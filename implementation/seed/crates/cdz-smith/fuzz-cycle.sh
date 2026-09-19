@@ -38,6 +38,9 @@
 #                         the campaign — a KILL mid-sweep is safe, findings file incrementally to disk)
 #   CDZ_SMITH_CDZ         the `cdz` binary for the differential rust side (default: auto-discover)
 #   CDZ_SMITH_STORE       the value-heap runtime store for the differential wasm side (default: <root>/target/cadenza-store)
+#   CDZ_SMITH_OPT_COUNT   opt-invariance-sweep programs/cycle (default: 100; 0 disables the sweep)
+#   CDZ_SMITH_OPT_CAP     opt-invariance-sweep wall-clock backstop, s (default: the 1/3 of the tick's
+#                         post-campaign budget the differential sweep leaves — a KILL mid-sweep is safe)
 set -uo pipefail
 
 # ── locate the checkout ─────────────────────────────────────────────────────────────────────────
@@ -173,17 +176,49 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
     if ( cd "$CRATE_DIR" && cargo build -q --release --features differential 2>/dev/null ); then
       DIFF_BIN="$CRATE_DIR/target/release/cdz-smith"
       # TICK-AWARE backstop: the crash/invalid-wasm campaign already consumed ~CYCLE_CAP of the tick,
-      # so bound the sweep to what's LEFT under a 10-min tick (default: 600 - CYCLE_CAP - 60s slack,
-      # floored at 60s). This keeps a full tick (campaign + sweep + builds) from overrunning the
-      # interval, which was crowding the next tick. A KILL when the backstop trips is SAFE — the sweep
-      # files each finding to disk as it goes, so a clipped sweep just does fewer programs this cycle.
-      DIFF_CAP="${CDZ_SMITH_DIFF_CAP:-$(( 600 - CYCLE_CAP - 60 ))}"
+      # so bound the sweep to what's LEFT under a 10-min tick (600 - CYCLE_CAP - 60s slack). That leftover
+      # is now SHARED with the opt-invariance sweep below: this wasm-vs-rust pass gets 2/3 (it rustc-compiles
+      # every program, the slower side), the in-process opt-invariance pass gets the remaining 1/3. Floored
+      # at 60s. A KILL when the backstop trips is SAFE — the sweep files each finding to disk as it goes, so
+      # a clipped sweep just does fewer programs this cycle.
+      DIFF_CAP="${CDZ_SMITH_DIFF_CAP:-$(( (600 - CYCLE_CAP - 60) * 2 / 3 ))}"
       [ "$DIFF_CAP" -lt 60 ] && DIFF_CAP=60
       CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$DIFF_CAP" \
         "$DIFF_BIN" differential --count "$DIFF_COUNT" --seed "$(date +%s)" \
           --findings "$FINDINGS" --store "$DIFF_STORE" --cdz "$DIFF_CDZ" 2>&1 | tail -4 || true
     else
       log "differential: cdz-smith --features differential build failed; skipping sweep"
+    fi
+  fi
+fi
+
+# ── opt-invariance sweep (SEPARATE, in-process, no cdz) ──────────────────────────────────────────
+# Complements the wasm-vs-rust differential: each program is compiled+run at the O0 baseline and at
+# every higher level (O1/O2/O3), and the values are cross-checked. A divergence is a pure-optimizer
+# miscompile (the O2/O3 global-CSE / lifted-analysis reclaim class the differential oracle, both sides
+# at O1, cannot reach). WASM-only + IN-PROCESS (no `cdz` subprocess, no rustc), so it is faster per
+# program than the differential sweep — it just needs the runtime store. Findings file into the SAME
+# fleet queue as `differential-*.smith.{sexp,md}` (tagged `opt-invariance`). Shares the post-campaign
+# budget: it gets the 1/3 the differential sweep left (see DIFF_CAP above). Best-effort: skip cleanly if
+# the store is absent or the featured build fails.
+OPT_COUNT="${CDZ_SMITH_OPT_COUNT:-100}"
+if [ "$OPT_COUNT" -gt 0 ]; then
+  OPT_STORE="${CDZ_SMITH_STORE:-$ROOT/target/cadenza-store}"
+  if [ ! -d "$OPT_STORE" ]; then
+    log "opt-invariance: runtime store $OPT_STORE absent (\`cargo xtask build\`); skipping sweep"
+  else
+    # Reuse the differential-featured binary if the sweep above already built it; otherwise build it now
+    # (a build failure just skips this pass). Same feature set — no libFuzzer link concern.
+    OPT_BIN="$CRATE_DIR/target/release/cdz-smith"
+    if [ -x "$OPT_BIN" ] || ( cd "$CRATE_DIR" && cargo build -q --release --features differential 2>/dev/null ); then
+      OPT_CAP="${CDZ_SMITH_OPT_CAP:-$(( (600 - CYCLE_CAP - 60) / 3 ))}"
+      [ "$OPT_CAP" -lt 60 ] && OPT_CAP=60
+      log "opt-invariance sweep | count $OPT_COUNT | store $OPT_STORE | cap ${OPT_CAP}s"
+      CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$OPT_CAP" \
+        "$OPT_BIN" opt-differential --count "$OPT_COUNT" --seed "$(date +%s)" \
+          --findings "$FINDINGS" --store "$OPT_STORE" 2>&1 | tail -4 || true
+    else
+      log "opt-invariance: cdz-smith --features differential build failed; skipping sweep"
     fi
   fi
 fi
