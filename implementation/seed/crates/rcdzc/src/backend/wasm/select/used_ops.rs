@@ -1113,6 +1113,18 @@ pub(super) fn collect_used_ops_into_seen(
                         if !matches!(core_of(db, arg), Core::ConstStr(_)) {
                             out.insert(OP_BYTES_LEN);
                             out.insert(OP_BYTES_GET);
+                            // Import mirror of the marshaled-arg reclaim (emit.rs `HostCall` runtime String/
+                            // Bytes arm): an OWNED marshaled arg is dropped after the copy loop, so declare
+                            // `drop` iff the emit will emit one — SAME `heap_operand_ownership == Owned` gate,
+                            // else the emit's `CallImport(OP_DROP)` resolves to u32::MAX (an invalid module).
+                            if matches!(
+                                crate::backend::wasm::select::ownership::heap_operand_ownership(
+                                    db, arg
+                                ),
+                                Ok(crate::backend::wasm::select::ownership::HandleOwnership::Owned)
+                            ) {
+                                out.insert(OP_DROP);
+                            }
                             collect_used_ops_into_seen(db, arg, out, visited);
                         }
                     }

@@ -5952,6 +5952,22 @@ pub(super) fn emit(
                             out.push(Lir::LocalGet(len_slot));
                             out.push(Lir::I32Add);
                             out.push(Lir::LocalSet(cursor)); // cursor += len
+                            // MARSHALED-ARG RECLAIM (v-memory-safety, 04-capabilities host-arg leak): the
+                            // runtime rope in `rope_slot` was COPIED byte-for-byte into shared `mem` above;
+                            // the host reads `mem` (via `(ptr,len)`), NOT the guest handle, so the handle is
+                            // DEAD after the copy loop. When the arg is a freshly-built OWNED producer (a
+                            // `Bytes.of`/concat/slice rope — `heap_operand_ownership == Owned`), drop it here
+                            // to reclaim it (else one buffer leaks per host call — the `(host (io) (io.op
+                            // (Bytes.of …)))` shape). Stack-neutral: `(ptr,len)` were already pushed above and
+                            // stay below this `local.get; drop`. A BORROWED arg (a param / match-binder whose
+                            // owner reclaims it) is left untouched — leak-safe: an unproven ownership just
+                            // leaves it un-dropped, never double-frees (leak-over-UAF). Import mirror in
+                            // `collect_used_ops_into_seen`'s `HostCall` arm (same Owned gate).
+                            if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            {
+                                out.push(Lir::LocalGet(rope_slot));
+                                out.push(Lir::CallImport(OP_DROP));
+                            }
                         }
                     },
                     // A RECORD argument (shape d) crosses NATIVELY: the guest DECOMPOSES the value-heap record

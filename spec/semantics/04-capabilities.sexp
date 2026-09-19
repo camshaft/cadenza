@@ -515,7 +515,8 @@
   (host-responses (respond hb.h (: 7 Int64)))
   (host-calls (call hb.h))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  ; v-memory-safety: the runtime Bytes/String host-arg is now reclaimed after marshaling into shared mem (owned marshaled-arg drop); census 0. Was known-leak.
+  (live-objects 0))
 
 (case
   "a runtime String host arg is marshaled into shared memory and the host call returns its response"
@@ -552,7 +553,8 @@
   (host-responses (respond io.sink2 (: 9 Int64)))
   (host-calls (call io.sink2))
   (output (: 9 Int64))
-  (live-objects known-leak))
+  ; v-memory-safety: the runtime Bytes/String host-arg is now reclaimed after marshaling into shared mem (owned marshaled-arg drop); census 0. Was known-leak.
+  (live-objects 0))
 
 (case
   "a host op with three runtime Bytes args marshals each to a disjoint region"
@@ -572,7 +574,8 @@
   (host-responses (respond io.sink3 (: 11 Int64)))
   (host-calls (call io.sink3))
   (output (: 11 Int64))
-  (live-objects known-leak))
+  ; v-memory-safety: the runtime Bytes/String host-arg is now reclaimed after marshaling into shared mem (owned marshaled-arg drop); census 0. Was known-leak.
+  (live-objects 0))
 
 (case
   "a host op interleaving runtime Bytes and scalar args keeps regions and slots distinct"
@@ -592,7 +595,8 @@
   (host-responses (respond io.mix (: 3 Int64)))
   (host-calls (call io.mix))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  ; v-memory-safety: the runtime Bytes/String host-arg is now reclaimed after marshaling into shared mem (owned marshaled-arg drop); census 0. Was known-leak.
+  (live-objects 0))
 
 (case
   "a host op mixing a const String and a runtime Bytes arg routes each to its own path"
@@ -607,7 +611,8 @@
   (host-responses (respond io.mix2 (: 4 Int64)))
   (host-calls (call io.mix2))
   (output (: 4 Int64))
-  (live-objects known-leak))
+  ; v-memory-safety: the runtime Bytes/String host-arg is now reclaimed after marshaling into shared mem (owned marshaled-arg drop); census 0. Was known-leak.
+  (live-objects 0))
 
 (case
   "an empty runtime String host arg marshals as a zero-length buffer"
