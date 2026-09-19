@@ -3493,7 +3493,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: (tuple 11 12) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a compose combinator over HEAP-typed functions pipelines list transformers"
