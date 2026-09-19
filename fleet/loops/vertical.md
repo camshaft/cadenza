@@ -146,16 +146,16 @@ returning to the tick-top check):
    agent paying ~10min/verify. (Exception: a `cdz-runtime` `//`-comment / `wit/runtime.wit` edit bumps the
    frozen `REQUIRED_RUNTIME_HASH` → `cargo xtask build` + `codegen --check` locally, since pr-sync can't
    recover a hash mismatch for you.)
-   ⚠ **INTERIM LAND BAR (2026-09-19, while pr-sync is DOWN + the full `corpus-gate-coarse` aggregate is
-   WEDGED):** the whole-corpus aggregate (`nix build .#checks.<sys>.corpus-gate-coarse`) currently HANGS
-   (~88min then idle) on an unguarded per-case COMPILE in one chapter (`mkCorpusGateFileCoarse`'s `cdz-compile`
-   has no `timeout`, unlike cad-tests; fix in flight with v-nix). Until it completes clean again, do NOT run
-   the full aggregate as your land gate — the standard LAND bar is **per-chapter coarse + BLAST-RADIUS**:
-   run `nix build .#checks.<sys>.corpus-gate-coarse-<stem>` for ONLY the chapters your change can reach
-   (reason about which chapters a change can affect, gate those, and argue byte-identical elsewhere), and
-   verify each by EXIT CODE / `nix path-info` on the out — a piped `grep -c` tail returns 1 on 0 matches and
-   MASKS the real build exit. This REVERTS to the full aggregate as the bar once v-nix's compile-`timeout`
-   fix lands and `corpus-gate-coarse` builds green again.
+   ⚠ **LAND BAR WHILE pr-sync IS DOWN (2026-09-19):** under the direct-to-main model there is NO pr-sync
+   full re-gate backstop, so YOUR land bar is **per-chapter coarse + BLAST-RADIUS**: run
+   `nix build .#checks.<sys>.corpus-gate-coarse-<stem>` for ONLY the chapters your change can reach (reason
+   about which chapters a change can affect, gate those, and argue byte-identical elsewhere), and verify each
+   by EXIT CODE / `nix path-info` on the out — a piped `grep -c` tail returns 1 on 0 matches and MASKS the
+   real build exit. The full aggregate (`nix build .#checks.<sys>.corpus-gate-coarse`) is AVAILABLE for
+   whole-corpus assurance when a change's blast-radius is wide/uncertain — its ~88min compile-hang WEDGE was
+   fixed (#9357: `mkCorpusGateFileCoarse` per-case compile is now `timeout`-capped at 180s, so a compile-hang
+   fails-fast RED naming the chapter+case instead of hanging). It is still the ~37-chapter cost, so prefer
+   blast-radius for a scoped change.
    **Then apply discipline (b): even a dev-gate + build cycle is a real context ingest — CHECK your context
    after it and `/compact` if past ~70% BEFORE the next unit** (committing, the next slice, resending after
    a reject). Never carry a near-full window into another build.
