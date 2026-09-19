@@ -6626,4 +6626,48 @@ mod tests {
             Verdict::Compiled { .. } | Verdict::Declined { .. }
         ));
     }
+
+    /// The `ByteCursorChoice` ENTROPY-MODEL contract — the invariant EVERY fixed-seed reachability
+    /// test AND the persistent coverage corpus (a saved byte string must decode to the SAME program
+    /// across ticks) silently depend on. Pinned DIRECTLY so a refactor that changes byte consumption
+    /// (e.g. `variant` reading a variable width, or `int_bounded` reading 4 bytes) fails LOUDLY here,
+    /// instead of silently remapping every seed — rotting the on-disk corpus and reshuffling every
+    /// sibling reachability test — with no test noticing.
+    #[test]
+    fn byte_cursor_choice_entropy_model_is_stable() {
+        // `variant(n)` consumes EXACTLY ONE byte and returns `byte % n`.
+        let mut c = ByteCursorChoice::new(&[7, 200, 3]);
+        assert_eq!(c.variant(5), 7 % 5);
+        assert_eq!(c.pos, 1, "variant consumes exactly one byte");
+        assert_eq!(c.variant(10), 200 % 10);
+        assert_eq!(c.pos, 2);
+
+        // `variant(0)` returns 0 and consumes NOTHING (an empty range reads no entropy).
+        let mut c = ByteCursorChoice::new(&[9]);
+        assert_eq!(c.variant(0), 0);
+        assert_eq!(c.pos, 0, "variant(0) reads no byte");
+
+        // `int_bounded` consumes EXACTLY EIGHT bytes (a big-endian u64 folded into the range).
+        let mut c = ByteCursorChoice::new(&[0; 16]);
+        let _ = c.int_bounded(0, 1_000_000);
+        assert_eq!(c.pos, 8, "int_bounded consumes exactly eight bytes");
+        // …and it IS a big-endian fold: 0x00..00_01 = 1, so `min + (1 % span)`.
+        let mut c = ByteCursorChoice::new(&[0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(c.int_bounded(0, 9), 1 % 10);
+
+        // A degenerate range (`min >= max`) reads NOTHING and returns `min`.
+        let mut c = ByteCursorChoice::new(&[0; 8]);
+        assert_eq!(c.int_bounded(42, 42), 42);
+        assert_eq!(c.pos, 0, "a degenerate int_bounded range reads no entropy");
+
+        // EXHAUSTION coerces to the LOW end: past the buffer `byte()` yields 0, so `variant` → 0 and
+        // `int_bounded` → min. This is exactly what makes generation always TERMINATE at its base case.
+        let mut c = ByteCursorChoice::new(&[]);
+        assert_eq!(c.variant(4), 0, "exhausted variant coerces to 0");
+        assert_eq!(
+            c.int_bounded(-5, 5),
+            -5,
+            "exhausted int_bounded coerces to min"
+        );
+    }
 }
