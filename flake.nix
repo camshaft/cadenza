@@ -233,10 +233,15 @@
         #    rcdzc is already in seedCompilerClosure (non-optional today); WHEN v-cdz-crate-split flips
         #    `standalone=["dep:rcdzc"]` + `rcdzc={optional=true}`, THIS variant's closure must gain
         #    includeOptional for rcdzc (seam coordinated with v-cdz-crate-split — the compile variant stays as-is).
-        mkSeedCompiler = { pname, cargoExtraArgs, src ? seedCompilerSrc, closure ? seedCompilerClosure }: craneLib.buildPackage {
+        # cargoArtifacts + cargoProfile params (v-nix, profile.ci — 3b compiler-under-ci for cad-tests): a ci
+        # variant passes cargoArtifacts=cargoArtifactsCi + cargoProfile="ci" so the in-process rcdzc test runner
+        # builds under [profile.ci] (assertions + overflow-checks). DEFAULTS preserve the exact release behavior
+        # (the shared dev cargoArtifacts + NO CARGO_PROFILE via optionalAttrs) → existing callers (seedCompiler,
+        # seedCompilerTestRunner) BYTE-IDENTICAL.
+        mkSeedCompiler = { pname, cargoExtraArgs, src ? seedCompilerSrc, closure ? seedCompilerClosure, depsCache ? cargoArtifacts, cargoProfile ? null }: craneLib.buildPackage ({
           inherit pname cargoExtraArgs src;
           version = "0.0.0";
-          inherit cargoArtifacts;
+          cargoArtifacts = depsCache;
           cargoVendorDir = seedCargoVendor;
           # Materialize synthetic empty target stubs for the non-closure members (+ xtask) whose real src the
           # scoped fileset omits, so cargo can parse the workspace `members` glob for `-p cdz -p cdz-run`
@@ -270,7 +275,7 @@
           # the deps layer (we consume the shared cargoArtifacts, not produce a new one).
           doCheck = false;
           doInstallCargoArtifacts = false;
-        };
+        } // pkgs.lib.optionalAttrs (cargoProfile != null) { CARGO_PROFILE = cargoProfile; });
         # COMPILE/DELEGATE variant (standalone OFF). `--no-default-features` drops cdz's default-on `corpus`
         # (v-nix+v-cml 2026-08-10) — paired with seedCompilerClosure's includeOptional=false (drops cdz-corpus
         # SRC), a corpus-only MR no longer rotates seedCompiler; and it sheds lsp/watch/completions. cdz-run has
@@ -293,6 +298,20 @@
           # rcdzc-optional flip; no-op today. The compile seedCompiler above keeps the default closure.
           src = seedTestRunnerSrc;
           closure = seedTestRunnerClosure;
+        };
+        # CI-profile test runner (v-nix, profile.ci 3b): the SAME in-process rcdzc `cdz test` runner built under
+        # [profile.ci] (debug-assertions + overflow-checks), drawing cargoArtifactsCi. Consumed ONLY by the
+        # CADENCE cad-tests (cad-test-*, NOT in localGate), so the compiler bugs a `cdz test` exercises now trip
+        # assertions/overflow on the nightly cadence. Frozen-hash safe: mkSeedCompiler's preBuild stamps the SAME
+        # release runtime/nfc hashes, so `cdz test` programs still target the release runtime. seedCompilerTestRunner
+        # (release) is unchanged for the per-MR/test-shred/discovery consumers.
+        seedCompilerTestRunnerCi = mkSeedCompiler {
+          pname = "cdz-seed-compiler-testrunner-ci";
+          cargoExtraArgs = "-p cdz -p cdz-run --no-default-features --features cdz/standalone";
+          src = seedTestRunnerSrc;
+          closure = seedTestRunnerClosure;
+          depsCache = cargoArtifactsCi;
+          cargoProfile = "ci";
         };
 
         # xtaskBin — the `xtask` dev-tool binary AS a relocatable nix package (v-xtask-decompose, operator
@@ -1444,10 +1463,12 @@
             root = ./.;
             fileset = dir;
           };
-          # `cdz test` is standalone-gated (in-process rcdzc runner) → use seedCompilerTestRunner; the
-          # --no-default-features seedCompiler's `cdz test` refuses. CDZ_COMPILE_BIN kept as a harmless no-op.
-          nativeBuildInputs = [ seedCompilerTestRunner ];
-          CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
+          # `cdz test` is standalone-gated (in-process rcdzc runner) → use the CI test runner (profile.ci 3b):
+          # cad-tests is a CADENCE check (NOT in localGate), so it runs the assertions+overflow rcdzc to surface
+          # compiler integer-overflow / debug_assert! bugs a `cdz test` exercises. CDZ_COMPILE_BIN → the ci
+          # compiler too (harmless no-op for `cdz test`'s in-process path, but keeps the ci profile consistent).
+          nativeBuildInputs = [ seedCompilerTestRunnerCi ];
+          CDZ_COMPILE_BIN = "${cdzCompileCi}/bin/cdz-compile";
           buildPhase = ''
             runHook preBuild
             set -o pipefail
