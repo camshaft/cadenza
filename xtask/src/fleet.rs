@@ -25398,6 +25398,99 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert_eq!(inbox_shadow_action(true, true, false, false), SkipConflict);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn ensure_worktree_inbox_link_creates_replaces_empty_and_never_clobbers_content() {
+        // Exercise the I/O wrapper end-to-end against a real temp filesystem: create-when-free,
+        // idempotent re-link, replace-an-empty-stale-scaffold, and — the mail-loss-critical
+        // invariant — NEVER clobber a shadow that holds a message file.
+        let base = std::env::temp_dir().join(format!("cdz-inbox-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("hub");
+        let worktrees = base.join("worktrees");
+        let hub_inbox = root.join("inbox");
+        std::fs::create_dir_all(&hub_inbox).unwrap();
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: worktrees.clone(),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let shadow = |name: &str| {
+            worktrees
+                .join(name)
+                .join(".claude")
+                .join("fleet")
+                .join("inbox")
+        };
+        let is_symlink_to_hub = |name: &str| {
+            let s = shadow(name);
+            std::fs::symlink_metadata(&s).is_ok_and(|m| m.file_type().is_symlink())
+                && std::fs::read_link(&s).is_ok_and(|t| t == hub_inbox)
+        };
+
+        // (1) NoWorktree — the worktree does not exist → nothing is created.
+        ensure_worktree_inbox_link(&fleet, "ghost");
+        assert!(
+            std::fs::symlink_metadata(shadow("ghost")).is_err(),
+            "no shadow is created when the worktree is absent"
+        );
+
+        // (2) CreateLink — worktree exists + shadow path free → symlink to the hub inbox.
+        std::fs::create_dir_all(worktrees.join("fresh")).unwrap();
+        ensure_worktree_inbox_link(&fleet, "fresh");
+        assert!(
+            is_symlink_to_hub("fresh"),
+            "a free shadow path is linked to the hub inbox"
+        );
+
+        // (3) AlreadyLinked — idempotent: re-running keeps the correct symlink, no error/duplication.
+        ensure_worktree_inbox_link(&fleet, "fresh");
+        assert!(is_symlink_to_hub("fresh"), "re-linking is idempotent");
+
+        // (4) ReplaceEmpty — a stale EMPTY real-dir scaffold (nested empty processed/) → removed + linked.
+        std::fs::create_dir_all(
+            worktrees
+                .join("stale")
+                .join(".claude")
+                .join("fleet")
+                .join("inbox")
+                .join("stale")
+                .join("processed"),
+        )
+        .unwrap();
+        assert!(!is_symlink_to_hub("stale"));
+        ensure_worktree_inbox_link(&fleet, "stale");
+        assert!(
+            is_symlink_to_hub("stale"),
+            "an empty stale shadow scaffold is replaced by the hub symlink"
+        );
+
+        // (5) SkipConflict — a shadow holding a real message file is NEVER clobbered (mail-loss guard).
+        let content_dir = shadow("hasmail");
+        std::fs::create_dir_all(&content_dir).unwrap();
+        let msg = content_dir.join("000000000001-1-note.json");
+        std::fs::write(&msg, "{}").unwrap();
+        ensure_worktree_inbox_link(&fleet, "hasmail");
+        assert!(
+            !is_symlink_to_hub("hasmail"),
+            "a content-bearing shadow is left as a real dir, not turned into a symlink"
+        );
+        assert!(
+            msg.exists(),
+            "the real message file is preserved (never clobbered)"
+        );
+        assert!(
+            std::fs::symlink_metadata(shadow("hasmail"))
+                .unwrap()
+                .file_type()
+                .is_dir(),
+            "the content-bearing shadow stays a real directory"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn ci_verdict_folds_gh_buckets_conservatively() {
         use CiVerdict::*;
