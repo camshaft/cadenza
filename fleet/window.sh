@@ -177,6 +177,21 @@ schedules nothing): /loop $INTERVAL $TICK"
 # Overridable: a per-agent AUTOCOMPACT from `describe`, else the env CDZ_AUTOCOMPACT_WINDOW, else 600K.
 : "${AUTOCOMPACT:=${CDZ_AUTOCOMPACT_WINDOW:-600000}}"
 
+# ── OPERATOR-AWAY non-interactive override (fleet-tooling 2026-09-19) ──────────────────────────────
+# `describe` derives DISALLOW_ASK from the ROLE, so the on-demand `design` role normally relaunches WITH
+# AskUserQuestion (DISALLOW_ASK=0). When the operator is AWAY, they directed that ALL agents run
+# non-interactive — a `design` agent that re-arms interactive just re-blocks on a terminal AskUserQuestion
+# modal that no one will answer (the exact wedge that stalls a design agent for hours). A hub SENTINEL file
+# `<hub>/.claude/fleet/non-interactive` (or env CDZ_FORCE_DISALLOW_ASK=1) forces DISALLOW_ASK=1 for EVERY
+# relaunch, INCLUDING design — so a restart during an operator-away window structurally CANNOT come back
+# interactive. Durable across relaunches (survives in the hub, unlike an exported env that tmux won't carry
+# into a fresh window). REMOVE the sentinel when the operator returns to restore per-role interactivity:
+#   touch   <hub>/.claude/fleet/non-interactive   # force all relaunches non-interactive
+#   rm -f   <hub>/.claude/fleet/non-interactive   # restore design's terminal AskUserQuestion
+if [ -e "$HUB/.claude/fleet/non-interactive" ] || [ "${CDZ_FORCE_DISALLOW_ASK:-0}" = "1" ]; then
+  DISALLOW_ASK=1
+fi
+
 CLAUDE_ARGS=()
 # Structural guard: every window EXCEPT the interactive roles (concierge, design) is denied the
 # human-question tool, so no unattended agent can pop an interactive prompt in its window. The
