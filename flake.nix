@@ -3015,12 +3015,18 @@
             # `itest-alloc` (split out of `host`, 2026-09-10) gives the itest bin its jemalloc #[global_allocator]
             # exactly as before; it is now a distinct feature so `host` as a LIBRARY does not drag the jemalloc
             # C build. The itest [[bin]] requires all three, so this build must enable itest-alloc too.
-            cargo build --release --locked -p cdz-platform --bin cdz-platform-itest --features "testing host itest-alloc"
+            # PROFILE.CI (v-nix, concierge assign 080976 / v-cadenza-ci greenlit): the §9 integration tests are
+            # code-RUNNING CI checks, so build the itest exe under the diagnostic [profile.ci] (inherits release +
+            # debug-assertions + overflow-checks) — a platform-host overflow/assertion bug now trips instead of
+            # silently passing. Raw stdenv build (no crane dep-cache), so no ci-deps-layer wiring needed; it just
+            # compiles under target/ci/ from the vendored deps. FROZEN-HASH SAFE: this is the host exe, NOT the CA
+            # runtime component (mkRuntime stays --release), so REQUIRED_RUNTIME_HASH is untouched.
+            cargo build --profile ci --locked -p cdz-platform --bin cdz-platform-itest --features "testing host itest-alloc"
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
-            install -Dm755 target/release/cdz-platform-itest "$out/bin/cdz-platform-itest"
+            install -Dm755 target/ci/cdz-platform-itest "$out/bin/cdz-platform-itest"
             runHook postInstall
           '';
         };
