@@ -2771,6 +2771,42 @@
   (live-objects 0))
 
 (case
+  "a Bytes.at self-tail-loop over a runtime-DEEP rope param reclaims (the BytesAt sibling of the StrAt deep-rope fix)"
+  (doc
+    "The Bytes sibling of the deep-rope String.at self-tail-loop reclaim (13-strings #9283/#9271-followup):
+           v-memory-safety fixed a `Core::StrAt` self-tail scan over a runtime-DEEP rope param, where the StrAt
+           lowering dup'd the string into its scratch slot for the borrow-reads and the enclosing MatchSum
+           recycled that slot, orphaning the per-iteration alias dup (leaked 1/iter). This is the BytesAt analog:
+           `rep` concatenates `#list(1 2)` `(+ r 2)` times (runtime count → a genuinely deep byte-rope that
+           cannot pre-fold to a flat leaf), then the SAME `(match (Bytes.at b i) ((Some _v) (go b (+ i 1) n
+           (+ acc 1))))` self-tail loop walks it (borrow-only arm, count 4 → 4). The StrAt fix was gated on
+           `Core::StrAt`; this pins that `Core::BytesAt` over a deep byte-rope does NOT have the analogous
+           orphaned scrutinee-alias dup — it ALREADY reclaims (census 0, gate-proven). The distinction: a
+           runtime String.at decodes a scalar and dups the string into a scratch slot the enclosing MatchSum
+           recycled (the #9283 leak); Bytes.at reads a byte from the array without that scratch-slot dup, so no
+           per-iteration alias is orphaned. Value stable at 4. A passing fence pinning the op-distinction — the
+           BytesAt deep-rope self-tail scan is leak-free where its StrAt twin needed #9296 — so a future
+           StrAt-like scrutinee-alias regression on BytesAt would red here.")
+  (input
+    (do
+      (def
+        (rep (: chunk Bytes) (: n Int64) (: acc Bytes))
+        (if (< n 1) acc (rep chunk (- n 1) (Bytes.concat acc chunk))))
+      (def
+        (go (: b Bytes) (: i Int64) (: n Int64) (: acc Int64))
+        (if (>= i n) acc (match (Bytes.at b i) ((Some _v) (go b (+ i 1) n (+ acc 1))) ((None _u) acc))))
+      (def (main (: r Int64)) (go (rep (Bytes.of #list(1 2)) (+ r 2) (Bytes.of #list())) 0 4 0))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 4 Int64))
+  (call main (: 2 Int64))
+  (output (: 4 Int64))
+  ; GATE-PROVEN GREEN (breaker, this gate): Core::BytesAt over a runtime-deep byte-rope self-tail-loop reclaims
+  ; to exact-0 — NO analogous orphaned scrutinee-alias dup (contrast the StrAt twin #9283 which needed #9296).
+  ; Bytes.at reads from the array without String.at's scalar-decode scratch-slot dup. Passing op-distinction fence.
+  (live-objects 0))
+
+(case
   "String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts"
   (doc
     "The None face of the decode path (the landed from-bytes pins are happy-path): the bytes of
