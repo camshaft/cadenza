@@ -50,6 +50,13 @@ pub enum GenMode {
     /// stresses the allocator / linear-memory-grow + value-escape copy-out paths (where the #7793/#7800
     /// `>64 KiB` OOBs lived) — reached by the wasm-vs-rust `differential --large`, not per-campaign.
     LargeValue,
+    /// The OWNED-AGGREGATE-RECLAIM grammar (`astgen::generate_reclaim_shapes`) — a narrow family of
+    /// owned List / tagged-sum-payload programs (matchsum-len, loop-accumulator rebind, scalar-project-
+    /// drop-heap-sibling, nested sum-in-sum, in-arm push rebind) that each return a KNOWN Int64. Densifies
+    /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
+    /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
+    /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
+    ReclaimShapes,
 }
 
 /// Configuration for a fuzzing run.
@@ -1155,6 +1162,9 @@ pub fn program_for_seed_with(seed: u64, mode: GenMode) -> String {
         GenMode::TypeFuzz => crate::astgen::generate_typecheck(&astgen_seed_entropy(seed)).source,
         GenMode::LargeValue => {
             crate::astgen::generate_large_value(&astgen_seed_entropy(seed)).source
+        }
+        GenMode::ReclaimShapes => {
+            crate::astgen::generate_reclaim_shapes(&astgen_seed_entropy(seed)).source
         }
     }
 }
