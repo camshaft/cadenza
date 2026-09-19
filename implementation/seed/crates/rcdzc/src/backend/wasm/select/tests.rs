@@ -4019,6 +4019,69 @@ fn def_funcref_taken_builds_its_referenced_code_memo_once_not_per_query() {
 // the Core level so a regression flips `cargo test`, independent of the (infra-gated) live census.
 
 #[test]
+fn wit310_escaped_field_projections_nested_path_records_the_full_chain() {
+    // A NESTED compound field moves out verbatim through a list+nested-record result
+    // (`(. (. m inner) leaf)`): NOT blanket-droppable → the analysis reports the full projection chain
+    // `[[0, 0]]` (inner = field 0, leaf = field 0 of that), so the emit's chained `arr-get` dups the deep
+    // leaf. Guards the multi-level path (the single-level SHAPE-9 case pins `[[0]]`).
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: m (Record (inner (Record (leaf Bytes)))))) \
+             (record (= items (list (record (= e (. (. m inner) leaf))))))) \
+           (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select nested");
+    let binder = params[0].0;
+    assert!(!record_cell_param_droppable(&mut db, body, binder));
+    assert_eq!(
+        escaped_field_projections(&mut db, body, binder),
+        Some(vec![vec![0usize, 0usize]]),
+        "nested field move-out → the full [inner, leaf] = [[0,0]] projection chain"
+    );
+}
+
+#[test]
+fn wit310_escaped_field_projections_none_when_multiple_fields_forwarded_is_droppable() {
+    // Forwarding TWO compound fields into the result (`(. m x)` + `(. m y)`) is blanket-droppable (each
+    // child is dup'd → the shell is a dead owned temporary), so the existing all-or-nothing drop reclaims
+    // it → `escaped_field_projections` returns `None` (no per-field dup path needed). Documents that the
+    // co-fix fires on single (possibly nested) move-outs, not multi-field forwards.
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: m (Record (x Bytes) (y Bytes)))) \
+             (record (= items (list (record (= a (. m x)) (= b (. m y))))))) \
+           (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select multi-field");
+    let binder = params[0].0;
+    assert!(record_cell_param_droppable(&mut db, body, binder));
+    assert_eq!(escaped_field_projections(&mut db, body, binder), None);
+}
+
+#[test]
+fn wit310_escaped_field_projections_none_when_same_field_used_twice_is_droppable() {
+    // The SAME field projected twice (`(. m x)` + `(. m x)`): the first consume becomes a Perceus dup-site
+    // (the field is live_after), so the child is dup'd and the shell is blanket-droppable → `None`. Pins
+    // that the multiplicity path is not spuriously triggered by a droppable double-use.
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: m (Record (x Bytes)))) \
+             (record (= items (list (record (= a (. m x)) (= b (. m x))))))) \
+           (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select same-field-twice");
+    let binder = params[0].0;
+    assert!(record_cell_param_droppable(&mut db, body, binder));
+    assert_eq!(escaped_field_projections(&mut db, body, binder), None);
+}
+
+#[test]
 fn wit310_escaped_field_projections_shape9_records_the_moved_out_field() {
     // SHAPE-9: a record param `m` whose Bytes field `tok` MOVES OUT VERBATIM through a list+nested-record
     // result (`(record (= items (list (record (= echo (. m tok))))))`). Unlike a direct compound-field
