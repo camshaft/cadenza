@@ -175,9 +175,9 @@ fn usage() {
          \n\
          USAGE:\n\
          \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR] [--astgen]\n\
-         \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen] [--large]\n\
-         \x20 cdz-smith opt-differential  [--count N] [--seed S] [--findings DIR] [--store DIR] [--astgen] [--large]   (O0-vs-O1/O2/O3 VALUE invariance — pure-optimizer miscompile hunt; in-process, no cdz)\n\
-         \x20 cdz-smith determinism      [--count N] [--seed S] [--findings DIR] [--astgen]   (compile TWICE, require byte-identical output — compiler-nondeterminism hunt; compile-only, no store/cdz)\n\
+         \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen] [--large] [--reclaim]\n\
+         \x20 cdz-smith opt-differential  [--count N] [--seed S] [--findings DIR] [--store DIR] [--astgen] [--large] [--reclaim]   (O0-vs-O1/O2/O3 VALUE invariance — pure-optimizer miscompile hunt; in-process, no cdz; --reclaim = owned-aggregate reclaim-precision shapes)\n\
+         \x20 cdz-smith determinism      [--count N] [--seed S] [--findings DIR] [--astgen] [--reclaim]   (compile TWICE, require byte-identical output — compiler-nondeterminism hunt; compile-only, no store/cdz)\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR] [--host]\n\
@@ -1104,6 +1104,10 @@ fn cmd_differential(args: &[String]) -> ExitCode {
             // Draw LARGE-VALUE builder programs (>64 KiB heap List) — a dedicated SLOW regime stressing the
             // allocator / memory-grow + value-escape copy-out paths (#7793/#7800). Use small --count.
             "--large" => gen_mode = driver::GenMode::LargeValue,
+            // Draw OWNED-AGGREGATE-RECLAIM shapes (matchsum/loop-accum/project-drop-sibling) — densifies
+            // value-observable coverage of the reclaim-precision churn (a leak is invisible, a freed-live-cell
+            // wrong-value is not). See `GenMode::ReclaimShapes`.
+            "--reclaim" => gen_mode = driver::GenMode::ReclaimShapes,
             other => {
                 eprintln!("cdz-smith differential: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -1150,6 +1154,7 @@ fn cmd_differential(args: &[String]) -> ExitCode {
     let grammar = match gen_mode {
         driver::GenMode::Astgen => "astgen",
         driver::GenMode::LargeValue => "large-value",
+        driver::GenMode::ReclaimShapes => "reclaim-shapes",
         _ => "text",
     };
 
@@ -1226,6 +1231,9 @@ fn cmd_opt_differential(args: &[String]) -> ExitCode {
             "--store" => store = it.next().map(PathBuf::from),
             "--astgen" => gen_mode = driver::GenMode::Astgen,
             "--large" => gen_mode = driver::GenMode::LargeValue,
+            // Owned-aggregate-reclaim shapes — the opt-invariance counterpart of the corpus leak pins:
+            // an over-aggressive reclaim at O2/O3 that frees a still-live cell diverges from the O0 value.
+            "--reclaim" => gen_mode = driver::GenMode::ReclaimShapes,
             other => {
                 eprintln!("cdz-smith opt-differential: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -1267,6 +1275,7 @@ fn cmd_opt_differential(args: &[String]) -> ExitCode {
     };
     let grammar = match gen_mode {
         driver::GenMode::LargeValue => "large-value",
+        driver::GenMode::ReclaimShapes => "reclaim-shapes",
         _ => "astgen",
     };
     eprintln!(
@@ -2140,6 +2149,9 @@ fn cmd_determinism(args: &[String]) -> ExitCode {
             "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
             "--findings" => findings = it.next().map(PathBuf::from),
             "--astgen" => gen_mode = driver::GenMode::Astgen,
+            // Owned-aggregate-reclaim shapes — a reclaim decision that leaks a nondeterministic
+            // iteration order into codegen would show as a byte-diff across the two compiles.
+            "--reclaim" => gen_mode = driver::GenMode::ReclaimShapes,
             other => {
                 eprintln!("cdz-smith determinism: unexpected arg `{other}`");
                 return ExitCode::from(2);

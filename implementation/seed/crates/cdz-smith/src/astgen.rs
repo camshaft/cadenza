@@ -154,6 +154,54 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
     }
 }
 
+/// Generate an OWNED-AGGREGATE-RECLAIM program — a param-less `main` returning Int64 whose value
+/// depends on a heap aggregate (a `List`, or a tagged-sum payload) being CONSTRUCTED, destructured,
+/// and its dead siblings RECLAIMED while the live projection survives. This DENSIFIES value-observable
+/// coverage of exactly the reclaim-PRECISION churn the fleet is grinding through (fresh-owned-aggregate
+/// Proj shell-reclaim, SumNew loop-accumulator rebind, matchsum owned-payload reclaim — #9362/#9369/#9373
+/// and siblings). A LEAK is invisible to a value oracle, but an OVER-aggressive reclaim that frees a
+/// still-live cell corrupts the RETURNED value (or traps) — which the wasm-vs-rust `differential`,
+/// `opt-invariance`, and `determinism` sweeps DO see. Every shape is type-correct, terminating, and
+/// computes a KNOWN Int64, so a reclaim-precision miscompile surfaces as a value mismatch. The narrow
+/// shape family is deliberate — it is the OPT/VALUE-oracle counterpart to the corpus `(live-objects N)`
+/// leak pins (which the value oracles structurally cannot observe).
+pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
+    let mut c = ByteCursorChoice::new(entropy);
+    let shape = c.variant(5);
+    // Small bounded literals so values stay in range and the whole program is trivially terminating.
+    let a = c.int_bounded(0, 99);
+    let b = c.int_bounded(0, 99);
+    let d = c.int_bounded(0, 99);
+    let n = c.int_bounded(0, 12); // bounded loop fuel for the accumulator shape
+    let source = match shape {
+        // 0 — matchsum with an OWNED `List` payload: destructure + read its length. The payload must
+        // be reclaimed AFTER the `List.len` read, never before.
+        0 => format!(
+            "(do (type Box (Mk (List Int64))) (def (main) (match (Box.Mk (list {a} {b} {d})) ((Mk xs) (List.len xs)))) (export main))"
+        ),
+        // 1 — a tail-recursive loop-accumulator REBIND (`SumNew` + `If` arms): each step frees the old
+        // `acc` shell and rebinds the grown one; return the final length (== n).
+        1 => format!(
+            "(do (def (build (: k Int64) (: acc (List Int64))) (if (<= k 0) acc (build (- k 1) (List.push acc k)))) (def (main) (List.len (build {n} (list)))) (export main))"
+        ),
+        // 2 — project a SCALAR out of an owned aggregate whose OTHER field is a heap `List`: the live
+        // scalar must survive while the dead heap sibling (`_ys`) is reclaimed.
+        2 => format!(
+            "(do (type Pair (Mk Int64 (List Int64))) (def (main) (match (Pair.Mk {a} (list {b} {d})) ((Mk x _ys) x))) (export main))"
+        ),
+        // 3 — a NESTED owned sum-in-sum: two destructurings deep, each shell reclaimed on the way out.
+        3 => format!(
+            "(do (type Inner (I (List Int64))) (type Outer (O Inner)) (def (main) (match (Outer.O (Inner.I (list {a} {b} {d}))) ((O inner) (match inner ((I xs) (List.len xs)))))) (export main))"
+        ),
+        // 4 — matchsum owned payload with an IN-ARM rebind (`SumNew`-in-arm): push onto the destructured
+        // list inside the arm, then measure — stresses reclaim of the intermediate shell.
+        _ => format!(
+            "(do (type Box (Mk (List Int64))) (def (main) (match (Box.Mk (list {a} {b})) ((Mk xs) (List.len (List.push xs {d}))))) (export main))"
+        ),
+    };
+    Program { source }
+}
+
 /// Which optional helpers are in scope for an expression, so the call arms (`gen_expr`) know what they
 /// may emit. A `Copy` struct threaded by value — cheaper to extend with a new helper than a positional
 /// `bool` per generator function.
@@ -4762,6 +4810,50 @@ mod tests {
             saw_return && saw_consume,
             "both main-body variants must be reachable across seeds (return the list AND List.len it): \
              saw_return={saw_return} saw_consume={saw_consume}"
+        );
+    }
+
+    /// [`generate_reclaim_shapes`] — the ReclaimShapes generator behind `--reclaim` (the value/opt/
+    /// determinism oracles' counterpart to the corpus `(live-objects N)` leak pins) — must keep its two
+    /// load-bearing invariants or every `--reclaim` sweep silently degrades: (1) EVERY generated program
+    /// COMPILES cleanly (a declined shape stresses no reclaim path and contributes no value check); and
+    /// (2) ALL FIVE owned-aggregate shapes stay reachable across varied entropy (matchsum-len, loop-accum
+    /// rebind, scalar-project-drop-heap-sibling, nested sum-in-sum, in-arm push rebind) — a generator edit
+    /// that drops a shape would quietly stop exercising that reclaim class.
+    #[test]
+    fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
+        // Distinctive, mutually-exclusive markers for the five shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 5];
+        for seed in 0u64..96 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
+            let mut bytes = Vec::new();
+            // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
+            // shape selector AND every literal on live entropy.
+            for _ in 0..40 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let src = generate_reclaim_shapes(&bytes).source;
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "every reclaim shape must COMPILE (a decline stresses no reclaim path): {src}"
+            );
+            if src.contains("((Mk xs) (List.len xs)))") {
+                reached[0] = true;
+            } else if src.contains("(def (build (: k Int64)") {
+                reached[1] = true;
+            } else if src.contains("(type Pair (Mk Int64") {
+                reached[2] = true;
+            } else if src.contains("(type Inner (I (List Int64))") {
+                reached[3] = true;
+            } else if src.contains("(List.len (List.push xs") {
+                reached[4] = true;
+            }
+        }
+        assert!(
+            reached.iter().all(|&r| r),
+            "all five reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
