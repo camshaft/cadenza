@@ -174,6 +174,15 @@ Bulk content is scanned via `current_chunk()` (a contiguous `&[u8]`, `memchr`-fr
 carry, never via per-byte random access. The `'a` here is a borrow of the _source rope during the scan_ — a
 scan-local lifetime, entirely separate from Decision 0 (the produced _values_ carry no `'de`).
 
+_Why this cursor is the critical path (spike timing evidence, #184)._ The #184 adapter, run without the
+ScanCursor (its tokenizer used `byte_at` per byte), won on allocation (~2200×, above) but _trailed_
+`serde_json` ~3× on wall-clock (mixed doc 563 µs vs 170 µs; string-heavy 106 µs vs 30 µs). The measured gap is
+neither the seam nor allocation (both near-free) — it is exactly the O(log n)-per-byte `byte_at` leaf descent
+this section exists to eliminate, versus serde's O(1) contiguous reads. So the chunk-streaming cursor +
+`as_contiguous` fast path is not a nicety; it is the lever that closes the time gap, and it is orthogonal to
+Decision 0. Increment 2 must land it, and its benchmark (O(1)/byte scan vs `byte_at`) is the primary
+continuous-improvement target for the whole stack's latency.
+
 ---
 
 ## 4. `StrRope` — UTF-8 rope with free byte↔str interop (cohort-owned; my constraints)
@@ -281,6 +290,10 @@ pub trait Deserializer {   // no <'de> parameter
     // ... typed hints (deserialize_str/map/seq/...) as serde has, minus the lifetime
 }
 ```
+_Spike finding (#184): for JSON, `deserialize_any` alone suffices_ — `deserialize_any` + the has-escapes
+string split + lexeme-primary numbers cover every JSON value, and a consumer specializes in its `Visitor`.
+Typed hints stay in the trait for a format that needs them, but are not required to land the JSON decoder; a
+self-describing format may never need them.
 `SeqAccess`/`MapAccess` yield sub-`Deserializer`s positioned by the `ScanCursor`; a map key is a `RopeStr`
 (usually `Borrowed`). Because a `Borrowed` value is an owned-shared handle, it can outlive the scan with no
 lifetime threading — the source chunks stay alive via refcount as long as any slice holds them (the same
@@ -398,7 +411,12 @@ Defaults are chosen (above); these are the forks worth an operator eyeball on th
 5. _"Holds the input alive" tradeoff._ A `Borrowed` value keeps the source rope's chunks alive via refcount
    (same as cadenza-ast zero-copy decode). Acceptable for streaming decode; an `into_owned()` escape hatch on
    `RopeStr`/`RopeBytes` lets a long-lived consumer detach. (Default: provide `into_owned`, document the
-   tradeoff.)
+   tradeoff. Spike #184: no surprise in the tested Visitors — they consume within the visit; `into_owned` is
+   the right hatch for a consumer that stashes a `Borrowed` value past the scan, not yet needed.)
+6. _Latency vs `serde_json` (honest picture, #184)._ The seam wins allocation decisively (~2200×) but
+   currently trails ~3× on wall-clock; the gap is the tokenizer's per-byte `byte_at` access, closed by the
+   §3 chunk-streaming cursor (increment 2) — downstream tokenizer work, orthogonal to Decision 0. Not a
+   design fork; recorded so the alloc win is not read as a time win.
 
 ---
 
