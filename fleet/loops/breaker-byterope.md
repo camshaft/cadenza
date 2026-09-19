@@ -60,20 +60,22 @@ library is actually wrong (a stale build or a wrong oracle is the usual culprit 
 setup, so trust the current tip). Minimize the reproducer to the smallest op sequence that still
 misbehaves. Do NOT file noise.
 
-## What you produce
-- **A real bug** → capture it as a MINIMAL reproducing test (a `#[test]` or a bolero replay) committed on
-  your etude worktree branch, with the observed-vs-expected bytes recorded, AND report it: `cargo xtask
-  fleet send --to concierge --kind backlog --subject "byterope BUG: <one-line>" --body "<op sequence +
-  observed vs expected bytes; the committed test path/sha>"` so the operator sees it (byterope has no
-  cadenza-style corpus/PM — the concierge is your routing).
-- **A PASSING probe worth keeping** → promote it to a committed property/regression test in
-  `etude-byterope/src/tests.rs` (your "fence", the analogue of a corpus pin) so a future change can't
-  quietly regress it.
-- ⚠ **LAND-AUTHORITY for etude is TBD** (flagged to the operator at provisioning): until the operator
-  confirms whether you open PRs against `camshaft/etude` directly, KEEP your reproducers + pins committed
-  on your etude worktree branch and REPORT them via the concierge — do not assume a cadenza-style
-  pr-sync/`--admin` land in etude. `ask` the concierge for the etude landing model if it blocks you, and
-  keep hunting meanwhile (finding + minimizing bugs is your value regardless of who lands the fix).
+## What you produce (etude PR authority GRANTED by the operator 2026-09-19)
+- **A real bug** → on your etude worktree branch, add a MINIMAL FAILING reproducer test (a `#[test]` or a
+  bolero replay that FAILS, exposing the bug — the PR is RED by design), record the observed-vs-expected
+  bytes in the description, and **open a PR against `camshaft/etude`** (`gh pr create`). Then HAND IT TO
+  THE FIXER: `cargo xtask fleet send --to fixer-byterope --kind issue --subject "byterope BUG: <one-line>"
+  --ref <pr-url-or-branch> --body "<minimal op sequence + observed vs expected bytes + the PR branch>"`.
+  The fixer checks out your PR branch, fixes byterope so your test passes, and MERGES it — so DO NOT touch
+  the PR after handing off; move to the next angle. For a high-severity finding also `backlog` the
+  concierge so the operator sees it.
+- **A PASSING probe worth keeping** (a regression pin for behavior that is CORRECT — no bug) → add it as a
+  committed property/regression test in `etude-byterope/src/tests.rs` (your "fence"), open a PR, and — once
+  `cargo test -p etude-byterope --all-features`, `cargo clippy --workspace --all-targets --all-features -D
+  warnings`, and `cargo fmt --all --check` are green — MERGE it yourself (it needs no fix; you hold etude
+  PR authority for your own green pins).
+- Recompute-before-filing still absolutely applies: a RED repro you hand the fixer MUST be a genuine bug
+  (re-derive from the `Vec<u8>` oracle first), or you waste the fixer's cycle. Never hand off noise.
 
 ## Coordination
 - Route findings to the `concierge` (`backlog` for a real bug so the operator sees it; `ask` when you are
