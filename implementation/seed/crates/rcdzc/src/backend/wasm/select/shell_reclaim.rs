@@ -763,6 +763,67 @@ pub(crate) fn matchsum_view_shell_reclaim_ok(
         .is_some_and(|tb| strat_view_consume_nonescaping(db, tb, root, scrutinee, compound_boxed))
 }
 
+/// The PROJECTION-of-a-fresh-owned-aggregate twin of [`matchsum_view_shell_reclaim_ok`]: a `MatchSum`
+/// scrutinee `(. <fresh-owned-aggregate> i)` (`Core::Proj`) extracting a HEAP-SUM field out of a fresh
+/// OWNED product (a `#tuple`/`#record`/recursive-`Call` result — `heap_operand_ownership(operand) ==
+/// Owned`). The projected `Some` shell is owned LOCALLY (like the view twin's local>global discipline) but
+/// `Core::Proj` is deliberately NOT in `heap_operand_ownership` (it stays Borrowed to avoid perturbing the
+/// Stage-B product path), so `sum_shell_reclaim_ok`'s global-`Owned` gate MISSES it and the extracted
+/// `Some` shell LEAKS one cell per match (02-binding-and-control:7314 — `(match (. (mk …) 0) ((Some v) …))`,
+/// the fresh-tuple projection; siblings 6042/6085).
+///
+/// SOUND by the SAME fence the view twin's borrow-clean branch relies on. A STASHED MatchSum scrutinee's
+/// shell is held in its I32 slot and LEAKS unless a reclaim disjunct fires — so ADDING this disjunct drops
+/// exactly the shell that currently has NO drop (rc1 → 0, balanced; never a double-free of an
+/// already-balanced shell). This is a NO-CHILD-DUP path (`collect_shell_reclaim_child_dups` keys on a
+/// globally-`Owned` scrutinee, which a `Core::Proj` is NOT), so — exactly as the view twin — it is sound
+/// ONLY under the STRICT BORROW-CLEAN floor: the projected sum must have ZERO consuming sites (payload only
+/// READ as a scalar/probe, never moved into a builder/Call NOR escaped as an arm result). A consuming site
+/// would transfer ownership of the payload, so the husk deep-drop's cascade freeing that same payload =
+/// a DOUBLE-FREE (leak beats UAF → excluded). 02:7314's `((Some v) (+ v …))` reads only the scalar `v`
+/// (the `.1` projection is a SEPARATE fresh `mk` call, not this scrutinee) → empty set → reclaimed. The
+/// fresh-owned aggregate is deep-dropped after the projection, which dup-retains the extracted child across
+/// that drop (Perceus), leaving the shell at exactly the rc1 this drop balances. An aggregate that is NOT
+/// globally `Owned` (a borrowed binder/param that could alias a still-live product) fails the `Owned` gate
+/// → declined (leak-safe).
+pub(crate) fn matchsum_proj_owned_aggregate_reclaim_ok(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    stashed_slot: Option<(u32, ValType)>,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> bool {
+    // Shared safety floor (identical to the view twin): freshly-stashed I32 slot, diverging-clean, heap
+    // non-enum sum, and not re-matched by a nested MatchSum (Class-B — reclaimed by the inner drop already).
+    if !matches!(stashed_slot, Some((_, ValType::I32)))
+        || never_diverges
+        || !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+    {
+        return false;
+    }
+    // The scrutinee must be a projection OUT OF a fresh globally-`Owned` aggregate. The `Owned` gate on the
+    // OPERAND (not the Proj node) is the load-bearing fence: a fresh owned product is consumed by this
+    // projection and deep-dropped after, which forces the projection to dup-retain the extracted child.
+    let Core::Proj { operand, .. } = core_of(db, scrutinee) else {
+        return false;
+    };
+    if !matches!(
+        heap_operand_ownership(db, operand),
+        Ok(HandleOwnership::Owned)
+    ) {
+        return false;
+    }
+    // STRICT BORROW-CLEAN floor (NO child-dup on this local path): the projected sum must be purely
+    // BORROWED — zero consuming sites. Uses the SAME consume/borrow classifier as the owned-scrutinee dup
+    // collection and the view twin.
+    let mut consuming = HashSet::new();
+    collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
+    consuming.is_empty()
+}
+
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed
 /// temp vs proven-owned param slot): heap + non-enum + non-diverging + payload-safety + not-re-matched.
 /// [`sum_shell_reclaim_ok`] ANDs the stashed-Owned requirement on top; the non-tail-spine param path ANDs

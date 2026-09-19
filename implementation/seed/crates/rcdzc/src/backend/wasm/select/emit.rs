@@ -4178,6 +4178,17 @@ pub(super) fn emit(
                 never_diverges,
                 &root,
                 out.fn_body,
+            )
+            // Also reclaim a `(. <fresh-owned-aggregate> i)` (Core::Proj) shell the global `Owned` gate
+            // misses (Proj stays Borrowed to avoid perturbing Stage-B) — owned LOCALLY, borrow-clean, so
+            // the husk drop nets against the currently-leaked stashed shell (02:7314 fresh-tuple proj).
+            || matchsum_proj_owned_aggregate_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
             );
             emit_sum_cont(
                 db,
