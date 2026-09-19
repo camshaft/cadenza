@@ -977,6 +977,30 @@
           '';
           doCheck = false;
         };
+        # CI-PROFILE dep-cache (v-nix, profile.ci work — concierge assign 080976, paired w/ v-cadenza-ci #c49d812d32).
+        # The sibling of cargoArtifactsRelease built under the new [profile.ci] (inherits release + debug-assertions
+        # + overflow-checks + line-tables debug). WHY: the operator "expensive CI / fast local" principle — the
+        # code-RUNNING CI checks should run the DIAGNOSTIC ci profile (catches overflow/assertion bugs a plain
+        # release build misses). Repointing a check from CARGO_PROFILE=release to =ci BUSTS the release dep-cache →
+        # a full release-dep recompile (~330s+) per check unless it restores a PRE-BUILT ci dep closure. This caches
+        # the ci dep closure ONCE (same buildDepsOnly shape — all members stubbed → hash invariant to first-party
+        # edits — just CARGO_PROFILE=ci). Consumer: opt-sweep (the clean cargoArtifacts+CARGO_PROFILE swap). NOTE:
+        # NO cargoArtifactsCiCodegen sibling — its only would-be consumers (codegen-check, bench-check) BOTH STAY
+        # release (codegen builds the CA runtime component under its profile → ci would break REQUIRED_RUNTIME_HASH;
+        # bench is a perf measurement whose alloc-baseline overflow-checks would perturb), so a Ci-codegen layer
+        # would have zero consumers.
+        cargoArtifactsCi = craneLib.buildDepsOnly {
+          pname = "cadenza-seed-deps-ci";
+          version = "0.0.0";
+          src = cargoArtifactsSrc;
+          cargoVendorDir = seedCargoVendor;
+          CARGO_PROFILE = "ci";
+          preBuild = ''
+            chmod -R u+w .
+            ${stubNonClosure [ ]}
+          '';
+          doCheck = false;
+        };
         # crane MR2: per-crate CLIPPY via crane, consuming the shared cargoArtifacts (deps pre-compiled) so
         # only C's first-party src recompiles — NOT the whole dep closure every run (the ~14m→~6-7m win).
         #
@@ -6143,17 +6167,24 @@
         # fail-set — v-gha-green wires it into nightly.yml (advisory, within-a-day catch, proportionate to the
         # low-frequency Core-pass-change risk; concierge greenlit nightly-advisory 2026-08-31). Currently green
         # (v-core-opt: 1876 cases, 0 divergences). A future `--target rust` sibling is optional (v-core-opt).
+        # PROFILE.CI repoint (v-nix, concierge assign 080976): opt-sweep is a code-RUNNING CI check, so run it
+        # under the DIAGNOSTIC [profile.ci] (debug-assertions + overflow-checks) — a candidate O0..O3 miscompile
+        # or an overflow in the gate/compiler path now trips an assertion instead of silently passing. Uses the
+        # cargoArtifactsCi dep-cache (built under ci) so the profile switch does NOT bust the warm-dep lever
+        # (else a full ci-dep recompile per run). FROZEN-HASH SAFE: consumes the prebuilt componentStore (--store)
+        # — it does NOT rebuild the CA runtime component (mkRuntime stays --release), so REQUIRED_RUNTIME_HASH is
+        # untouched. Nightly-ADVISORY (not a localGate constituent), so the ci switch adds no per-MR local cost.
         optSweepCheck = craneLib.mkCargoDerivation {
           pname = "cdz-opt-sweep";
           version = "0.0.0";
           src = gateSrc;
-          cargoArtifacts = cargoArtifactsRelease;
+          cargoArtifacts = cargoArtifactsCi;
           cargoVendorDir = seedCargoVendor;
-          CARGO_PROFILE = "release";
+          CARGO_PROFILE = "ci";
           doInstallCargoArtifacts = false;
           nativeBuildInputs = [ pkgs.wasm-tools ];
           buildPhaseCargoCommand = ''
-            cargo run --locked --package xtask --profile release -- gate --opt-sweep --store "${componentStore}"
+            cargo run --locked --package xtask --profile ci -- gate --opt-sweep --store "${componentStore}"
           '';
           installPhaseCommand = ''
             echo "ok: cdz-opt-sweep (cargo xtask gate --opt-sweep --store <nix store> — O0..O3 level-equivalence, all corpus cases)" > "$out"
@@ -7578,6 +7609,9 @@
         packages.cdz-calc = cdzCalc;
         packages.cargo-artifacts-release = cargoArtifactsRelease;
         packages.cargo-artifacts-release-codegen = cargoArtifactsReleaseCodegen;
+        # ci-profile dep-cache (profile.ci work) — exposed so a cache-warm workflow can seed it + opt-sweep PULLs
+        # it instead of a cold ci-dep recompile (mirrors packages.cargo-artifacts-release).
+        packages.cargo-artifacts-ci = cargoArtifactsCi;
         packages.rcdzc-wasm = rcdzcWasm;
         packages.rcdzc-wasm-hash = hashOf rcdzcWasm "rcdzc-wasm-hash";
         # B3 (v-reducer-targets): the rcdzc reducer-world guest component + its CAS hash (the program-hash
