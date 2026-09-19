@@ -5127,12 +5127,18 @@
         # canonical_output_value on both paths). NO CDZ_VALUE_DOC (the wasm baseline is the bare-render coarse
         # harvest). Swap into localGate is HELD until the bare-(tuple)→#tuple corpus nativization settles (else
         # it gates against a baseline about to change on ~127 cases); the derivation itself is baseline-agnostic.
-        mkCorpusGateFileCoarse = { name, file }:
+        # `compiler ? cdzCompile` (v-nix, profile.ci): the CADENCE full corpusGateCoarse passes cdzCompileCi so
+        # the whole-corpus nightly gate compiles under [profile.ci] (assertions + overflow-checks → surfaces
+        # compiler integer-overflow / debug_assert! bugs the plain-release build silently passes). DEFAULT stays
+        # cdzCompile (release), so the per-MR localGate corpusGateCoarseSubset + the exposed per-file
+        # corpus-gate-coarse-<stem> checks are BYTE-IDENTICAL (fast local untouched). mkCorpusShred is
+        # compiler-free (parser closure), so only the compile+grade step changes with the compiler.
+        mkCorpusGateFileCoarse = { name, file, compiler ? cdzCompile }:
           let shred = mkCorpusShred { inherit name file; };
           in
           pkgs.runCommand "corpus-gate-coarse-${name}"
             {
-              nativeBuildInputs = [ cdzCompile cdzRun ];
+              nativeBuildInputs = [ compiler cdzRun ];
             } ''
             set -euo pipefail
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
@@ -5199,13 +5205,15 @@
         # case-set + #7329 single-sourced canonical_output_value grader, PLUS the diagnostics wire (--diagnostics)
         # that fixes gateCheck's warning-capture blind spot → strictly-better coverage. Committed .gate-baseline
         # == the #7692 coarse harvest by construction, so this is green on a clean main.
+        # FULL corpus gate = CADENCE (nightly), so it runs under the ci COMPILER (compiler = cdzCompileCi) —
+        # operator-greenlit ~2x cost paid at cadence, per-MR localGate subset stays release (v-nix profile.ci).
         corpusGateCoarse = pkgs.runCommand "corpus-gate-coarse" { } ''
           : > "$out"
           ${pkgs.lib.concatMapStringsSep "\n"
               (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in
-                ''cat ${mkCorpusGateFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; }} >> "$out"'')
+                ''cat ${mkCorpusGateFileCoarse { name = stem; file = ./spec/semantics + "/${f}"; compiler = cdzCompileCi; }} >> "$out"'')
               corpusFileNames}
-          echo "ok: corpus-gate-coarse — all ${toString (builtins.length corpusFileNames)} files graded vs .gate-baseline (no regression)" >> "$out"
+          echo "ok: corpus-gate-coarse — all ${toString (builtins.length corpusFileNames)} files graded vs .gate-baseline under [profile.ci] compiler (no regression)" >> "$out"
         '';
 
         # BOUNDED-SUBSET COARSE WASM GATE (v-nix — FOLD B, the localGate gateCheck swap, atomic with v-xtask's
