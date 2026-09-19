@@ -449,13 +449,14 @@ pub fn differential_sweep(
     Ok(stats)
 }
 
-/// The OPT-INVARIANCE sweep: for each generated program, run it at the DEFAULT level (`O1`) AND at `O3`
-/// ([`crate::differential::opt_invariance`]) and file any value/liveness disagreement — a pure optimizer
-/// MISCOMPILE (the O2/O3 global-CSE / lifted-analysis reclaim class the wasm-vs-rust oracle, both sides at
-/// O1, cannot reach). WASM-only + in-process: no `cdz` subprocess, so `unavailable` stays 0. Mismatches are
-/// shrunk with [`crate::differential::shrink_opt_invariance`] and filed as `Differential` findings tagged
-/// `opt-invariance`. Uses the COERCING astgen grammar (type-correct, terminating, value-comparable) so the
-/// comparison is dense rather than mostly one-side declines.
+/// The OPT-INVARIANCE sweep: for each generated program, run it at the `O0` BASELINE and at every higher
+/// level (`O1`/`O2`/`O3`) ([`crate::differential::opt_invariance`]) and file any value/liveness disagreement
+/// against the baseline — a pure optimizer MISCOMPILE (the O2/O3 global-CSE / lifted-analysis reclaim class
+/// the wasm-vs-rust oracle, both sides at O1, cannot reach). WASM-only + in-process: no `cdz` subprocess, so
+/// `unavailable` stays 0. Mismatches are shrunk with [`crate::differential::shrink_opt_invariance`] and filed
+/// as `Differential` findings tagged `opt-invariance` (the detail names the diverging level). Uses the
+/// COERCING astgen grammar (type-correct, terminating, value-comparable) so the comparison is dense rather
+/// than mostly one-side declines.
 #[cfg(feature = "differential")]
 pub fn opt_invariance_sweep(
     cfg: &Config,
