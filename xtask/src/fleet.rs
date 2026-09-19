@@ -11487,7 +11487,11 @@ fn sync_base_pause_prefers_origin_main(
 fn sync_head_vs_origin_note(behind: usize, ahead: usize) -> String {
     match (behind, ahead) {
         (0, 0) => " HEAD is level with origin/main.".to_string(),
-        (0, a) => format!(" HEAD is {a} commit(s) ahead of origin/main (your unlanded work)."),
+        (0, a) => format!(
+            " HEAD is {a} commit(s) ahead of origin/main as of this fetch (your unlanded work) — \
+             a point-in-time snapshot; if peers land afterward, re-run fleet sync (a purely-behind \
+             HEAD then fast-forwards to origin/main automatically, it is not stranded)."
+        ),
         (b, 0) => format!(
             " ⚠ HEAD is {b} commit(s) BEHIND origin/main — rebase onto origin/main before you push or merge."
         ),
@@ -27054,9 +27058,17 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // Level → plain, no warning.
         let level = sync_head_vs_origin_note(0, 0);
         assert!(level.contains("level with origin/main") && !level.contains('⚠'));
-        // Ahead only (unlanded work) → informational, no warning.
+        // Ahead only (unlanded work) → informational, no warning. Also flags itself as a
+        // point-in-time snapshot + points at re-running sync (kills the recurring "sync inverted
+        // ahead/behind" false-alarm: two agents misread this line after origin/main advanced past
+        // them — design-cadenza-abi + v-nix-projection, 2026-09-19).
         let ahead = sync_head_vs_origin_note(0, 3);
-        assert!(ahead.contains("3 commit(s) ahead") && !ahead.contains('⚠'));
+        assert!(
+            ahead.contains("3 commit(s) ahead")
+                && !ahead.contains('⚠')
+                && ahead.contains("as of this fetch")
+                && ahead.contains("re-run fleet sync")
+        );
         // Behind → WARN + rebase hint (the force-push-a-behind-branch hazard).
         let behind = sync_head_vs_origin_note(2, 0);
         assert!(behind.contains('⚠') && behind.contains("BEHIND") && behind.contains("rebase"));
