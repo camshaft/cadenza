@@ -654,6 +654,16 @@ pub fn emit(
             if w.record_param_drop_after.iter().any(|&d| d) {
                 used.insert("drop");
             }
+            // 28-wit:310 SHAPE-9 shell-reclaim: a record/tuple cell param whose shell is reclaimed by
+            // projecting + `dup`ing each escaped field (→ rc≥2) before the def call, then deep-dropping the
+            // shell after it. The wrapper emits `arr-get` (project the field off the cell) + `dup` (retain the
+            // leaf) + `drop` (deep-drop the shell) — register all three so `code_entry` does not panic on an
+            // absent op (the "wrapper needs runtime op" guard).
+            if w.record_param_escaped_fields.iter().any(|f| f.is_some()) {
+                used.insert("arr-get");
+                used.insert("dup");
+                used.insert("drop");
+            }
             // A spilled compound RESULT reads its value off the returned handle via the recursive canonical
             // writer — collect every runtime op that plan calls (`arr-get`/`vec-len`/`vec-get`/`bytes-*` +
             // each scalar unbox) so they are imported.
@@ -7039,6 +7049,7 @@ fn try_bare_entry_param_component(
         enum_disc_params: vec![None; params.len()],
         mem_leaf_params,
         record_param_drop_after: vec![false; params.len()], // plain-export route has no record-cell param
+        record_param_escaped_fields: vec![None; params.len()], // ditto — no escaped-field shell-reclaim
         def_abs,
         result: serialize::ResultLower::Passthrough,
     };
@@ -7302,6 +7313,9 @@ fn record_interface_export(
         // `record_cell_param_droppable` gate proves safely reclaimable (every forwarded field dup'd); `false`
         // for every non-cell param and for a cell the def moves a field out of verbatim (would double-free).
         let mut record_param_drop_after: Vec<bool> = Vec::new();
+        // Parallel to `record_param_drop_after` (28-wit:310 SHAPE-9): `Some(paths)` for a cell param whose
+        // shell reclaims via per-escaped-field dup-then-deep-drop; `None` keeps the all-or-nothing behavior.
+        let mut record_param_escaped_fields: Vec<Option<Vec<Vec<usize>>>> = Vec::new();
         for ((binder, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
                 Ty::Record(map) => {
@@ -7324,6 +7338,13 @@ fn record_interface_export(
                     // the def, so it survives the cell's deep-drop; a moved-out field suppresses the drop).
                     record_param_drop_after.push(
                         crate::backend::wasm::select::record_cell_param_droppable(
+                            db, e.body, *binder,
+                        ),
+                    );
+                    // 28-wit:310 SHAPE-9: when NOT blanket-droppable *because* compound fields move out
+                    // verbatim, the escaped-field projection paths to dup-then-deep-drop (else `None`).
+                    record_param_escaped_fields.push(
+                        crate::backend::wasm::select::escaped_field_projections(
                             db, e.body, *binder,
                         ),
                     );
@@ -7357,6 +7378,12 @@ fn record_interface_export(
                     // #9014 envelope shell-drop (a tuple cell shares the array rep — same dup-aware gate).
                     record_param_drop_after.push(
                         crate::backend::wasm::select::record_cell_param_droppable(
+                            db, e.body, *binder,
+                        ),
+                    );
+                    // 28-wit:310 SHAPE-9 escaped-field paths (a tuple cell shares the array rep — same gate).
+                    record_param_escaped_fields.push(
+                        crate::backend::wasm::select::escaped_field_projections(
                             db, e.body, *binder,
                         ),
                     );
@@ -7401,6 +7428,7 @@ fn record_interface_export(
                     mem_leaf_params.push(None);
                     sum_params.push(None);
                     record_param_drop_after.push(false); // enum disc: no heap cell to drop
+                    record_param_escaped_fields.push(None);
                     // Identity → passthrough (the disc IS the guest disc; the `params` `None` arm forwards it);
                     // a genuine reorder → record the remap the wrapper emits before the def call.
                     if inv_perm.iter().enumerate().all(|(i, &g)| g == i as u32) {
@@ -7462,6 +7490,7 @@ fn record_interface_export(
                     sum_params.push(Some((rebuild, true)));
                     enum_disc_params.push(None);
                     record_param_drop_after.push(false); // sum cell handled by sum_params drop_after
+                    record_param_escaped_fields.push(None);
                     any_sum_param = true;
                 }
                 // A TOP-LEVEL memory-bearing leaf param — `Bytes` ↔ `list<u8>`, `String` ↔ `string`, or a
@@ -7503,6 +7532,7 @@ fn record_interface_export(
                     sum_params.push(None);
                     enum_disc_params.push(None);
                     record_param_drop_after.push(false); // mem-leaf handled by mem_leaf_params drop_after
+                    record_param_escaped_fields.push(None);
                     any_mem_leaf_param = true;
                 }
                 Ty::Map(_, _) | Ty::Set(_) => {
@@ -7517,6 +7547,7 @@ fn record_interface_export(
                     sum_params.push(None);
                     enum_disc_params.push(None);
                     record_param_drop_after.push(false); // scalar: no heap cell
+                    record_param_escaped_fields.push(None);
                 }
             }
         }
@@ -7573,6 +7604,7 @@ fn record_interface_export(
             param_slots,
             mem_leaf_params,
             record_param_drop_after,
+            record_param_escaped_fields,
             def_abs,
             result: result_lower,
         });

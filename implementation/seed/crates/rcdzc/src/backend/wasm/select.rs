@@ -49,7 +49,9 @@ use lift::*;
 mod reclaim;
 pub use reclaim::core_child_ids;
 use reclaim::*;
-pub(crate) use reclaim::{EscapeTarget, param_escapes_body, record_cell_param_droppable};
+pub(crate) use reclaim::{
+    EscapeTarget, escaped_field_projections, param_escapes_body, record_cell_param_droppable,
+};
 mod used_ops;
 use used_ops::*;
 mod arith;
