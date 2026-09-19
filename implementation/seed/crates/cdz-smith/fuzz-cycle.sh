@@ -41,6 +41,12 @@
 #   CDZ_SMITH_OPT_COUNT   opt-invariance-sweep programs/cycle (default: 100; 0 disables the sweep)
 #   CDZ_SMITH_OPT_CAP     opt-invariance-sweep wall-clock backstop, s (default: the 1/3 of the tick's
 #                         post-campaign budget the differential sweep leaves — a KILL mid-sweep is safe)
+#   CDZ_SMITH_TYPE_COUNT  type-differential-sweep programs/cycle (default: 200; 0 disables). Runs ONLY when
+#                         a fresh Lean oracle is staged (below) — the oracle can drift from the compiler,
+#                         so an absent/unstaged oracle skips cleanly rather than filing false findings.
+#   CDZ_SMITH_ORACLE_CHECK  the Lean `oracle-check` binary for the type-differential (default: PATH lookup;
+#                         build with `nix build .#oracle-lean` and stage result/bin/oracle-check to enable)
+#   CDZ_SMITH_TYPE_CAP    type-differential-sweep wall-clock backstop, s (default: a 1/3 leftover slice)
 set -uo pipefail
 
 # ── locate the checkout ─────────────────────────────────────────────────────────────────────────
@@ -221,6 +227,41 @@ if [ "$OPT_COUNT" -gt 0 ]; then
       log "opt-invariance: cdz-smith --features differential build failed; skipping sweep"
     fi
   fi
+fi
+
+# ── type-differential sweep (SEPARATE, Lean TYPE oracle) ─────────────────────────────────────────
+# The third oracle dimension: for each program, compare the compiler's TYPE judgment (accept/reject)
+# against the Lean `oracle-check` — a divergence is a false-reject (compiler rejects a well-typed
+# program), false-accept (compiler accepts an ill-typed one), or a capability-gap. Uses `--typegen`
+# (the dense in-fragment grammar — ~97% of programs are judged, vs ~13% on the broad text grammar).
+# Findings file into the same fleet queue (`type-*.smith.{sexp,md}`) for v-lean-oracle triage.
+#
+# GATED ON A DISCOVERABLE ORACLE (`CDZ_SMITH_ORACLE_CHECK` or `oracle-check` on PATH), NOT the stale-prone
+# `result/` symlink: the Lean oracle is an INDEPENDENT artifact that can DRIFT from the compiler, and a
+# stale oracle would file false-reject/accept NOISE. So this pass runs ONLY when an operator has
+# deliberately staged a FRESH oracle (`nix build .#oracle-lean` → put result/bin/oracle-check on PATH or
+# set CDZ_SMITH_ORACLE_CHECK); otherwise it skips cleanly. When it does run it shares the post-campaign
+# budget (its own CDZ_SMITH_TYPE_CAP slice — staging an oracle is a deliberate type campaign, so tune
+# CDZ_SMITH_DIFF_COUNT/OPT_COUNT down if a single tick must hold all three).
+TYPE_COUNT="${CDZ_SMITH_TYPE_COUNT:-200}"
+TYPE_ORACLE="${CDZ_SMITH_ORACLE_CHECK:-}"
+if [ -z "$TYPE_ORACLE" ]; then
+  command -v oracle-check >/dev/null 2>&1 && TYPE_ORACLE="$(command -v oracle-check)"
+fi
+if [ "$TYPE_COUNT" -gt 0 ] && [ -n "$TYPE_ORACLE" ] && [ -x "$TYPE_ORACLE" ]; then
+  TYPE_BIN="$CRATE_DIR/target/release/cdz-smith"
+  if [ -x "$TYPE_BIN" ] || ( cd "$CRATE_DIR" && cargo build -q --release --features differential 2>/dev/null ); then
+    TYPE_CAP="${CDZ_SMITH_TYPE_CAP:-$(( (600 - CYCLE_CAP - 60) / 3 ))}"
+    [ "$TYPE_CAP" -lt 60 ] && TYPE_CAP=60
+    log "type-differential sweep | count $TYPE_COUNT | oracle $TYPE_ORACLE | cap ${TYPE_CAP}s"
+    CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$TYPE_CAP" \
+      "$TYPE_BIN" type-differential --typegen --count "$TYPE_COUNT" --seed "$(date +%s)" \
+        --oracle "$TYPE_ORACLE" --findings "$FINDINGS" 2>&1 | tail -4 || true
+  else
+    log "type-differential: cdz-smith --features differential build failed; skipping sweep"
+  fi
+else
+  [ "$TYPE_COUNT" -gt 0 ] && log "type-differential: no oracle-check on PATH / CDZ_SMITH_ORACLE_CHECK (nix build .#oracle-lean); skipping sweep"
 fi
 
 after="$(ls "$FINDINGS"/*.smith.md 2>/dev/null | wc -l | tr -d ' ')"
