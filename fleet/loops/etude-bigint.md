@@ -41,6 +41,15 @@ it over and grow it.
    dir and stalls you). Oldest-first: act, then `--processed <msg>`.
 3. `cargo xtask fleet sync`. Then freshen your etude worktree (`fetch` + `reset --hard origin/main`).
 
+## SHARED WASM-BENCH RUNNER — reuse it, do NOT re-install or duplicate (2026-09-19)
+Wasm benches run on the `wasm32-wasip1` target via the SHARED runner already at WORKSPACE-ROOT
+`etude/.cargo/config.toml` (`[target.wasm32-wasip1] runner = "wasmtime run --"`), and wasmtime is installed
+host-globally (`~/.wasmtime/bin`). So `cargo test/bench --target wasm32-wasip1` works with ZERO extra setup
+— do NOT re-install wasmtime, and do NOT add a crate-local `.cargo/config.toml` runner (it shadows the
+shared one). Need a runner change? Edit the workspace-root config + `note` the cohort. 🪤 criterion +
+jemalloc do NOT build on wasm — gate wasm-incompatible dev-deps behind
+`[target.'cfg(not(target_family="wasm"))'.dev-dependencies]`.
+
 ## The work — in your ETUDE worktree, ONE landable slice per tick
 1. **Port (slice 1).** Create `crates/etude-bigint` with `Big` ported verbatim from cadenza's `bigint.rs`
    (keep the canonical-form invariant + module docs). Decide `no_std`+`alloc` (as upstream) vs `std` for
