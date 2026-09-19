@@ -106,6 +106,152 @@ pub(crate) fn record_cell_param_droppable(db: &mut Db, body: StructId, binder: S
     )
 }
 
+/// One escaped-field projection: the chain of `Core::Proj.index` steps from a record-cell param binder
+/// down to a COMPOUND field that MOVES OUT VERBATIM (an un-dup'd escaping projection). `[0]` = the
+/// binder's field 0; `[1, 0]` = field 0 of the binder's field 1. Never empty (an empty chain is the
+/// WHOLE binder — a `Param`/`LocalRef` move, which [`escaped_field_projections`] bails on, not a field).
+pub(crate) type EscapedFieldPath = Vec<usize>;
+
+/// Companion to [`record_cell_param_droppable`] for the 28-wit:310 SHAPE-9 shell-reclaim co-fix
+/// (v-memory-safety builds this analysis; v-core-opt wires the `serialize.rs` project+dup+deep-drop
+/// wrapper emit that consumes it; v-memory-safety co-gates guarded-all).
+///
+/// When the record-cell param `binder`'s shell is NOT blanket-droppable *because* one or more compound
+/// fields move out verbatim, return `Some(paths)` — the MULTISET of escaped-field projection paths, ONE
+/// ENTRY PER ESCAPING OCCURRENCE (multiplicity preserved: a field moved out twice → two entries). The
+/// wrapper dups the field reached by each entry ONCE (→ rc≥2) BEFORE the shell deep-drop cascades it
+/// (→ rc≥1, result-safe), reclaiming the shell without the escaped-field UAF.
+///
+/// Returns `None` — keep the current all-or-nothing suppress, i.e. the sound deliberate leak — when:
+///  • the shell IS blanket-droppable (`record_cell_param_droppable` true → no per-field dup needed); or
+///  • the non-droppability is NOT provably a set of unconditional, straight-line, dup-able compound-field
+///    move-outs. CONSERVATIVE BY CONSTRUCTION: a whole-binder move, a CONDITIONAL escape (under an
+///    `If`/`Match` — a runtime-single-arm dup would over/under-count), a `MapNew`/`SetOf` occurrence (the
+///    map/set-key-ownership line neither vertical crosses), or ANY arm this walk does not explicitly prove
+///    borrow/consume for → `None`. So an INCOMPLETE walk only ever LEAKS (over-record → the extra dup
+///    leaks and the census stays >0, caught by the co-gate; or bail → the existing leak), NEVER under-dups
+///    (a UAF). Coverage widens over time; soundness does not depend on completeness.
+#[allow(dead_code)] // TEMP: dead until v-core-opt wires the serialize.rs wrapper emit that consumes it.
+pub(crate) fn escaped_field_projections(
+    db: &mut Db,
+    body: StructId,
+    binder: StructId,
+) -> Option<Vec<EscapedFieldPath>> {
+    // Blanket deep-drop already reclaims the shell (every forwarded field was dup'd) — no per-field dup.
+    if record_cell_param_droppable(db, body, binder) {
+        return None;
+    }
+    // Same dup-aware polarity as `record_cell_param_droppable`: a consuming occurrence that is a Perceus
+    // retain (a dup_site) does NOT escape (the dup gave the consumer its own reference).
+    let mut dup_sites: HashSet<StructId> = HashSet::new();
+    collect_dup_sites(db, body, &[binder], &mut dup_sites);
+    let mut out: Vec<EscapedFieldPath> = Vec::new();
+    // Body result position is CONSUMING (`borrowed = false`).
+    if !collect_escaped_field_projs(db, body, binder, &dup_sites, false, &mut out) {
+        return None; // an unhandled / conditional / whole-binder escape → keep the sound leak
+    }
+    // Non-droppable but we proved NO dup-able field move-out → the non-droppability came from a shape we
+    // did not recognize as safe-to-transform; be conservative (keep the leak) rather than emit a shell
+    // drop that could free something (defensive — the walk should have bailed above, this is belt-and-braces).
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// A `Core::Proj` chain rooted at `binder`: `Some(path)` = `id` is `binder` (`path == []`) or a chain of
+/// projections off it (`path` = the `index` steps binder→field). `None` = `id` is anything else. Used by
+/// [`collect_escaped_field_projs`] to read the projection path of a field extracted from the binder.
+fn proj_chain_to_binder(db: &mut Db, id: StructId, binder: StructId) -> Option<EscapedFieldPath> {
+    match core_of(db, id) {
+        Core::Param { binder: b } | Core::LocalRef { binder: b } if b == binder => Some(Vec::new()),
+        Core::Proj { operand, index } => {
+            let mut p = proj_chain_to_binder(db, operand, binder)?;
+            p.push(index);
+            Some(p)
+        }
+        _ => None,
+    }
+}
+
+/// Whether `binder` occurs anywhere in the subtree `id` (a `Core::Param`/`Core::LocalRef` reference).
+fn binder_occurs_in(db: &mut Db, id: StructId, binder: StructId) -> bool {
+    if let Core::Param { binder: b } | Core::LocalRef { binder: b } = core_of(db, id)
+        && b == binder
+    {
+        return true;
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| binder_occurs_in(db, c, binder))
+}
+
+/// The walker for [`escaped_field_projections`]: mirrors the `Some`-polarity borrow/consume classification
+/// of [`binding_escapes_dup_aware`], but instead of a bool it PUSHES the projection path of each escaping
+/// compound-field move-out into `out`. Returns `true` = every binder occurrence in `id` is accounted for
+/// (a borrow, a dup-site, or a recorded field move-out); `false` = BAIL (an occurrence this v1 cannot
+/// prove safe to dup-then-drop — the caller returns `None`, keeping the sound leak).
+fn collect_escaped_field_projs(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    dup_sites: &HashSet<StructId>,
+    borrowed: bool,
+    out: &mut Vec<EscapedFieldPath>,
+) -> bool {
+    match core_of(db, id) {
+        // A bare binder occurrence: safe iff BORROWED or a Perceus dup-site; a bare CONSUMING move is the
+        // WHOLE shell flowing out (`(def (f m) m)`) — not a field we can dup — so bail.
+        Core::Param { binder: b } | Core::LocalRef { binder: b } if b == binder => {
+            borrowed || dup_sites.contains(&id)
+        }
+        Core::Proj { operand, index } => {
+            // Same Some-polarity borrow classification as the escape walk's `Core::Proj` arm.
+            let scalar = matches!(get_op(db, id), Ok(Some(_)));
+            let proj_borrow = scalar || borrowed || dup_sites.contains(&id);
+            if let Some(mut base) = proj_chain_to_binder(db, operand, binder) {
+                // `id` extracts field `index` (chain `base`) directly off the binder.
+                base.push(index);
+                if !proj_borrow {
+                    // A COMPOUND field moved out verbatim, consuming, un-dup'd → the dup target.
+                    out.push(base);
+                }
+                // The operand IS the pure binder proj-chain — no further binder occurrences beneath it.
+                true
+            } else {
+                // A projection of something else: recurse the operand with the borrow classification.
+                collect_escaped_field_projs(db, operand, binder, dup_sites, proj_borrow, out)
+            }
+        }
+        // BORROW ops (verbatim from the escape walk's arms): the operand is only read → recurse borrowing.
+        Core::ListLen { operand }
+        | Core::BytesLen { operand }
+        | Core::StrScalarLen { operand }
+        | Core::Blake3Of { operand }
+        | Core::AstPrint { operand, .. }
+        | Core::AstEncode { operand, .. }
+        | Core::AstDecode { operand, .. } => {
+            collect_escaped_field_projs(db, operand, binder, dup_sites, true, out)
+        }
+        Core::ListAt { list, index, .. } => {
+            collect_escaped_field_projs(db, list, binder, dup_sites, true, out)
+                && collect_escaped_field_projs(db, index, binder, dup_sites, false, out)
+        }
+        Core::BytesAt { bytes, index, .. } => {
+            collect_escaped_field_projs(db, bytes, binder, dup_sites, true, out)
+                && collect_escaped_field_projs(db, index, binder, dup_sites, false, out)
+        }
+        // Pure CONSUMING constructors (NOT MapNew/SetOf — those carry keys, the ownership line we hold):
+        // recurse every child consuming. Reaching a nested field move-out here records it.
+        Core::Record { .. } | Core::Tuple { .. } | Core::ListNew { .. } | Core::SumNew { .. } => {
+            core_child_ids(db, id)
+                .into_iter()
+                .all(|c| collect_escaped_field_projs(db, c, binder, dup_sites, false, out))
+        }
+        // Any other construct (control flow If/Match, calls, loops, rebinding, MapNew/SetOf, …): safe ONLY
+        // if the binder does not occur inside — else the escape may be CONDITIONAL / key-owned / opaque, so
+        // a single unconditional wrapper dup would mis-count → bail (keep the sound leak).
+        _ => !binder_occurs_in(db, id, binder),
+    }
+}
+
 /// The worker of [`binding_escapes`], with an optional `dup_sites` set. When `dup_sites` is `Some`, a
 /// CONSUMING occurrence of `binder` that is a Perceus RETAIN site (in `dup_sites`) does NOT count as an
 /// escape: the retain `dup`'d a fresh reference for the consuming op to take, leaving the binding's OWN
