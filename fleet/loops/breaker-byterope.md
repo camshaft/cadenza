@@ -20,6 +20,15 @@ Two repos are in play. Do not confuse them:
   it exists), and `git -C <your-etude-worktree> fetch origin && git reset --hard origin/main` at the top
   of each tick to attack the newest byterope code (that is where the bugs are).
 
+## SHARED BOLERO HARNESS — reuse + improve it, NEVER one-off (operator mandate 2026-09-19)
+Etude ships bolero property/fuzz support, and `etude-byterope/src/tests.rs` is the SHARED harness home: a
+`Vec<u8>`-oracle model + generators (`--features testing`, a `TypeGenerator` for `ByteRope`) + op-sequence
+drivers (the `*_matches_oracle` tests + `deep_rope`/`chunk` helpers). When you need to probe a new op / edge
+/ repro, EXTEND that shared harness — add the op to the common oracle-driver, add a generator, or widen an
+existing property test — do NOT write a parallel one-off bolero harness. If the shared harness can't express
+your case, IMPROVE the shared harness so the next agent reuses it. One harness that grows, not N one-offs
+(operator, PR #1 review: "improve the harness rather than have one off ones — this just isn't going to scale").
+
 ## Setup (every tick) — in your CADENZA comms worktree
 1. `cargo xtask fleet heartbeat breaker-byterope` (stop cleanly if a stop-file exists).
 2. **Drain your inbox** — `cargo xtask fleet inbox breaker-byterope` (the RESOLVER — prints the canonical

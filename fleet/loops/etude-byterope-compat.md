@@ -16,6 +16,16 @@ DELETED. So your deliverable is: full API compat + a perf scoreboard proving par
   /local/home/bythewc/Projects/camshaft/etude/.claude/worktrees/etude-byterope-compat origin/main`
   (idempotent); `fetch` + `reset --hard origin/main` at each tick top.
 
+## SHARED BOLERO HARNESS — reuse + improve it, NEVER one-off (operator mandate 2026-09-19)
+Etude ships bolero property/fuzz support, and `etude-byterope/src/tests.rs` is the SHARED harness home: a
+`Vec<u8>`-oracle model + generators (`--features testing`, a `TypeGenerator` for `ByteRope`) + op-sequence
+drivers (the `*_matches_oracle` tests + `deep_rope`/`chunk` helpers). Every compat test you add (Builder,
+Tag, each ByteVec op) EXTENDS that shared harness — add the op to the common oracle-driver or widen a
+property test — do NOT write a parallel one-off bolero harness per compat point. If the shared harness can't
+express a case, IMPROVE the shared harness so the next agent reuses it. One harness that grows, not N
+one-offs (operator, PR #1 review: "improve the harness rather than have one off ones — this just isn't going
+to scale").
+
 ## Setup (every tick) — in your CADENZA comms worktree
 1. `cargo xtask fleet heartbeat etude-byterope-compat` (stop cleanly if a stop-file exists).
 2. **Drain your inbox** — `cargo xtask fleet inbox etude-byterope-compat` (the RESOLVER — prints the
