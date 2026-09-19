@@ -1767,7 +1767,78 @@ mod cdz0308_tests {
 
 #[cfg(test)]
 mod decline_catalog_tests {
-    use super::{DeclineId, Reject};
+    use super::{Code, DeclineId, Reject};
+
+    #[test]
+    fn dedicated_decline_codes_are_pinned() {
+        // The CDZ0900-elimination sequence gave each reachable decline family a DEDICATED code split off
+        // the CDZ0900 umbrella. Pin (a) each dedicated `Code`'s exact CDZ string and (b) each re-coded
+        // `DeclineId` -> its dedicated `Code`. The `cdzDeclinesMatch` drift check only proves the catalog
+        // and the generated table AGREE (both derive from `data/unsupported.sexp`); it CANNOT catch a wrong
+        // CDZ string in `Code::code()` nor a swapped/renumbered mapping intent. This test closes that gap so
+        // an accidental renumber or a dropped mapping reds here rather than shipping.
+        // (a) exact CDZ strings for the dedicated decline band (CDZ0901-0907).
+        assert_eq!(Code::ClosureAcrossAbiUnsupported.code(), "CDZ0901");
+        assert_eq!(
+            Code::RecursiveFunctionRuntimeSpecialization.code(),
+            "CDZ0902"
+        );
+        assert_eq!(Code::HostOpNoBoundaryForm.code(), "CDZ0903");
+        assert_eq!(Code::ExportParamNoBoundaryForm.code(), "CDZ0904");
+        assert_eq!(Code::ExportHeapResultNoEncode.code(), "CDZ0905");
+        assert_eq!(Code::MultiHostEffectDelegation.code(), "CDZ0906");
+        assert_eq!(Code::EffectHandlerNotReducible.code(), "CDZ0907");
+        // Every dedicated decline code IS a decline (never a hard reject) — the is_decline_code registry.
+        for c in [
+            Code::ClosureAcrossAbiUnsupported,
+            Code::RecursiveFunctionRuntimeSpecialization,
+            Code::HostOpNoBoundaryForm,
+            Code::ExportParamNoBoundaryForm,
+            Code::ExportHeapResultNoEncode,
+            Code::MultiHostEffectDelegation,
+            Code::EffectHandlerNotReducible,
+        ] {
+            assert!(c.is_decline_code(), "{c:?} must be a decline code");
+        }
+        // (b) each re-coded DeclineId maps to its dedicated Code (the intent, one code per user-facing
+        // cause; the host-op pair and the export-param pair each share ONE code by design).
+        assert_eq!(
+            DeclineId::WasmClosureBoundaryNoRepr.code(),
+            Some(Code::ClosureAcrossAbiUnsupported)
+        );
+        assert_eq!(
+            DeclineId::RecursiveFunctionRuntimeSpecialization.code(),
+            Some(Code::RecursiveFunctionRuntimeSpecialization)
+        );
+        assert_eq!(
+            DeclineId::WasmHostOpNoBoundaryFormOnBareEffect.code(),
+            Some(Code::HostOpNoBoundaryForm)
+        );
+        assert_eq!(
+            DeclineId::WasmBytesCrossingHostOpNoBoundaryForm.code(),
+            Some(Code::HostOpNoBoundaryForm)
+        );
+        assert_eq!(
+            DeclineId::WasmHeapReturnParamNoBoundaryRep.code(),
+            Some(Code::ExportParamNoBoundaryForm)
+        );
+        assert_eq!(
+            DeclineId::WasmNonScalarExportParamNoBoundaryRep.code(),
+            Some(Code::ExportParamNoBoundaryForm)
+        );
+        assert_eq!(
+            DeclineId::WasmParameterizedHeapReturnNoValueEncode.code(),
+            Some(Code::ExportHeapResultNoEncode)
+        );
+        assert_eq!(
+            DeclineId::WasmMultiHostEffectDelegation.code(),
+            Some(Code::MultiHostEffectDelegation)
+        );
+        assert_eq!(
+            DeclineId::TailResumptiveFoldUnhandledForm.code(),
+            Some(Code::EffectHandlerNotReducible)
+        );
+    }
 
     #[test]
     fn catalog_is_enumerable_with_stable_kebab_keys() {
