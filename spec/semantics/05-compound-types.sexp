@@ -2409,7 +2409,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 9 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a projected boxed-sum accumulator survives the tail-loop step (escape, not reclaimed)"
