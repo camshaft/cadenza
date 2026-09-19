@@ -1070,8 +1070,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 2 20 30 0) (Tuple Int64 Int64 Int64 Int64)))
-  ; ABI-transfer (v-memory-safety): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST (host owns+frees it) — the Bytes rope/slice/compact intermediates ALL reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned tuple cell, NOT a guest leak. Was known-leak.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST as an OWNED resource — the Bytes rope/slice/compact intermediates ALL reclaim guest-side. The harness now models the HOST resource-dropping its transferred value before census, reclaiming that cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF the host's value); supersedes the earlier exact-N escv pin (was known-leak).
+  (live-objects 0))
 
 ; --- Compacting a slice preserves its value while releasing shared storage ---------------
 ; A slice MAY retain its parent's whole storage to represent a small range of it (a view holds the
@@ -1399,8 +1399,8 @@
       (def (main) (rep 4))
       (export main)))
   (output (: b"XXXX" Bytes))
-  ; ABI-transfer (v-memory-safety): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST (host owns+frees it) — the recursive Bytes.concat rope intermediates all reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned value cell count, NOT a guest leak. Was known-leak.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST as an OWNED resource — the recursive Bytes.concat rope intermediates all reclaim guest-side. The harness now models the HOST resource-dropping its transferred value before census, reclaiming that cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF the host's value); supersedes the earlier exact-N escv pin (was known-leak).
+  (live-objects 0))
 
 (case
   "a 2000-deep runtime Bytes.concat rope flattens iteratively and reads its content stack-safe"
@@ -1461,8 +1461,8 @@
       (def (main) (uleb 624485))
       (export main)))
   (output (: b"\xe5\x8e&" Bytes))
-  ; ABI-transfer (v-memory-safety): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST (host owns+frees it) — the recursive Bytes.concat rope intermediates all reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned value cell count, NOT a guest leak. Was known-leak.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST as an OWNED resource — the recursive Bytes.concat rope intermediates all reclaim guest-side. The harness now models the HOST resource-dropping its transferred value before census, reclaiming that cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF the host's value); supersedes the earlier exact-N escv pin (was known-leak).
+  (live-objects 0))
 
 (case
   "an unsigned LEB128 encoder emits a single byte below the continuation threshold"
@@ -1482,8 +1482,8 @@
       (def (main) (uleb 100))
       (export main)))
   (output (: b"d" Bytes))
-  ; ABI-transfer (v-memory-safety): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST (host owns+frees it) — the recursive Bytes.concat rope intermediates all reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned value cell count, NOT a guest leak. Was known-leak.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST as an OWNED resource — the recursive Bytes.concat rope intermediates all reclaim guest-side. The harness now models the HOST resource-dropping its transferred value before census, reclaiming that cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF the host's value); supersedes the earlier exact-N escv pin (was known-leak).
+  (live-objects 0))
 
 (case
   "a recursive emitter dispatches on a sum's variants to build bytes per node"
@@ -1514,8 +1514,8 @@
       (def (main) (emit (Expr.Add #tuple((Expr.Lit 1) (Expr.Neg (Expr.Lit 2))))))
       (export main)))
   (output (: b"BB|j" Bytes))
-  ; ABI-transfer (v-memory-safety): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST (host owns+frees it) — the recursive Bytes.concat rope intermediates all reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned value cell count, NOT a guest leak. Was known-leak.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST as an OWNED resource — the recursive Bytes.concat rope intermediates all reclaim guest-side. The harness now models the HOST resource-dropping its transferred value before census, reclaiming that cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF the host's value); supersedes the earlier exact-N escv pin (was known-leak).
+  (live-objects 0))
 
 (case
   "a recursive fold of a cons-list to bytes is the whole program result"
@@ -1550,8 +1550,8 @@
       (def (main) (cat-all (build 3)))
       (export main)))
   (output (: b"CBA" Bytes))
-  ; ABI-transfer (v-memory-safety): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST (host owns+frees it) — the recursive Bytes.concat rope intermediates all reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned value cell count, NOT a guest leak. Was known-leak.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): main RETURNS this Bytes, so the final compacted leaf (1 cell) is transferred to the HOST as an OWNED resource — the recursive Bytes.concat rope intermediates all reclaim guest-side. The harness now models the HOST resource-dropping its transferred value before census, reclaiming that cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF the host's value); supersedes the earlier exact-N escv pin (was known-leak).
+  (live-objects 0))
 
 ; The recursive fold above renders a SMALL rope (3 fragments) as its whole result, but does not read back a
 ; DEEP rope's content by position. A many-chunk byte rope (repeated Bytes.concat) is a deep byte-rope;
@@ -1590,8 +1590,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 40 10 20 10 20 1 -1) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64)))
-  ; ABI-transfer (v-memory-safety): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST (host owns+frees it) — the Bytes rope/slice/compact intermediates ALL reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned tuple cell, NOT a guest leak. Was known-leak.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST as an OWNED resource — the Bytes rope/slice/compact intermediates ALL reclaim guest-side. The harness now models the HOST resource-dropping its transferred value before census, reclaiming that cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF the host's value); supersedes the earlier exact-N escv pin (was known-leak).
+  (live-objects 0))
 
 ; --- Slice and compact at RUNTIME: reading and re-basing byte fragments ---------------------
 ; Slicing and compacting a byte sequence carrying a runtime value are the input-side companions of the
@@ -1754,8 +1754,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 1 4 30) (Tuple Int64 Int64 Int64)))
-  ; ABI-transfer (v-memory-safety): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST (host owns+frees it) — the Bytes rope/slice/compact intermediates ALL reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned tuple cell, NOT a guest leak. Was known-leak.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST as an OWNED resource — the Bytes rope/slice/compact intermediates ALL reclaim guest-side. The harness now models the HOST resource-dropping its transferred value before census, reclaiming that cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF the host's value); supersedes the earlier exact-N escv pin (was known-leak).
+  (live-objects 0))
 
 (case
   "a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string"
@@ -2003,8 +2003,8 @@
         #tuple((major (Bytes.of #list(0x19 0x1 0x2c)) 0) (arg (Bytes.of #list(0x19 0x1 0x2c)) 0)))
       (export main)))
   (output (: (tuple 0 300) (Tuple Int64 Int64)))
-  ; ABI-transfer (v-memory-safety): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST (host owns+frees it) — the Bytes rope/slice/compact intermediates ALL reclaim (scalar-return variant censuses 0; a heap-returning program can never census 0). N=1 = the returned tuple cell, NOT a guest leak. Was known-leak.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): main RETURNS this #tuple, so the tuple CONTAINER (1 heap cell) is transferred to the HOST as an OWNED resource — the Bytes rope/slice/compact intermediates ALL reclaim guest-side. The harness now models the HOST resource-dropping its transferred value before census, reclaiming that cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF the host's value); supersedes the earlier exact-N escv pin (was known-leak).
+  (live-objects 0))
 
 (case
   "a CBOR atom decodes each scalar major type to its value"

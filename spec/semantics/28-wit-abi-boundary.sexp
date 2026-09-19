@@ -128,13 +128,14 @@
            built-in Option/Result heap `.sum` results at the boundary — this fences the corpus-gate
            value-render side (which, unlike the oracle, already handles built-in AND user sums) so the two
            observation paths cannot silently drift on the bare-sum-result shape. Census pin PER-CALL
-           `(live-objects 1 0)` = EXPECTED-RETAIN, and the two arms GENUINELY DIFFER (v-memory-safety
-           rc-traced post-#8394): call 0 `(mk 5)` -> `(Ok 5)` retains 1 (the returned Result Sum node held by
-           the host at census — a benign escaping-value retain, 1 == the returned value's node count, no
-           authored drop, nothing to reclaim); call 1 `(mk 0)` -> `(Err "z")` retains 0 (the Err payload is a
-           CONST-IMMORTAL String literal → no fresh heap node → the returned Sum reclaims to 0). So a single
-           `(live-objects N)` cannot capture both — the per-call `(live-objects 1 0)` is the accurate pin.
-           (The faithful nix census discriminates these; the in-process census under-counts. NOT a leak.)"
+           `(live-objects 0 0)` under drop-before-census (operator 2026-09-19): the two arms rc-traced
+           (v-memory-safety, post-#8394): call 0 `(mk 5)` -> `(Ok 5)` produces a Result Sum node that the host
+           OWNS at census (a benign escaping-value retain, node count 1) — the harness now models the HOST
+           resource-dropping its transferred value before census, reclaiming that node → 0; call 1 `(mk 0)` ->
+           `(Err \"z\")` retains 0 already (the Err payload is a CONST-IMMORTAL String literal → no fresh heap
+           node → the returned Sum reclaims to 0). Under host-drop both arms census 0 (the per-call vector is
+           retained to document that the arms still differ pre-drop). NOT a leak; a guest-side reclaim of the
+           escaping return value would UAF the host's transferred value."
     "tri-target: wasm + rust + cadenza-hop all PASS.")
   (input
     (do
@@ -144,7 +145,7 @@
   (output (: (Ok 5) (Result Int64 String)))
   (call mk (: 0 Int64))
   (output (: (Err "z") (Result Int64 String)))
-  (live-objects 1 0))
+  (live-objects 0 0))
 
 (case
   "a bare LIST of String RESULT round-trips via the run/encode envelope (recursive String decode in a list container)"

@@ -12160,35 +12160,40 @@
   (input (do (def (main (: n Int64)) #list(n (+ n 1) (* n 2))) (export main)))
   (call main (: 5 Int64))
   (output (: #list(5 6 10) (List Int64)))
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned list crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cells (shell + node) → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier exact-N escv pin.
+  (live-objects 0))
 
 (case
   "crr2 an export returns a pair tuple (one reachable cell)"
   (input (do (def (main (: n Int64)) #tuple(n (+ n 1))) (export main)))
   (call main (: 5 Int64))
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned pair tuple crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier exact-N escv pin.
+  (live-objects 0))
 
 (case
   "crr3 an export returns a Some-wrapped scalar (one reachable cell)"
   (input (do (def (main (: n Int64)) (if (> n 0) (Option.Some n) Option.None)) (export main)))
   (call main (: 5 Int64))
   (output (: (Some 5) (Option Int64)))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "crr4 an export returns a runtime-concatenated String (one reachable cell)"
   (input (do (def (main (: n Int64)) (if (> n 0) (String.concat "ab" "c") "z")) (export main)))
   (call main (: 5 Int64))
   (output (: "abc" String))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "crr5 an export returns a two-field record (one reachable cell)"
   (input (do (def (main (: n Int64)) #record((= x n) (= y (+ n 1)))) (export main)))
   (call main (: 5 Int64))
   (output (: (record (= x 5) (= y 6)) (Record (: x Int64) (: y Int64))))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; -- breaker batch 472 (2026-08-27): NESTED compound returns (extends crr1-5). The result-side
 ; lowering handles nesting the param side needed a recursive lift for, and the reachable-cell
@@ -12202,7 +12207,8 @@
   (input (do (def (main (: n Int64)) #list(#tuple(n 1) #tuple((+ n 1) 2))) (export main)))
   (call main (: 5 Int64))
   (output (: #list(#tuple(5 1) #tuple(6 2)) (List (Tuple Int64 Int64))))
-  (live-objects 4))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "nrr2 an export returns a Some-wrapped list (three reachable cells)"
@@ -12212,21 +12218,24 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: (Some #list(5 6)) (Option (List Int64))))
-  (live-objects 3))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "nrr3 an export returns a record with a list field (three reachable cells)"
   (input (do (def (main (: n Int64)) #record((= k n) (= xs #list(n (+ n 1))))) (export main)))
   (call main (: 5 Int64))
   (output (: #record((= k 5) (= xs #list(5 6))) (record (k Int64) (xs (List Int64)))))
-  (live-objects 3))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "nrr4 an export returns a list of lists (six reachable cells)"
   (input (do (def (main (: n Int64)) #list(#list(n) #list(n (+ n 1)))) (export main)))
   (call main (: 5 Int64))
   (output (: #list(#list(5) #list(5 6)) (List (List Int64))))
-  (live-objects 6))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "nrr5 an export returns a tuple carrying a runtime String (two reachable cells)"
@@ -12234,7 +12243,8 @@
     (do (def (main (: n Int64)) #tuple(n (if (> n 0) (String.concat "ab" "c") "z"))) (export main)))
   (call main (: 5 Int64))
   (output (: #tuple(5 "abc") (Tuple Int64 String)))
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; The O(n) shell-ACCUMULATION known gap (more severe than the O(1) borrowed-param twin above): a
 ; self-recursive `f` returns an OWNED sum `(Mk list)`, and every returning frame `(match (f …) ((Mk t)
@@ -12331,21 +12341,24 @@
   (input (do (def (main (: n Int64)) (let ((ys #list(n (+ n 1)))) #list(ys ys))) (export main)))
   (call main (: 5 Int64))
   (output (: #list(#list(5 6) #list(5 6)) (List (List Int64))))
-  (live-objects 4))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "shr2 a let-bound inner list referenced twice in a returned tuple stays one shared object (three cells)"
   (input (do (def (main (: n Int64)) (let ((ys #list(n (+ n 1)))) #tuple(ys ys))) (export main)))
   (call main (: 5 Int64))
   (output (: #tuple(#list(5 6) #list(5 6)) (Tuple (List Int64) (List Int64))))
-  (live-objects 3))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "shr3 two separately-built identical inner lists are distinct objects (six cells, the unshared control)"
   (input (do (def (main (: n Int64)) #list(#list(n (+ n 1)) #list(n (+ n 1)))) (export main)))
   (call main (: 5 Int64))
   (output (: #list(#list(5 6) #list(5 6)) (List (List Int64))))
-  (live-objects 6))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; SIMPLEST instance of the compound-shell reclaim gap (the before/after witness for the future
 ; broadening): a SINGLE non-recursive match over an OWNED compound-payload sum whose payload child is
@@ -12423,28 +12436,32 @@
   (input (do (def (main (: n Int64)) #set(n (+ n 1))) (export main)))
   (call main (: 5 Int64))
   (output (: #set(5 6) (Set Int64)))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "trm2 an export returns a one-entry Map (one reachable cell)"
   (input (do (def (main (: n Int64)) (Map.insert Map.empty n (+ n 1))) (export main)))
   (call main (: 5 Int64))
   (output (: #map((= 5 6)) (Map Int64 Int64)))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "trm3 an export returns a BigInt built from the scalar param (one reachable cell)"
   (input (do (def (main (: n Int64)) (BigInt.of n)) (export main)))
   (call main (: 5 Int64))
   (output (: 5 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "trm4 an export returns an exact Rational from the scalar param (three reachable cells)"
   (input (do (def (main (: n Int64)) (Rational.of n 2)) (export main)))
   (call main (: 5 Int64))
   (output (: 5/2 Rational))
-  (live-objects 3))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render"
@@ -12598,7 +12615,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: #tuple(#list(5 6) #list(5 6)) (Tuple (List Int64) (List Int64))))
-  (live-objects 3))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "idc2 a NULLARY def-call's allocated list bound once and referenced twice stays one shared object"
@@ -12608,7 +12626,8 @@
   (output (: #tuple(#list(7 8) #list(7 8)) (Tuple (List Int64) (List Int64))))
   ; WIT static encoding: the collection-return assembler now hoists the shared constant list build-once
   ; (census-excluded immortal), so only the outer tuple is a mortal per-eval allocation: 3→1.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; -- breaker batch 483 (2026-08-27): the result<scalar,scalar> param rung — the cell my original
 ; Result probe MISSED (rp1 used a String error payload, which declined; the scalar-scalar shape
@@ -13205,7 +13224,8 @@
   (input (do (def (main (: n Int64)) #tuple(n #tuple(1 2))) (export main)))
   (call main (: 5 Int64))
   (output (: (tuple 5 (tuple 1 2)) (Tuple Int64 (Tuple Int64 Int64))))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "imc2 a constant tuple as a returned LIST element now hoists build-once (the collection-return assembler gained build-once); only the list vec + the runtime-`n` tuple are mortal"
@@ -13213,7 +13233,8 @@
   (call main (: 5 Int64))
   (output (: #list(#tuple(1 2) #tuple(5 9)) (List (Tuple Int64 Int64))))
   ; The embedded constant `(tuple 1 2)` is a census-excluded build-once immortal now: 4→3.
-  (live-objects 3))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "a pass-through parameter re-passed unchanged across a tail loop is not corrupted"
@@ -13433,7 +13454,8 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: (tuple 1 (tuple 2 3)) (Tuple Int64 (Tuple Int64 Int64))))
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "a mixed-width mutual-recursion SCC emits valid wasm (per-member scratch floor)"
