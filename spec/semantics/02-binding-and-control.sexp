@@ -7313,6 +7313,36 @@
   (output (: 11 Int64))
   (live-objects 0))
 
+(case
+  "the RECORD sibling of the fresh-owned-aggregate Proj shell-reclaim: a heap-sum field projected off a fresh owned RECORD into a borrow-only match reclaims to zero"
+  (doc
+    "The RECORD-product twin of the fresh-owned-aggregate `Core::Proj` shell-reclaim (#9362 added
+           `matchsum_proj_owned_aggregate_reclaim_ok` for `(match (. <fresh-owned-aggregate> i) ((Some v)
+           <borrow-only>) …)`, flipping the tuple case above → 0). That case's aggregate is a Call-result
+           TUPLE; this one is a fresh owned RECORD (name-indexed field access `(. r f)` rather than positional
+           `(. t 0)`), confirming the reclaim disjunct is keyed on the `Core::Proj`-of-Owned-aggregate shape,
+           not on the tuple product kind. `mk` returns `#record((= f (Some a)) (= g 1))` kept runtime-opaque
+           via the `(< n 0)` recursive guard (defeats const-fold so the record + `Some` are genuine heap
+           values); the scrutinee `(. (mk a 0) f)` projects the heap-`Some` field out of the fresh owned
+           record, and the `(Some v)` arm is STRICT BORROW-CLEAN (reads `v`; the `(. (mk a 0) g)` addend is a
+           SEPARATE fresh `mk` call, not a consume of the scrutinee), so the stashed `MatchSum` shell drops
+           rc1 → 0. Value: `v + g` = a+1 (a=10 → 11; a=20 → 21). No double-free (debug-counters runtime does
+           not trap); opt-invariant O0..O3.")
+  (input
+    (do
+      (def
+        (mk (: a Int64) (: n Int64))
+        (if (< n 0) (mk a (+ n 1)) #record((= f (Option.Some a)) (= g 1))))
+      (def
+        (main (: a Int64))
+        (match (. (mk a 0) f) ((Option.Some v) (+ v (. (mk a 0) g))) (_ -1)))
+      (export main)))
+  (call main (: 10 Int64))
+  (output (: 11 Int64))
+  (call main (: 20 Int64))
+  (output (: 21 Int64))
+  (live-objects 0))
+
 ; --- The list face of the common-constructor hoist (same-length ListNew arms) ---------------------
 ; The hoist's list extension: `(if c (list …p) (list …q))` with SAME-length arms builds one list with
 ; per-element selections. Same guard obligations as the sum/tuple/record pins above, plus two faces
