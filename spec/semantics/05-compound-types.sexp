@@ -1668,7 +1668,8 @@
       (export main)))
   (call main (: 7 Int64) (: 9 Int64))
   (output (: (tuple 7 9) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "reading a field of a record built from runtime elements folds to the field"
@@ -3166,7 +3167,8 @@
            heap-alloc → escape → walk round-trip: a fold-only path would never touch the runtime.")
   (input (do (def (f n) (if (= n 0) #tuple(n 7) (f (- n 1)))) (def (main) (f 3)) (export main)))
   (output (: (tuple 0 7) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a runtime record built behind a recursive call escapes to the host"
@@ -3183,7 +3185,8 @@
       (def (main) (f 3))
       (export main)))
   (output (: (record (= a 0) (= b 7)) (Record (: a Int64) (: b Int64))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a nested runtime tuple built behind a recursive call escapes to the host"
@@ -3197,7 +3200,8 @@
   (input
     (do (def (f n) (if (= n 0) #tuple(n #tuple(n n)) (f (- n 1)))) (def (main) (f 2)) (export main)))
   (output (: (tuple 0 (tuple 0 0)) (Tuple Int64 (Tuple Int64 Int64))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a runtime record whose field is a runtime tuple escapes to the host"
@@ -3212,7 +3216,8 @@
       (def (main) (f 2))
       (export main)))
   (output (: (record (= x 0) (= y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64)))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a recursive sum constructor with a CHECKED-ARITH payload and a recursive-call sibling payload"
@@ -3472,7 +3477,8 @@
       (def (main) (build 0 3 #list()))
       (export main)))
   (output (: #list(0 1 2) (List Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a list of Bool built at run time by a push-loop escapes with its Bool element type"
@@ -3488,7 +3494,8 @@
       (def (main) (build 0 2 #list()))
       (export main)))
   (output (: #list(false true) (List Bool)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; --- A consuming List op leaves a shared let-bound operand UNCHANGED (persistence) ----------------
 ; `List.push`/`update`/`concat` are PERSISTENT — each produces a new list and MUST leave its operand
@@ -3997,7 +4004,8 @@
       (def (main) (build Map.empty 3))
       (export main)))
   (output (: #map((= 1 1) (= 2 2) (= 3 3)) (Map Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a map built at run time with list values escapes with its nested value type"
@@ -4013,7 +4021,8 @@
       (def (main) (build Map.empty 2))
       (export main)))
   (output (: #map((= 1 #list(1)) (= 2 #list(2))) (Map Int64 (List Int64))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; The runtime-built maps above stop at a handful of keys — small enough that the CHAMP never splits a
 ; node, so the trie machinery (multi-level descent, per-level bitmap indexing, node splitting on
@@ -5719,7 +5728,8 @@
   (output (: 9 Int64))
   (call main (: 4 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "an index loop's loop-invariant List.len over a heap operand is still LICM-hoisted (value correct)"
@@ -6140,7 +6150,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: (Node #list((Lit 5) (Lit 6))) Ast))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a user sum whose variant name collides with a built-in renders that head QUALIFIED on all backends"
@@ -6475,7 +6486,8 @@
   (output (: 3 Int64))
   (call main (: -1 Int64))
   (output (: 99 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller"
@@ -6752,7 +6764,8 @@
       (def (main) (build 0 3 #list()))
       (export main)))
   (output (: #list(#list(0) #list(1) #list(2)) (List (List Int64))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a two-level index reads an inner element of a list of lists"
@@ -8326,7 +8339,8 @@
   (input
     (do (type Cached (Mk (Option Int64))) (def (main) (Mk (Some (if true 7 0)))) (export main)))
   (output (: (Some 7) (Option Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a recursive newtype escapes to the host STRUCTURALLY — bare, with no per-recursion type tag"
@@ -9410,7 +9424,8 @@
       (export main)))
   (call main (: 5 UInt64))
   (output (: 5000000000 Duration))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "two newtypes over the SAME inner type do not cross-assign"
@@ -11681,7 +11696,8 @@
       (def (main) (count 3))
       (export main)))
   (output (: (Cons #tuple(3 (Cons #tuple(2 (Cons #tuple(1 (Nil unit))))))) IntList))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; -- recursive-sum render with a NON-Int64 scalar payload (behavioral migration from rcdzc
 ; a_recursive_sum_carrying_a_{string,float64,float32}_renders_via_the_value_encode_walker, 2026-08-27):
@@ -11702,7 +11718,8 @@
       (def (main) (build 2))
       (export main)))
   (output (: (Cons #tuple("x" (Cons #tuple("x" (Nil unit))))) StrList))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a recursive sum carrying a Float64 renders its full runtime spine"
@@ -11718,7 +11735,8 @@
       (def (main) (build 2))
       (export main)))
   (output (: (Cons #tuple(1.5 (Cons #tuple(1.5 (Nil unit))))) FloatList))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a recursive sum carrying a Float32 renders its full runtime spine"
@@ -11734,7 +11752,8 @@
       (def (main) (build 2))
       (export main)))
   (output (: (Cons #tuple(1.5 (Cons #tuple(1.5 (Nil unit))))) F32List))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a runtime-PARAMETERIZED recursive sum renders per-call depths from one export"
@@ -11754,7 +11773,8 @@
   (output (: (S (S (Z unit))) Nat))
   (call main (: 0 Int64))
   (output (: (Z unit) Nat))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a recursively-built binary tree renders its full runtime structure"
@@ -11774,7 +11794,8 @@
       (def (main) (build 2))
       (export main)))
   (output (: (Node #tuple((Node #tuple((Leaf 0) (Leaf 0))) (Node #tuple((Leaf 0) (Leaf 0))))) Tree))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a deep balanced tree is built and folded to a scalar, consuming both children"
@@ -11822,7 +11843,8 @@
       (export main)))
   (call main)
   (output (: (Cons 3 (Cons 2 (Cons 1 (Nil unit)))) L))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a multi-payload variant whose spread element is itself a compound escapes correctly"
@@ -11863,7 +11885,8 @@
       (export main)))
   (call main)
   (output (: (Node 2 (Node 1 (Leaf 0) (Leaf 1)) (Leaf 2)) T))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
@@ -13424,7 +13447,8 @@
       (export main)))
   (call main (: 2 Int64))
   (output (: (tuple 1 0) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; --- A list is homogeneous: its elements share one type ----------------------------------
 ; collections-and-text.md #A List Is An Ordered Homogeneous Sequence: "A list MUST be an ordered
@@ -16964,7 +16988,8 @@
     (:
       #tuple(#tuple(21.04) #tuple(#tuple(#tuple(21.04) #tuple())))
       (Tuple (Tuple Float64) (Tuple (Tuple (Tuple Float64) Tuple)))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; --- A UNIT element in a HEAP-STORED compound occupies its slot with the inline-unit sentinel ----------
 ; A `Unit` has no machine slot (`valtype_of(Unit) = None`), so the VALUE emits nothing — but a heap slot
@@ -19700,7 +19725,8 @@
       (def (main) (lower (Expr.Neg (Expr.Lit 5))))
       (export main)))
   (output (: b"B|" Bytes))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "two MUTUALLY-recursive sum types fold across their boundary"
@@ -21192,7 +21218,8 @@
       (export main)))
   (call main (: 99 Int64))
   (output (: (tuple 33 99 1) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; The replace-at-index operation is DEFINED ONLY for an in-bounds index (collections-and-text.md #A List
 ; Is Grown By Functional Construction, 2nd sentence: "The replace-at-index operation MUST be defined only
@@ -21296,7 +21323,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 999 3 38 40 35) (Tuple Int64 Int64 Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; The update case above touches ONE deep index; this pins the whole-spine TRAVERSAL of a large list. A List
 ; is an RRB vector, so a 100-element list is a multi-node trie — a fold reading every element in order (a
@@ -21330,7 +21358,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 100 4950 0 63 99 -1) (Tuple Int64 Int64 Int64 Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; The cases above span TWO RRB levels (n≤1024 = a leaf of leaves). An RRB branches by 32, so n>32²=1024
 ; forces a THIRD level (level 2): the trie root now indexes interior nodes that index leaves. These pin that
@@ -21360,7 +21389,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 1100 5 1050 1099 -1) (Tuple Int64 Int64 Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a List.update at a third-level RRB index lands and preserves persistence and siblings"
@@ -21389,7 +21419,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: (tuple 999 5 1099 1100 1050) (Tuple Int64 Int64 Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a MAX-fold threads a CONDITIONAL accumulator over a list with a runtime element"
@@ -23418,7 +23449,8 @@
   (input (do (def (main (: a Int64)) #list(a (* a 2))) (export main)))
   (call main (: 7 Int64))
   (output (: #list(7 14) (List Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a parameterized export returns a tuple computed from its argument"
@@ -23428,7 +23460,8 @@
   (input (do (def (main (: a Int64)) #tuple(a (+ a 1) (+ a 2))) (export main)))
   (call main (: 100 Int64))
   (output (: (tuple 100 101 102) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a parameterized export returns a sum value computed from its argument"
@@ -23442,7 +23475,8 @@
       (export main)))
   (call main (: 9 Int64))
   (output (: (Some 81) Option))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; The list/tuple/sum companions above pin ONE call each. These extend the param-forwarding resource escape
 ; to the RECORD and built-in Option compound kinds, and add a case whose TWO calls prove the argument
@@ -23463,7 +23497,8 @@
   (output (: (record (= hi 15) (= lo 5)) (Record (: hi Int64) (: lo Int64))))
   (call main (: 0 Int64))
   (output (: (record (= hi 10) (= lo 0)) (Record (: hi Int64) (: lo Int64))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a parameterized export returns a built-in Option computed from its argument"
@@ -23478,7 +23513,8 @@
   (output (: (Some 5) (Option Int64)))
   (call main (: 0 Int64))
   (output (: (None unit) (Option Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a parameterized compound-return export forwards distinct arguments to make"
@@ -23495,7 +23531,8 @@
   (output (: (tuple 5 6) (Tuple Int64 Int64)))
   (call main (: 40 Int64))
   (output (: (tuple 40 41) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; The parameterized COLLECTION-return cases above always return a NON-EMPTY collection. The EMPTY boundary
 ; — a parameterized export whose result is a runtime-SELECTED empty-or-nonempty collection (an `if` choosing
@@ -23569,7 +23606,8 @@
   (output (: #list(#tuple(5 50) #tuple(6 60)) (List (Tuple Int64 Int64))))
   (call main (: 0 Int64))
   (output (: #list(#tuple(0 0) #tuple(1 10)) (List (Tuple Int64 Int64))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a parameterized export returns a list of lists built from its argument"
@@ -23583,7 +23621,8 @@
   (output (: #list(#list(5) #list(5 5)) (List (List Int64))))
   (call main (: 0 Int64))
   (output (: #list(#list(0) #list(0 0)) (List (List Int64))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a parameterized export builds a list of tuples by a runtime-length loop and measures it"
@@ -26874,7 +26913,8 @@
       (def (main) #tuple((build 3) 30))
       (export main)))
   (output (: #tuple(#list(1 2 3) 30) (Tuple (List Int64) Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a runtime-built list nested in a record field crosses the host boundary rendering the nested collection"
@@ -26891,7 +26931,8 @@
       (def (main) #record((= data (build 2)) (= n 2)))
       (export main)))
   (output (: #record((= data #list(1 2)) (= n 2)) (record (data (List Int64)) (n Int64))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a runtime list of sum-typed elements escapes rendering each element as its sum value-form"
@@ -26918,7 +26959,8 @@
       (def (main) (build 0 2 (: #list() (List (Option Int64)))))
       (export main)))
   (output (: #list((None unit) (Some 1)) (List (Option Int64))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "a runtime list of record elements escapes rendering each element as its named-field record form"
@@ -26940,7 +26982,8 @@
     (:
       #list(#record((= op "x") (= seq 0)) #record((= op "x") (= seq 1)))
       (List (record (op String) (seq Int64)))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 (case
   "two sibling Option fields of different arg do not alias in the value-encode descriptor"
@@ -35013,7 +35056,8 @@
       (export main)))
   (call main)
   (output (: 4 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — deterministic escape/render/return, measures live-objects 0 (drop-before-census); v-core-opt 40-chapter baseline diff + v-corpus-harness census-sweep. (map/set-key subset held for determinism clearance.)
+  (live-objects 0))
 
 ; ── List.at bounds over a RUNTIME-built list at a RUNTIME-COMPUTED index (the runtime bounds-check
 ; path, distinct from the constant-fold None cases which fold at compile time). The list is built by a
