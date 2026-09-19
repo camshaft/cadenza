@@ -4317,6 +4317,14 @@
         # `compile.err`, and the run metadata forwarded from the shred (`test-run.ast`, `expect-kind`,
         # `component-name`). Because it is content-addressed, a compiler change that re-emits identical
         # bytes + identical metadata produces the SAME output path → the exec cache-hits.
+        # Per-case COMPILE wall-clock cap (v-nix 2026-09-19, v-fleet-tooling RCA #82018). A single corpus case
+        # compiles in seconds, so 300s is a HUGE margin — its only job is to convert a PATHOLOGICAL compile hang
+        # (rcdzc looping on a case) from an indefinite wedge of the whole corpus aggregate (which force-realizes
+        # every per-file shard, so one stuck shard blocks the lot → the reported ~88min-then-idle hang) into a
+        # fast RED naming the offending case. Mirrors cadTestTimeoutSecs, which fixed this exact class for
+        # cad-tests. (mkCorpusExec's run is already bounded by cdz-run's internal CDZ_RUN_TIMEOUT_SECS=300 epoch
+        # deadline; the COMPILE was the unguarded gap.)
+        corpusCaseCompileTimeoutSecs = 300;
         mkCorpusBuild = { name, shred, idx }:
           pkgs.runCommand "corpus-build-${name}-${idx}"
             {
@@ -4348,11 +4356,17 @@
             # `--emit-diagnostics` writes the KIND_DIAGNOSTICS wire (the well-formedness fault set, with any
             # fixes) to `$out/diagnostics` UNCONDITIONALLY (even on error/decline — it exits the normal compile
             # status), so the exec can grade a case's `(fix …)`/`(count …)` diagnostic-QUALITY assertions (C1).
-            if cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$out/emit.wasm" --emit-diagnostics "$out/diagnostics" 2>"$out/compile.err"; then
-              printf '0' > "$out/compile.status"
-            else
-              printf '%s' "$?" > "$out/compile.status"
+            # Under a wall-clock cap (corpusCaseCompileTimeoutSecs) so a compile HANG fails this shard fast rather
+            # than wedging the aggregate. A normal refusal (error/declines) is a NON-124 non-zero → captured as
+            # compile.status + graded by the exec, UNCHANGED; only 124 (timeout) / 137 (timeout+SIGKILL) is a HANG.
+            st=0
+            timeout --kill-after=30s ${toString corpusCaseCompileTimeoutSecs} \
+              cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$out/emit.wasm" --emit-diagnostics "$out/diagnostics" 2>"$out/compile.err" || st=$?
+            if [ "$st" = 124 ] || [ "$st" = 137 ]; then
+              echo "TIMEOUT: compile of case ${idx} of '${name}' exceeded the ${toString corpusCaseCompileTimeoutSecs}s wall-clock cap — treating as a compile HANG (fail-fast, not an aggregate wedge)." >&2
+              exit 1
             fi
+            printf '%s' "$st" > "$out/compile.status"
             # (peer) CROSS-COMPONENT cases (L3): a case may ship provider PEERS the consumer imports via
             # `(extern …)`. Each `peer-N.ast` is a STANDALONE provider program compiled EXACTLY like
             # `program.ast` but with `--component-name <iface>` (from the `peer-N.iface` sidecar) — that is
@@ -4363,7 +4377,8 @@
             for p in "$case"/peer-*.ast; do
               [ -e "$p" ] || continue
               pn=$(basename "$p" .ast)                 # peer-N
-              cdz-compile "ast:main=$p" --component-name "$(cat "$case/$pn.iface")" -t wasm \
+              timeout --kill-after=30s ${toString corpusCaseCompileTimeoutSecs} \
+                cdz-compile "ast:main=$p" --component-name "$(cat "$case/$pn.iface")" -t wasm \
                 -o "$out/$pn.wasm" 2>>"$out/compile.err" || true
               cp "$case/$pn.iface" "$out/$pn.iface"
             done
