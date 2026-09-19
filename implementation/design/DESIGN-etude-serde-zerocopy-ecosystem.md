@@ -174,14 +174,18 @@ Bulk content is scanned via `current_chunk()` (a contiguous `&[u8]`, `memchr`-fr
 carry, never via per-byte random access. The `'a` here is a borrow of the _source rope during the scan_ — a
 scan-local lifetime, entirely separate from Decision 0 (the produced _values_ carry no `'de`).
 
-_Why this cursor is the critical path (spike timing evidence, #184)._ The #184 adapter, run without the
-ScanCursor (its tokenizer used `byte_at` per byte), won on allocation (~2200×, above) but _trailed_
-`serde_json` ~3× on wall-clock (mixed doc 563 µs vs 170 µs; string-heavy 106 µs vs 30 µs). The measured gap is
-neither the seam nor allocation (both near-free) — it is exactly the O(log n)-per-byte `byte_at` leaf descent
-this section exists to eliminate, versus serde's O(1) contiguous reads. So the chunk-streaming cursor +
-`as_contiguous` fast path is not a nicety; it is the lever that closes the time gap, and it is orthogonal to
-Decision 0. Increment 2 must land it, and its benchmark (O(1)/byte scan vs `byte_at`) is the primary
-continuous-improvement target for the whole stack's latency.
+_The scan is already competitive — the latency cost is the per-token handoff, not `byte_at` (corrected #184
+timing evidence)._ An earlier reading of the spike blamed the ~3× wall-clock trail on `byte_at` and cast this
+cursor as the fix; a `raw_tokenize` baseline (drive the tokenizer, count tokens, touch no content) _overturned_
+that: raw tokenization is ~59 µs on the mixed doc — _faster_ than serde's full 147 µs parse — and ~26 µs on
+the string doc (serde ~29 µs). So the rope scan is not the bottleneck; the tokenizer is competitive-to-faster
+than serde already. The measured adapter overhead is the per-token _handoff_ from token to Visitor value:
+(a) `StrRope::from_utf8` re-validating each escape-free string's UTF-8 that the tokenizer already guaranteed
+(O(n) per string, redundant) — fixed by a `from_utf8_unchecked` constructor on the Borrowed path (§5); and
+(b) _eager_ `NumberToken` component sub-rope materialization, built even when the consumer reads none — fixed
+by making components lazy (§5). This cursor remains the right O(1)/byte scan design (and its benchmark still
+matters), but it is _not_ the adapter-latency lever; the handoff-cost fixes in §5 are. (Scientific-method
+note: a new baseline falsified the first hypothesis — the record is corrected here rather than left standing.)
 
 ---
 
@@ -247,31 +251,46 @@ pub enum RopeBytes {
 ```
 
 - _Strings_ (the copy-avoidance payoff — JSON's only bulk content): a no-escape string is
-  `RopeStr::Borrowed(StrRope::from_utf8(input.slice(string_span)))` — an O(1) structural share, no unescape,
-  no allocation (an escape-free JSON string's content is already valid UTF-8 in the source rope). An _escaped_
-  string materializes (`RopeStr::Owned`) via `decode_string` — unescape can never be a pure borrow (constraint
-  3). The tokenizer records a cheap `has_escapes` flag during its mandatory scan so the value layer picks the
-  arm with no re-scan. _Spike-confirmed (#184):_ this works today on `etude-json`'s `string_span` +
-  `string_has_escapes` (both on main) — the common case (unescaped strings) is zero-copy now, and
-  `etude-json` #147's `decode_str_rope` is an _optimization_ for the escaped case, not a prerequisite.
-- _Numbers_ are always a decode, never a borrow, but skippable (constraint 4). The number token carries
-  _materialized_ O(1)-shared sub-ropes, not a bare `Span` — the Visitor has no handle on the source rope, so
-  it could not resolve a span itself (spike finding b). Shape (matches `etude-json::Token::number_parts`,
-  #171):
+  `RopeStr::Borrowed(StrRope::from_utf8_unchecked(input.slice(string_span)))` — an O(1) structural share, no
+  unescape, no allocation, _and no re-validation_. The tokenizer's grammar scan already proved the span is
+  valid UTF-8, so a checked `from_utf8` here is an O(n)-per-string redundant re-scan — the #184 timing board
+  showed that redundant validation is a real chunk of the string-path handoff cost. The Borrowed path must use
+  the unchecked constructor (`etude-str-migration` has approved a `from_utf8_unchecked` on StrRope, landing via
+  PR). An _escaped_ string materializes (`RopeStr::Owned`) via `decode_string` — unescape can never be a pure
+  borrow (constraint 3). The tokenizer records a cheap `has_escapes` flag during its mandatory scan so the
+  value layer picks the arm with no re-scan. _Spike-confirmed (#184):_ this works today on `etude-json`'s
+  `string_span` + `string_has_escapes` (both on main) — the common case (unescaped strings) is zero-copy now,
+  and `etude-json` #147's `decode_str_rope` is an _optimization_ for the escaped case, not a prerequisite.
+- _Numbers_ are always a decode, never a borrow, but skippable (constraint 4). The number token materializes
+  exactly _one_ sub-rope — the whole lexeme — and carries the component boundaries as cheap offsets _within_
+  that lexeme, sliced on demand by accessor methods. This is Decision 2's "materialize on demand" applied
+  inside the token: the lexeme must be materialized (the Visitor has no source-rope handle, spike finding b),
+  but a skip/scan consumer that reads no components should not pay for them. Shape (revised per the #184 lazy
+  finding below):
   ```rust
   pub struct NumberToken {
       pub negative: bool,
-      pub lexeme: ByteVec,               // the whole number lexeme (O(1) sub-rope) — feeds a lexeme parser
-      pub integer: ByteVec,              // integer digit run (ASCII 0-9, grammar-validated)
-      pub fraction: Option<ByteVec>,     // fraction digit run, if any
-      pub exponent: Option<ByteVec>,     // exponent digit run, if any
-      pub exponent_negative: bool,
+      lexeme: ByteVec,                   // the ONE eager O(1) sub-rope: the whole number, self-contained
+      integer: Range<usize>,             // offsets WITHIN lexeme (grammar-validated ASCII 0-9); cheap usizes
+      fraction: Option<Range<usize>>,    // offsets within lexeme, if any
+      exponent: Option<Range<usize>>,    // offsets within lexeme, if any
+      exponent_negative: bool,
+  }
+  impl NumberToken {
+      pub fn lexeme(&self) -> &ByteVec { &self.lexeme }          // feeds Decimal::parse — pays nothing extra
+      pub fn integer(&self) -> ByteVec { self.lexeme.slice(self.integer.clone()) }   // O(1) sub-slice on demand
+      pub fn fraction(&self) -> Option<ByteVec> { .. }           // sliced only if a from_components consumer asks
+      pub fn exponent(&self) -> Option<ByteVec> { .. }
+      pub fn is_integer(&self) -> bool { self.fraction.is_none() && self.exponent.is_none() }  // free, no slice
   }
   ```
-  The `lexeme` is the primary payload (one slice, feeds a value type's byte-iterator parser); the component
-  sub-ropes are cheap structural metadata (integer-ness = no fraction & no exponent; sign; digit counts)
-  built with one `ByteVec::slice` each. Value produced on demand via §6. Lazy decode wins when a consumer
-  skips fields.
+  _#184 lazy finding (measured, approved):_ the earlier "4 eager `ByteVec` fields" shape cost ~220 ns/number of
+  pure overhead for a consumer that reads none of them (a number-heavy streaming digest ran 6.5× the raw
+  tokenize: ~130 µs vs ~20 µs, ≈ serde). Carrying component _offsets_ + on-demand accessors drops the eager
+  cost from 4 slices to 1 (the lexeme) with no capability lost: a `Decimal::parse` consumer pays the lexeme it
+  needs; a `from_components` consumer pays only for the splits it calls; a skip/scan consumer pays neither.
+  Component slices are O(1) and cross-chunk-safe (a number lexeme is short, usually single-chunk). Value
+  produced on demand via §6.
 
 _The Visitor contract (no `'de`, rope-shaped):_
 ```rust
@@ -349,17 +368,21 @@ getters (`len`/`is_empty`/field reads) are exempt.
   absolute-offset tracking, `current_chunk`, `find`, `matches_at`, wired to the landed `as_contiguous` fast
   path. Gate: cursor unit tests incl. a token bracketed across a forced chunk boundary; the `SliceSpan`
   extension trait (Decision 1a). Bench: O(1)/byte scan (contiguous + chunked) vs the O(log n) `byte_at`
-  baseline — validates the perf claim and is the primary continuous-improvement lever here.
+  baseline. (Note: #184 measured the tokenizer scan already competitive-to-faster than serde, so this cursor
+  keeps the scan clean but is _not_ the adapter-latency lever — those are the §5 handoff fixes in increment 4.)
 - **Increment 3 — `StrRope` scan + interop surface (cohort, my constraints §4).** `into_bytes` (free,
   landed), char-safe O(1) `slice`/`slice_span`, and delegation of the generic `Rope<K>` reads + the
   single-chunk `as_contiguous`/`try_as_str` fast path onto `StrRope`. No `as_bytes(&self) -> &ByteVec` (§4.4,
   unsound). Gate: round-trip `ByteVec ↔ StrRope` free/validated; slice shares chunks (assert refcount, not
   copy); char-boundary rejection; a decoder scans `&StrRope` non-consuming. Reviewed by etude-str-migration
   (invariant) + etude-byterope-compat (repr).
-- **Increment 4 — `etude-serde` value model + Visitor traits (§5).** `RopeStr`/`RopeBytes`/`NumberToken`, the
-  `Visitor`/`Deserializer`/`SeqAccess`/`MapAccess` traits (no `'de`). Gate: a trivial in-memory decoder
-  exercising borrowed vs owned string, skipped number, cross-chunk map key; benches on the value-model hot
-  paths.
+- **Increment 4 — `etude-serde` value model + Visitor traits (§5).** `RopeStr`/`RopeBytes`/`NumberToken` (lazy
+  offsets + accessors), the `Visitor`/`Deserializer`/`SeqAccess`/`MapAccess` traits (no `'de`). This is where
+  the two #184-measured latency levers land: the Borrowed string path uses `StrRope::from_utf8_unchecked`
+  (no redundant re-validation, §5), and `NumberToken` materializes one eager `lexeme` with lazy component
+  accessors. Gate: a trivial in-memory decoder exercising borrowed vs owned string, skipped number,
+  cross-chunk map key; benches on the value-model hot paths (differential streaming-digest re-measure vs the
+  eager baseline to confirm the handoff-cost drop).
 - **Increment 5 — value-type validated-component constructors (§6).** `Decimal::from_components`,
   `BigInt::from_ascii_digits`, etc.; migrate any grammar currently in a value type out to its decoder (closes
   the `etude-decimal #64` concern). Gate: constructor tests from raw component slices; assert no `String`
@@ -413,10 +436,17 @@ Defaults are chosen (above); these are the forks worth an operator eyeball on th
    `RopeStr`/`RopeBytes` lets a long-lived consumer detach. (Default: provide `into_owned`, document the
    tradeoff. Spike #184: no surprise in the tested Visitors — they consume within the visit; `into_owned` is
    the right hatch for a consumer that stashes a `Borrowed` value past the scan, not yet needed.)
-6. _Latency vs `serde_json` (honest picture, #184)._ The seam wins allocation decisively (~2200×) but
-   currently trails ~3× on wall-clock; the gap is the tokenizer's per-byte `byte_at` access, closed by the
-   §3 chunk-streaming cursor (increment 2) — downstream tokenizer work, orthogonal to Decision 0. Not a
-   design fork; recorded so the alloc win is not read as a time win.
+6. _Latency vs `serde_json` (honest picture, corrected #184)._ The seam wins allocation decisively (~2200×)
+   but currently trails ~3× on wall-clock. The gap is _not_ the rope scan (a `raw_tokenize` baseline is
+   faster than serde) and _not_ allocation — it is the per-token handoff: redundant UTF-8 re-validation on
+   Borrowed strings (fixed by `from_utf8_unchecked`, §5) and eager `NumberToken` component materialization
+   (fixed by lazy offsets + accessors, §5). Both fixes are increment-4/3 work, orthogonal to Decision 0. Not
+   a design fork; recorded so the alloc win is not read as a time win and the critical path is attributed
+   correctly (superseding the earlier `byte_at` attribution).
+7. _`NumberToken` lazy shape (resolved with etude-json, #184-measured)._ Component sub-ropes are offsets
+   within the one eager `lexeme` sub-rope, sliced on demand by accessors — not 4 eager slices. Drops the
+   number handoff from a 6.5× tax to ~1 slice, no capability lost. Approved; etude-json to prototype +
+   re-measure. Recorded, no operator decision needed.
 
 ---
 
