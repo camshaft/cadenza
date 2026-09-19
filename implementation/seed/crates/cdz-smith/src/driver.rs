@@ -528,6 +528,64 @@ pub fn opt_invariance_sweep(
     Ok(stats)
 }
 
+/// The DETERMINISM sweep: for each generated program, compile it TWICE and require byte-identical output
+/// ([`crate::differential::compile_determinism`]). A divergence is a compiler-nondeterminism bug (the spec
+/// mandates each phase be a deterministic function of its input; the content-addressed pipeline depends on
+/// it). COMPILE-ONLY + IN-PROCESS: no store, no run, no `cdz` — the cheapest sweep. Findings file UNSHRUNK
+/// (nondeterminism can be intermittent, so a shrink predicate that re-runs the compile is unreliable —
+/// re-run the filed repro to confirm). Uses the coercing astgen grammar so most programs actually compile
+/// (a decline is deterministic and simply agrees). COMPILE-ONLY — no store/run/`cdz` (the cheapest sweep),
+/// though it rides the `differential` feature since it lives beside the other oracle sweeps.
+#[cfg(feature = "differential")]
+pub fn determinism_sweep(cfg: &Config, count: u64) -> std::io::Result<DiffStats> {
+    use crate::differential::{Diff, compile_determinism};
+    let fstore = FindingStore::open(&cfg.findings_dir)?;
+    let mut stats = DiffStats::default();
+    let mut rng = SplitMix64::new(cfg.run_seed);
+    for i in 0..count {
+        let seed = rng.next();
+        let source = program_for_seed_with(seed, cfg.gen_mode);
+        match compile_determinism(&source) {
+            Diff::Agree | Diff::Unavailable(_) => stats.agreed += 1,
+            Diff::Mismatch { kind, wasm, rust } => {
+                stats.mismatched += 1;
+                // File UNSHRUNK: the divergence may be intermittent, so re-running a shrink predicate is
+                // unreliable — keep the exact program the mismatch was observed on.
+                let detail = format!("[determinism] {wasm} vs {rust}");
+                let finding = Finding {
+                    category: Category::Differential,
+                    program: source.clone(),
+                    crash: None,
+                    detail: Some(detail),
+                    commit: cfg.commit.clone(),
+                };
+                let label = format!("determinism ({} mismatch)", kind.tag());
+                file_and_tally(
+                    &fstore,
+                    &finding,
+                    &mut stats.new_buckets,
+                    &mut stats.duplicate_hits,
+                    seed,
+                    &label,
+                );
+            }
+            // A compile crash is the crash oracle's finding, not determinism's; `compile_determinism`
+            // never returns CompileCrash (it maps a crash to not-comparable), but handle it for totality.
+            Diff::CompileCrash(_) => stats.crashed += 1,
+        }
+        if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
+            eprintln!(
+                "[cdz-smith] determinism {}/{count} | {} agreed, {} nondeterministic ({} buckets)",
+                i + 1,
+                stats.agreed,
+                stats.mismatched,
+                stats.new_buckets
+            );
+        }
+    }
+    Ok(stats)
+}
+
 /// The CADENZA-BACKEND equivalence sweep (operator seq-184): for each generated program, compare the
 /// DIRECT wasm value against the `--target cadenza` round-trip value ([`crate::cadenza_diff::cadenza_diff`]).
 /// A divergence is a cadenza-backend miscompile — filed like a wasm-vs-rust differential finding. Uses a

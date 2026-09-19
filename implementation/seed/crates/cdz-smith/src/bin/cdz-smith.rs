@@ -142,6 +142,17 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         "decline-histogram" => cmd_decline_histogram(&args[1..]),
+        #[cfg(feature = "differential")]
+        "determinism" => cmd_determinism(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "determinism" => {
+            eprintln!(
+                "cdz-smith: the `determinism` subcommand needs the `differential` feature \
+                 (it shares the differential oracle's compile helpers) — rebuild: \
+                 `cargo run --features differential -- determinism …`."
+            );
+            ExitCode::from(2)
+        }
         "once" => cmd_once(&args[1..]),
         "gen" => cmd_gen(&args[1..]),
         "verify" => cmd_verify(&args[1..]),
@@ -166,6 +177,7 @@ fn usage() {
          \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR] [--astgen]\n\
          \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen] [--large]\n\
          \x20 cdz-smith opt-differential  [--count N] [--seed S] [--findings DIR] [--store DIR] [--astgen] [--large]   (O0-vs-O1/O2/O3 VALUE invariance — pure-optimizer miscompile hunt; in-process, no cdz)\n\
+         \x20 cdz-smith determinism      [--count N] [--seed S] [--findings DIR] [--astgen]   (compile TWICE, require byte-identical output — compiler-nondeterminism hunt; compile-only, no store/cdz)\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR] [--host]\n\
@@ -2103,6 +2115,77 @@ fn cmd_seed_corpus(args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("cdz-smith seed-corpus: failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The DETERMINISM dimension: compile each generated program TWICE and require byte-identical output. A
+/// divergence is a compiler-nondeterminism bug (the spec mandates each phase be a deterministic function of
+/// its input; the content-addressed pipeline — binary-AST exchange, the CAS runtime store, caching —
+/// depends on it). COMPILE-ONLY + in-process: no runtime store, no `cdz` (it rides the `differential`
+/// feature only because it shares that module's compile helpers).
+#[cfg(feature = "differential")]
+fn cmd_determinism(args: &[String]) -> ExitCode {
+    let mut count: u64 = 1000;
+    let mut seed: Option<u64> = None;
+    let mut findings: Option<PathBuf> = None;
+    // Default to the coercing astgen grammar so most programs actually COMPILE (a decline is deterministic
+    // and simply agrees, so the broad text grammar's ~73% declines would waste the sweep).
+    let mut gen_mode = driver::GenMode::Astgen;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--findings" => findings = it.next().map(PathBuf::from),
+            "--astgen" => gen_mode = driver::GenMode::Astgen,
+            other => {
+                eprintln!("cdz-smith determinism: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let findings_dir = match resolve_findings_dir(findings) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    let cfg = Config {
+        iterations: Some(count),
+        run_seed: seed.unwrap_or_else(driver::wallclock_seed),
+        timeout: Duration::from_secs(10),
+        findings_dir: findings_dir.clone(),
+        commit: driver::detect_commit(),
+        progress_every: 100,
+        gen_mode,
+    };
+    eprintln!(
+        "[cdz-smith] determinism @{} | seed {} | count {} | findings → {}",
+        cfg.commit,
+        cfg.run_seed,
+        count,
+        findings_dir.display()
+    );
+    // Arm the compile-hang watchdog: both compiles are unguarded native calls; a hang would wedge the sweep.
+    cdz_smith::compile_guard::install(
+        cfg.findings_dir.clone(),
+        cfg.commit.clone(),
+        cdz_smith::compile_guard::compile_timeout(),
+    );
+    match driver::determinism_sweep(&cfg, count) {
+        Ok(stats) => {
+            eprintln!(
+                "[cdz-smith] determinism done: {} agreed, {} nondeterministic ({} new buckets, {} dup hits)",
+                stats.agreed, stats.mismatched, stats.new_buckets, stats.duplicate_hits
+            );
+            if stats.new_buckets > 0 {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("cdz-smith: determinism sweep failed: {e}");
             ExitCode::FAILURE
         }
     }
