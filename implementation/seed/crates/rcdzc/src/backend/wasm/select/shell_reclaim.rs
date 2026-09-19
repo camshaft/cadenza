@@ -824,6 +824,64 @@ pub(crate) fn matchsum_proj_owned_aggregate_reclaim_ok(
     consuming.is_empty()
 }
 
+/// The `Option.expect`-result twin of [`matchsum_proj_owned_aggregate_reclaim_ok`]: a `MatchSum` scrutinee
+/// that is a `Core::SumExpect` (`(Option.expect <owned-Some> …)`) extracting a HEAP-SUM payload out of an
+/// OWNED source Option. `SumExpect` is deliberately NOT in `heap_operand_ownership` (like `Core::Proj` /
+/// `StrAt` — it stays Borrowed to avoid perturbing the value-eq / Stage-B extraction consumers), so
+/// `sum_shell_reclaim_ok`'s global-`Owned` gate MISSES it and the extracted payload shell LEAKS one cell per
+/// match (05-compound-types:2117 — `(nc (Option.expect (List.at … 0) "at"))` inlines to `(match
+/// (Option.expect …) ((Ast.Int _) 1) ((Ast.List _) 9))`, a borrow-clean disc-only match whose extracted
+/// `Ast` shell is never dropped).
+///
+/// SOUND by the SAME fence as the proj/view twins. The load-bearing gate is `heap_operand_ownership(<the
+/// SumExpect's own scrutinee — the source Option>) == Owned`: `Option.expect` on an OWNED Some TRANSFERS the
+/// payload out as owned (the fallible-read producers — `List.at`/`Map.lookup`/`Bytes.at` — `dup` the payload
+/// INTO the `Some`, so the extracted value is an INDEPENDENT owned ref, never an alias into a still-live
+/// source; the source collection is already reclaimed by the time the match runs). The `SumExpect` emit
+/// already `drop`s the Some shell + leaves the extracted payload at rc1, so this reclaim drops exactly that
+/// one un-dropped shell (rc1 → 0, balanced; never a double-free). NO-CHILD-DUP path → sound ONLY under the
+/// STRICT BORROW-CLEAN floor (zero consuming sites — the payload only READ/disc-probed, never moved into a
+/// builder/Call NOR escaped as an arm result); a consuming site → declined (leak beats UAF). An `Option.
+/// expect` on a BORROWED Some (source not `Owned`) fails the gate → declined (its payload is borrowed, must
+/// stay leaking — dropping it would double-free the owner's ref).
+pub(crate) fn matchsum_expect_owned_reclaim_ok(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    stashed_slot: Option<(u32, ValType)>,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> bool {
+    // Shared safety floor (identical to the proj/view twins).
+    if !matches!(stashed_slot, Some((_, ValType::I32)))
+        || never_diverges
+        || !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+    {
+        return false;
+    }
+    // The scrutinee must be an `Option.expect` (`Core::SumExpect`) whose SOURCE Option is globally `Owned`
+    // (a fallible-read producer / constructor). That is the fence: expect on an owned Some transfers the
+    // payload out as an independent owned ref.
+    let Core::SumExpect {
+        scrutinee: source, ..
+    } = core_of(db, scrutinee)
+    else {
+        return false;
+    };
+    if !matches!(
+        heap_operand_ownership(db, source),
+        Ok(HandleOwnership::Owned)
+    ) {
+        return false;
+    }
+    // STRICT BORROW-CLEAN floor (NO child-dup): the extracted payload must have ZERO consuming sites.
+    let mut consuming = HashSet::new();
+    collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
+    consuming.is_empty()
+}
+
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed
 /// temp vs proven-owned param slot): heap + non-enum + non-diverging + payload-safety + not-re-matched.
 /// [`sum_shell_reclaim_ok`] ANDs the stashed-Owned requirement on top; the non-tail-spine param path ANDs

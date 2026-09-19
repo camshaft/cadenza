@@ -4189,6 +4189,17 @@ pub(super) fn emit(
                 stashed_slot,
                 never_diverges,
                 &root,
+            )
+            // Also reclaim an `(Option.expect <owned-Some> …)` (Core::SumExpect) shell the global `Owned`
+            // gate misses (SumExpect stays Borrowed) — the extracted payload is owned + borrow-clean, so the
+            // husk drop nets against the currently-leaked stashed shell (05:2117 nc disc-only match).
+            || matchsum_expect_owned_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
             );
             emit_sum_cont(
                 db,

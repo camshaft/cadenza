@@ -2114,7 +2114,7 @@
       (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 #list()) 0) "at")))
       (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A recursion that CARRIES a heap collection (Bytes / List) as a parameter and, at its BASE arm, performs
 ; a FALLIBLE INDEXED READ (`Bytes.at` / `List.at`, which materializes an Option HANDLE in a scratch slot)
