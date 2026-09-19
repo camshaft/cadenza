@@ -332,7 +332,7 @@
           (q-drain q4)))
       (export main)))
   (output (: "B,B2,A,main" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the event queue is a STABLE time-sort over RUNTIME instants — non-adjacent same-time events keep insertion order, offset-independent"
@@ -384,7 +384,7 @@
   (output (: "24135" String))
   (call main (: 1000000000 UInt64))
   (output (: "24135" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "INTERLEAVED pops and inserts keep the event queue min-ordered across live mutation"
@@ -705,7 +705,7 @@
           (r-drain r3)))
       (export main)))
   (output (: "A,B,C" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
 ; Increment 2 — the `Sim` effect declaration + task API shape (§4). `now` is tail-resumptive and
@@ -952,7 +952,7 @@
           (q-drain q3)))
       (export main)))
   (output (: "A,B,C" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "interleaved same/different Instants keep FIFO within a time and ascending across times"
@@ -1000,7 +1000,7 @@
           (q-drain q4)))
       (export main)))
   (output (: "P,Q,X,Y" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a RUNTIME-count generated batch insorts fully time-ordered, verified by a sortedness walk"
@@ -1101,7 +1101,7 @@
           (q-drain q)))
       (export main)))
   (output (: "e,b,d,h,g,a,c,f" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a zero-Duration sleep files at the current instant — pop-min then reinsert keeps order"
