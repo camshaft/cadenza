@@ -938,6 +938,15 @@ pub struct WrapperDesc {
     /// def MOVES a field out verbatim (a last-consume, not a dup_site) — dropping then would double-free. The
     /// record-cell twin of `mem_leaf_params`/`sum_params` `drop_after`.
     pub record_param_drop_after: Vec<bool>,
+    /// Parallel to `record_param_drop_after` (28-wit:310 SHAPE-9 shell-reclaim co-fix). For a record/tuple-cell
+    /// param whose shell is NOT blanket-droppable *because* compound field(s) move out verbatim, `Some(paths)`
+    /// = the MULTISET of escaped-field projection paths (one `Vec<usize>` `arr-get`-index chain per escaping
+    /// occurrence, from `select::escaped_field_projections`). The wrapper projects each field off the cell and
+    /// `dup`s it (→ rc≥2) BEFORE the def call, then deep-drops the shell after the call (cascade → rc≥1, so the
+    /// result's field handle survives) — reclaiming the shell without the escaped-field UAF that a blanket drop
+    /// would cause. `None` = keep the all-or-nothing `record_param_drop_after` behavior (mutually exclusive:
+    /// `escaped_field_projections` returns `None` when the shell is blanket-droppable).
+    pub record_param_escaped_fields: Vec<Option<Vec<Vec<usize>>>>,
     /// The compiled def's absolute core func index to `call` after building its args.
     pub def_abs: u32,
     /// How the wrapper turns the def's return value into the boundary result — pass a scalar straight through,
@@ -1633,7 +1642,39 @@ fn core_module_impl(
                         // call — every forwarded field was dup'd, so it survives the deep-drop cascade — save
                         // it in a drop-local (it stays on the stack as the def arg) and deep-drop it in the
                         // post-call reclaim loop below, exactly like the mem-leaf/sum `drop_after` path.
-                        if wrap
+                        // 28-wit:310 SHAPE-9: the cell is NOT blanket-droppable because compound field(s) move
+                        // out verbatim, so reclaim the shell WITHOUT the escaped-field UAF — save the cell, then
+                        // for each escaped-occurrence path project the field off the cell (`arr-get` BORROWS)
+                        // and `dup` it (→ rc≥2) NOW (before the call); the post-call reclaim loop deep-drops the
+                        // shell, whose cascade returns each dup'd field to rc≥1 so the result's handle survives.
+                        // dup-BEFORE-deep-drop ordering is the whole safety; multiplicity is authoritative (one
+                        // `dup` per escaped-occurrence entry — never dedup). Mutually exclusive with
+                        // `record_param_drop_after` (Some only when the shell is NOT blanket-droppable).
+                        if let Some(paths) = wrap
+                            .record_param_escaped_fields
+                            .get(pi)
+                            .and_then(|f| f.as_ref())
+                        {
+                            let dl = next_local;
+                            next_local += 1;
+                            inner.push(op::LOCAL_TEE);
+                            uleb128(dl as u64, &mut inner); // [cell] stays as the def arg; also saved in `dl`
+                            for path in paths {
+                                inner.push(op::LOCAL_GET);
+                                uleb128(dl as u64, &mut inner); // [cell, cell-copy]
+                                for &idx in path {
+                                    // project field `idx` off the (nested) cell — `arr-get` borrows + consumes
+                                    // the cell-copy, leaving the field box (a heap-cell handle for a compound).
+                                    inner.push(op::I32_CONST);
+                                    crate::backend::wasm::encode::sleb128(idx as i64, &mut inner); // [cell-copy, idx]
+                                    inner.push(op::CALL);
+                                    uleb128(imp("arr-get"), &mut inner); // [field-box] (borrows)
+                                }
+                                inner.push(op::CALL);
+                                uleb128(imp("dup"), &mut inner); // rc+1 on the escaped leaf; consumes it → [cell]
+                            }
+                            drop_locals.push(dl); // deep-drop the shell after the call (cascade → field rc≥1)
+                        } else if wrap
                             .record_param_drop_after
                             .get(pi)
                             .copied()
