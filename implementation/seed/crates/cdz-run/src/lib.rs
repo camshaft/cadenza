@@ -4033,9 +4033,18 @@ fn run_resource_escape(
     } else {
         render_closure_call_result(out.first())
     };
-    // A `(drop)` clause: reclaim the escaped resource's cell after the member call(s) (which only borrowed
-    // it), so a `(live-objects 0)` case reads a released heap.
-    drop_handle_if(&mut *store, &handle[0], drop_handle)?;
+    // DROP-BEFORE-CENSUS (operator ruling 2026-09-19): the escaping value crosses the component boundary as
+    // an OWNED resource `t` — the host RECEIVES ownership and the guest correctly keeps its value-heap handle
+    // live until the host DROPS the resource. The conformance census must model the host ACCURATELY: after
+    // the host invokes the export, receives the owned resource, and does its (borrowing) reads, it DROPS the
+    // resource before querying live-objects — so the census reflects the true post-host-drop state (0 for a
+    // clean escape), NOT the mid-flight host-owned count. This UNCONDITIONAL drop (the resource-escape path
+    // always holds an owned handle) is the harness fix for the dominant owned-resource-escape known-leak
+    // class: a guest-side drop would be a corpus-wide UAF (rejected) — the correct model is the HOST dropping.
+    // A genuine leak beyond the returned resource still surfaces (dropping the return handle reclaims only ITS
+    // cells), so real leaks are NOT masked. The `(drop)` clause is now subsumed (drop is always done here).
+    let _ = drop_handle;
+    drop_handle_if(&mut *store, &handle[0], true)?;
     Ok(Outcome::Value(rendered))
 }
 

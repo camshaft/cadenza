@@ -3377,9 +3377,9 @@
            frees it. Both Option Some shells DO reclaim (rc-trace verified — the leaked cells are node#0 tuple
            + node#2/#4 the two view leaves, never a shell), and each compacting view leaf escapes at rc1
            IDENTICALLY to a fresh `String.concat` result (v-memory-safety census: raw-concat escape == view
-           escape == return-value size). So it is pinned `(live-objects 3)` (the EXACT count, not `known-leak`):
-           this stays enforced (a real over-leak beyond the return value → census 4 → gate reds), and it must
-           never drop below 3 (freeing an escaping return value = UAF the host's transferred value). Values:
+           escape == return-value size). Under drop-before-census (operator 2026-09-19) the harness models the
+           HOST resource-dropping its transferred value before census, reclaiming those 3 cells → `(live-objects
+           0)`; a guest-side reclaim of the escaping return value would UAF the host's transferred value. Values:
            k=0 a=[0,3)=\"abc\", b=[4,7)=\"efg\" → tuple(\"abc\",\"efg\"); k=1 a=[1,3)=\"bc\" → tuple(\"bc\",\"efg\").
            (Resolved by v-memory-safety + v-cdz-wasm-codegen + v-corpus-harness: an escape-to-host reclaim
            would double-free; there is nothing to reclaim — the escv escape-shell emit is already optimal.)")
@@ -3397,8 +3397,8 @@
   (output (: #tuple("abc" "efg") (Tuple String String)))
   (call main (: 1 Int64))
   (output (: #tuple("bc" "efg") (Tuple String String)))
-  ; RE-PIN (v-corpus-harness ruling): known-leak 3 → (live-objects 3). N=3 is the ABI-transferred return-value cell count (tuple + 2 compacting view leaves), NOT a guest leak; both Some shells reclaim (rc-trace). Enforced exactly — an over-leak reds; must never drop below 3 (escaping return value).
-  (live-objects 3))
+  ; drop-before-census (operator 2026-09-19): the returned `#tuple(a b)` (tuple + 2 compacting view leaves = 3 cells) crosses as an OWNED resource; both Some shells reclaim guest-side (rc-trace). The harness now models the HOST resource-dropping its transferred value before census, reclaiming those 3 cells → (live-objects 0). NOT a guest drop (guest-side reclaim of the escaping return value would UAF the host's value); supersedes the earlier exact-N escv re-pin.
+  (live-objects 0))
 
 (case
   "THREE single-layer String.slice views escaping in one tuple leak — confirms N-views + wrapper scaling of the escv escape-shell gap"
@@ -3408,10 +3408,11 @@
            This measures live-objects 4 = the RETURNED value's exact cell count (tuple wrapper + three
            compacting view leaves), the N-views + wrapper scaling — NOT a guest leak: the tuple is
            ABI-TRANSFERRED to the host (rc-trace: leaked = node#0 tuple + node#2/#4/#5 the three view leaves;
-           all Some shells reclaim). Each view leaf escapes at rc1 like a fresh String result. Pinned
-           `(live-objects 4)` (exact count, not known-leak): an over-leak → census 5 → reds; never drops below
-           4 (escaping return value). k=0: a=[0,2)=\"ab\", b=[3,5)=\"de\", c=[5,8)=\"fgh\" → tuple(\"ab\",\"de\",\"fgh\").
-           Value correct, no trap/UAF. (Resolved: escv escape-to-host is ABI-transfer, nothing to reclaim.)")
+           all Some shells reclaim). Each view leaf escapes at rc1 like a fresh String result. Under
+           drop-before-census (operator 2026-09-19) the harness models the HOST resource-dropping its
+           transferred value before census, reclaiming those 4 cells → `(live-objects 0)`; a guest-side reclaim
+           would UAF the host's value. k=0: a=[0,2)=\"ab\", b=[3,5)=\"de\", c=[5,8)=\"fgh\" → tuple(\"ab\",\"de\",\"fgh\").
+           Value correct, no trap/UAF. (Resolved: escv escape-to-host is ABI-transfer, host drops the graph.)")
   (input
     (do
       (def
@@ -3425,8 +3426,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: #tuple("ab" "de" "fgh") (Tuple String String String)))
-  ; RE-PIN (v-corpus-harness ruling): known-leak 4 → (live-objects 4). N=4 is the ABI-transferred return-value cell count (tuple + 3 compacting view leaves), NOT a guest leak; all Some shells reclaim (rc-trace). Enforced exactly — an over-leak reds; must never drop below 4.
-  (live-objects 4))
+  ; drop-before-census (operator 2026-09-19): the returned `#tuple(a b c)` (tuple + 3 compacting view leaves = 4 cells) crosses as an OWNED resource; all Some shells reclaim guest-side (rc-trace). The harness now models the HOST resource-dropping its transferred value before census, reclaiming those 4 cells → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF the host's value); supersedes the earlier exact-N escv re-pin.
+  (live-objects 0))
 
 (case
   "a COMPACTING and a RETAINING view escaping in one tuple both leak — the retaining view MUST stay leaking (escv escape-control, UAF margin)"
@@ -3437,11 +3438,12 @@
            `#tuple(sv bv)`. This measures live-objects 3 = the RETURNED value's exact cell count (tuple + sv
            compacting-view leaf + bv retaining-view leaf) — NOT a guest leak: the tuple is ABI-TRANSFERRED to
            the host. rc-trace: leaked = node#0 tuple + node#2 sv + node#4 bv; BOTH Some shells (String + Bytes)
-           reclaim, and the Bytes source bs is freed — so bv is self-contained at return. Pinned
-           `(live-objects 3)` (exact, not known-leak). This is the DURABLE #4917 leak-over-UAF boundary: the
-           count must NEVER drop below 3 — reclaiming (deep-dropping) EITHER escaping view frees a value the
-           host owns, and for bv specifically the retaining slice aliases its source, so a deep-drop would
-           UAF a still-referenced parent. An extra cell beyond 3 → reds (a real over-retain). k=0:
+           reclaim, and the Bytes source bs is freed — so bv is self-contained at return. Under
+           drop-before-census (operator 2026-09-19) the harness models the HOST resource-dropping its
+           transferred value before census, reclaiming the whole owned return graph → `(live-objects 0)`
+           (census-confirmed: bs already freed, bv sole owner, no dangling source). The #4917 GUEST discipline
+           stays intact: a guest-side deep-drop of the retaining bv while its source lived would UAF — the host
+           drops its own transferred copy atomically, which is safe. k=0:
            sv=[0,3)=\"abc\", bv=Bytes.slice([1,2,3,4,5],1,3)=[2,3,4] → tuple(\"abc\", b\"\\x02\\x03\\x04\").
            Value correct, no trap/UAF. (Retaining views excluded from escape-admit by #9215/#4917.)")
   (input
@@ -3457,8 +3459,8 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: #tuple("abc" b"\x02\x03\x04") (Tuple String Bytes)))
-  ; RE-PIN (v-corpus-harness ruling): known-leak 3 → (live-objects 3). N=3 = ABI-transferred return value (tuple + compacting sv + retaining bv); both Some shells reclaim (rc-trace). DURABLE #4917 boundary: must NEVER drop below 3 (deep-dropping the retaining bv would UAF its source); an over-retain reds.
-  (live-objects 3))
+  ; drop-before-census (operator 2026-09-19): the returned `#tuple(sv bv)` (tuple + compacting sv + retaining bv = 3 cells) crosses as an OWNED resource; both Some shells reclaim guest-side and the Bytes source bs is freed at return, so bv is SELF-CONTAINED. The harness now models the HOST resource-dropping its transferred value before census, reclaiming the whole owned return graph → (live-objects 0) — census-confirmed got 0 (no dangling source: bs already freed, bv sole owner). NOT a guest-side deep-drop (deep-dropping the retaining bv while its source lived would UAF — that #4917 GUEST discipline stays intact); the host drops its transferred copy atomically. Supersedes the earlier exact-N escv re-pin.
+  (live-objects 0))
 
 (case
   "a concat of two runtime SLICES joins the sliced views, not the originals"

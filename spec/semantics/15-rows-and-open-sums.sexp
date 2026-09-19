@@ -2671,16 +2671,15 @@
   "a tagged sum with an arity-2 payload variant is returned as the result value"
   (input (do (type Shape (Circle Int64) (Rect Int64 Int64)) (def (main) (Rect 3 4)) (export main)))
   (output (: (Rect 3 4) Shape))
-  ; The returned tagged variant is REACHABLE at exit (shell + payload = 2 cells) — not a leak (breaker
-  ; batch 471); flips to 0 once the reachability-aware live-objects driver subtracts reachable-from-return.
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned tagged variant (shell + payload = 2 cells) crosses as an OWNED resource — not a leak (breaker batch 471). The harness now models the HOST resource-dropping its transferred value before census, reclaiming those cells → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier exact-N escv pin.
+  (live-objects 0))
 
 (case
   "a MIXED-arity multi-variant sum returns its arity-2 variant (disc→field-type indexing across arities)"
   (input (do (type M (A) (B Int64) (C Int64 Int64)) (def (main) (C 3 4)) (export main)))
   (output (: (C 3 4) M))
-  ; Returned tagged variant reachable at exit (shell + payload = 2 cells), not a leak (breaker batch 471).
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned tagged variant (shell + payload = 2 cells) crosses as an OWNED resource, not a leak (breaker batch 471); the harness models the HOST resource-dropping it before census, reclaiming those cells → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier exact-N escv pin.
+  (live-objects 0))
 
 (case
   "a tagged sum with a NESTED Option payload is returned (recursive field-type traversal over Option)"

@@ -2050,8 +2050,8 @@
       (export main)))
   (call main (: -7 Int64))
   (output (: (tuple -3 -4 -3 -4) (Tuple Int64 Int64 Int64 Int64)))
-  ; RE-PIN (v-memory-safety, applying v-corpus-harness's escv ruling): known-leak → (live-objects 1). N=1 is the ABI-transferred RETURN-VALUE cell count — the returned `#tuple(-3 -4 -3 -4)` (one Compound, scalars inline), which the host owns and frees. rc-trace verified: the list `xs` AND every Rational intermediate reclaim (freed); the four List.at Option shells reclaim; the SOLE residual (node#137) is the result tuple itself. NOT a guest leak (the earlier known-leak framing was stale — a peer reclaim fix made xs reclaim). Enforced exactly: an over-leak beyond the return tuple → census 2 → reds; must never drop below 1 (freeing the returned tuple = UAF the host's value). A scalar-bodied twin (e.g. `(+ …)` instead of the tuple) censuses 0 — the result SHAPE, not a drop-epilogue bug.
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned `#tuple(-3 -4 -3 -4)` crosses as an OWNED resource. rc-trace: the list `xs`, every Rational intermediate and the four List.at Option shells reclaim guest-side; the SOLE guest residual is the result tuple itself (node#137), which is ABI-TRANSFERRED to the host. The harness now models the HOST resource-dropping its transferred value before census, reclaiming that cell → (live-objects 0). NOT a guest drop (guest-side reclaim of the returned tuple would UAF the host's value); supersedes the earlier exact-N escv re-pin. A scalar-bodied twin (e.g. `(+ …)`) censuses 0 too.
+  (live-objects 0))
 
 ; The exact-arithmetic cases above use SMALL operands (1/3, 1/6) that never leave the i64 range. A Rational
 ; is a normalized pair of BigInt handles, so a gcd normalization over NEAR-i64 operands must run on the
@@ -2236,7 +2236,8 @@
            `(BigInt.of …)`.")
   (input (+ 100N 1N))
   (output (: 101 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned BigInt crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier exact-N escv pin.
+  (live-objects 0))
 
 (case
   "a RADIX literal carries the N type suffix"
@@ -2259,7 +2260,8 @@
            does. Pins that the whole `<radix-body-with-underscores><suffix>` is one suffixed literal.")
   (input (+ 0b1010N 0xffffN))
   (output (: 65545 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "a radix literal carries the R (Rational) suffix"
@@ -3475,7 +3477,8 @@
       (export main)))
   (call main)
   (output (: (Some 28.29) (Option Float32)))
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "consuming a runtime Option Float32 (not returning it) leaves zero live objects"
@@ -3505,7 +3508,8 @@
   (input (do (def (f (: x Float32)) (: (Ok x) (Result Float32 Int64))) (export f)))
   (call f (: 0.1 Float32))
   (output (: (Ok 0.1) (Result Float32 Int64)))
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; ── breaker: the EXTREME-EXPONENT face of the shortest-f32 ruling. f32 MAX is where a
 ; print-via-f64 implementation leaks: promoting to f64 then printing shortest-f64 needs the full
@@ -5035,7 +5039,8 @@
            the `value-encode` walker (`Shape::BigInt`, a variable-length KIND_INT leaf).")
   (input (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)))
   (output (: 85070591730234615847396907784232501249 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "a recursive factorial accumulates exact BigInt multiplies far past Int64.max (21! via the runtime limb loop)"
@@ -5262,7 +5267,8 @@
            through the looping `value-encode` (like a runtime collection), not the fixed hole-template.")
   (input (+ (BigInt.of 40) (BigInt.of 2)))
   (output (: 42 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; A BigInt mixed with a fixed-width Int is the numeric no-promotion rule (BigInt counts as numeric in the
 ; unify mismatch), so `(+ (BigInt.of n) 1)` is CDZ0301 — NOT the generic CDZ0203 type mismatch — and carries
@@ -5285,7 +5291,8 @@
            the sign path of the runtime-BigInt escape, distinct from the positive `(+ 40 2)` companion.")
   (input (- (BigInt.of 42) (BigInt.of 100)))
   (output (: -58 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "a runtime BigInt divide crosses the host boundary as its truncated quotient"
@@ -5296,7 +5303,8 @@
            the escape walker (100/7 = 14 remainder 2, truncated to 14).")
   (input (/ (BigInt.of 100) (BigInt.of 7)))
   (output (: 14 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; The divide/remainder cases here use SMALL single-limb operands (100/7, 17%5). This pins the division
 ; INVARIANT on a genuinely MULTI-LIMB dividend: the runtime limb-library `divmod` must satisfy the
@@ -6574,7 +6582,8 @@
         (def (double x) (* x 2)))
       (crypto.double (BigInt.of 21))))
   (output (: 42 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "a default-integer pragma fixes a type but adds no conversion — no-promotion still holds"
@@ -13168,7 +13177,8 @@
       (def (main) (loop 70 (BigInt.of 1)))
       (export main)))
   (output (: 1180591620717411303424 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "a two-accumulator BigInt permutation loop seeded with ONE aliased value stays exact"
@@ -13201,7 +13211,8 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 80000000000000000000000000 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; The CONSUMED-to-scalar companion of the escaping-BigInt case above. The above RETURNS its BigInt, so the
 ; result crosses to the host and is live at the census — a (live-objects known-leak) ESCAPING-VALUE artifact
@@ -13246,7 +13257,8 @@
       (def (main) (fac 25 (BigInt.of 1)))
       (export main)))
   (output (: 15511210043330985984000000 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "a BigInt is usable as a set element, deduplicated by its arbitrary-precision value"
@@ -13602,7 +13614,8 @@
            form a constant Rational bakes. Mirrors the runtime-BigInt boundary escape.")
   (input (Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000)))))
   (output (: 1000000000000/1 Rational))
-  (live-objects 3))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; The boundary escapes above are all RESULT-side (a Rational crosses OUT to the host). The ENTRY-arg
 ; direction — a Rational boundary PARAMETER marshaled IN by the driver — is realized on the rust targets
@@ -13794,7 +13807,8 @@
   (input (do (def (main (: a Int64)) (* (BigInt.of a) (BigInt.of 3))) (export main)))
   (call main (: 5000000000 Int64))
   (output (: 15000000000 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; `BigInt.of` is `∀a.(Int a)->BigInt`, so its runtime widening MUST honor the source width's SIGNEDNESS. A
 ; SIGNED source (Int8..Int64) widens through `bigint-of-i64`, whose operand is a signed i64 — correct. But a
@@ -14080,7 +14094,8 @@
   (input (do (def (main (: a Int64)) (+ (Rational.of a 6) (Rational.of 1 6))) (export main)))
   (call main (: 1 Int64))
   (output (: 1/3 Rational))
-  (live-objects 3))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "runtime Rational MULTIPLICATION of two parameter-built fractions reduces to lowest terms"
@@ -14752,7 +14767,8 @@
            the type). Witnesses negation over BigInt.")
   (input (let ((b (BigInt.of 5))) (Num.neg b)))
   (output (: -5 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "Num.neg of a quantity preserves its unit"
@@ -18294,7 +18310,8 @@
     (:
       #record((= pair #tuple(3 4)) (= xs #list(3 6)))
       (record (pair (Tuple Int64 Int64)) (xs (List Int64)))))
-  (live-objects 4))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw12 the cadenza backend round-trips a USER-declared multi-variant sum value — the (type …) declaration re-emits"
@@ -18315,7 +18332,8 @@
   (output (: (Leaf 8) T))
   (call main (: -9 Int64))
   (output (: (Node 9) T))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw13 the cadenza backend round-trips a PRELUDE-COLLIDING user variant head — the qualified (. Type Variant) spelling"
@@ -18334,7 +18352,8 @@
   (output (: (MyT.Int 8) MyT))
   (call main (: -9 Int64))
   (output (: (MyT.Other 9) MyT))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw14 the cadenza backend round-trips a RECURSIVE user sum with a nested variant payload"
@@ -18358,7 +18377,8 @@
   (output (: (Neg (Lit 8)) E))
   (call main (: -9 Int64))
   (output (: (Lit 9) E))
-  (live-objects 2 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0 0))
 
 (case
   "cdzw15 the cadenza backend round-trips a MatchSum CONSUMED through recursion — the #4942+#4954 interplay"
@@ -18448,7 +18468,8 @@
   (output (: #map((= 5 2)) (Map Int64 Int64)))
   (call main (: -3 Int64))
   (output (: #map((= -3 2)) (Map Int64 Int64)))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw20 the cadenza backend round-trips a GUARDED list arm whose condition reads the REST binder"
@@ -18502,7 +18523,8 @@
   (output (: (Some 14) (Option Int64)))
   (call main (: 0 Int64))
   (output (: (None unit) (Option Int64)))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw23 the cadenza backend round-trips a join-resolved Result — the Ok/Err twin"
@@ -18515,7 +18537,8 @@
   (output (: (Ok 8) (Result Int64 Int64)))
   (call main (: 0 Int64))
   (output (: (Err 0) (Result Int64 Int64)))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw24 the cadenza backend round-trips a MONOMORPHIC single-variant newtype — construct sites and a pass-through in one program"
@@ -18560,7 +18583,8 @@
   (output (: (Some (None unit)) (Option (Option Int64))))
   (call main (: -4 Int64))
   (output (: (None unit) (Option (Option Int64))))
-  (live-objects 2 0 0))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0 0 0))
 
 (case
   "cdzw26 the cadenza backend round-trips a bare (None) as a LIST ELEMENT — the element-position join"
@@ -18572,7 +18596,8 @@
   (input (do (def (main (: n Int64)) #list((Some n) (None) (Some (+ n 2)))) (export main)))
   (call main (: 9 Int64))
   (output (: #list((Some 9) (None unit) (Some 11)) (List (Option Int64))))
-  (live-objects 4))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw27 the cadenza backend preserves compound-compare SHORT-CIRCUIT — a differing first component never forces the trapping second"
@@ -18625,7 +18650,8 @@
   (output (: (S 7) (Opt2 Int64)))
   (call main (: -3 Int64))
   (output (: (N unit) (Opt2 Int64)))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw31 the cadenza backend round-trips a GENERIC sum MATCHED with a payload binder"
@@ -18666,7 +18692,8 @@
     (do (type LW (Mk (List Int64))) (def (main (: n Int64)) (Mk #list(n (+ n 1)))) (export main)))
   (call main (: 4 Int64))
   (output (: #list(4 5) LW))
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw34 two width-DIFFERENT .wrap Converts of one operand keep their OWN widths (the CSE-key fence), Int32-first order"
@@ -18707,7 +18734,8 @@
   (output (: #tuple(5 6) P2))
   (call main (: -4 Int64))
   (output (: #tuple(-4 -3) P2))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw37 a GUARDED sum arm with same-variant fall-through round-trips through the cadenza hop"
@@ -18861,7 +18889,8 @@
   (output (: (None unit) (Option Int64)))
   (call main (: 0 Int64))
   (trap "divide by zero")
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw47 a Qty constructed at a bare-magnitude binder and consumed to its value round-trips the cadenza hop"
@@ -19328,7 +19357,8 @@
   (input (do (def (main) (* 10000000000N 10000000000N)) (export main)))
   (call main)
   (output (: 100000000000000000000 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw52 a nullary user-sum VALUE re-emits WITH its type declaration through the cadenza hop"
@@ -19509,7 +19539,8 @@
   (output (: 200000000000000000012 BigInt))
   (call main (: -3 Int64))
   (output (: 199999999999999999992 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw59 RUNTIME Rational arithmetic reduces to lowest terms through the cadenza hop"
@@ -19525,7 +19556,8 @@
   (output (: 5 BigInt))
   (call main (: -3 Int64))
   (output (: -5 BigInt))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "cdzw60 runtime Float64 arithmetic, comparison, and a NaN self-equality all round-trip the cadenza hop"

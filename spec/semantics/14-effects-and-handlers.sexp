@@ -13909,7 +13909,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: #list(5 6) (List Int64)))
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the handler fold's list result crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cells → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier exact-N escv pin.
+  (live-objects 0))
 
 (case
   "hwp1 a UInt8-width list entry param read inside a handle body composes with the fold"

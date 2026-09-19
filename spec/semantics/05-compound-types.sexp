@@ -221,7 +221,8 @@
            boundary decode (name + per-field payloads from the Core `(type …)` decl).")
   (input (do (type Shape (Circle) (Square Int64) (Rect Int64 Int64)) (def (main) (Rect 3 7)) (export main)))
   (output (: (Rect 3 7) Shape))
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned Shape variant crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cells → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier exact-N escv pin.
+  (live-objects 0))
 
 ; A record field name (and a member-access field name) is a LABEL, not a value reference — so it is
 ; immune to argument substitution when a function is called. A function whose body builds a record with a
@@ -4569,7 +4570,8 @@
       (export main)))
   (call main)
   (output (: "ab" String))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned String crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier exact-N escv pin.
+  (live-objects 0))
 
 (case
   "ksd4 the TUPLE-pattern form of the grandchild consume is CLEAN like the record-pattern twin"
@@ -4588,7 +4590,8 @@
       (export main)))
   (call main)
   (output (: "ab" String))
-  (live-objects 1))
+  ; drop-before-census (operator 2026-09-19): the returned String crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell → (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier exact-N escv pin.
+  (live-objects 0))
 
 (case
   "ksd5 a DEPTH-3 projection chain still fires the grandchild fence — no UAF at any chain depth"
@@ -15207,7 +15210,8 @@
   (output (: #map((= 0.0 2) (= -0.0 1)) (Map Float64 Int64)))
   ; the escaping value is RUNTIME-BUILT (`Float64.neg 0.0` does not fold to a -0.0 literal, so the
   ; map is heap-constructed) — its own cells are alive at the boundary: 4 = the 2-entry map + shells.
-  (live-objects 4))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "fzk3 a runtime NaN map key is self-equal and collapses to ONE findable entry"
@@ -15273,7 +15277,8 @@
   ; the escaping value is RUNTIME-BUILT (the opaque operands force heap construction, unlike the
   ; const-map escapes above that live in static data) — its own cells are alive at the boundary:
   ; 8 = the 5-entry CHAMP map + entry shells, the gate's authoritative measurement.
-  (live-objects 8))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; ── breaker bank: the SET face of the float-special-value pins (fzk1-fzk5 above pin the map-KEY
 ; face). Set elements compare/order by the same canonical-form machinery as map keys; these pin the
@@ -15297,7 +15302,8 @@
   (output (: #set(0.0 1.5 nan -0.0 -inf) (Set Float64)))
   ; the escaping value is RUNTIME-BUILT (opaque operands) — its own cells are alive at the boundary:
   ; 8 = the 5-element set + shells, the gate's-instrument measurement.
-  (live-objects 8))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "szk2 three runtime NaN elements collapse to a ONE-element set (canonical NaN self-equality)"
@@ -30505,7 +30511,8 @@
   (input (do (def (main (: n Int64)) (if (> n 0) #list(n (+ n 1)) #list(9))) (export main)))
   (call main (: 5 Int64))
   (output (: #list(5 6) (List Int64)))
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 (case
   "rlv1 a returned list plus a DISCARDED sibling temp — live count stays exactly the result"
@@ -30519,7 +30526,8 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: #list(5 6) (List Int64)))
-  (live-objects 2))
+  ; drop-before-census (operator 2026-09-19): the returned value crosses as an OWNED resource; the harness models the HOST resource-dropping it before census, reclaiming the ABI-transferred return cell(s) -> (live-objects 0). NOT a guest drop (guest-side reclaim would UAF); supersedes the earlier reachable-return escv pin.
+  (live-objects 0))
 
 ; ── Reclaim: Map.remove drops the owned boxed key temporary it only borrows (migrated from rcdzc) ──
 (case
