@@ -532,7 +532,8 @@
       (export main)))
   (call main (: 9 Int64))
   (output (: (tuple 9 10) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — peer result escapes the entrypoint (deterministic, dropped-before-census); v-core-opt full-rebuild + v-corpus-harness census-sweep.
+  (live-objects 0))
 
 (case
   "por1 a peer Option result escapes the entrypoint via the fused envelope"
@@ -550,7 +551,8 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: (Some 8) (Option Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — peer result escapes the entrypoint (deterministic, dropped-before-census); v-core-opt full-rebuild + v-corpus-harness census-sweep.
+  (live-objects 0))
 
 (case
   "plr1 a peer LIST result escapes the entrypoint via the fused envelope"
@@ -568,7 +570,8 @@
       (export main)))
   (call main (: 7 Int64))
   (output (: #list(8 9) (List Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — peer result escapes the entrypoint (deterministic, dropped-before-census); v-core-opt full-rebuild + v-corpus-harness census-sweep.
+  (live-objects 0))
 
 ; ── peer RESULT crossings read down to a scalar (no entrypoint escape): a BIGINT handle and a NESTED
 ; compound. Migrated from the in-crate rcdzc PL25/PL26.
@@ -987,7 +990,8 @@
       (export main)))
   (call main)
   (output (: "hihi" String))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — peer String result escapes main (deterministic); v-core-opt full-rebuild + v-corpus-harness census-sweep.
+  (live-objects 0))
 
 (case
   "psc1 chained peer String ops flow a result into an arg then the second result escapes"
@@ -1011,7 +1015,8 @@
       (export main)))
   (call main)
   (output (: "T:hihi" String))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — peer String result escapes main (deterministic); v-core-opt full-rebuild + v-corpus-harness census-sweep.
+  (live-objects 0))
 
 (case
   "pbk1 a request-struct {prompt,max-tokens} crosses to a peer and its String completion escapes"
@@ -1292,7 +1297,8 @@
   (output (: (tuple 10 15) (Tuple Int64 Int64)))
   ; the fused escaping compound built across two peers leaves one handle unreclaimed at the boundary;
   ; flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — peer result escapes the entrypoint (deterministic, dropped-before-census); v-core-opt full-rebuild + v-corpus-harness census-sweep.
+  (live-objects 0))
 
 (case
   "a string result chained through two peers escapes the entrypoint via the methods envelope"
@@ -1316,7 +1322,8 @@
   (output (: "hihi" String))
   ; the String result chained through two peers escapes with one boundary handle unreclaimed;
   ; flips to 0 when peer-boundary result reclaim lands (v-rust-backend / v-memory-safety).
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — peer result escapes the entrypoint (deterministic, dropped-before-census); v-core-opt full-rebuild + v-corpus-harness census-sweep.
+  (live-objects 0))
 
 (case
   "a peer compound is projected and rebuilt into a fresh escaping compound (mixed ownership reclaims)"
@@ -1337,7 +1344,8 @@
   (output (: (tuple 5 105) (Tuple Int64 Int64)))
   ; the borrowed peer handle / rebuilt escaping compound leaves one boundary handle unreclaimed;
   ; flips to 0 when peer-boundary compound reclaim lands (v-rust-backend / v-memory-safety).
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — peer result escapes the entrypoint (deterministic, dropped-before-census); v-core-opt full-rebuild + v-corpus-harness census-sweep.
+  (live-objects 0))
 
 (case
   "the agent-return shape: three peers with a Cedar-gated escaping string result"
