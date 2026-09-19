@@ -257,7 +257,8 @@
     (do (def (main) (Map.insert (Map.insert Map.empty (: 1.0 Float32) 5) 2.0 6)) (export main)))
   (call main)
   (output (: #map((= 1.0 5) (= 2.0 6)) (Map Float32 Int64)))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — float-keyed map RESULT round-trip (escv value-render, #6211 key-adopt/use + #6274 render). Determinism-CLEARED by v-corpus-harness (opt-sweep x3, O0-O3, 142/0-divergence 12 execs — map result host-dropped-before-census so keys reclaim WITH the map; float-key canonicalization affects only the rendered VALUE, not the live count). Value-render round-trip, NOT key-reclaim code — key-ownership CODE hold untouched. Pin-flip only.
+  (live-objects 0))
 
 (case
   "a none-only option<s64> record field resolves its element type from an imposed WIT world"
@@ -681,7 +682,8 @@
             (= token #list(3))
             (= deadline-nanos (Some 42)))))
       (= outcome (continue unit))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — reducer-escape via imposed WIT world (result threaded/written out the envelope), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN. (float-keyed map-result sibling HELD pending v-corpus-harness float-key determinism clearance.)
+  (live-objects 0))
 
 (case
   "a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)"
@@ -1409,7 +1411,8 @@
             (= token b"\xaa\xbb")
             (= deadline-nanos (Some 5)))))
       (= outcome (continue unit))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — reducer-escape via imposed WIT world (result threaded/written out the envelope), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN. (float-keyed map-result sibling HELD pending v-corpus-harness float-key determinism clearance.)
+  (live-objects 0))
 
 (case
   "a typed reducer performing a nested list<list<s64>> host arg emits, loads, and runs (via an imposed WIT world)"
@@ -1584,7 +1587,8 @@
             (= token #list(9 9))
             (= deadline-nanos (None unit)))))
       (= outcome (continue unit))))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — reducer-escape via imposed WIT world (result threaded/written out the envelope), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN. (float-keyed map-result sibling HELD pending v-corpus-harness float-key determinism clearance.)
+  (live-objects 0))
 
 (case
   "a typed reducer performing a list<record> host arg emits, loads, and runs (via an imposed WIT world)"
