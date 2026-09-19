@@ -1659,6 +1659,163 @@ type RejectedSinkFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn RejectedSink> + Send
 type RunSinkFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn RunSink> + Send + Sync>;
 type ArgProbeSinkFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn ArgProbeSink> + Send + Sync>;
 
+/// The key under which the warm-instance pool parks a reducer for reuse: the program that drives it AND the
+/// reducer's own id (§3). Keying by BOTH — never the program alone — IS the v1 safety invariant this vertical's
+/// net-0 census + reclaim-witness gates underwrite: a pooled instance is reused ONLY within the SAME reducer's
+/// event stream, so its (legitimately persistent) semantic state and its per-id capability wiring (the
+/// `blobs`/`kv`/`graph`/`delivery` backends `spawn` builds from `ctx.id`) belong to that one reducer and never
+/// bleed across tenants. Cross-tenant reuse of a *stateful* reducer (a different id under the same program)
+/// would need a state-reset plus its own proof and is deliberately OUT of v1 (`WasmProgramStore::with_reducer_pool`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PoolKey {
+    program: ProgramHash,
+    id: ReducerId,
+}
+
+/// A warm-instance pool for [`WasmProgramStore`]: idle reducers parked by [`PoolKey`] so a repeat spawn of the
+/// SAME (program, id) skips instantiation — the ~88µs `spawn` cost this vertical measured — and folds an
+/// already-warm instance instead. OFF unless a store opts in with
+/// [`with_reducer_pool`](WasmProgramStore::with_reducer_pool): the seam lands DORMANT, so with no opt-in every
+/// spawn is byte-for-byte today's fresh-per-event path. Reuse is proven leak-free by the net-0 census +
+/// reclaim-witness gates (a reused instance folds flat over its event stream — #9147/#9193/#9248); this pool is
+/// that already-proven reuse lifted across the per-event spawn boundary.
+#[derive(Default)]
+struct ReducerPool {
+    /// Idle instances by key. A `Vec` per key rather than a single slot: under concurrency the same (program,
+    /// id) may briefly have more than one instance checked out, and each returns on drop — a single slot would
+    /// silently discard the surplus (throwing away warm work). `Mutex` (never held across an `.await`): the
+    /// critical sections are HashMap ops only.
+    idle: Mutex<HashMap<PoolKey, Vec<Box<dyn Reducer>>>>,
+}
+
+impl ReducerPool {
+    /// Take a warm instance parked under `key`, or `None` if none is idle (the caller then instantiates fresh).
+    fn take(&self, key: &PoolKey) -> Option<Box<dyn Reducer>> {
+        let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+        idle.get_mut(key).and_then(Vec::pop)
+    }
+
+    /// Park a healthy instance back under `key` for the next spawn of that (program, id) to reuse.
+    fn park(&self, key: PoolKey, reducer: Box<dyn Reducer>) {
+        let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+        idle.entry(key).or_default().push(reducer);
+    }
+}
+
+/// A checked-out reducer that returns itself to its [`ReducerPool`] when dropped, so the next spawn of the same
+/// [`PoolKey`] reuses it. Delegates every [`Reducer`] call to the inner instance and watches its health: an
+/// instance that FAULTED (a guest trap or host-backend error — a wasm trap poisons its store) or CLOSED
+/// ([`Outcome::Break`] — its lifecycle is over, §7) is NOT re-pooled but dropped, so a poisoned or retired
+/// instance is never handed to a later event. Only a clean, still-running instance is parked on drop.
+struct PooledReducer {
+    /// `Some` until dropped; an `Option` so `Drop` can move the inner box out to hand it back to the pool.
+    inner: Option<Box<dyn Reducer>>,
+    key: PoolKey,
+    pool: Arc<ReducerPool>,
+    /// Cleared the instant a fold faults or closes — a poisoned/retired instance must not re-enter the pool.
+    healthy: bool,
+}
+
+impl PooledReducer {
+    fn new(inner: Box<dyn Reducer>, key: PoolKey, pool: Arc<ReducerPool>) -> Self {
+        Self {
+            inner: Some(inner),
+            key,
+            pool,
+            healthy: true,
+        }
+    }
+
+    /// Classify a fold's result: a fault (`Err`) or a `Break` outcome retires the instance (never re-pooled).
+    fn observe(&mut self, r: &Result<(Vec<Request>, Outcome), crate::ReducerFault>) {
+        match r {
+            Ok((_, Outcome::Break { .. })) | Err(_) => self.healthy = false,
+            Ok((_, Outcome::Continue)) => {}
+        }
+    }
+}
+
+#[async_trait]
+impl Reducer for PooledReducer {
+    async fn on_message(
+        &mut self,
+        message: Message,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+        let r = self
+            .inner
+            .as_mut()
+            .expect("pooled reducer folded after drop")
+            .on_message(message)
+            .await;
+        self.observe(&r);
+        r
+    }
+
+    async fn on_response(
+        &mut self,
+        response: Response,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+        let r = self
+            .inner
+            .as_mut()
+            .expect("pooled reducer folded after drop")
+            .on_response(response)
+            .await;
+        self.observe(&r);
+        r
+    }
+
+    async fn on_notification(
+        &mut self,
+        notification: Notification,
+    ) -> Result<(Vec<Request>, Outcome), crate::ReducerFault> {
+        let r = self
+            .inner
+            .as_mut()
+            .expect("pooled reducer folded after drop")
+            .on_notification(notification)
+            .await;
+        self.observe(&r);
+        r
+    }
+
+    async fn live_object_census(&mut self) -> Option<u32> {
+        self.inner
+            .as_mut()
+            .expect("pooled reducer censused after drop")
+            .live_object_census()
+            .await
+    }
+
+    async fn rc_trace_enable(&mut self, on: bool) -> Option<()> {
+        self.inner
+            .as_mut()
+            .expect("pooled reducer rc-traced after drop")
+            .rc_trace_enable(on)
+            .await
+    }
+
+    async fn rc_trace_drain(&mut self) -> Option<Vec<u8>> {
+        self.inner
+            .as_mut()
+            .expect("pooled reducer rc-traced after drop")
+            .rc_trace_drain()
+            .await
+    }
+}
+
+impl Drop for PooledReducer {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            // Re-pool only a clean, still-running instance; a faulted/closed one is dropped here (freeing its
+            // wasm store) so it can never be handed to a later event.
+            if self.healthy {
+                self.pool.park(self.key, inner);
+            }
+        }
+    }
+}
+
 pub struct WasmProgramStore {
     /// The shared per-host instantiation core (engine, linkers, content store, compiled cache, pure-run memo),
     /// held via `Arc` so a reducer's synchronous `run` host import can share it — both to instantiate the
@@ -1702,6 +1859,11 @@ pub struct WasmProgramStore {
     /// backend; [`set_node_delivery`](ProgramStore::set_node_delivery) fills THIS slot, so a forward lands in
     /// the target's mailbox rather than being dropped. Empty (a no-op) unless a system fills it.
     node_delivery: Arc<crate::NodeDeliverySlot>,
+    /// The warm-instance pool for per-identity reuse, or `None` (the default) when pooling is OFF. Set only by
+    /// [`with_reducer_pool`](WasmProgramStore::with_reducer_pool): with `None`, `spawn` is byte-for-byte the
+    /// fresh-per-event path (production wiring does not opt in — the seam is DORMANT until the operator
+    /// greenlights v1). See [`ReducerPool`].
+    pool: Option<Arc<ReducerPool>>,
 }
 
 impl WasmProgramStore {
@@ -1759,6 +1921,7 @@ impl WasmProgramStore {
             make_run_sink: None,
             make_arg_probe: None,
             node_delivery: Arc::new(crate::NodeDeliverySlot::new()),
+            pool: None,
         })
     }
 
@@ -1866,6 +2029,22 @@ impl WasmProgramStore {
         self.make_arg_probe = Some(make_arg_probe);
         self
     }
+
+    /// Enable per-identity warm-instance pooling (v1): a repeat spawn of the SAME (program, id) reuses the
+    /// instance parked when the previous fold's reducer was dropped, instead of instantiating afresh —
+    /// amortizing the ~88µs `spawn` cost (≈59% of a per-request wall-clock this vertical measured) toward zero
+    /// across a long-lived reducer's event stream. OFF by default, so the seam is DORMANT: with no opt-in
+    /// `spawn` is byte-for-byte the fresh-per-event path, and production wiring (`deliver.rs`) does not enable
+    /// it until the operator greenlights v1. Reuse is keyed by (program, id) — never the program alone — so an
+    /// instance is reused ONLY within its own reducer's stream (see [`PoolKey`]); cross-tenant reuse of a
+    /// stateful reducer is deliberately out of v1. Safe because a reused instance folds LEAK-FREE, proven by
+    /// this vertical's net-0 census + reclaim-witness gates. A faulted or closed instance is retired, never
+    /// re-pooled (see [`PooledReducer`]).
+    #[must_use]
+    pub fn with_reducer_pool(mut self) -> Self {
+        self.pool = Some(Arc::new(ReducerPool::default()));
+        self
+    }
 }
 
 /// Alias every function a dependency instance exports into `linker` under `import_name` — the parent's
@@ -1929,6 +2108,28 @@ impl ProgramStore for WasmProgramStore {
         // also reach, without a cycle back here). Each factory builds this reducer's view of its capability
         // (default: the shared one; an injected factory: a per-reducer variant, e.g. a decorator that logs the
         // call attributed to its id, §9).
+        // Warm-instance pooling (opt-in, v1): if enabled and a prior instance of this SAME (program, id) is
+        // parked idle, reuse it — skipping instantiation entirely — re-wrapped in the return-on-drop guard so
+        // it re-pools after this event. Keyed by (program, id) so reuse stays within one reducer's own stream
+        // (the v1 safety invariant this vertical's net-0 gates underwrite). Pool OFF ⇒ the exact fresh-per-event
+        // path below, byte-for-byte unchanged.
+        //
+        // NOTE (v1): a reused instance keeps the `HostState` it was built with at its FIRST spawn — capability
+        // wiring (blobs/kv/graph/delivery) AND the resolved resource limits. That is correct because the key is
+        // the reducer's identity: its per-id capabilities are stable, and a reducer's spawn budget is fixed at
+        // birth (re-spawns of one id under the event dispatch carry the same `ctx.limits`), so `ctx.limits` on
+        // the reuse path is intentionally not re-applied. A future variant that re-spawns one id with a DIFFERENT
+        // budget would need to re-arm or evict — deferred with the rest of the lifecycle policy (v-system).
+        if let Some(pool) = &self.pool {
+            let key = PoolKey {
+                program,
+                id: ctx.id,
+            };
+            if let Some(warm) = pool.take(&key) {
+                return Some(Box::new(PooledReducer::new(warm, key, Arc::clone(pool))));
+            }
+        }
+
         // Resolve this reducer's effective limits: the node's, with any per-spawn budget clamped to the node
         // ceiling (a spawn can lower its own budget, never raise it above the node's). `None` inherits the
         // node's. The store is armed (compute + memory) from these, so the per-spawn budget actually reaches
@@ -1948,9 +2149,23 @@ impl ProgramStore for WasmProgramStore {
             limits: reducer_store_limits(&effective),
             resource_limits: effective,
         };
-        self.inst
+        let reducer = self
+            .inst
             .instantiate_program(program, ctx.kind, host_state)
-            .await
+            .await?;
+        // With pooling on, wrap the fresh instance so it re-pools on drop for the next event of this (program,
+        // id); with pooling off, hand it back bare — today's fresh-per-event path.
+        match &self.pool {
+            Some(pool) => Some(Box::new(PooledReducer::new(
+                reducer,
+                PoolKey {
+                    program,
+                    id: ctx.id,
+                },
+                Arc::clone(pool),
+            ))),
+            None => Some(reducer),
+        }
     }
 
     async fn contains(&self, program: ProgramHash) -> bool {
@@ -3748,6 +3963,250 @@ mod tests {
             "instantiation p50 is implausible: {:.2}µs",
             us(spawn_med)
         );
+    }
+
+    // Pool seam gate (v1 per-identity reuse — the mechanism the measured pooling opportunity rests on): with
+    // `WasmProgramStore::with_reducer_pool`, a repeat spawn of the SAME (program, id) REUSES the instance parked
+    // when the previous fold's reducer dropped — it does NOT instantiate again — while a spawn of a DIFFERENT id
+    // instantiates fresh (the per-identity key isolates tenants, the v1 safety invariant). Proven by counting
+    // instantiations through an `InstantiateObserver`: a reused spawn fires ZERO sub-steps (it never enters
+    // `instantiate_program`), a fresh spawn fires some. A regression that keyed the pool wrong, dropped the
+    // re-pool-on-drop, or bypassed the fast path would make the reused spawn instantiate and trip the
+    // zero-new-records assert. (Heap-cleanliness ACROSS reuse is gated separately by the net-0 census/witness
+    // gates — a reused instance folds flat.) Env-gated like the benches: SKIPS cleanly when the fixtures unset.
+    #[tokio::test]
+    async fn the_reducer_pool_reuses_a_warm_instance_for_the_same_identity_and_instantiates_fresh_for_a_distinct_one()
+     {
+        use super::{InstantiateObserver, InstantiateSubStep};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let Ok(path) = std::env::var("CDZ_REDUCER_ECHO_WASM") else {
+            eprintln!("CDZ_REDUCER_ECHO_WASM unset — skipping the reducer-pool reuse gate");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read the reducer-echo wasm component");
+        let cas = InMemoryBlobStore::new();
+        cas.put(Bytes::from(bytes.clone())).await.unwrap();
+        if let Ok(dir) = std::env::var("CDZ_COMPONENT_STORE_DIR") {
+            for entry in std::fs::read_dir(&dir).expect("read component-store dir") {
+                let p = entry.expect("dir entry").path();
+                if p.extension().and_then(|e| e.to_str()) == Some("wasm") {
+                    cas.put(Bytes::from(std::fs::read(&p).unwrap()))
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+        let program = ProgramHash::of(&bytes);
+
+        // Count every instantiate sub-step the store records: a spawn that instantiates fires ≥1, a spawn that
+        // reuses a pooled instance fires ZERO (it never enters `instantiate_program`).
+        struct CountObserver(Arc<AtomicUsize>);
+        impl InstantiateObserver for CountObserver {
+            fn record(&self, _sub_step: InstantiateSubStep, _elapsed: std::time::Duration) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let records = Arc::new(AtomicUsize::new(0));
+        let graph: Arc<dyn super::ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
+        let store = WasmProgramStore::new(
+            Arc::new(cas),
+            Arc::new(|_id| Box::new(InMemoryBlobStore::new()) as Box<dyn BlobStore>),
+            Arc::new(|_id| Box::new(InMemoryKvStore::new()) as Box<dyn KvStore>),
+            Arc::new(move |_id| graph.clone()),
+        )
+        .expect("build the wasm program store")
+        .with_instantiate_observer(Arc::new(CountObserver(Arc::clone(&records))))
+        .with_reducer_pool();
+
+        let base = crate::Message {
+            id: crate::ContractId::of(b"echo-contract"),
+            payload: Bytes::from_static(b"ping"),
+            from: crate::Origin {
+                reducer: crate::ReducerId::of(b"caller"),
+                host: crate::HostId::of(b"node"),
+            },
+            continuation_token: Bytes::from_static(b"tok"),
+        };
+
+        // 1) First spawn of identity A instantiates (records climb from zero).
+        let Some(mut a1) = store.spawn(program, ord(b"pool-tenant-A")).await else {
+            eprintln!(
+                "spawn DECLINED — is CDZ_COMPONENT_STORE_DIR the closure matching this reducer-echo build?"
+            );
+            return;
+        };
+        let after_first = records.load(Ordering::Relaxed);
+        assert!(
+            after_first > 0,
+            "a fresh spawn must record instantiate sub-steps"
+        );
+        a1.on_message(base.clone()).await.expect("first fold");
+        drop(a1); // returns the instance to the pool under key (program, A)
+
+        // 2) A second spawn of the SAME identity A REUSES the parked instance — zero new instantiations.
+        let mut a2 = store
+            .spawn(program, ord(b"pool-tenant-A"))
+            .await
+            .expect("reuse spawn");
+        assert_eq!(
+            records.load(Ordering::Relaxed),
+            after_first,
+            "a repeat spawn of the same (program, id) must REUSE the pooled instance, not instantiate"
+        );
+        // The reused instance still folds correctly.
+        a2.on_message(base.clone()).await.expect("reused fold");
+        drop(a2);
+
+        // 3) A DIFFERENT identity B does NOT reuse A's instance — it instantiates fresh (per-identity isolation:
+        // the pool keys by (program, id), never the program alone).
+        let before_b = records.load(Ordering::Relaxed);
+        let _b = store
+            .spawn(program, ord(b"pool-tenant-B"))
+            .await
+            .expect("distinct-id spawn");
+        assert!(
+            records.load(Ordering::Relaxed) > before_b,
+            "a spawn of a DIFFERENT id must instantiate fresh (the pool keys by identity, not program alone)"
+        );
+    }
+
+    /// A fake reducer whose `on_message` returns a scripted outcome, to drive the pool guard's health
+    /// classification (re-pool a clean instance vs retire a faulted/closed one) WITHOUT needing a real wasm
+    /// trap or the env-gated fixtures. Test-only; the other entry points are inert.
+    enum ScriptedOutcome {
+        Continue,
+        Close,
+        Fault,
+    }
+    struct FakeReducer(ScriptedOutcome);
+    #[async_trait::async_trait]
+    impl crate::Reducer for FakeReducer {
+        async fn on_message(
+            &mut self,
+            _m: crate::Message,
+        ) -> Result<(Vec<crate::Request>, Outcome), crate::ReducerFault> {
+            match self.0 {
+                ScriptedOutcome::Continue => Ok((Vec::new(), Outcome::Continue)),
+                ScriptedOutcome::Close => Ok((
+                    Vec::new(),
+                    Outcome::Break {
+                        schema: crate::ContractId::of(b"done"),
+                        reason: Bytes::new(),
+                    },
+                )),
+                ScriptedOutcome::Fault => Err(crate::ReducerFault::Guest("scripted fault".into())),
+            }
+        }
+        async fn on_response(
+            &mut self,
+            _r: crate::Response,
+        ) -> Result<(Vec<crate::Request>, Outcome), crate::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
+        }
+        async fn on_notification(
+            &mut self,
+            _n: crate::Notification,
+        ) -> Result<(Vec<crate::Request>, Outcome), crate::ReducerFault> {
+            Ok((Vec::new(), Outcome::Continue))
+        }
+    }
+
+    // Pool RETIRE-on-fault/close gate: the return-on-drop guard must re-pool ONLY a clean, still-running
+    // instance. An instance whose fold FAULTED (`Err`) or CLOSED (`Outcome::Break`) is RETIRED — dropped, never
+    // handed to a later spawn — so a poisoned/retired instance can never serve another event. UNLIKE the
+    // env-gated wasm reuse gate above, this is FIXTURE-FREE and DETERMINISTIC — a native fake reducer scripts
+    // the outcome (no real wasm trap, no CDZ_* fixtures) — so wherever a `--features host` check's filter
+    // selects it, it runs unconditionally and executes its assertions (it never skips). It still needs its name
+    // in such a filter to run in-gate (host.rs compiles only under `--features host`; see the v-nix wiring
+    // follow-up on the PR). Runs on bach (operator: async tests run on the simulator, not tokio), matching
+    // `program.rs`'s store test.
+    #[test]
+    fn the_pool_re_pools_a_clean_instance_but_retires_a_faulted_or_closed_one() {
+        use super::{PoolKey, PooledReducer, ReducerPool};
+        // `Reducer` in scope: `on_message` is called on the CONCRETE `PooledReducer` (a trait method on a
+        // concrete type needs the trait imported — unlike a `Box<dyn Reducer>`, whose type already binds it).
+        use crate::Reducer;
+
+        use bach::ext::*;
+
+        bach::sim(|| {
+            async {
+                let msg = || crate::Message {
+                    id: crate::ContractId::of(b"c"),
+                    payload: Bytes::new(),
+                    from: crate::Origin {
+                        reducer: crate::ReducerId::of(b"r"),
+                        host: crate::HostId::of(b"h"),
+                    },
+                    continuation_token: Bytes::new(),
+                };
+                let key = PoolKey {
+                    program: ProgramHash::of(b"p"),
+                    id: crate::ReducerId::of(b"id"),
+                };
+                let pool = Arc::new(ReducerPool::default());
+
+                // 1) A clean (Continue) instance re-pools on drop, and is then reusable exactly once.
+                {
+                    let mut g = PooledReducer::new(
+                        Box::new(FakeReducer(ScriptedOutcome::Continue)),
+                        key,
+                        Arc::clone(&pool),
+                    );
+                    g.on_message(msg()).await.expect("clean fold");
+                }
+                assert!(
+                    pool.take(&key).is_some(),
+                    "a clean, still-running instance must re-pool on drop"
+                );
+                assert!(pool.take(&key).is_none(), "exactly one was parked");
+
+                // 2) A CLOSED (Outcome::Break) instance is retired — never re-pooled.
+                {
+                    let mut g = PooledReducer::new(
+                        Box::new(FakeReducer(ScriptedOutcome::Close)),
+                        key,
+                        Arc::clone(&pool),
+                    );
+                    let _ = g.on_message(msg()).await;
+                }
+                assert!(
+                    pool.take(&key).is_none(),
+                    "a closed (Outcome::Break) instance must NOT re-pool"
+                );
+
+                // 3) A FAULTED (Err) instance is retired — never re-pooled.
+                {
+                    let mut g = PooledReducer::new(
+                        Box::new(FakeReducer(ScriptedOutcome::Fault)),
+                        key,
+                        Arc::clone(&pool),
+                    );
+                    let _ = g.on_message(msg()).await;
+                }
+                assert!(
+                    pool.take(&key).is_none(),
+                    "a faulted instance must NOT re-pool"
+                );
+
+                // 4) An un-folded instance observed no fault → healthy by default → re-pools on drop.
+                {
+                    let _g = PooledReducer::new(
+                        Box::new(FakeReducer(ScriptedOutcome::Continue)),
+                        key,
+                        Arc::clone(&pool),
+                    );
+                }
+                assert!(
+                    pool.take(&key).is_some(),
+                    "an un-folded instance is healthy by default and re-pools"
+                );
+            }
+            .group("reducer-pool-retire")
+            .primary()
+            .spawn();
+        });
     }
 
     /// Shared setup for the env-gated reducer-echo benches: seed the guest + its whole component-store closure
