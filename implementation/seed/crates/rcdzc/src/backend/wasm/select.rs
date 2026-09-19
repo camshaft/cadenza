@@ -178,18 +178,6 @@ pub struct Emit {
     /// shape. A DEDICATED set (disjoint from `dup_sites`) so the single-source-of-truth double-mark discipline
     /// holds. Empty for a non-closure body (no `Core::Captured`) → the fast path is untouched.
     captured_escape_dup_sites: HashSet<StructId>,
-    /// 11:1403 SITE-A closure-env invariant-borrow-clean reclaim binders (`closure_env_invariant_borrow_clean_
-    /// binders`, v-memory-safety's #9378 discriminator): the Fn-typed INVARIANT loop-param binders (identity-
-    /// passed on every back-edge) that are borrow-clean whole-body (every non-back-edge use — incl. the
-    /// `CallClosure` apply — is a borrow, no genuine second consume/escape). For such a binder the per-
-    /// application caller-side dup (`mark_binder_dups` CallClosure arm) is SPURIOUS — the apply only BORROWS the
-    /// env cell (emit.rs SITE-A "the call BORROWS the env cell") — so the SITE-A env-cell reclaim drops that
-    /// dead dup PER APPLICATION, balancing it 1:1 (the entry-owned ref is reclaimed by the EXISTING
-    /// `looped_owned_param_drops` epilogue). Fires the drop ONLY when the operand is a bare `Param` in this set
-    /// AND `dup_sites` marked that occurrence (a dup exists to reclaim) AND the result is not a Fn. Single self-
-    /// loop only; default-deny (leak-over-UAF). Excludes 09-functions:0411 (a genuine 2nd consume → absent →
-    /// dup kept → no under-retain). Empty for a non-looping / non-closure-threading body.
-    closure_env_invariant_reclaim_binders: HashSet<StructId>,
     /// (2) rope/slice-view SumExpect reclaim — the `Core::SumExpect` NODE ids whose extracted COMPOUND view
     /// payload is SCALAR-READ (consumed by exactly ONE `Bytes.at`) and does NOT escape, so the extraction is
     /// reclaimable: `compound_dupd` (the SumExpect emit) dup's the view at extract + drops the Some-shell, and
@@ -1453,128 +1441,12 @@ pub fn closure_env_invariant_borrow_clean_binders(
         // which borrows the env cell). This is the SAME predicate whose truth put this invariant param into
         // `looped_owned_param_drops` (the loop-exit drop that already reclaims the entry-owned ref once), so a
         // per-application SITE-A drop of the SPURIOUS dup is the only missing half.
-        if !param_only_borrowed_or_backedge(
-            db,
-            body,
-            *binder,
-            &loop_members,
-            &param_slots,
-            &slot_of,
-        ) {
-            continue;
+        if param_only_borrowed_or_backedge(db, body, *binder, &loop_members, &param_slots, &slot_of)
+        {
+            out.insert(*binder);
         }
-        // NON-TAIL SELF-CALL FENCE (v-memory-safety, 09-functions:0411 regression fix). `param_only_borrowed_
-        // or_backedge` treats EVERY self-member call's identity arg as a free loop back-edge (slot-reuse, no
-        // consume) — but that is only true for a TAIL self-call (the trampolined `br` back-edge). A NON-TAIL
-        // self-call (e.g. `(Cons #tuple(x (ifilter (. c 1) p)))` — the recursive call embedded in a ctor) is a
-        // REAL recursive frame that CONSUMES the binder (the child frame owns its copy). When the binder is
-        // BOTH consumed by such a non-tail self-call AND epilogue-dropped (`looped_owned_param_drops`), the
-        // per-application caller dup is NOT spurious — it supplies the non-tail consume. A SITE-A drop of it
-        // then over-drops (dup + non-tail-consume + epilogue = 3 reclaims for 2 refs) → under-retain UAF (the
-        // 0411 iterator-pipeline `ifilter` trap; verified: both b1 dup-removal and b2 SITE-A-drop break it,
-        // while the pure TAIL-loop `times f n x` shape — f's only non-apply use is a tail back-edge — is a
-        // genuine spurious dup and reclaims to 0). So EXCLUDE a binder consumed by a non-tail self-call;
-        // DEFAULT-DENY over-excludes a safe simultaneous-operand non-tail consume (a leak, never a UAF).
-        if binder_in_nontail_selfcall(db, body, *binder, &loop_members, true) {
-            continue;
-        }
-        out.insert(*binder);
     }
     out
-}
-
-/// Whether `binder` appears as an argument to a NON-TAIL member (self) call anywhere in `body` — a recursive
-/// call NOT in tail position (embedded in a ctor / arith / non-tail-call arg / an if-condition), which is a
-/// genuine consuming recursive frame (unlike a TAIL self-call, the trampolined loop back-edge that reuses the
-/// slot). Tail positions mirror `invalidate_varying_params`/`emit_tail` (If then/else, Let body, Match arm
-/// bodies, MatchSum/MatchList arm bodies); every other sub-position is non-tail. The CallClosure APPLY (the
-/// closure operand) is a BORROW, not a consume, so it is not flagged; only a self-`Core::Call` carrying the
-/// binder as an arg in non-tail position is. Used by [`closure_env_invariant_borrow_clean_binders`] to exclude
-/// the 0411 `ifilter` shape. Conservative: an unmodeled node kind recurses its children as NON-TAIL (can only
-/// add exclusions = leak-over-UAF safe).
-fn binder_in_nontail_selfcall(
-    db: &mut Db,
-    id: StructId,
-    binder: StructId,
-    members: &[usize],
-    in_tail: bool,
-) -> bool {
-    // Fast prune: no occurrence of `binder` in this subtree ⟹ nothing to flag.
-    if !occurs_in(db, id, binder) {
-        return false;
-    }
-    let recur =
-        |db: &mut Db, c: StructId, t: bool| binder_in_nontail_selfcall(db, c, binder, members, t);
-    match core_of(db, id) {
-        // A self-member call: if NOT in tail position and it carries `binder` as an arg, it is a non-tail
-        // consuming recursive frame → flag. Its args are always evaluated in a non-tail context.
-        Core::Call { callee, args } if members.contains(&callee) => {
-            let here = !in_tail && args.iter().any(|&a| occurs_in(db, a, binder));
-            here || args
-                .iter()
-                .any(|&a| binder_in_nontail_selfcall(db, a, binder, members, false))
-        }
-        // A non-self call: args are non-tail; recurse to catch nested self-calls (a `binder` consume by a
-        // non-member call is already denied by `param_only_borrowed_or_backedge`, so it need not be re-flagged
-        // here — but nested self-calls inside it must still be found).
-        Core::Call { args, .. } => args
-            .iter()
-            .any(|&a| binder_in_nontail_selfcall(db, a, binder, members, false)),
-        // TAIL-PRESERVING control flow: the sub-terms in tail position inherit `in_tail`; the scrutinee/cond/
-        // let-init are NOT tail.
-        Core::If { cond, then_, else_ } => {
-            recur(db, cond, false) || recur(db, then_, in_tail) || recur(db, else_, in_tail)
-        }
-        Core::Let { bindings, body } => {
-            bindings.iter().any(|&(_, init)| recur(db, init, false)) || recur(db, body, in_tail)
-        }
-        Core::Match { scrutinee, arms } => {
-            recur(db, scrutinee, false) || arms.iter().any(|a| recur(db, a.body, in_tail))
-        }
-        Core::MatchList { scrutinee, arms } => {
-            recur(db, scrutinee, false)
-                || arms.iter().any(|a| {
-                    recur(db, a.body, in_tail) || a.guard.is_some_and(|g| recur(db, g, false))
-                })
-        }
-        Core::MatchSum { scrutinee, root } => {
-            recur(db, scrutinee, false)
-                || cont_binder_in_nontail_selfcall(db, &root, binder, members, in_tail)
-        }
-        // Everything else (ctors, arith, CallClosure, borrow ops, ...) evaluates ALL children in NON-TAIL
-        // position (a value embedded in a ctor / operand is not a tail position).
-        _ => core_child_ids(db, id)
-            .into_iter()
-            .any(|c| binder_in_nontail_selfcall(db, c, binder, members, false)),
-    }
-}
-
-/// [`binder_in_nontail_selfcall`] over a `MatchSum` continuation tree — the arm bodies inherit `in_tail`
-/// (mirrors `invalidate_varying_params_sum`); the path steps carry no binding.
-fn cont_binder_in_nontail_selfcall(
-    db: &mut Db,
-    cont: &crate::core::SumCont,
-    binder: StructId,
-    members: &[usize],
-    in_tail: bool,
-) -> bool {
-    match cont {
-        crate::core::SumCont::Leaf(body) => {
-            binder_in_nontail_selfcall(db, *body, binder, members, in_tail)
-        }
-        crate::core::SumCont::Guarded { cond, body, els } => {
-            binder_in_nontail_selfcall(db, *cond, binder, members, false)
-                || binder_in_nontail_selfcall(db, *body, binder, members, in_tail)
-                || cont_binder_in_nontail_selfcall(db, els, binder, members, in_tail)
-        }
-        crate::core::SumCont::LitTest { then_, els, .. } => {
-            cont_binder_in_nontail_selfcall(db, then_, binder, members, in_tail)
-                || cont_binder_in_nontail_selfcall(db, els, binder, members, in_tail)
-        }
-        crate::core::SumCont::Switch { arms, .. } => arms
-            .iter()
-            .any(|a| cont_binder_in_nontail_selfcall(db, &a.cont, binder, members, in_tail)),
-    }
 }
 
 /// Whether a direct call to `callee` CONSUMES (moves out) the arg at `param_index`. FALSE ⟹ the callee only
@@ -1961,11 +1833,6 @@ pub fn select_function_of(
             );
         }
     }
-    // 11:1403 SITE-A: the Fn-typed invariant-borrow-clean loop-param binders whose per-application caller dup
-    // the `CallClosure` emit will reclaim (drop the dead env-cell copy after the borrowing apply). v-mem's
-    // #9378 discriminator; empty for a non-self_def / non-closure-threading body (leak-over-UAF default-deny).
-    code.closure_env_invariant_reclaim_binders =
-        closure_env_invariant_borrow_clean_binders(db, body, params, self_def);
     // (2) rope/slice-view: partition the SumExpect-extracted single-view Somes (String.at/Bytes.slice) into
     // the VIEW set (scalar-read-dead single consumer → we dup+shell-drop+view-drop, net -1) and the SHELL set
     // (consumed-onward single consumer → dup+shell-drop only, net-0, consumer owns the view). Dedicated sets
