@@ -250,15 +250,16 @@
     "A fallible boundary whose Option result ESCAPES to the host: `main` binds a rope `s`, runs a
            runtime-disc `?`, and RETURNS the `Some`/`None` to the host. v>0 overflows the checked-add →
            `None` short-circuit; v=-100 is in range → `(Some (max-100 + byte-len s))`. Value holds both
-           paths, both backends, O0..O2, no double-free. The census reads 1 LIVE OBJECT — but that husk is
+           paths, both backends, O0..O2, no double-free. The escape husk here is
            the value-ESCAPE-ENCODE residual of returning an Option to the host (the make / t-encode /
            resource-new escape-emit path), NOT the enclosing binding `s` and NOT a `?`-abort gap: (1) the
            IN-BODY companion below (boundary in a helper, result CONSUMED by main's match, scalar returned,
            no host escape) reclaims to live-objects 0 — the try-abort `MatchSum` reclaim is clean; and (2)
            `s` here const-folds to an immortal constant (both `if` arms are literals), so it never allocates.
            The husk routes to the escape-emit lane (v-cdz escv co-design), the same residual any host-returned
-           heap-carrying Option shows. `(live-objects known-leak)` tracks it; flip when the escape-emit
-           reclaim lands. (Breaker probe, re-attributed after v-memory-safety triage.)")
+           heap-carrying Option shows. Under drop-before-census (operator 2026-09-19) the host drops the
+           escaped owned Option before the census queries live-objects, so `(live-objects 0)`. (Breaker
+           probe, re-attributed after v-memory-safety triage.)")
   (input
     (do
       (def
