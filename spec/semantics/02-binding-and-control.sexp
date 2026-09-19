@@ -8855,7 +8855,7 @@
   (output (: (tuple 1 1) (Tuple Int64 Int64)))
   (call main (: -1 Int64) (: 5 Int64))
   (output (: (tuple 0 0) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "the dual-absorption fold keeps a trapping absorbed operand's short-circuit form"
@@ -8890,7 +8890,7 @@
   (output (: (tuple 1 1) (Tuple Int64 Int64)))
   (call main (: -1 Int64) (: 5 Int64))
   (output (: (tuple 0 0) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── COMPLEMENTARY COMPARISONS: two ordering tests that PARTITION every value fold to true / false ─────
 ; When two comparisons on the SAME operand pair are exact complements over the total order — `<`/`>=` or
@@ -9121,7 +9121,7 @@
   (output (: (tuple 0 0) (Tuple Int64 Int64)))
   (call main (: 12 Int64))
   (output (: (tuple 0 1) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── BRANCHLESS boolean connectives over trap-free operands (value parity of the no-short-circuit emit) ─
 ; `(and p q)` / `(or p q)` over cheap trap-free operands (leaves or comparisons) need no short-circuit

@@ -221,7 +221,7 @@
   (output (: (Some 9223372036854775749) (Option Int64)))
   (call main (: 1 Int64))
   (output (: (None unit) (Option Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a RUNTIME-DISC `?` unwraps Ok or short-circuits Err by a per-call value (Result)"
@@ -271,7 +271,7 @@
   (output (: (None unit) (Option Int64)))
   (call main (: -100 Int64))
   (output (: (Some 9223372036854775712) (Option Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a `?` short-circuit with a live runtime-rope binding, boundary CONSUMED in-body (no host escape), reclaims to 0"
@@ -330,7 +330,7 @@
   (output (: (Some 10) (Option Int64)))
   (call main (: -7 Int64))
   (output (: (Some -14) (Option Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a success `?` unwraps a RUNTIME Ok payload under a Result boundary"
@@ -346,7 +346,7 @@
       (export main)))
   (call main (: 41 Int64))
   (output (: (Ok 42) (Result Int64 String)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "two `?`s in one boundary both unwrap (nested happy path)"
@@ -596,7 +596,7 @@
   (output (: (Some 100) (Option Int64)))
   (call main (: 21 Int64))
   (output (: (Some 42) (Option Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "runtime-payload `?`s in BOTH branches of a runtime if take their own continuations"
@@ -615,7 +615,7 @@
   (output (: (Some 42) (Option Int64)))
   (call main (: false Bool) (: 43 Int64))
   (output (: (Some 42) (Option Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence"
@@ -632,7 +632,7 @@
       (export main)))
   (call main (: 19 Int64))
   (output (: (Some 42) (Option Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a `?` in an anonymous LAMBDA body resolves the lambda as its boundary (happy path)"
