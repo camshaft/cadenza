@@ -26,7 +26,8 @@
     (:
       b"\xaf\x13I\xb9\xf5\xf9\xa1\xa6\xa0@M\xea6\xdc\xc9I\x9b\xcb%\xc9\xad\xc1\x12\xb7\xcc\x9a\x93\xca\xe4\x1f2b"
       Bytes))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — escape/render case (Blake3 digest bytes / Ast.print render), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN.
+  (live-objects 0))
 
 (case
   "Blake3.of is a 32-byte digest"
@@ -2207,7 +2208,8 @@
   (input (do (def (run (: n Int64)) (Ast.print (Ast.Int (BigInt.of n)))) (export run)))
   (call run 42)
   (output (: "42" String))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — escape/render case (Blake3 digest bytes / Ast.print render), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN.
+  (live-objects 0))
 
 (case
   "runtime Ast.print renders a nested Ast.List byte-identical to the compile-time fold"
@@ -2221,7 +2223,8 @@
       (export run)))
   (call run 2)
   (output (: "(f 2)" String))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — escape/render case (Blake3 digest bytes / Ast.print render), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN.
+  (live-objects 0))
 
 (case
   "runtime Ast.print renders a doubly-nested Ast.List"
@@ -2234,7 +2237,8 @@
       (export run)))
   (call run 2)
   (output (: "((f 2))" String))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 pin hygiene — escape/render case (Blake3 digest bytes / Ast.print render), post-#9310 escv class. Pin-flip only (no reclaim code). Census-validated per-chapter GREEN.
+  (live-objects 0))
 
 (case
   "compile-time Ast.print of the same Ast folds to the identical text"
