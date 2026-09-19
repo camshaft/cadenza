@@ -11717,6 +11717,12 @@ fn sync(fleet: &Fleet, force: bool) {
     // exits 0 iff TRUNK is an ancestor of HEAD; treat a spawn failure as "advanced" (do the safe replay).
     if git_ok(&["merge-base", "--is-ancestor", base, &old_head]) {
         let base_sha = git_stdout(&["rev-parse", "--short", base]);
+        // Also name HEAD's OWN sha in the message. The no-op path leaves HEAD untouched, so an agent
+        // reading this line later (or comparing it to a fresh `git rev-parse HEAD`) must be able to see
+        // WHICH commit sync believed HEAD was at — otherwise, once origin/main advances, the base-relative
+        // "level"/"ahead" claim reads as inconsistent with their now-moved view (the recurring "sync said
+        // level but HEAD is X" false-report class: design-cadenza-abi + v-nix-projection, 2026-09-19).
+        let head_short = git_stdout(&["rev-parse", "--short", &old_head]);
         let ahead = git_stdout(&["rev-list", "--count", &format!("{base}..{old_head}")]);
         let n: usize = ahead.parse().unwrap_or(0);
         // Report HEAD vs the AUTHORITATIVE tip (origin/main) too — the base-relative "current" claim is
@@ -11733,13 +11739,13 @@ fn sync(fleet: &Fleet, force: bool) {
         let om_note = sync_head_vs_origin_note(behind_om, ahead_om);
         if n == 0 {
             println!(
-                "fleet sync: on {base} ({base_sha}); already current, nothing to replay.{om_note}"
+                "fleet sync: HEAD ({head_short}) is on {base} ({base_sha}); already current, nothing to replay.{om_note}"
             );
         } else {
             println!(
-                "fleet sync: already on {base} ({base_sha}) with {n} local commit(s) on top — base \
-                 has not advanced, so nothing to rebase; leaving the branch UNCHANGED (no re-sha, so \
-                 any queued merge-request --ref stays valid).{om_note}"
+                "fleet sync: HEAD ({head_short}) is already on {base} ({base_sha}) with {n} local \
+                 commit(s) on top — base has not advanced, so nothing to rebase; leaving the branch \
+                 UNCHANGED (no re-sha, so any queued merge-request --ref stays valid).{om_note}"
             );
         }
         return;
