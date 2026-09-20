@@ -6039,7 +6039,19 @@
       (def (main) (match (top #list(42 7)) ((AInt n) n) (_ -1)))
       (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  ; tighten (v-core-opt emit + v-memory-safety recognizer #9388): known-leak->1. `top`'s match destructures
+  ; the OWNED tuple `(dn b 0)` and returns its HEAP child `ast` (a SumPayload{[Elem(0)]}); `pos` is scalar.
+  ; The tuple SHELL was a deliberate leak — a bare deep-drop would cascade-free the returned `ast` (UAF). The
+  ; co-fix dups the sole escaping extraction `ast` (rc>=2) at emit BEFORE it escapes, then deep-drops the tuple
+  ; shell (cascade nets it 2->1, result-safe) — reclaiming the tuple shell (v-mem rc-trace node#2). Emit:
+  ; matchsum_escaping_proj_reclaim gate (emit.rs) + matchsum_escaping_proj_node dup (reclaim.rs); drop ⊆ dup
+  ; ⇒ no UAF. Multi/conditional/FBIP-rebuild escapes stay KEPT (leak-over-UAF).
+  ; RESIDUAL 1 (a SEPARATE reclaim class, not this fix): `main`'s `(match (top …) ((AInt n) n) (_ -1))`
+  ; leaks the returned `AInt` shell — `Ast` is a COMPOUND-payload sum (the `AList (List Ast)` variant), so
+  ; `sum_shell_reclaim_ok`'s all-scalar-payload floor (the sread-UAF restriction) declines it even though the
+  ; arm is borrow-clean + scalar-result. That's the documented "reclaim-the-compound-shell" increment, a
+  ; harder UAF-sensitive class — tracked separately, not folded into the escaping-heap-child emit.
+  (live-objects 1))
 
 ; The recursive-descent PARSER face of the mutual-recursion cursor thread: the decoder above destructures
 ; the returned (value, cursor) tuple with a tuple PATTERN in a match arm; a hand-written precedence parser

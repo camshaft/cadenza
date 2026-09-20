@@ -4013,6 +4013,62 @@ fn def_funcref_taken_builds_its_referenced_code_memo_once_not_per_query() {
     });
 }
 
+// ── 02:6042 escaping-heap-child MatchSum shell reclaim: emit consumes matchsum_escaping_proj_{node,reclaim}
+// (v-memory-safety recognizer #9388, v-core-opt emit). Pins the dup⟺drop LOCKSTEP at the Core level: the
+// recognizer identifies the sole escaping extraction node, and the dup-pass marks THAT node — so the emit's
+// shell deep-drop (which fires on the same recognition) is always paired with the child-dup (drop ⊆ dup ⇒
+// no UAF). A regression that drops the dup or the recognition flips this test, independent of the live census.
+#[test]
+fn escaping_proj_6042_recognized_node_is_dup_marked_lockstep() {
+    // `top`: (match (dn b 0) (#tuple(ast pos) ast)) — `dn` returns an OWNED tuple(AInt, cursor); the arm
+    // returns the HEAP child `ast` (SumPayload{[Elem(0)]}), `pos` is scalar/unused. The tuple SHELL was a
+    // deliberate leak (a bare deep-drop would cascade-free the returned `ast` → UAF); the co-fix dups `ast`
+    // (rc≥2) at extraction, then deep-drops the shell (cascade 2→1, result-safe).
+    let ast = crate::testkit::parse(
+        "(module m \
+           (type Ast (AInt Int64) ALeaf (AList (List Ast))) \
+           (def (dn (: b (List Int64)) (: i Int64)) (if (= i 0) #tuple((AInt (Option.expect (List.at b 0) \"in range\")) (+ i 1)) \
+             #tuple((AList (dac b i (- i 1) #list())) (+ i 1)))) \
+           (def (dac (: b (List Int64)) (: i Int64) (: n Int64) (: acc (List Ast))) (if (< n 1) acc \
+             (match (dn b i) (#tuple(child nx) (dac b nx (- n 1) (List.push acc child)))))) \
+           (def (top (: b (List Int64))) (match (dn b 0) (#tuple(ast pos) ast))) \
+           (def (main) (match (top #list(42 7)) ((AInt n) n) (_ -1))) \
+           (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "top");
+    // The emit path selects cleanly (the shell deep-drop + child-dup are emitted, not rejected).
+    let _ = select_function(&mut db, body, &params, &layout).expect("select top");
+    // Find `top`'s MatchSum (scrutinee + root).
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![body];
+    let mut found = None;
+    while let Some(nd) = stack.pop() {
+        if !seen.insert(nd) {
+            continue;
+        }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd) {
+            found = Some((scrutinee, root));
+        }
+        stack.extend(crate::core_analysis::licm_children(&mut db, nd));
+    }
+    let (scrut, root) = found.expect("top MatchSum");
+    let scrut_ty = type_of(&mut db, scrut);
+    // The recognizer identifies the sole escaping extraction node (slot-independent dup-side form).
+    let node = super::matchsum_escaping_proj_node(&mut db, scrut, &scrut_ty, false, &root)
+        .expect("6042: the escaping heap-child extraction is recognized");
+    // LOCKSTEP: the dup-pass marks THAT node → the emit `OP_DUP` (rc≥2) fires before the escape, so the
+    // shell deep-drop the emit gate enables is paired 1:1 (drop ⊆ dup → no double-free of the returned child).
+    let mut dup_sites = std::collections::HashSet::new();
+    collect_shell_reclaim_child_dups(&mut db, body, &mut dup_sites);
+    assert!(
+        dup_sites.contains(&node),
+        "the recognized escaping extraction node must be dup-marked (dup⟺drop lockstep; else the shell \
+         deep-drop cascade-frees the returned child → UAF)"
+    );
+}
+
 // ── 28-wit:310 SHAPE-9 shell-reclaim co-fix: `escaped_field_projections` (reclaim.rs) ──────────
 // The analysis half of the wrapper shell-reclaim (v-memory-safety builds it; v-core-opt wires the
 // serialize.rs project+dup+deep-drop emit; v-memory-safety co-gates). These pin the API contract at
