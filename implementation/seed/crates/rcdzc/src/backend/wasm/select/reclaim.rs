@@ -5578,13 +5578,42 @@ pub(super) fn payload_in_result_bare_escape_ok(
             _ => false,
         }
     }
+    // Whether the RESULT tail of this arm is a DIRECT single-level `SumPayload{scrutinee: scrut}` (heap,
+    // non-scalar) — the 14929 leaf shape `((T.L n) n)`. NOT a deeper/nested projection chain (a `Proj` of a
+    // record, or a payload-of-a-payload) — e.g. json `encode`'s `((JNum n) (match n (Num r) r.raw))` returns
+    // `r.raw = Proj(SumPayload(SumPayload(v)))`, a MULTI-LEVEL child whose exclusive ownership the single
+    // top-node escape-dup does NOT cover (the shell cascade frees an intermediate the dup didn't protect) →
+    // a cross-chapter UAF (cad-test-json encode/rpc OOB). Restricting to the DIRECT payload keeps 14929/14941
+    // (direct `SumPayload{t}`) and DECLINES the nested case (leak-over-UAF; a deeper escaped child needs a
+    // deeper co-design, not this increment). Follows the SAME result tails as `payload_in_result_position`.
+    fn result_tail_is_direct_payload(db: &mut Db, id: StructId, scrut: StructId) -> bool {
+        match core_of(db, id) {
+            Core::SumPayload { scrutinee, .. } => {
+                scrutinee == scrut
+                    && is_heap_type(&type_of(db, id))
+                    && get_op(db, id).ok().flatten().is_none()
+            }
+            Core::If { then_, else_, .. } => {
+                result_tail_is_direct_payload(db, then_, scrut)
+                    || result_tail_is_direct_payload(db, else_, scrut)
+            }
+            Core::Let { body, .. } => result_tail_is_direct_payload(db, body, scrut),
+            Core::Seq { tail, .. } => result_tail_is_direct_payload(db, tail, scrut),
+            Core::Block { body, .. } => result_tail_is_direct_payload(db, body, scrut),
+            Core::Break { value } => result_tail_is_direct_payload(db, value, scrut),
+            _ => false,
+        }
+    }
     fn arm_ok(db: &mut Db, body: StructId, scrut: StructId) -> bool {
         if !payload_in_result_position(db, body, scrut) {
             return true; // not a bare-return arm — its consumes are balanced by the shell child-dup.
         }
-        // Bare-return arm: the returned payload must be the SOLE use — no payload of `scrut` also consumed
-        // outside the result tail, else escape-dup + shell cascade would not net (leak-over-UAF DECLINE).
-        !nonresult_payload_consume(db, body, scrut)
+        // Bare-return arm: (a) the returned payload must be a DIRECT single-level `SumPayload` of `scrut`
+        // (the escape-dup of that one node fully covers it under the shell cascade — a nested/deeper child is
+        // NOT covered → the encode/rpc OOB UAF), AND (b) it must be the SOLE use — no payload of `scrut` also
+        // consumed outside the result tail. Either failing → DECLINE (leak-over-UAF).
+        result_tail_is_direct_payload(db, body, scrut)
+            && !nonresult_payload_consume(db, body, scrut)
     }
     match cont {
         crate::core::SumCont::Leaf(body) => arm_ok(db, *body, scrut),
