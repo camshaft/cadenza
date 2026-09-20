@@ -5383,6 +5383,91 @@ fn payload_in_result_position(db: &mut Db, id: StructId, scrut: StructId) -> boo
     }
 }
 
+/// v-memory-safety EXCLUSIVE-OWNED FENCE for the 14929 escaped-child-dup increment (co-design with
+/// v-core-opt; the SHARED predicate BOTH the escape-dup collector AND the G4 `bare_payload_result_ok`
+/// PARAM-context relax key on — so escape-dup fires IFF the fence admits IFF G4 relaxes, dup⟺drop⟺relax by
+/// construction, the 5786/465b shared-predicate discipline). Whether EVERY arm of `cont` that bare-RETURNS a
+/// payload-projection of `scrut` in result position does so SAFELY: that arm must NOT ALSO move a payload of
+/// `scrut` into a CONSUMING position (a member/self call, a consuming op) — i.e. the bare-returned child is
+/// the SOLE use of `scrut`'s payload in that arm, so escape-dup'ing it before the shell deep-drop nets 1:1
+/// (the cascade decrements the dup; the return survives rc1). 14929's L arm `((T.L n) n)` bare-returns `n`
+/// with no consuming site → ADMIT; a synthetic `((T.L n) (do (s n) n))` returns `n` AND consumes it via the
+/// self-call → the consuming site is non-empty → DECLINE (leak-over-UAF). The #9413 render hazard
+/// (`Ast.List(es)`→`render-list(es)`) never even trips this: its payload is CALL-CONSUMED, not bare-returned
+/// (`payload_in_result_position` is `_=>false` for a call-as-result), so that arm returns `true` here and the
+/// relax is decided by whether some OTHER arm bare-returns. Arms that do NOT bare-return are UNCONSTRAINED —
+/// their consumes are balanced by the existing shell-reclaim child-dup (`collect_shell_reclaim_child_dups`).
+/// CROSS-ARM is vacuous under variant-exclusivity (one arm runs per value; the escape-dup is on the EXACT
+/// returned node, so dup⟺drop nets regardless of a sibling arm); the per-arm "bare-return ⟹ no consuming
+/// site in that arm" test also directly rejects the same-arm return+consume hazard (the real one), and is
+/// STRICTER than a same-node coincidence check (it declines a bare-return arm that consumes ANY payload of
+/// `scrut`, even a disjoint sibling) — sound-conservative (an over-decline is a leak, never a double-free).
+/// INERT until v-core-opt's escape-dup collector + the G4 3rd-context relax call it (the co-design wiring);
+/// gates guarded-all pre-land (this relax touches the exact fence #9413's UAF lived behind).
+#[allow(dead_code)]
+pub(super) fn payload_in_result_bare_escape_ok(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrut: StructId,
+) -> bool {
+    // Whether a payload of `scrut` is consumed OUTSIDE the RESULT-position tail of this arm body — i.e. moved
+    // into a member/self call / a consuming op that is NOT itself the returned escape. The bare-returned
+    // payload (the result tail) is the escape we dup, so it is NOT a hazard; a consume in a condition / a
+    // let-initializer / a sequenced effect IS (the same-arm return+consume hazard, the local analogue of the
+    // #9413 aliased-spine OOB). Follows the SAME result-position tails as `payload_in_result_position`.
+    fn nonresult_payload_consume(db: &mut Db, id: StructId, scrut: StructId) -> bool {
+        fn consumes(db: &mut Db, sub: StructId, scrut: StructId) -> bool {
+            let mut sites = HashSet::new();
+            collect_consuming_payload_sites_expr(db, sub, scrut, true, &mut sites);
+            !sites.is_empty()
+        }
+        match core_of(db, id) {
+            Core::If { cond, then_, else_ } => {
+                consumes(db, cond, scrut) // cond is NON-result
+                    || nonresult_payload_consume(db, then_, scrut)
+                    || nonresult_payload_consume(db, else_, scrut)
+            }
+            Core::Let { bindings, body } => {
+                let inits: Vec<StructId> = bindings.iter().map(|&(_, v)| v).collect();
+                inits.into_iter().any(|v| consumes(db, v, scrut)) // initializers are NON-result
+                    || nonresult_payload_consume(db, body, scrut)
+            }
+            Core::Seq { stmts, tail } => {
+                let stmts: Vec<StructId> = stmts.iter().copied().collect();
+                stmts.into_iter().any(|s| consumes(db, s, scrut)) // sequenced effects are NON-result
+                    || nonresult_payload_consume(db, tail, scrut)
+            }
+            Core::Block { body, .. } => nonresult_payload_consume(db, body, scrut),
+            Core::Break { value } => nonresult_payload_consume(db, value, scrut),
+            // A bare payload result (the escape) or a call/op result: not a NON-result consume. (A call-as-
+            // result consuming the payload is the render shape — but then `payload_in_result_position` is
+            // false and `arm_ok` returns early, so this is never reached for it.)
+            _ => false,
+        }
+    }
+    fn arm_ok(db: &mut Db, body: StructId, scrut: StructId) -> bool {
+        if !payload_in_result_position(db, body, scrut) {
+            return true; // not a bare-return arm — its consumes are balanced by the shell child-dup.
+        }
+        // Bare-return arm: the returned payload must be the SOLE use — no payload of `scrut` also consumed
+        // outside the result tail, else escape-dup + shell cascade would not net (leak-over-UAF DECLINE).
+        !nonresult_payload_consume(db, body, scrut)
+    }
+    match cont {
+        crate::core::SumCont::Leaf(body) => arm_ok(db, *body, scrut),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            arm_ok(db, *body, scrut) && payload_in_result_bare_escape_ok(db, els, scrut)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            payload_in_result_bare_escape_ok(db, then_, scrut)
+                && payload_in_result_bare_escape_ok(db, els, scrut)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .all(|a| payload_in_result_bare_escape_ok(db, &a.cont, scrut)),
+    }
+}
+
 /// INC1 compound-fence exclusion (05:9972): whether ANY arm's RESULT/tail is the SCRUTINEE ITSELF returned
 /// UNCHANGED — a persistent-structure BST-insert dedup arm `(if (> v k) … t)` returns the matched node `t`
 /// as-is. The compound shell-drop would then free a RETURNED value (the 13589→589 read-after-free trap).
