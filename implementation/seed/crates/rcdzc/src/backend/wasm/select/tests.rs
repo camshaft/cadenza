@@ -4246,10 +4246,10 @@ fn view_shell_465b_strat_escaping_declines_no_owned_compound_boxed_dup() {
         if !seen.insert(nd) {
             continue;
         }
-        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd) {
-            if matches!(core_of(&mut db, scrutinee), crate::core::Core::StrAt { .. }) {
-                found = Some((scrutinee, root));
-            }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd)
+            && matches!(core_of(&mut db, scrutinee), crate::core::Core::StrAt { .. })
+        {
+            found = Some((scrutinee, root));
         }
         stack.extend(crate::core_analysis::licm_children(&mut db, nd));
     }
