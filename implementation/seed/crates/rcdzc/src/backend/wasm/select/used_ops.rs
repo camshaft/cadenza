@@ -1114,17 +1114,16 @@ pub(super) fn collect_used_ops_into_seen(
                             out.insert(OP_BYTES_LEN);
                             out.insert(OP_BYTES_GET);
                             // Import mirror of the marshaled-arg reclaim (emit.rs `HostCall` runtime String/
-                            // Bytes arm): an OWNED marshaled arg is dropped after the copy loop, so declare
-                            // `drop` iff the emit will emit one — SAME `heap_operand_ownership == Owned` gate,
-                            // else the emit's `CallImport(OP_DROP)` resolves to u32::MAX (an invalid module).
-                            if matches!(
-                                crate::backend::wasm::select::ownership::heap_operand_ownership(
-                                    db, arg
-                                ),
-                                Ok(crate::backend::wasm::select::ownership::HandleOwnership::Owned)
-                            ) {
-                                out.insert(OP_DROP);
-                            }
+                            // Bytes arm). The emit drops iff `heap_operand_ownership == Owned` OR the arg is a
+                            // shell-reclaim CHILD-DUP site (`out.dup_sites.contains(&arg)` — the owned-by-flow
+                            // twin, 04-capabilities:536). The dup-site set is NOT computed in this import pass
+                            // (`out` here is a plain op set), so we cannot mirror that disjunct exactly; instead
+                            // declare `drop` for EVERY non-const runtime String/Bytes arg — a SAFE SUPERSET of
+                            // the emit's gate. Over-declaring is harmless (an unused import is a valid module),
+                            // whereas UNDER-declaring is fatal (the emit's `CallImport(OP_DROP)` would resolve
+                            // to u32::MAX → an invalid module). This guarantees the import exists whenever the
+                            // emit calls it, regardless of the ownership/dup-site outcome.
+                            out.insert(OP_DROP);
                             collect_used_ops_into_seen(db, arg, out, visited);
                         }
                     }

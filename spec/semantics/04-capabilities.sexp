@@ -534,7 +534,12 @@
   (host-responses (respond hs.h (: 42 Int64)))
   (host-calls (call hs.h))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  ; v-memory-safety: the `Some` shell from `String.from-bytes` now reclaims (v-effects blessed refining the
+  ; opaque-capture backstop for a terminal host-delegated `Core::HostCall` — by-copy-marshaled args, no
+  ; resume-continuation, so #048389 is not weakened; `Core::CallClosure` stays conservative), and the
+  ; owned-by-flow marshaled arg `s` (a shell-reclaim child-dup) is dropped after the byte-copy so the dup is
+  ; not orphaned; census 0. Was known-leak.
+  (live-objects 0))
 
 (case
   "a host op with two runtime Bytes args marshals each to a disjoint region"
