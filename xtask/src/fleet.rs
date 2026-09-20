@@ -22082,7 +22082,11 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert_eq!(parse_cron_line("# fleet:watchdog just a note"), None);
     }
 
+    // assertions_on_constants is DELIBERATE here: this asserts the SHIPPED const default, guarding against
+    // an accidental flip of WATCHDOG_ENABLED to true (which would re-arm the operator-banned destructive run).
+    // The lint fires under -D warnings (it took gate-local RED fleet-wide, #9409); allow it for this pin.
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn watchdog_cron_line_is_disabled_by_default_and_not_schedulable() {
         // Default state: the destructive watchdog is OFF per the operator ban 2026-09-10.
         assert!(!WATCHDOG_ENABLED);
