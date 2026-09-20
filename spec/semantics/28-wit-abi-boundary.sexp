@@ -762,7 +762,7 @@
             (= token #list(3))
             (= deadline-nanos (None unit)))))
       (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a list-of-scalars host arg emits, loads, and runs (via an imposed WIT world)"
@@ -1898,7 +1898,7 @@
             (= token #list(3))
             (= deadline-nanos (None unit)))))
       (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a record-with-an-option-scalar-field host arg emits, loads, and runs (via an imposed WIT world)"
@@ -3781,7 +3781,7 @@ cases
             (= token #list(3))
             (= deadline-nanos (None unit)))))
       (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a payloadless enum result VALUE round-trips via the run/encode envelope (no wit-world clause; typed enum export is a separate gap)"
