@@ -1071,6 +1071,110 @@ pub(crate) fn matchsum_escaping_proj_node(
     Some(*body)
 }
 
+/// COMPANION recognizer (DUP-side, slot-independent) for the FBIP-REBUILD `MatchSum` shell reclaim — the
+/// co-fix half v-core-opt's emit consumes (09-functions:1089 tuple-SWAP `swap p = (match p (#tuple(a b)
+/// #tuple(b a)))`, census 8). Unlike [`matchsum_escaping_proj_node`] (which returns the SOLE escaping child
+/// and BAILS on a compound-constructing arm), this admits the arm that RECONSTRUCTS a compound by MOVING the
+/// scrutinee's projected children OUT: the single-`Leaf` body is a PURE ctor (`Tuple`/`Record`/`SumNew`)
+/// whose elements are extractions off the (dead-after) scrutinee, each MOVED (consumed) by the fresh ctor. A
+/// bare shell deep-drop would double-free those moved children (the escape walk sees only borrowing
+/// projections + reports safe), so `matchsum_escaping_proj_node` declines it (`sum_cont_arm_constructs_
+/// compound`). The reclaim (v-core-opt emit shape b): `dup` EACH moved child at its extraction (rc1->2)
+/// BEFORE the ctor consumes it, then deep-drop the shell — the ctor takes one ref, the shell-drop cascade
+/// nets the other, so every child escapes at rc1 owned by the fresh compound and the shell is freed.
+///
+/// Returns `Some(nodes)` = the HEAP moved-child extraction NODES to insert into `dup_sites` (one `dup` per
+/// node, LOCKSTEP with the shell deep-drop the drop-side gate fires). `None` = BAIL (leak-over-UAF): not a
+/// single-`Leaf` arm, the body is not a pure ctor, any heap element is NOT a clean extraction rooting at the
+/// scrutinee (a nested consume / further computation that re-reads a moved child would break the 1:1 dup),
+/// no heap child is moved (nothing to reclaim), the scrutinee is re-matched, or it is not dead-after.
+///
+/// OWNERSHIP IS DELIBERATELY NOT GATED HERE (unlike the 6042 `_node`): swap's scrutinee is a consumed PARAM
+/// (`heap_operand_ownership` == Borrowed), and proving a param is OWNED-consumed (vs a live caller borrow) is
+/// v-core-opt's CONSUMING-ANALYSIS lane. The DUP side is leak-SAFE regardless (an over-dup only leaks, never
+/// UAFs), so the companion stays permissive; the UAF-critical ownership proof lives on the DROP side
+/// (v-core-opt ANDs the proven-owned-dead-after-param condition before firing the deep-drop — the
+/// non-tail-spine param path `sum_shell_reclaim_ok` documents). LOCKSTEP: dup-nodes ⊇ drop ⇒ no UAF.
+#[allow(dead_code)] // TEMP: inert until v-core-opt wires the FBIP-rebuild dup-children + gated deep-drop.
+pub(crate) fn matchsum_rebuild_moved_child_nodes(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> Option<Vec<StructId>> {
+    // Shared safety floor (same as `matchsum_escaping_proj_node`, MINUS the ownership gate — see doc — and
+    // minus the constructs-compound bail, which is exactly the shape this admits).
+    if never_diverges
+        || !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+        || !scrutinee_dead_after_destructure(db, scrutinee, root)
+    {
+        return None;
+    }
+    // Single-`Leaf` arm only (a Guarded/LitTest/Switch is a CONDITIONAL rebuild → a runtime-single-arm dup
+    // would over/under-count → bail).
+    let crate::core::SumCont::Leaf(body) = root else {
+        return None;
+    };
+    let binder = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+        _ => None,
+    };
+    // The body must be a PURE ctor (Tuple/Record/SumNew) — the FBIP-rebuild shape. Its elements are the
+    // reconstructed compound's children.
+    let elems: Vec<StructId> = match core_of(db, *body) {
+        Core::Tuple { elems } => elems.to_vec(),
+        Core::Record { fields } => fields.values().copied().collect(),
+        Core::SumNew { payloads, .. } => payloads.to_vec(),
+        _ => return None,
+    };
+    // Every element must be EITHER a scalar (COPIES out — no shared ref, no dup owed) OR a HEAP extraction
+    // (Proj/SumPayload) rooting at the scrutinee (a MOVED child — dup it). ANY heap element that is not a
+    // clean extraction (a nested Call/ctor/computation that consumes or re-reads a moved child) breaks the
+    // 1:1 dup⇔consume lockstep → BAIL (leak-over-UAF). Collect the heap extraction nodes to `dup`.
+    let mut moved = Vec::new();
+    for e in elems {
+        if !is_heap_type(&type_of(db, e)) {
+            continue; // scalar element: copies out, no dup owed
+        }
+        if !extraction_roots_at_scrutinee(db, e, scrutinee, binder) {
+            return None; // a heap element that is not a clean extraction off the scrutinee → bail
+        }
+        moved.push(e);
+    }
+    // At least one heap child must be moved out (else the all-scalar floor / other paths already reclaim; a
+    // pure-scalar rebuild owns no heap child to protect and needs no shell-dup lockstep here).
+    if moved.is_empty() {
+        return None;
+    }
+    Some(moved)
+}
+
+/// DROP-SIDE gate (slot-gated) for the FBIP-rebuild shell reclaim — the twin of [`matchsum_escaping_proj_
+/// reclaim`] for [`matchsum_rebuild_moved_child_nodes`]. `true` ⟺ the scrutinee was freshly stashed into an
+/// I32 reclaim slot AND the FBIP-rebuild shape holds; then the emit deep-drops the shell after the arm's
+/// ctor. LOCKSTEP: this drop-side is the slot-gated SUBSET of the dup-side node set, so the shell deep-drop
+/// NEVER fires without every moved child dup-protected (no UAF); a dup where the drop declines is an
+/// orphaned-dup leak (safe). NOTE (v-core-opt emit): AND the proven-owned-dead-after-param condition on top
+/// of this gate before firing the deep-drop — this gate proves the SHAPE + slot; the consuming/ownership
+/// proof (is the param OWNED-consumed vs a live caller borrow) is the emit's consuming-analysis lane, the
+/// UAF-critical guard for a Borrowed-classified param scrutinee.
+#[allow(dead_code)] // TEMP: inert until v-core-opt wires the FBIP-rebuild reclaim_shell + dup-side path.
+pub(crate) fn matchsum_rebuild_shell_reclaim_ok(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    stashed_slot: Option<(u32, ValType)>,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> bool {
+    matches!(stashed_slot, Some((_, ValType::I32)))
+        && matchsum_rebuild_moved_child_nodes(db, scrutinee, scrut_ty, never_diverges, root)
+            .is_some()
+}
+
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed
 /// temp vs proven-owned param slot): heap + non-enum + non-diverging + payload-safety + not-re-matched.
 /// [`sum_shell_reclaim_ok`] ANDs the stashed-Owned requirement on top; the non-tail-spine param path ANDs
