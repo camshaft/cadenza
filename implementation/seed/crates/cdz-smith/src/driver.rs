@@ -998,6 +998,55 @@ pub fn rcdzc_typecheck_verdict(source: &str) -> Option<crate::lean::RcdzcVerdict
     }
 }
 
+/// The DIRECTION of a type-oracle mismatch, classified from the Lean oracle's `mismatch("<dir>: …")`
+/// detail (design §1.3). SOUNDNESS-CRITICAL to get right: a [`FalseAccept`](Self::FalseAccept) (rcdzc
+/// accepted an ILL-typed program) is a real unsoundness bug — the highest-severity type finding — while a
+/// [`CapabilityGap`](Self::CapabilityGap) (codeless decline of a well-typed program) is only a feature
+/// backlog TODO, and a [`FalseReject`](Self::FalseReject) (coded reject of a well-typed program) is a
+/// compiler bug of middling severity. Misrouting one direction for another would MIS-TRIAGE the finding's
+/// severity (or drop a false-accept into the catch-all), so this is extracted as a pure, unit-tested
+/// classifier rather than an inline chain buried in the sweep.
+#[cfg(feature = "differential")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeMismatchDir {
+    /// rcdzc coded-rejected a program the oracle judges well-typed — a compiler false-reject bug.
+    FalseReject,
+    /// rcdzc codeless-declined a well-typed program — a should-work capability gap (backlog, not a bug).
+    CapabilityGap,
+    /// rcdzc accepted a program the oracle judges ill-typed — an UNSOUNDNESS bug (highest severity).
+    FalseAccept,
+    /// Any other disagreement (e.g. `code-mismatch`) — surfaced but uncategorized.
+    Other,
+}
+
+#[cfg(feature = "differential")]
+impl TypeMismatchDir {
+    /// Classify by the direction word the oracle prefixes onto the mismatch detail (leading whitespace
+    /// tolerated). The four words are distinct prefixes, so match order is irrelevant to correctness.
+    pub fn classify(detail: &str) -> TypeMismatchDir {
+        let d = detail.trim_start();
+        if d.starts_with("false-reject") {
+            TypeMismatchDir::FalseReject
+        } else if d.starts_with("capability-gap") {
+            TypeMismatchDir::CapabilityGap
+        } else if d.starts_with("false-accept") {
+            TypeMismatchDir::FalseAccept
+        } else {
+            TypeMismatchDir::Other
+        }
+    }
+
+    /// The sweep-log / finding label for this direction (UPPERCASE for the two real bugs).
+    pub fn label(self) -> &'static str {
+        match self {
+            TypeMismatchDir::FalseReject => "type-oracle FALSE-REJECT",
+            TypeMismatchDir::CapabilityGap => "type-oracle capability-gap",
+            TypeMismatchDir::FalseAccept => "type-oracle FALSE-ACCEPT",
+            TypeMismatchDir::Other => "type-oracle mismatch",
+        }
+    }
+}
+
 /// Run the TYPE-ORACLE differential (design §2, Phase T2). For each generated program: take rcdzc's
 /// in-process [`compile_catching`] verdict — `Compiled`/`InvalidWasm` ⇒ `accept`,
 /// `Declined{code:Some}` ⇒ `reject(code)`, `Declined{code:None}` ⇒ `decline` — parse the source to an
@@ -1071,20 +1120,14 @@ pub fn typecheck_sweep(
                     LeanVerdict::Skip(_) => stats.skipped += 1,
                     LeanVerdict::Mismatch(detail) => {
                         stats.judged += 1;
-                        let d = detail.trim_start();
-                        let label = if d.starts_with("false-reject") {
-                            stats.false_rejects += 1;
-                            "type-oracle FALSE-REJECT"
-                        } else if d.starts_with("capability-gap") {
-                            stats.capability_gaps += 1;
-                            "type-oracle capability-gap"
-                        } else if d.starts_with("false-accept") {
-                            stats.false_accepts += 1;
-                            "type-oracle FALSE-ACCEPT"
-                        } else {
-                            stats.other_mismatches += 1;
-                            "type-oracle mismatch"
-                        };
+                        let dir = TypeMismatchDir::classify(detail);
+                        match dir {
+                            TypeMismatchDir::FalseReject => stats.false_rejects += 1,
+                            TypeMismatchDir::CapabilityGap => stats.capability_gaps += 1,
+                            TypeMismatchDir::FalseAccept => stats.false_accepts += 1,
+                            TypeMismatchDir::Other => stats.other_mismatches += 1,
+                        }
+                        let label = dir.label();
                         let finding = Finding {
                             category: Category::TypeOracle,
                             program: src.clone(),
@@ -1275,6 +1318,47 @@ mod tests {
         }
         // Unparseable text is excluded from the typing population (not a typing question).
         assert!(rcdzc_typecheck_verdict("(do (def (main)").is_none());
+    }
+
+    /// The type-mismatch DIRECTION classifier — soundness-critical: a `false-accept` (unsoundness bug)
+    /// must never be misrouted into `capability-gap` (backlog TODO) or the `Other` catch-all, and vice
+    /// versa, or the standing type-differential sweep would mis-triage a finding's severity. Pins the
+    /// exact prefix contract + that leading whitespace is tolerated.
+    #[cfg(feature = "differential")]
+    #[test]
+    fn type_mismatch_direction_is_classified_by_prefix() {
+        use TypeMismatchDir::*;
+        assert_eq!(
+            TypeMismatchDir::classify("false-reject: oracle infers Int64 over CDZ0203"),
+            FalseReject
+        );
+        assert_eq!(
+            TypeMismatchDir::classify("capability-gap: oracle infers Bool"),
+            CapabilityGap
+        );
+        assert_eq!(
+            TypeMismatchDir::classify("false-accept: oracle rejects CDZ0203"),
+            FalseAccept
+        );
+        // An unrecognized direction word is surfaced but uncategorized (never silently a real-bug bucket).
+        assert_eq!(
+            TypeMismatchDir::classify("code-mismatch: differing codes"),
+            Other
+        );
+        // Leading whitespace is tolerated (the oracle detail may be indented).
+        assert_eq!(
+            TypeMismatchDir::classify("   false-accept: ws"),
+            FalseAccept
+        );
+        // The soundness invariant: false-accept and capability-gap are NEVER conflated (severity split).
+        assert_ne!(
+            TypeMismatchDir::classify("false-accept: x"),
+            TypeMismatchDir::classify("capability-gap: x")
+        );
+        // Labels flag the two REAL bugs in uppercase so they stand out in the sweep log.
+        assert_eq!(FalseAccept.label(), "type-oracle FALSE-ACCEPT");
+        assert_eq!(FalseReject.label(), "type-oracle FALSE-REJECT");
+        assert_eq!(CapabilityGap.label(), "type-oracle capability-gap");
     }
 
     #[test]
