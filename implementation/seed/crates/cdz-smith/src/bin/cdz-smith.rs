@@ -175,9 +175,9 @@ fn usage() {
          \n\
          USAGE:\n\
          \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR] [--astgen]\n\
-         \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen] [--large] [--reclaim]\n\
-         \x20 cdz-smith opt-differential  [--count N] [--seed S] [--findings DIR] [--store DIR] [--astgen] [--large] [--reclaim]   (O0-vs-O1/O2/O3 VALUE invariance — pure-optimizer miscompile hunt; in-process, no cdz; --reclaim = owned-aggregate reclaim-precision shapes)\n\
-         \x20 cdz-smith determinism      [--count N] [--seed S] [--findings DIR] [--astgen] [--reclaim]   (compile TWICE, require byte-identical output — compiler-nondeterminism hunt; compile-only, no store/cdz)\n\
+         \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen] [--large] [--reclaim] [--effect]\n\
+         \x20 cdz-smith opt-differential  [--count N] [--seed S] [--findings DIR] [--store DIR] [--astgen] [--large] [--reclaim] [--effect]   (O0-vs-O1/O2/O3 VALUE invariance — pure-optimizer miscompile hunt; in-process, no cdz; --reclaim = reclaim-precision shapes, --effect = algebraic-effect lowering)\n\
+         \x20 cdz-smith determinism      [--count N] [--seed S] [--findings DIR] [--astgen] [--reclaim] [--effect]   (compile TWICE, require byte-identical output — compiler-nondeterminism hunt; compile-only, no store/cdz)\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR] [--host]\n\
@@ -1108,6 +1108,9 @@ fn cmd_differential(args: &[String]) -> ExitCode {
             // value-observable coverage of the reclaim-precision churn (a leak is invisible, a freed-live-cell
             // wrong-value is not). See `GenMode::ReclaimShapes`.
             "--reclaim" => gen_mode = driver::GenMode::ReclaimShapes,
+            // Draw ALGEBRAIC-EFFECT programs (effect/handle/resume/abort) — value-observable coverage of the
+            // effects lowering (continuation capture, handler-stack resolution). See `GenMode::Effect`.
+            "--effect" => gen_mode = driver::GenMode::Effect,
             other => {
                 eprintln!("cdz-smith differential: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -1155,6 +1158,7 @@ fn cmd_differential(args: &[String]) -> ExitCode {
         driver::GenMode::Astgen => "astgen",
         driver::GenMode::LargeValue => "large-value",
         driver::GenMode::ReclaimShapes => "reclaim-shapes",
+        driver::GenMode::Effect => "effect",
         _ => "text",
     };
 
@@ -1234,6 +1238,9 @@ fn cmd_opt_differential(args: &[String]) -> ExitCode {
             // Owned-aggregate-reclaim shapes — the opt-invariance counterpart of the corpus leak pins:
             // an over-aggressive reclaim at O2/O3 that frees a still-live cell diverges from the O0 value.
             "--reclaim" => gen_mode = driver::GenMode::ReclaimShapes,
+            // Algebraic-effect programs — an opt pass that mislowers a captured continuation / handler frame
+            // would diverge from the O0 value.
+            "--effect" => gen_mode = driver::GenMode::Effect,
             other => {
                 eprintln!("cdz-smith opt-differential: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -1276,6 +1283,7 @@ fn cmd_opt_differential(args: &[String]) -> ExitCode {
     let grammar = match gen_mode {
         driver::GenMode::LargeValue => "large-value",
         driver::GenMode::ReclaimShapes => "reclaim-shapes",
+        driver::GenMode::Effect => "effect",
         _ => "astgen",
     };
     eprintln!(
@@ -2152,6 +2160,8 @@ fn cmd_determinism(args: &[String]) -> ExitCode {
             // Owned-aggregate-reclaim shapes — a reclaim decision that leaks a nondeterministic
             // iteration order into codegen would show as a byte-diff across the two compiles.
             "--reclaim" => gen_mode = driver::GenMode::ReclaimShapes,
+            // Algebraic-effect programs — compile-byte determinism of the effects lowering.
+            "--effect" => gen_mode = driver::GenMode::Effect,
             other => {
                 eprintln!("cdz-smith determinism: unexpected arg `{other}`");
                 return ExitCode::from(2);
