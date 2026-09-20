@@ -5229,7 +5229,15 @@ pub(super) fn nontail_param_compound_extra_ok(
         && is_heap_type(scrut_ty)
         && !ty_is_enum_disc(db, scrut_ty)
         && !cont_rematches_scrutinee(db, scrutinee, root)
-        && !sum_cont_payload_in_result(db, root, scrutinee)
+        // G4 RELAX (Class B, v-mem-safety-signed-off, operator seq-1202 correct-memory): the blanket
+        // `!sum_cont_payload_in_result` conjunct is REMOVED. It was the over-conservative floor from the
+        // sread interior-view UAF, but that UAF is the ALIAS-OUT shape caught SEPARATELY by
+        // `!sum_cont_arm_interior_view_on_scrutinee` below. A BARE payload of the scrutinee returned in
+        // result position is ALWAYS escape-dup'd by the dup pass (verified in-process: the returned
+        // `Core::SumPayload` of the scrutinee is a dup site, dup_marked=true), so the shell deep-drop nets
+        // 1:1 against the escape — no double-free. Removing this admits the bare-compound-payload-in-result
+        // reclaim (28-wit:1043 run.run Ok-arm returns the payload bare) while the interior-view fence keeps
+        // the genuine alias-out (10-bytes:702 Bytes.slice VIEW) declined. guarded-all is the UAF backstop.
         && !sum_cont_arm_interior_view_on_scrutinee(db, root, scrutinee)
         // 05:9972: exclude a persistent-structure fold whose dedup arm returns the SCRUTINEE unchanged (`… t`)
         // — the shell-drop would free a returned node (the 13589→589 UAF). Leak beats UAF.

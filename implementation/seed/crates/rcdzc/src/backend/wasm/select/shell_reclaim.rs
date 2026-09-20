@@ -671,9 +671,17 @@ pub(crate) fn sum_shell_reclaim_ok(
             // FRESH owned shell inlined once, so strictly at least as dead-after-safe as a Call; the fences hold
             // identically and the dup pass dups any consumed payload child (12-metaprogramming:0072 Ast round-
             // trip; 10-bytes:919 str-from-bytes `Some String`). Without them those husks + payloads leaked.
+            // `Core::HostCall` (a host-boundary op, e.g. `run.run`) ALSO joins (v-mem-safety-signed-off, Class B
+            // 28-wit:1043): its result is a FRESH owned sum minted at the boundary + inlined once as the match
+            // scrutinee — it is NOT a handler-threaded state, so it cannot resume-escape a payload (dead-after-
+            // destructure holds like a plain Call). The Ok arm returns the payload BARE (escape-dup'd by the
+            // dup pass), so the shell deep-drop nets 1:1. Without it the run.run result Sum shell + payload leaked.
             || (matches!(
                 core_of(db, scrutinee),
-                Core::Call { .. } | Core::AstDecode { .. } | Core::StrFromBytes { .. }
+                Core::Call { .. }
+                    | Core::AstDecode { .. }
+                    | Core::StrFromBytes { .. }
+                    | Core::HostCall { .. }
             )
                 && scrutinee_dead_after_destructure(db, scrutinee, root)
                 && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)))
