@@ -146,7 +146,6 @@ pub(crate) type EscapedFieldPath = Vec<usize>;
 ///    borrow/consume for → `None`. So an INCOMPLETE walk only ever LEAKS (over-record → the extra dup
 ///    leaks and the census stays >0, caught by the co-gate; or bail → the existing leak), NEVER under-dups
 ///    (a UAF). Coverage widens over time; soundness does not depend on completeness.
-#[allow(dead_code)] // TEMP: dead until v-core-opt wires the serialize.rs wrapper emit that consumes it.
 pub(crate) fn escaped_field_projections(
     db: &mut Db,
     body: StructId,
