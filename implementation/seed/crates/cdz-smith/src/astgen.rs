@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(5);
+    let shape = c.variant(7);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -195,8 +195,19 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         ),
         // 4 — matchsum owned payload with an IN-ARM rebind (`SumNew`-in-arm): push onto the destructured
         // list inside the arm, then measure — stresses reclaim of the intermediate shell.
-        _ => format!(
+        4 => format!(
             "(do (type Box (Mk (List Int64))) (def (main) (match (Box.Mk (list {a} {b})) ((Mk xs) (List.len (List.push xs {d}))))) (export main))"
+        ),
+        // 5 — DUP: the destructured owned payload is USED TWICE in the arm, so it must be dup'd and each
+        // use dropped exactly once — the dup-aware-droppable reclaim class (#9385 / child-dup-parent-dup).
+        // A double-free / early-free here corrupts the summed value.
+        5 => format!(
+            "(do (type Box (Mk (List Int64))) (def (main) (match (Box.Mk (list {a} {b} {d})) ((Mk xs) (+ (List.len xs) (List.len xs))))) (export main))"
+        ),
+        // 6 — RECURSIVE-DESCENT: a depth-3 nested owned sum projected through three matches, each shell
+        // reclaimed on the way out — the recursive-descent-tuple-proj reclaim path (#9385 / 02:7314 nesting).
+        _ => format!(
+            "(do (type A (Mk (List Int64))) (type B (W A)) (type C (W B)) (def (main) (match (C.W (B.W (A.Mk (list {a} {b} {d})))) ((W bx) (match bx ((W ax) (match ax ((Mk xs) (List.len xs)))))))) (export main))"
         ),
     };
     Program { source }
@@ -4817,14 +4828,15 @@ mod tests {
     /// determinism oracles' counterpart to the corpus `(live-objects N)` leak pins) — must keep its two
     /// load-bearing invariants or every `--reclaim` sweep silently degrades: (1) EVERY generated program
     /// COMPILES cleanly (a declined shape stresses no reclaim path and contributes no value check); and
-    /// (2) ALL FIVE owned-aggregate shapes stay reachable across varied entropy (matchsum-len, loop-accum
-    /// rebind, scalar-project-drop-heap-sibling, nested sum-in-sum, in-arm push rebind) — a generator edit
-    /// that drops a shape would quietly stop exercising that reclaim class.
+    /// (2) ALL SEVEN owned-aggregate shapes stay reachable across varied entropy (matchsum-len, loop-accum
+    /// rebind, scalar-project-drop-heap-sibling, nested sum-in-sum, in-arm push rebind, dup-used-twice,
+    /// depth-3 recursive-descent) — a generator edit that drops a shape would quietly stop exercising that
+    /// reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the five shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 5];
-        for seed in 0u64..96 {
+        // Distinctive, mutually-exclusive markers for the seven shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 7];
+        for seed in 0u64..160 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -4839,21 +4851,27 @@ mod tests {
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
                 "every reclaim shape must COMPILE (a decline stresses no reclaim path): {src}"
             );
-            if src.contains("((Mk xs) (List.len xs)))") {
-                reached[0] = true;
-            } else if src.contains("(def (build (: k Int64)") {
+            // Check the UNIQUE structural markers first; shape 0's plain matchsum-len marker is generic
+            // (shape 6's innermost projection `((Mk xs) (List.len xs))` also contains it), so it goes LAST.
+            if src.contains("(def (build (: k Int64)") {
                 reached[1] = true;
             } else if src.contains("(type Pair (Mk Int64") {
                 reached[2] = true;
             } else if src.contains("(type Inner (I (List Int64))") {
                 reached[3] = true;
+            } else if src.contains("(type C (W B))") {
+                reached[6] = true;
             } else if src.contains("(List.len (List.push xs") {
                 reached[4] = true;
+            } else if src.contains("(+ (List.len xs) (List.len xs))") {
+                reached[5] = true;
+            } else if src.contains("((Mk xs) (List.len xs)))") {
+                reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all five reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all seven reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 

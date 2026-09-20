@@ -52,7 +52,8 @@ pub enum GenMode {
     LargeValue,
     /// The OWNED-AGGREGATE-RECLAIM grammar (`astgen::generate_reclaim_shapes`) — a narrow family of
     /// owned List / tagged-sum-payload programs (matchsum-len, loop-accumulator rebind, scalar-project-
-    /// drop-heap-sibling, nested sum-in-sum, in-arm push rebind) that each return a KNOWN Int64. Densifies
+    /// drop-heap-sibling, nested sum-in-sum, in-arm push rebind, dup-used-twice, depth-3 recursive-descent)
+    /// that each return a KNOWN Int64. Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
