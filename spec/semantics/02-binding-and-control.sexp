@@ -6132,6 +6132,36 @@
   (output (: 5 Int64))
   (live-objects 0))
 
+; The BRANCH-CONDITIONAL-liveness face of the dead-binding drop (the static-dead sibling lives at
+; 05:unused-heap-sibling): a match binds two heap children, then an inner `if` consumes only ONE per
+; dynamic path — so each child is statically live (used in one arm) yet branch-conditionally DEAD on the
+; taken path. Drop-insertion must reclaim the not-taken child PER BRANCH; a static all-uses-live pass that
+; dropped neither would leak the unused list, one that dropped both would double-free.
+(case
+  "a match binds two heap children and an inner branch consumes only one — the other drops per path"
+  (doc
+    "`pick` matches `(P a b)` binding two heap `Lst` children, then `(if flag (sum a) (sum b))`
+           consumes only ONE per dynamic path: on `flag` true `a` is summed and `b` is DEAD, on false `b`
+           is summed and `a` is DEAD. Both binders are statically live (each used in one arm) but
+           branch-conditionally dead on the taken path, so the reclaim must drop the not-taken child PER
+           BRANCH — only the scalar `sum` escapes, so live-objects 0 on both paths. `main`'s `flag` =
+           `(> n 2)`: n=3 → true, `sum [3,2,1]` = 6 (drops the unused `b` = `[4,3,2,1]`); n=1 → false,
+           `sum [2,1]` = 3 (drops the unused `a` = `[1]`). The two calls exercise BOTH drop paths.")
+  (input
+    (do
+      (type Lst (Nil) (Cons Int64 Lst))
+      (type Pair (P Lst Lst))
+      (def (mk (: n Int64)) (if (< n 1) (Nil) (Cons n (mk (- n 1)))))
+      (def (sum (: l Lst)) (match l ((Nil) 0) ((Cons h t) (+ h (sum t)))))
+      (def (pick (: p Pair) (: flag Bool)) (match p ((P a b) (if flag (sum a) (sum b)))))
+      (def (main (: n Int64)) (pick (P (mk n) (mk (+ n 1))) (> n 2)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 6 Int64))
+  (call main (: 1 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
 ; --- A binding position accepts an irrefutable pattern ---------------------------------------
 ; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a `let` binder (and a parameter)
 ; MAY hold an irrefutable pattern in place of a bare name, binding the names it introduces to the
