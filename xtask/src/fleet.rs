@@ -11728,6 +11728,22 @@ fn sync(fleet: &Fleet, force: bool) {
         std::process::exit(1);
     }
 
+    // ANNOUNCE the worktree + branch this sync is operating on (v-hivemind-deploy 2026-09-20). sync acts on
+    // the INVOKING process's cwd — `git rev-parse HEAD` is per-worktree — so if the cwd (or a leaked
+    // GIT_DIR/GIT_WORK_TREE) points at a PEER's worktree, sync correctly syncs THAT worktree, silently
+    // leaving the agent's own branch stranded (v-hivemind-deploy hit this: its sync ran in v-memory-safety's
+    // worktree and reported that branch's HEAD as "1 ahead", refusing to advance the real, purely-behind
+    // branch). It is not a branch-pick bug — but it was INVISIBLE. Name the toplevel + branch + HEAD up front
+    // so a wrong-worktree sync is immediately obvious instead of a stall that mimics a healthy at-rest agent.
+    let toplevel = git_stdout(&["rev-parse", "--show-toplevel"]);
+    let branch = git_stdout(&["rev-parse", "--abbrev-ref", "HEAD"]);
+    let wt_name = toplevel.rsplit('/').next().unwrap_or(&toplevel);
+    println!(
+        "fleet sync: worktree '{wt_name}' on branch '{branch}' (HEAD {}). If that is NOT the worktree you \
+         meant to sync, your cwd/GIT_DIR points at a peer — cd to your own worktree and re-run.",
+        &old_head[..old_head.len().min(10)]
+    );
+
     // Bring trunk current (the hub shares the object store, but `fetch` refreshes origin for the
     // ahead/behind reporting and is harmless if there's nothing new).
     let _ = git_ok(&["fetch", "-q", "origin"]);
