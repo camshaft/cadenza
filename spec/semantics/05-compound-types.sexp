@@ -2196,6 +2196,32 @@
   (live-objects 0))
 
 (case
+  "a nested destructure binds an unused heap sibling and it reclaims with the pair shell"
+  (doc
+    "`P` pairs two heap `Lst` values; `fst-sum` destructures `(P a _b)` and sums only `a`, so the
+           sibling `_b` — a fully-built heap `Lst` (from `(mk (+ n 1))`) bound by the pattern but never
+           read — is a DEAD binding that must be dropped, along with the `P` shell, since only the scalar
+           sum escapes. Pins that a bound-but-unused HEAP sibling in a multi-heap-child destructure
+           reclaims: the compiler both diagnoses the dead binding (it silences under `_`) AND actually
+           drops it — a dead-binding drop that failed to fire would leak `_b`'s whole spine (live-objects
+           > 0). `main` returns a bare Int64 (`sum a`), no heap escapes. `mk 2` = `[2,1]` with the unused
+           `mk 3` = `[3,2,1]` → `sum a` = 3; `mk 3` with the unused `mk 4` → 6.")
+  (input
+    (do
+      (type Lst (Nil) (Cons Int64 Lst))
+      (type Pair (P Lst Lst))
+      (def (mk (: n Int64)) (if (< n 1) (Nil) (Cons n (mk (- n 1)))))
+      (def (sum (: l Lst)) (match l ((Nil) 0) ((Cons h t) (+ h (sum t)))))
+      (def (fst-sum (: p Pair)) (match p ((P a _b) (sum a))))
+      (def (main (: n Int64)) (fst-sum (P (mk n) (mk (+ n 1)))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 3 Int64))
+  (call main (: 3 Int64))
+  (output (: 6 Int64))
+  (live-objects 0))
+
+(case
   "the borrow sibling: a runtime-heap Some payload only BORROWED reclaims to zero"
   (doc
     "The clean control for the StrToBytes-consume leak above: the identical runtime-`Some` scaffold, but
