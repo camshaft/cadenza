@@ -3267,10 +3267,32 @@ fn emit_tail(
                 never_diverges,
                 &root,
             );
+            // MATCH-EXTRACTION owned-locally COMPOUND-SUM shell reclaim (02:6042 residual, increment-1): the
+            // scrutinee is itself a `Core::MatchSum` (e.g. top's escaping-proj match INLINED into main) whose
+            // escaping child #9391 already dup'd to escape OWNED, so the outer match extracts a scalar and the
+            // now-dead COMPOUND-payload sum shell is a dead owned temporary. `sum_shell_reclaim_ok`'s
+            // all-scalar-payload TYPE floor (the sread-UAF restriction) over-approximates and declines it even
+            // though this value's arm is borrow-clean + scalar-result; `matchsum_matchextract_owned_reclaim_ok`
+            // is the 4th owned-LOCALLY twin (after proj/expect/view) — it proves owned-local via the inner
+            // match's escaping-proj dup + the G4/G5 per-arm alias fences (the PRECISE guard the coarse type
+            // floor stood in for). Non-looping (post-match fall-through drop of the stashed shell slot below);
+            // the extracted payload is scalar-copied so no child-dup is owed (the deep-drop nets the shell alone).
+            let matchextract_reclaim = matchsum_matchextract_owned_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
+            );
             let reclaim_shell = view_reclaim
                 || looped_scalar_shell
                 || (!arms_tail_call
-                    && (scalar_shell_ok || param_reclaim || proj_reclaim || expect_reclaim));
+                    && (scalar_shell_ok
+                        || param_reclaim
+                        || proj_reclaim
+                        || expect_reclaim
+                        || matchextract_reclaim));
             // Thread the owned-view shell slot into the arms' loop context so a member tail-call in an arm
             // (`find-at`'s recursive branch) drops the dead shell before its back-edge `br`. Only when the
             // match actually loops (`arms_tail_call`) and the view reclaim holds; else the arms' `tl` is
