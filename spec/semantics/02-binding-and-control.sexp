@@ -6162,6 +6162,35 @@
   (output (: 3 Int64))
   (live-objects 0))
 
+; The MINIMAL single-level isolation of the escaping-heap-child MatchSum shell reclaim (#9391's class,
+; whose mutual-recursion decoder face is 6042): a match extracts a boxed heap child that MOVES OUT/escapes,
+; leaving the dead sum shell to reclaim. Stripped of 6042's tuple / cursor / mutual-recursion so a
+; regression that stopped reclaiming the bare escaping-child match shell reds HERE with a clean attribution.
+(case
+  "a match extracts a boxed heap child that escapes and the dead sum shell reclaims"
+  (doc
+    "`unbox` matches `(B inner)` and RETURNS `inner` — the boxed heap `Lst` child ESCAPES while the
+           `B` sum SHELL is dead after the destructure. #9391 activated the escaping-heap-child MatchSum
+           shell reclaim (the 6042 class): the dead `B` shell is reclaimed even though its child moves out,
+           so only the escaped list flows to `sum` and `main` returns a bare Int64 scalar — no heap
+           survives the call: live-objects 0. The minimal single-level isolation of the 6042 mutual-
+           recursion decoder's shell reclaim, stripped of the tuple / cursor / mutual recursion. `mk 3` =
+           `[3,2,1]`, `sum` = 6; `mk 2` = `[2,1]` = 3.")
+  (input
+    (do
+      (type Lst (Nil) (Cons Int64 Lst))
+      (type Box (B Lst))
+      (def (mk (: n Int64)) (if (< n 1) (Nil) (Cons n (mk (- n 1)))))
+      (def (unbox (: bx Box)) (match bx ((B inner) inner)))
+      (def (sum (: l Lst)) (match l ((Nil) 0) ((Cons h t) (+ h (sum t)))))
+      (def (main (: n Int64)) (sum (unbox (B (mk n)))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 6 Int64))
+  (call main (: 2 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
 ; --- A binding position accepts an irrefutable pattern ---------------------------------------
 ; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a `let` binder (and a parameter)
 ; MAY hold an irrefutable pattern in place of a bare name, binding the names it introduces to the
