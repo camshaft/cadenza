@@ -671,9 +671,18 @@ pub(crate) fn sum_shell_reclaim_ok(
             // FRESH owned shell inlined once, so strictly at least as dead-after-safe as a Call; the fences hold
             // identically and the dup pass dups any consumed payload child (12-metaprogramming:0072 Ast round-
             // trip; 10-bytes:919 str-from-bytes `Some String`). Without them those husks + payloads leaked.
+            // `Core::HostCall` JOINS them (v-memory-safety + v-core-opt co-fix, 28-wit:1043 `run.run` result<>
+            // matched, Ok arm returns the payload bare): a host-delegated perform is a TERMINAL boundary call —
+            // no in-program closure/handler/continuation, no `resume` (the v-effects soundness ruling in
+            // `expr_refs_scrutinee`), so its FRESH lifted result shell is strictly at least as dead-after-safe as
+            // a Call; the dup pass dups the escaping bare payload (v-core-opt verified `dup_marked=true` on the
+            // Core::SumPayload{scrutinee} escape) so the shell deep-drop nets 1:1, no double-free.
             || (matches!(
                 core_of(db, scrutinee),
-                Core::Call { .. } | Core::AstDecode { .. } | Core::StrFromBytes { .. }
+                Core::Call { .. }
+                    | Core::HostCall { .. }
+                    | Core::AstDecode { .. }
+                    | Core::StrFromBytes { .. }
             )
                 && scrutinee_dead_after_destructure(db, scrutinee, root)
                 && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)))
