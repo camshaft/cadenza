@@ -302,6 +302,42 @@
   (live-objects 0))
 
 (case
+  "TWO DISTINCT reduced closures share one list and are each cross-applied, keeping SEPARATE captures"
+  (doc
+    "Distinct-capture tripwire for the reduced-closure lift (the #6049 force-keep / #9423 SITE-A family):
+           TWO different factory-reduced closures — `f = (mk-adder k)` = `(fn (x) (+ x k))` and
+           `g = (mk-muler k)` = `(fn (x) (* x k))` — share ONE materialized `#list(f g)` (both escape-whole)
+           AND are each DIRECTLY applied. Every use must read the RIGHT closure's captured `k` with no
+           aliasing between the two lifted slots: `(f 5)+(g 5)+(f 2)+(g 3) = (5+k)+(5·k)+(2+k)+(3·k) =
+           7 + 10k`. k=3 → 37; k=0 → 7; k=2 → 27; k=-4 → -33. Guards the SHARED-backend reduced-closure-lift
+           miscompile class (#9423's origin: the lift once reused a poisoned capture occurrence — a bad
+           wasm `call_indirect` / an unbound rust `__cap0` E0425); here TWO distinct captures in ONE list +
+           cross-apply is the never-covered two-closure extension of the single-closure `#list(f f)` pin.
+           live-objects 0 = BOTH closure env cells + the list reclaim exactly once (no leak, no cross-free).")
+  (input
+    (do
+      (def (mk-adder (: n Int64)) (fn ((: x Int64)) (+ x n)))
+      (def (mk-muler (: n Int64)) (fn ((: x Int64)) (* x n)))
+      (def
+        (main (: k Int64))
+        (let
+          ((f (mk-adder k)) (g (mk-muler k)))
+          (let ((bag #list(f g)))
+            (+ ((Option.expect (List.at bag 0) "a") 5)
+               (+ ((Option.expect (List.at bag 1) "m") 5)
+                  (+ (f 2) (g 3)))))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 37 Int64))
+  (call main (: 0 Int64))
+  (output (: 7 Int64))
+  (call main (: 2 Int64))
+  (output (: 27 Int64))
+  (call main (: -4 Int64))
+  (output (: -33 Int64))
+  (live-objects 0))
+
+(case
   "a partial application captures a runtime parameter in the residual closure"
   (doc
     "Partially applying to a VARIABLE reference must CAPTURE it in the residual lambda: `((sub n) 3)`
