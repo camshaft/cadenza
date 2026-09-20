@@ -6085,6 +6085,21 @@ pub(super) fn emit(
                             db, &elem, elem_wit, list_slot, cursor, work_base, high, scratch_ty,
                             out,
                         )?;
+                        // MARSHALED-ARG RECLAIM (v-memory-safety, list twin of the record/String/Bytes host-arg
+                        // reclaim): `emit_list_arg_marshal` walked the list (`vec-len`/`vec-get` borrow) and
+                        // COPIED each element into shared `mem` (scalar inline / rope→mem / nested record/tuple
+                        // via `emit_*_to_mem` — all pure-borrow, no `OP_DUP`, no element handle moved out), so
+                        // the list handle in `list_slot` is DEAD after the marshal. When the arg is a freshly-
+                        // built OWNED list (`heap_operand_ownership == Owned`) or a child-dup site, deep-drop it
+                        // — the cascade frees the spine + every element (all copied to the boundary, balanced;
+                        // else one list structure leaks per host call). A BORROWED list is left untouched
+                        // (leak-over-UAF). Import mirror in `collect_used_ops`'s `Ty::List` arm.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(list_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
                     }
                     // A bare scalar-payload VARIANT argument (the top-level param position): the guest emits
                     // the value-heap variant HANDLE into a slot, then decomposes it into the canonical
@@ -6103,6 +6118,20 @@ pub(super) fn emit(
                         emit_variant_reg_flatten(
                             db, var_slot, &at, work_base, high, scratch_ty, out,
                         )?;
+                        // MARSHALED-ARG RECLAIM (v-memory-safety, variant twin of the record/list host-arg
+                        // reclaim): `emit_variant_reg_flatten` read the disc + (on a payload case) the payload
+                        // scalar via borrowing `sum-disc`/`sum-payload` + unbox — pure-borrow, no dup, no handle
+                        // moved out — so the variant handle in `var_slot` is DEAD after the flatten. When the arg
+                        // is a freshly-built OWNED variant (`heap_operand_ownership == Owned`) or a child-dup
+                        // site, deep-drop it (the payload was COPIED out as a scalar, so the cascade is balanced;
+                        // else the variant shell leaks per host call). A BORROWED variant is left untouched
+                        // (leak-over-UAF). Import mirror in `collect_used_ops`'s variant-arg arm.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(var_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
                     }
                     // A scalar argument emits its value directly.
                     _ => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
