@@ -73,8 +73,52 @@ Everything else stays declined (leak-over-UAF). This is why the general PARAM pa
    pins that slice proves to 0 (never a blanket B2-at-O1 flip — that was the reverted mistake).
 4. Close the O1-opt-gating class (5620 + siblings) and the interior-view cluster to live-objects 0.
 
+## 5. Grounded findings (v-mem rc-traces, 2026-09-20; fixed seed compiler O1)
+
+Two DISTINCT admit conditions, one safety framework (§3). **They do NOT share one primitive** (answers
+the first open question below). I own both admit classifiers; v-mem owns the reclaim PLACEMENT (the
+husk-only drop / loop-exit drop emit) + census + pin flips.
+
+### (b) 465 — inner `Some(view)` shell-husk reclaim  [`/tmp/o1parity-465-rctrace.txt`]
+Repro: `pick`/`Bytes.concat` rope → `match (Bytes.slice rope 1 5) Some outer → match (Bytes.slice
+outer 1 3) Some i → i`; then `i` feeds value-eq + a `Map.lookup` key. main(0)=17, live-objects 4.
+- **What leaks:** ONLY the inner `Some(view)` Option SHELLS — node#10/#11 (first nested-match eval) +
+  node#15/#16 (second eval): `ALLOC … no freed DROP`. The payload view `i` is escape-dup'd (node#10/#15
+  `DUP 1→2`).
+- **Source chain IS reclaimed independently:** node#7 (rope Compound) `DUP 1→2` then `DROP…→0 [freed]`;
+  node#12 (outer-slice VIEW) same. So freeing the inner shell does NOT touch a live source.
+- **Admit condition (my lane):** admit a SHELL-HUSK-ONLY reclaim of the inner `Some(view)` shell (free
+  the shell cell; do NOT deep-drop / cascade into the escaped payload `i`) when: (1) the payload escapes
+  as a DUP'd arm result (`view_escapes_as_arm_result` ∧ the escape is a dup site), (2) the shell is
+  dead-after (only `i` is used downstream, not the shell), (3) the view's source chain is reclaimed on
+  every path independently of this shell. The escape-dup accounts for `i`'s surviving ref; the husk-only
+  drop reclaims exactly the un-dropped shell cell. This is why the current DEEP-drop is declined
+  (`matchsum_view_shell_reclaim_ok` bails the escaping-heap arm) — a deep-drop cascades into `i` (aliases
+  outer→rope) → UAF; a HUSK-ONLY drop does not. **New emit primitive needed: shell-husk-only drop.**
+
+### (a) 5786 — loop-exit invariant-param reclaim  [`/tmp/o1parity-5786-rctrace.txt`]
+Repro: `mb` builds `base=[0,1]`; loop threads `base` INVARIANT, each iter `List.len(List.push base 99)`;
+`base` reused every iteration and by the caller. main(2)=6, live-objects 2 (CONSTANT across m — not
+iteration-scaling).
+- **What leaks:** node#1 (base list spine, the invariant param) + node#2 (its boxed wrapper Sum). The
+  per-iteration `(List.push base 99)` results ARE reclaimed (node#3/#4, node#5/#6 alloc+freed per iter).
+  The residue is the invariant `base` never dropped at loop EXIT.
+- **Admit condition (my lane):** at loop exit, drop the consumed-and-reused invariant param spine when
+  the caller does not need it after (caller-ownership) — extend `looped_invariant_param_caller_owned`
+  (which already fences the CAESAR compare-arm case) to the consumed-arm relax. Safe iff caller discards
+  (main does) or dups. No view, no shell-husk. **Reclaim placement: loop-exit drop (v-mem).**
+
+### 266 (SITE-A) — a THIRD, simpler class (non-view, non-invariant)
+Handled separately (v-mem drafts). The coupling I already supplied: SumExpect is Owned (payload
+independent, SITE-A-droppable) iff `heap_operand_ownership(source)==Owned ∧ !matches!(core_of(source),
+BytesSlice|StrSlice|StrAt)` — element/copy producers dup the payload in; view producers alias. Same
+element-vs-view discriminator as (b), reused.
+
 ## Open questions (fill during co-design)
-- Do (a)-loop-parity and (b)-view-source-chain reduce to ONE "does the drop cascade under-drain a
-  structure the escapee still needs?" primitive, or two distinct proofs?
-- Can the O1 loop-reclaim parity reuse the O2 pipeline's drop-insertion directly, or must it be a
-  separate O1-emit pass (layout-preserving, like B2 itself)?
+- **ANSWERED:** (a) and (b) are TWO distinct proofs, not one primitive (v-mem trace 2026-09-20): (a) is
+  a whole-spine loop-exit drop gated on caller-ownership; (b) is a shell-husk-only drop gated on
+  view-source-chain non-under-drain + payload-escape-dup. Shared only via §3.
+- Does the shell-husk-only drop need a NEW Lir/emit op (free-cell-without-cascade), or can it reuse an
+  existing husk-drop path? [v-mem placement lane]
+- Can the O1 loop-exit invariant-param drop reuse the O2 pipeline's drop-insertion, or a separate
+  layout-preserving O1-emit pass (like B2)?
