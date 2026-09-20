@@ -4013,6 +4013,111 @@ fn def_funcref_taken_builds_its_referenced_code_memo_once_not_per_query() {
     });
 }
 
+// ── G4-relax escape-analysis probe (v-mem 082345 co-fix, operator seq 1202 correct-memory): the
+// compound-payload-in-result class. A MatchSum over an owned compound-payload sum whose Some arm returns the
+// payload BARE is currently declined by nontail_param_compound_extra_ok's G4 fence (sum_cont_payload_in_
+// result). v-mem's claim: the emit ALREADY dups the escaping payload, so a shell deep-drop would be BALANCED
+// (drop ⊆ dup, no double-free) — the blanket G4 exclusion is the over-conservative floor from the sread
+// interior-view UAF (a DIFFERENT shape, caught by sum_cont_arm_interior_view_on_scrutinee). This probe PINS
+// the safety precondition on a clean (non-view, non-host) bare-compound shape: (1) G4 currently blocks it;
+// (2) the returned payload IS escape-dup'd (so the relax nets to 0, no UAF). DIAGNOSTIC (prints), not a
+// landing gate — informs the exact relax predicate to compose with v-mem's recognizer.
+#[test]
+fn g4relax_bare_compound_payload_is_escape_dup_marked() {
+    let ast = crate::testkit::parse(
+        "(module m \
+           (def (f (: o (Option (Tuple Int64 Int64)))) \
+             (match o ((Option.Some v) v) ((Option.None) #tuple(0 0)))) \
+           (def (main (: k Int64)) \
+             (match (f (Option.Some #tuple(k k))) (#tuple(a b) (+ a b)))) \
+           (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (fp, fb) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, fb, &fp, &layout).expect("select f");
+    // Find f's MatchSum (scrutinee = param o, root).
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![fb];
+    let mut found = None;
+    while let Some(nd) = stack.pop() {
+        if !seen.insert(nd) {
+            continue;
+        }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd) {
+            found = Some((scrutinee, root));
+        }
+        stack.extend(crate::core_analysis::licm_children(&mut db, nd));
+    }
+    let (scrut, root) = found.expect("f MatchSum");
+    let scrut_ty = type_of(&mut db, scrut);
+    // (1) POST-RELAX: the compound non-tail-spine gate now ADMITS the bare-compound-payload-return shape
+    // (the G4 `sum_cont_payload_in_result` conjunct was removed; the interior-view + returns-scrutinee fences
+    // remain). This is the Class-B relax — safe because the returned payload is escape-dup'd (asserted below).
+    let gate = super::nontail_param_compound_extra_ok(&mut db, scrut, &scrut_ty, false, &root);
+    assert!(
+        gate,
+        "post-G4-relax: nontail_param_compound_extra_ok must ADMIT the bare-compound-payload-return shape \
+         (interior-view + returns-scrutinee fences still guard the genuine sread/whole-return hazards)"
+    );
+    // (2) SAFETY PRECONDITION: the returned payload (the Some arm's `v` = a SumPayload of the scrutinee) must
+    // be escape-dup'd, so a shell deep-drop nets 1:1. Collect dup_sites and look for the heap SumPayload of o.
+    let mut heap_binders: Vec<StructId> = Vec::new();
+    collect_retain_candidate_binders(&mut db, fb, &mut heap_binders);
+    let mut ds = std::collections::HashSet::new();
+    collect_dup_sites(&mut db, fb, &heap_binders, &mut ds);
+    collect_shell_reclaim_child_dups(&mut db, fb, &mut ds);
+    // Collect the SumCont's arm-body (Leaf) nodes — licm_children does NOT descend MatchSum arms.
+    fn leaf_bodies(root: &crate::core::SumCont, out: &mut Vec<StructId>) {
+        match root {
+            crate::core::SumCont::Leaf(b) => out.push(*b),
+            crate::core::SumCont::Guarded { body, els, .. } => {
+                out.push(*body);
+                leaf_bodies(els, out);
+            }
+            crate::core::SumCont::LitTest { then_, els, .. } => {
+                leaf_bodies(then_, out);
+                leaf_bodies(els, out);
+            }
+            crate::core::SumCont::Switch { arms, .. } => {
+                for a in arms {
+                    leaf_bodies(&a.cont, out);
+                }
+            }
+        }
+    }
+    let mut bodies = Vec::new();
+    leaf_bodies(&root, &mut bodies);
+    let mut payload_nodes = 0usize;
+    let mut payload_dupd = 0usize;
+    for b in bodies {
+        let c = core_of(&mut db, b);
+        let heap = is_heap_type(&type_of(&mut db, b));
+        let is_payload =
+            matches!(c, crate::core::Core::SumPayload { scrutinee: s, .. } if s == scrut);
+        if is_payload && heap {
+            payload_nodes += 1;
+            if ds.contains(&b) {
+                payload_dupd += 1;
+            }
+        }
+    }
+    // (2) SAFETY PRECONDITION VERIFIED: the bare compound payload returned from the Some arm IS a heap
+    // SumPayload of the scrutinee AND is escape-dup'd (dup_marked). So a shell deep-drop after the arm nets
+    // 1:1 (the escape holds an independent ref; the drop's cascade decrements the shell's) — NO double-free.
+    // This is the exact condition making v-mem's G4 relax sound for the bare-clean-compound shape (distinct
+    // from the interior-view alias-out that sum_cont_arm_interior_view_on_scrutinee guards separately).
+    assert_eq!(
+        payload_nodes, 1,
+        "the Some arm returns exactly one bare heap compound payload of the scrutinee"
+    );
+    assert_eq!(
+        payload_dupd, 1,
+        "the returned bare compound payload MUST be escape-dup'd (dup⊇escape) — the balance that makes the \
+         G4-relax shell deep-drop safe (no double-free of the returned payload)"
+    );
+}
+
 // ── 02:6042 escaping-heap-child MatchSum shell reclaim: emit consumes matchsum_escaping_proj_{node,reclaim}
 // (v-memory-safety recognizer #9388, v-core-opt emit). Pins the dup⟺drop LOCKSTEP at the Core level: the
 // recognizer identifies the sole escaping extraction node, and the dup-pass marks THAT node — so the emit's

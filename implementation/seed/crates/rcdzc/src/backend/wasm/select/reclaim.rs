@@ -146,7 +146,6 @@ pub(crate) type EscapedFieldPath = Vec<usize>;
 ///    borrow/consume for → `None`. So an INCOMPLETE walk only ever LEAKS (over-record → the extra dup
 ///    leaks and the census stays >0, caught by the co-gate; or bail → the existing leak), NEVER under-dups
 ///    (a UAF). Coverage widens over time; soundness does not depend on completeness.
-#[allow(dead_code)] // TEMP: dead until v-core-opt wires the serialize.rs wrapper emit that consumes it.
 pub(crate) fn escaped_field_projections(
     db: &mut Db,
     body: StructId,
@@ -259,6 +258,41 @@ fn collect_escaped_field_projs(
             core_child_ids(db, id)
                 .into_iter()
                 .all(|c| collect_escaped_field_projs(db, c, binder, dup_sites, false, out))
+        }
+        // `bytes-compact` is REFCOUNT-NEUTRAL (`op_bytes_compact` = flatten-in-place, return the SAME handle):
+        // the operand's cell IS the result's cell, so a binder-field projection flowing THROUGH it escapes
+        // identically to the raw projection. Passthrough the borrow classification (v-memory-safety, the
+        // 28-wit SHAPE-30 host-arg param-field escape — `#record((= contract (bytes-compact (. m contract))) …)`).
+        Core::BytesCompact { operand } => {
+            collect_escaped_field_projs(db, operand, binder, dup_sites, borrowed, out)
+        }
+        // A HOST-CALL ARG is a CONSUMING position: the owned arg structure is marshaled into memory then
+        // DEEP-DROPPED (#9402/#9403), so a binder-field projection embedded in it (`m.contract` moved into
+        // `sink.push #list(#record((= contract m.contract) …))`) MOVES OUT and its cell is freed by that arg
+        // deep-drop — the wrapper must dup it before the shell drop. Recurse args consuming, mirroring the
+        // `binder_must_escape` Call/HostCall arm. A bare whole-binder arg (`sink.push m`) reaches the `Param`
+        // arm and BAILS (a whole-shell move, not a dup-able field) — unchanged. Only `HostCall` (not the
+        // general `Core::Call`) is admitted here: the 28-wit host-arg-marshal deep-drop is the proven
+        // consuming site; a peer/member `Core::Call`'s per-callee param convention is not, so it stays in the
+        // `_ =>` bail (sound leak) until separately proven.
+        Core::HostCall { args, .. } => {
+            let args: Vec<StructId> = args.iter().copied().collect();
+            args.into_iter()
+                .all(|a| collect_escaped_field_projs(db, a, binder, dup_sites, false, out))
+        }
+        // SEQUENCING (`(do stmt… tail)`): each statement runs for side effect (a host call whose arg embeds an
+        // escaping field), then `tail` is the block value — all CONSUMING for escape purposes (mirror
+        // `binder_must_escape`). The reducer body `(host (sink) (do (sink.push …) #record(output)))` reaches
+        // the escaping `sink.push` through here; without this arm the whole body hit the `_ =>` bail.
+        Core::Seq { stmts, tail } => {
+            let stmts: Vec<StructId> = stmts.iter().copied().collect();
+            stmts
+                .into_iter()
+                .all(|s| collect_escaped_field_projs(db, s, binder, dup_sites, false, out))
+                && collect_escaped_field_projs(db, tail, binder, dup_sites, false, out)
+        }
+        Core::Block { body, .. } => {
+            collect_escaped_field_projs(db, body, binder, dup_sites, false, out)
         }
         // Any other construct (control flow If/Match, calls, loops, rebinding, MapNew/SetOf, …): safe ONLY
         // if the binder does not occur inside — else the escape may be CONDITIONAL / key-owned / opaque, so
@@ -5229,7 +5263,15 @@ pub(super) fn nontail_param_compound_extra_ok(
         && is_heap_type(scrut_ty)
         && !ty_is_enum_disc(db, scrut_ty)
         && !cont_rematches_scrutinee(db, scrutinee, root)
-        && !sum_cont_payload_in_result(db, root, scrutinee)
+        // G4 RELAX (Class B, v-mem-safety-signed-off, operator seq-1202 correct-memory): the blanket
+        // `!sum_cont_payload_in_result` conjunct is REMOVED. It was the over-conservative floor from the
+        // sread interior-view UAF, but that UAF is the ALIAS-OUT shape caught SEPARATELY by
+        // `!sum_cont_arm_interior_view_on_scrutinee` below. A BARE payload of the scrutinee returned in
+        // result position is ALWAYS escape-dup'd by the dup pass (verified in-process: the returned
+        // `Core::SumPayload` of the scrutinee is a dup site, dup_marked=true), so the shell deep-drop nets
+        // 1:1 against the escape — no double-free. Removing this admits the bare-compound-payload-in-result
+        // reclaim (28-wit:1043 run.run Ok-arm returns the payload bare) while the interior-view fence keeps
+        // the genuine alias-out (10-bytes:702 Bytes.slice VIEW) declined. guarded-all is the UAF backstop.
         && !sum_cont_arm_interior_view_on_scrutinee(db, root, scrutinee)
         // 05:9972: exclude a persistent-structure fold whose dedup arm returns the SCRUTINEE unchanged (`… t`)
         // — the shell-drop would free a returned node (the 13589→589 UAF). Leak beats UAF.
