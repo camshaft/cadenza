@@ -724,7 +724,16 @@
   (output (: 230 Int64))
   (call main (: 0 Int64))
   (output (: 210 Int64))
-  (live-objects known-leak))
+  ; FIXED (v-memory-safety + v-core-opt 465(b) co-design): the escaping single-level slice view's Some SHELL
+  ; is now husk-only reclaimed. mk-slice's `(Bytes.slice parent a 2)` Some(s) — s escapes as the arm result
+  ; (view_escapes_as_arm_result) and is its LONE consuming site (consuming.len()==1), so v-core-opt's
+  ; matchsum_view_shell_reclaim_ok disjunct ADMITS the shell deep-drop; the owned_compound_boxed child-dup of
+  ; the view (fresh Bytes.slice scrutinee IS Owned) keeps s independent so the deep-drop cascades ONE
+  ; decrement into the VIEW NODE only (never parent's storage). s survives holding parent past the helper's
+  ; frame teardown (retained-storage), reclaimed at the caller's last use. coarse-10-bytes: 0 live cells on
+  ; every heap trial (was known-leak). The NESTED slice-of-slice case (465) stays known-leak (compiler can't
+  ; assume the runtime slice-of-slice collapse → outer shell held; source-transfer follow-on).
+  (live-objects 0))
 
 (case
   "a SumExpect-unwrapped slice view BOUND and read TWICE (count>1) is NOT reclaimed (SumExpect single-consumer/escape must-hold)"
