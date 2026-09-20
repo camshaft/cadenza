@@ -636,6 +636,29 @@ pub(crate) fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<Handle
     }
 }
 
+/// Collect the `Core::Let` binders whose INITIALIZER is a genuinely OWNED value
+/// (`heap_operand_ownership == Owned`): the frame owns the value, so a `dup`'d reference to such a binder
+/// consumed by a BORROWING closure apply is a SURPLUS owned copy that the SITE-A env-cell drop can reclaim
+/// (the binder's own end-of-scope drop reclaims the original — the dup+SITE-A-drop and alloc+scope-drop
+/// balance). A binder bound to a `Param`/`Proj`/view/wrapper is NOT owned (its ownership belongs to a caller
+/// or aliases a source) → excluded, so SITE-A never drops a borrowed-from-caller cell (the 09-functions HOF
+/// `(h n)` param UAF, and a `let x = <param>` aliasing-LocalRef). Because a binder `StructId` is keyed by its
+/// initializer occurrence (unique per binding), there is no shadowing ambiguity. Read ONLY by the CallClosure
+/// SITE-A gate (`emit`); empty for a body with no owned-initializer `let`-binding, so the fast path is untouched.
+pub(crate) fn collect_sitea_owned_binders(db: &mut Db, id: StructId, out: &mut HashSet<StructId>) {
+    if let Core::Let { bindings, .. } = core_of(db, id) {
+        let pairs: Vec<(StructId, StructId)> = bindings.iter().copied().collect();
+        for (binder, init) in pairs {
+            if matches!(heap_operand_ownership(db, init), Ok(HandleOwnership::Owned)) {
+                out.insert(binder);
+            }
+        }
+    }
+    for c in core_child_ids(db, id) {
+        collect_sitea_owned_binders(db, c, out);
+    }
+}
+
 /// The JOIN of several result positions' ownership for a borrowing-op operand (see
 /// [`heap_operand_ownership`]): [`HandleOwnership::Owned`] iff EVERY body is provably `Owned`, otherwise
 /// [`HandleOwnership::Borrowed`]. A body whose ownership cannot be proven counts as `Borrowed` — the

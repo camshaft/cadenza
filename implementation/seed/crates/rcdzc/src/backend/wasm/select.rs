@@ -124,6 +124,15 @@ pub struct Emit {
     /// Computed ONCE at function entry over all heap binders (params + `let`-binders); empty for a body
     /// with no shared-then-consumed heap binding (the common case), so the fast path is untouched.
     dup_sites: HashSet<StructId>,
+    /// SITE-A owned-binder set (`collect_sitea_owned_binders`): the `Core::Let` binder ids whose initializer
+    /// is a genuinely OWNED value (`heap_operand_ownership == Owned`). Read ONLY by the `Core::CallClosure`
+    /// SITE-A env-cell reclaim: when a closure operand is a `Core::LocalRef` to such a binder AND its
+    /// occurrence is a whole-binder dup site (∈ `dup_sites`), the dup made a SURPLUS owned copy in the env
+    /// cell that the borrowing apply never consumes, so the SITE-A drop reclaims it (the binder's own scope
+    /// drop reclaims the original). A binder bound to a `Param`/view/wrapper is NOT here → SITE-A never drops
+    /// a borrowed-from-caller cell (the 09-functions HOF `(h n)` param UAF). Empty for a body with no
+    /// owned-initializer `let`-binding, so the fast path is untouched.
+    sitea_owned_binders: HashSet<StructId>,
     /// IF-JOIN PER-ARM DROP plan (v-memory-safety co-design, the Core::If analog of the loop-join per-arm
     /// reconciliation). Keyed by a `Core::If` node id → the `(slot, d_is_then)` of each DIVERGENT heap
     /// let-binding live-in to it: a binding that ESCAPES on one arm (W) but is DEAD on the other (D). The
@@ -1799,6 +1808,10 @@ pub fn select_function_of(
         let mut heap_binders: Vec<StructId> = Vec::new();
         collect_retain_candidate_binders(db, body, &mut heap_binders);
         collect_dup_sites(db, body, &heap_binders, &mut code.dup_sites);
+        // SITE-A owned-binder set: the let-binders whose initializer is a genuinely Owned value, so a dup'd
+        // reference to one consumed by a BORROWING closure apply is a surplus owned copy the SITE-A env-cell
+        // drop reclaims (a Param/view/wrapper-bound binder is excluded → never drops a borrowed-from-caller cell).
+        collect_sitea_owned_binders(db, body, &mut code.sitea_owned_binders);
         // The wrapper-scrutinee shell-reclaim's consumed-child dups: for each MatchSum over an owned
         // compound boxed-sum whose shell the emit will deep-drop, `dup` each consuming scrutinee-child
         // extraction so the drop does not double-free a moved-out child. Computed here (upfront) so the

@@ -258,12 +258,17 @@
   (output (: 7 Int64))
   (call main (: -4 Int64))
   (output (: -1 Int64))
-  ; INTERIM re-pin (v-rust-backend, 2026-08-30): #6049's CALL-BOTH-WAYS force-keep materializes the
-  ; reduced closure as one Core::Let slot; on the escape-into-#list + direct-apply path the slot's
-  ; surviving ref is not yet dropped (the surviving-owned-ref-drop reclaim class, same as cdzw66/#6022).
-  ; LEAK-side (values correct, no trap; seq-278). Real fix = the dup_sites-3690-3694 surviving-slot-drop
-  ; (v-mem co-design, in flight) → tightens to 0; #5766 tolerate-fewer auto-passes the collapse. Was (0).
-  (live-objects known-leak))
+  ; FIXED (v-memory-safety, co-design w/ v-core-opt route (b)): the reduced closure `f` (one Core::Let slot,
+  ; #6049 force-keep) escapes into #list(f f) AND is directly applied twice; the closure body BORROWS its env,
+  ; so the SITE-A post-apply env-cell drop is the intended reclaim. Two owned closure refs leaked: (1) `(f 5)`
+  ; operand = SumExpect over an OWNED List.at Option → now classified Owned iff the source is a DIRECT non-view
+  ; producer (heap_operand_ownership; view-producers + wrappers excluded, leak-over-UAF); (2) `(f 2)` operand =
+  ; a LocalRef whole-binder-DUP'd at the apply whose BINDING is Owned → SITE-A now drops such a surplus owned
+  ; copy (gated: LocalRef ∧ ∈dup_sites ∧ ∈sitea_owned_binders — excludes a borrowed Param like the HOF `(h n)`
+  ; and a LocalRef aliasing a borrowed value). Debug-runtime census 0 across main 3/0/-4 (=13/7/-1), rc-trace
+  ; balanced (node#0 → rc 0, no double-free); the f-value-through-recursive-HOF sibling stays correct (15, no
+  ; trap). Was known-leak.
+  (live-objects 0))
 
 (case
   "a partial application captures a runtime parameter in the residual closure"
