@@ -6196,6 +6196,40 @@
   (output (: 3 Int64))
   (live-objects 0))
 
+; The NON-TAIL, MULTI-USE face of the compound-sum-shell reclaim (6042/#9397 pinned the TAIL, single-use
+; face): a let-bound compound-payload sum is matched TWICE in the operands of `(+ …)` — neither match is
+; in tail position, and the shell is read by BOTH. The shell must survive the first match (the second
+; re-reads it) and reclaim exactly ONCE at end-of-scope. An over-drop after the first match UAFs the
+; second read; a per-match drop double-frees. A UAF-safety tripwire for the reclaim's liveness accounting.
+(case
+  "a compound-payload sum bound once is matched twice and its shell reclaims once, not per-match"
+  (doc
+    "`a` binds a runtime `Ast` (`top`'s `if` keeps it unfolded; `Ast` is a COMPOUND-payload sum via
+           the `AList (List Ast)` variant). `a` is matched TWICE in the two operands of `(+ …)` — both
+           NON-TAIL — each extracting the scalar `AInt` payload. The shell must stay live across the FIRST
+           match (the second re-reads it) and reclaim exactly ONCE at end-of-scope: an over-drop after the
+           first match would UAF the second read, a per-match drop would double-free. Only the scalar sum
+           escapes, so live-objects 0. Complements the tail-position compound-sum-shell reclaim (6042) with
+           the NON-TAIL, MULTI-USE face. `top 5` = `AInt 5` → 5 + 5 = 10; `top 3` → 6; `top -1` = `AList
+           []` → 0 + 0 = 0.")
+  (input
+    (do
+      (type Ast (AInt Int64) (AList (List Ast)))
+      (def (top (: x Int64)) (if (< x 0) (AList #list()) (AInt x)))
+      (def
+        (main (: n Int64))
+        (let
+          ((a (top n)))
+          (+ (match a ((AInt v) v) ((AList _l) 0)) (match a ((AInt w) w) ((AList _l) 0)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 10 Int64))
+  (call main (: 3 Int64))
+  (output (: 6 Int64))
+  (call main (: -1 Int64))
+  (output (: 0 Int64))
+  (live-objects 0))
+
 ; --- A binding position accepts an irrefutable pattern ---------------------------------------
 ; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a `let` binder (and a parameter)
 ; MAY hold an irrefutable pattern in place of a bare name, binding the names it introduces to the
