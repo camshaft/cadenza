@@ -5783,7 +5783,13 @@
   (output (: 9 Int64))
   (call main (: 4 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety, 5786(a)): known-leak->0. The invariant caller-owned `base` is CONSUMED as the
+  ; base collection of `(List.push base 99)` whose result is scalar-reduced by `List.len` — the base spine +
+  ; wrapper (rc-trace node#1 + node#2, constant across m) leaked because the borrow-only invariant-exit reclaim
+  ; declines a base-consume. Now reclaimed by the parallel `param_consumed_reused_in_loop_body` exit deep-drop
+  ; (v-core-opt wrapper over v-mem's allow_base_consume_reduced walk arm), gated invariant && caller-owned +
+  ; no-heap-child-escape. Measures live-objects 0 across m=1..8, values unchanged; rc-trace balanced (LEAK: none).
+  (live-objects 0))
 
 (case
   "a loop-invariant heap projection consumed in the loop body is not LICM-hoisted"

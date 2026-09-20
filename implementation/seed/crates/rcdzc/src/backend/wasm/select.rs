@@ -1339,7 +1339,30 @@ fn looped_owned_param_drops(
                 param_slots,
                 slot_of,
             ) {
-                continue; // not provably borrow/back-edge only → conservatively leave it (default-deny).
+                // 5786(a) PARALLEL PATH (v-memory-safety placement over v-core-opt's wrapper): a base-
+                // CONSUMING invariant param FAILS the borrow-only path (`List.push base` recurses in a result
+                // position → `_ => false`), but if the consume is a base-collection reclaim whose result is
+                // scalar-REDUCED / discarded (`param_consumed_reused_in_loop_body` — the walk with
+                // `allow_base_consume_reduced = true` + the no-heap-child-escape fences) AND this frame OWNS
+                // `binder` on entry (`looped_invariant_param_caller_owned`, HARD — the AXIS-A/CAESAR fence),
+                // the slot's own ref is live + UNALIASED at loop exit: invariance forces `binder` identity-
+                // threaded to its OWN slot, so the consume never rebinds that slot ⟹ `binder` is dup-backed ⟹
+                // the persistent-extend PATH-COPIES ⟹ `binder` survives unconsumed. A single exit deep-drop
+                // reclaims it (5786: node#1 spine + node#2 child, one cascade) with no UAF. DISJOINT from the
+                // borrow-only path above (a base consume fails it), so no double-count. leak-over-UAF: a wrong
+                // admit only over-covers a caller-owned invariant reclaim (a leak), never frees a borrowed param.
+                if param_consumed_reused_in_loop_body(
+                    db,
+                    body,
+                    *binder,
+                    &loop_members,
+                    param_slots,
+                    slot_of,
+                ) && looped_invariant_param_caller_owned(db, self_d, body, *binder)
+                {
+                    drops.push(slot);
+                }
+                continue; // borrow-only path failed; the 5786(a) parallel path decided (pushed or not).
             }
             // CALLER-REUSE GUARD (AXIS A) — scoped to the #9010 COMPARE-arm shape. Borrow-only-within-the-body
             // is necessary but NOT sufficient for a COMPARED invariant param: the loop-exit `op_drop` also

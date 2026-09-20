@@ -4285,6 +4285,97 @@ fn view_shell_465b_strat_escaping_declines_no_owned_compound_boxed_dup() {
     );
 }
 
+// ── 5786(a) consumed-reused invariant param: param_consumed_reused_in_loop_body admits the invariant `base`
+// consumed as a persistent-extend base whose result is scalar-reduced (v-core-opt wrapper over v-mem's
+// allow_base_consume_reduced flag; the parallel exit-drop placement is v-mem's). Pins the wrapper is the
+// DECIDING factor (param_only_borrowed_or_backedge denies base) and declines an escaping base.
+fn reconstruct_loop_ctx(
+    db: &mut Db,
+    fp: &[(StructId, Ty)],
+    name: &str,
+) -> (
+    Vec<usize>,
+    Vec<u32>,
+    std::collections::HashMap<StructId, u32>,
+) {
+    let self_d = db.def_by_name(name).expect("def present");
+    let mut slot_of = std::collections::HashMap::new();
+    let mut param_slots: Vec<u32> = Vec::new();
+    for (binder, ty) in fp.iter() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        let slot = param_slots.len() as u32;
+        slot_of.insert(*binder, slot);
+        param_slots.push(slot);
+    }
+    let members = mutual_loop_group(db, self_d);
+    (members, param_slots, slot_of)
+}
+
+#[test]
+fn param_consumed_reused_admits_5786_invariant_base_pushed_reduced() {
+    // 5786: loop threads `base` INVARIANT; each iter (List.len (List.push base 99)) consumes base as a
+    // persistent-extend BASE whose result is scalar-reduced into the tot slot → base's spine+wrapper leak at
+    // loop exit. The consumed-reused wrapper admits it; param_only_borrowed_or_backedge (the pre-relaxation
+    // path) DENIES it (List.push base recurses in a result position, no admit arm) — so the wrapper is the
+    // deciding factor.
+    let ast = crate::testkit::parse(
+        "(do \
+           (def (mb (: i Int64) (: n Int64) (: acc (List Int64))) \
+             (if (< i n) (mb (+ i 1) n (List.push acc i)) acc)) \
+           (def (loopf (: j Int64) (: m Int64) (: base (List Int64)) (: tot Int64)) \
+             (if (< j m) (loopf (+ j 1) m base (+ tot (List.len (List.push base 99)))) tot)) \
+           (def (main (: m Int64)) (loopf 0 m (mb 0 2 #list()) 0)) \
+           (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (fp, fb) = function_of(&mut db, "loopf");
+    let _ = select_function(&mut db, fb, &fp, &layout).expect("select loopf");
+    let (members, param_slots, slot_of) = reconstruct_loop_ctx(&mut db, &fp, "loopf");
+    assert!(
+        !members.is_empty(),
+        "loopf must be a detected self-loop group"
+    );
+    let base = fp[2].0; // params: j, m, base, tot
+    assert!(
+        !param_only_borrowed_or_backedge(&mut db, fb, base, &members, &param_slots, &slot_of),
+        "5786: the pre-relaxation path must DENY base (List.push base in a result position) — the leak the \
+         consumed-reused relaxation targets; if this passes, base was never leaking and the wrapper is moot"
+    );
+    assert!(
+        param_consumed_reused_in_loop_body(&mut db, fb, base, &members, &param_slots, &slot_of),
+        "5786: param_consumed_reused_in_loop_body must ADMIT the invariant base consumed as (List.push base 99) \
+         whose result is scalar-reduced by List.len into the tot slot — the deciding factor for the exit drop"
+    );
+}
+
+#[test]
+fn param_consumed_reused_declines_base_escaping_as_terminal() {
+    // DECLINE control: base ESCAPES as a terminal result (`else base`) → dropping it at loop exit would
+    // double-free the returned spine. The wrapper must decline (the walk's Param-in-result arm denies), even
+    // though base is otherwise invariant/back-edge-threaded. Guards against over-admitting an escaping base.
+    let ast = crate::testkit::parse(
+        "(do \
+           (def (loopf (: j Int64) (: m Int64) (: base (List Int64))) \
+             (if (< j m) (loopf (+ j 1) m base) base)) \
+           (def (main (: m Int64)) (List.len (loopf 0 m (List.push #list() 7)))) \
+           (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (fp, fb) = function_of(&mut db, "loopf");
+    let _ = select_function(&mut db, fb, &fp, &layout).expect("select loopf-escaping");
+    let (members, param_slots, slot_of) = reconstruct_loop_ctx(&mut db, &fp, "loopf");
+    let base = fp[2].0;
+    assert!(
+        !param_consumed_reused_in_loop_body(&mut db, fb, base, &members, &param_slots, &slot_of),
+        "base escapes as a terminal (`else base`) → the consumed-reused wrapper MUST decline (an exit drop \
+         would double-free the escaped spine) — leak-over-UAF"
+    );
+}
+
 // ── 02:6042 escaping-heap-child MatchSum shell reclaim: emit consumes matchsum_escaping_proj_{node,reclaim}
 // (v-memory-safety recognizer #9388, v-core-opt emit). Pins the dup⟺drop LOCKSTEP at the Core level: the
 // recognizer identifies the sole escaping extraction node, and the dup-pass marks THAT node — so the emit's
