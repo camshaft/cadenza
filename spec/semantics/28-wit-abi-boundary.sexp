@@ -2010,7 +2010,7 @@
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 And
 
@@ -2139,7 +2139,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a list<option<s64>> host arg emits, loads, and runs (via an imposed WIT world)"
@@ -2309,7 +2309,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a nested-record host arg with an option + bytes leaf emits, loads, and runs (via an imposed WIT world)"
@@ -2370,7 +2370,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a record-with-a-variant-scalar-field host arg emits, loads, and runs (via an imposed WIT world)"
@@ -2786,7 +2786,7 @@ cases
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Int64.of over a u64 host-op RESULT evaluates the host call ONCE (the range-check names the operand)"
