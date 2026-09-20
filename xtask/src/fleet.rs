@@ -22082,14 +22082,16 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert_eq!(parse_cron_line("# fleet:watchdog just a note"), None);
     }
 
-    // assertions_on_constants is DELIBERATE here: this asserts the SHIPPED const default, guarding against
-    // an accidental flip of WATCHDOG_ENABLED to true (which would re-arm the operator-banned destructive run).
-    // The lint fires under -D warnings (it took gate-local RED fleet-wide, #9409); allow it for this pin.
+    // NB: this test does NOT assert on the WATCHDOG_ENABLED const itself. `assert!(!WATCHDOG_ENABLED)` would
+    // (a) trip clippy::assertions_on_constants under -D warnings — it took gate-local RED fleet-wide in #9409,
+    // and the file convention (see the CTX_PREWALL const-block asserts near the top) has already moved OFF the
+    // `#[allow(clippy::assertions_on_constants)]` workaround — and (b) be WRONG to make a compile-time
+    // invariant, since flipping WATCHDOG_ENABLED to true is the SANCTIONED operator re-enable path (a
+    // const-block assert would block the very "flip + land" it documents). The current default (false) is a
+    // deployment choice, not a test invariant; both cron-line forms are validated explicitly via the `enabled`
+    // arg below, so the test stays green whichever way the operator sets the const.
     #[test]
-    #[allow(clippy::assertions_on_constants)]
     fn watchdog_cron_line_is_disabled_by_default_and_not_schedulable() {
-        // Default state: the destructive watchdog is OFF per the operator ban 2026-09-10.
-        assert!(!WATCHDOG_ENABLED);
         let disabled = watchdog_cron_line("/hub/watchdog.sh", false);
         // Tagged so reconcile_tagged_crons keeps/heals it — it can never silently vanish like the old
         // untagged ad-hoc line did.
