@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(8);
+    let shape = c.variant(9);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -213,8 +213,19 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // MatchSum SHELL must be reclaimed while the escaping child is KEPT (a shell-reclaim that also frees
         // the escaping child would return a freed/corrupted list). The #9388/#9391 escaping-heap-child class.
         // `main` returns the List value, compared rendered (`#list(…)`) across backends / opt levels.
-        _ => format!(
+        7 => format!(
             "(do (type Box (Mk (List Int64))) (def (main) (match (Box.Mk (list {a} {b} {d})) ((Mk xs) xs))) (export main))"
+        ),
+        // 8 — PARAM-SCRUTINEE BARE-PAYLOAD-REUSE: `eval` matches a sum-typed PARAM `t` (NOT a freshly-
+        // constructed scrutinee) and the `(Node xs)` arm passes the bare heap payload `xs` into a helper —
+        // mirroring chor-driver `render`'s `(Ast.List es) → render-list(es)`, the #082469 UAF (#9419). On a
+        // PARAM scrutinee the payload may ALIAS a spine the caller still holds, so the G4 bare-payload-in-
+        // result fence must STAY (leak-over-UAF); over-relaxing it (as #9413 did) frees `xs`'s backing while
+        // the helper still walks it → use-after-free / OOB. A distinct reclaim path from every other shape
+        // here (all of which match a FRESH-owned producer). Also a prime OPT-INVARIANCE target: at O0 `t` is
+        // a genuine param (fence path); O2/O3 inlining can turn it fresh (relax path) — a divergence is the bug.
+        _ => format!(
+            "(do (type Tree (Leaf Int64) (Node (List Int64))) (def (walk (: xs (List Int64))) (List.len xs)) (def (eval (: t Tree)) (match t ((Leaf n) n) ((Node xs) (walk xs)))) (def (main) (eval (Node (list {a} {b} {d})))) (export main))"
         ),
     };
     Program { source }
@@ -4862,15 +4873,15 @@ mod tests {
     /// determinism oracles' counterpart to the corpus `(live-objects N)` leak pins) — must keep its two
     /// load-bearing invariants or every `--reclaim` sweep silently degrades: (1) EVERY generated program
     /// COMPILES cleanly (a declined shape stresses no reclaim path and contributes no value check); and
-    /// (2) ALL EIGHT owned-aggregate shapes stay reachable across varied entropy (matchsum-len, loop-accum
+    /// (2) ALL NINE owned-aggregate shapes stay reachable across varied entropy (matchsum-len, loop-accum
     /// rebind, scalar-project-drop-heap-sibling, nested sum-in-sum, in-arm push rebind, dup-used-twice,
-    /// depth-3 recursive-descent, escaping-heap-child) — a generator edit that drops a shape would quietly
-    /// stop exercising that reclaim class.
+    /// depth-3 recursive-descent, escaping-heap-child, param-scrutinee bare-payload-reuse) — a generator edit
+    /// that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the eight shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 8];
-        for seed in 0u64..200 {
+        // Distinctive, mutually-exclusive markers for the nine shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 9];
+        for seed in 0u64..240 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -4901,13 +4912,15 @@ mod tests {
                 reached[5] = true;
             } else if src.contains("((Mk xs) xs))") {
                 reached[7] = true;
+            } else if src.contains("(type Tree (Leaf Int64)") {
+                reached[8] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all eight reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all nine reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
