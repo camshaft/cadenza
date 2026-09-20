@@ -3482,6 +3482,21 @@ fn agent_deeply_stale(is_stale: bool, hb_age: u64, window_secs: u64) -> bool {
     is_stale && hb_age > window_secs.saturating_mul(2)
 }
 
+/// How many of an agent's registry `/loop` cadences have elapsed since its last heartbeat, as a ratio
+/// (`hb_age / interval`). A monitor heartbeats each tick, so at rest it grazes up to ~1× its interval; a
+/// ratio ≥ ~2 means it has MISSED a whole registered cadence — its LIVE firing has drifted from the registry
+/// (the set-interval/cron-desync failure: the durable CronCreate cron never re-armed to the registry
+/// interval, so it fires slower or froze — v-effects showed registry 3h with its 2h cron gone stale → 6h
+/// freeze). This makes the registry-vs-actual comparison explicit so a real desync-stall is distinguishable
+/// from a healthy at-rest graze (concierge-greenlit stale-cron detector, 2026-09-20). Pure/unit-tested;
+/// `interval == 0` → 0.0 (unknown cadence, never a false drift signal).
+fn cadence_drift_ratio(hb_age_secs: u64, interval_secs: u64) -> f64 {
+    if interval_secs == 0 {
+        return 0.0;
+    }
+    hb_age_secs as f64 / interval_secs as f64
+}
+
 /// Is `line` the redundant title line of `<name>`'s status file — `# <name> status` or
 /// `# <name> — status` (any heading/emphasis/dash punctuation)? Matched so it's skipped in favor of the
 /// first REAL status line. Strips only markdown markers and the `—`/`|` separators (NOT the `-` inside a
@@ -4260,9 +4275,10 @@ fn status(fleet: &Fleet) {
         // surface it here so the board is a single pane of glass for the stall problem, not just the
         // watchdog's job. A stopped/never-stamped agent shows a plain age with no flag.
         let (hb_age, flag) = match heartbeat_age_secs(fleet, &a.name, now) {
-            None => ("never".to_string(), ""),
+            None => ("never".to_string(), String::new()),
             Some(age) => {
-                let window_secs = stale_window_secs(parse_interval_secs(&a.interval), 2, 600);
+                let interval_secs = parse_interval_secs(&a.interval);
+                let window_secs = stale_window_secs(interval_secs, 2, 600);
                 // Mirror the watchdog's pr-sync exemption so the board and the watchdog AGREE: pr-sync
                 // does minutes-long synchronous gate work per MR, so its heartbeat legitimately goes
                 // stale mid-batch — a recent commit on `trunk` (which only pr-sync writes) proves it's
@@ -4288,16 +4304,23 @@ fn status(fleet: &Fleet) {
                     wedged += 1;
                     wedged_names.push(a.name.clone());
                 }
-                (
-                    fmt_age(age),
-                    if is_wedged {
-                        " ⚠⚠WEDGED"
-                    } else if is_stale {
-                        " ⚠STALE"
-                    } else {
-                        ""
-                    },
-                )
+                // Append the registry-vs-actual cadence ratio to a stale/wedged flag so the reader sees AT A
+                // GLANCE whether a monitor's idle time has drifted past its registry cadence (a probable
+                // /loop-cron desync) vs a healthy at-rest graze — no mental math on the interval/age columns.
+                let flag = if is_wedged {
+                    format!(
+                        " ⚠⚠WEDGED {:.1}×cadence",
+                        cadence_drift_ratio(age, interval_secs)
+                    )
+                } else if is_stale {
+                    format!(
+                        " ⚠STALE {:.1}×cadence",
+                        cadence_drift_ratio(age, interval_secs)
+                    )
+                } else {
+                    String::new()
+                };
+                (fmt_age(age), flag)
             }
         };
         println!(
@@ -4313,8 +4336,11 @@ fn status(fleet: &Fleet) {
     }
     if stale > 0 {
         println!(
-            "\n  ⚠ {stale} active agent(s) STALE (heartbeat past their stale window) — the watchdog \
-             re-arms these WHEN IT IS ACTIVE (`cargo xtask fleet watchdog`)."
+            "\n  ⚠ {stale} active agent(s) STALE (heartbeat past their stale window; the ×cadence flag = \
+             idle-time ÷ registry interval) — the watchdog re-arms these WHEN IT IS ACTIVE (`cargo xtask \
+             fleet watchdog`). A high ×cadence on a slow-interval monitor is often a /loop-cron DESYNC (a \
+             `set-interval` re-issue that never re-armed, or a stale cron) rather than a slow tick — \
+             re-issue its /loop or relaunch to re-sync (the registry interval is the durable source)."
         );
     }
     if wedged > 0 {
@@ -21778,6 +21804,19 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // Frozen well past 2× the window (e.g. the 16h membrain wedge) → WEDGED.
         assert!(agent_deeply_stale(true, win * 2 + 1, win));
         assert!(agent_deeply_stale(true, 16 * 3600, win));
+    }
+
+    #[test]
+    fn cadence_drift_ratio_measures_missed_registry_cadences() {
+        // A monitor grazing at rest ≤ ~1× its interval → healthy (ratio ~≤1).
+        assert!((cadence_drift_ratio(3600, 3600) - 1.0).abs() < 1e-9); // 1h idle at 1h interval
+        assert!(cadence_drift_ratio(1800, 3600) < 1.0); // half an interval → clearly healthy
+        // The v-effects desync: registry 3h (10800s), heartbeat frozen 6h (21600s) → 2× (missed a cadence).
+        assert!((cadence_drift_ratio(21600, 10800) - 2.0).abs() < 1e-9);
+        // A deep freeze reads as a large multiple, distinguishing it from a healthy graze.
+        assert!(cadence_drift_ratio(16 * 3600, 3600) >= 15.0);
+        // interval == 0 (unknown cadence) → 0.0, never a false drift signal.
+        assert_eq!(cadence_drift_ratio(99999, 0), 0.0);
     }
 
     #[test]
