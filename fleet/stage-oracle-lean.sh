@@ -71,6 +71,15 @@ fi
 # by `timeout`; if it is starved/killed the out-link is untouched (nix is atomic) and the sweep just stays
 # skipping. `--accept-flake-config` matches the flake's trusted-substituter config used elsewhere.
 echo "stage-oracle-lean: building .#oracle-lean (out-link $OUTLINK, timeout ${BUILD_TIMEOUT}s) from $(basename "$wt") ..."
+# START BREADCRUMB (observability, 2026-09-20): stamp .last-run BEFORE the heavy build so an EXTERNAL
+# kill leaves a trace. A clean internal timeout/failure hits the else branch (rc=1) below and stamps its
+# outcome — but an OOM / low-mem-guardian / SIGKILL of THIS script mid-build writes nothing at the end,
+# leaving BOTH cron_health_failures (needs an rc= token) AND cron_stale (skips entirely when NO .last-run
+# file exists) blind, so the cron looks like it never fired. Confirmed empirically 2026-09-20: a mid-build
+# kill left zero stamp — indistinguishable from "never scheduled". Stamp rc=1 now; the success/failure
+# branches below OVERWRITE it, so this line only PERSISTS when the build was killed before completing — a
+# transient kill then self-heals on the next successful night's rc=0, a persistent one surfaces in status.
+printf '%s rc=1 BUILD-STARTED (in progress; if this rc=1 line PERSISTS to the next run the build was KILLED mid-flight — OOM/low-mem-guardian/SIGKILL — before it could stamp its outcome; nix is atomic so the out-link/store are untouched, it retries next run)\n' "$(date -Is 2>/dev/null || echo now)" > "$LASTRUN" 2>/dev/null || true
 if (cd "$wt" && timeout "$BUILD_TIMEOUT" nix build --accept-flake-config --out-link "$OUTLINK" '.#oracle-lean' >/dev/null 2>&1) \
    && [ -x "$OUTLINK/bin/oracle-check" ]; then
   printf '%s rc=0 BUILT outPath=%s\n' "$(date -Is 2>/dev/null || echo now)" "$(readlink -f "$OUTLINK" 2>/dev/null)" > "$LASTRUN" 2>/dev/null || true
