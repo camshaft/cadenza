@@ -692,6 +692,20 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
             elems.iter().all(|&e| recur(db, e, false))
         }
+        // `Core::BinBuild`/`Core::BinBitsBuild` — a runtime `(bin (uNN v) …)` / `(bits v k)` construction mints
+        // a FRESH `Bytes` from its INTEGER SEGMENT VALUES (each a scalar int emitted at select; a `bin` mixing a
+        // runtime bytes/bits splice declines at `lower`). A segment value is a scalar built from a borrow-read,
+        // never `binder`'s whole shell, so recurse each in a CONSUME position exactly like `BytesOf`/`ListNew`: a
+        // scalar built from a borrow of `binder` (`(u8 (UInt8.wrap (SumPayload (Bytes.at b i))))` — the per-byte
+        // reverse-append) recurses through the `Convert`/`SumPayload`/`BytesAt` borrow arms to a borrow of
+        // `binder` → admitted; a direct `Param(binder)` segment value (type-invalid for an int segment, but
+        // defensive) still DENIES via the `Param` arm. Without this arm the `bin` on a self-loop back-edge arg
+        // fell to `_ => false`, spuriously declining the INVARIANT Bytes param's loop-exit reclaim — the
+        // `Bytes.at`/`BytesConcat`/`Set.insert` missing-borrow-arm class (10-bytes:3070 `brev` byte-reverse: the
+        // threaded reverse-source `b` leaked its whole rope). Leak-over-UAF sound: widens acceptance toward the
+        // equivalent scalar-borrow, and a whole-`binder` consume still denies.
+        Core::BinBuild { segs } => segs.iter().all(|s| recur(db, s.value, false)),
+        Core::BinBitsBuild { fields } => fields.iter().all(|f| recur(db, f.value, false)),
         Core::Record { fields } => fields.values().all(|&v| recur(db, v, false)),
         Core::SumNew { payloads, .. } => payloads.iter().all(|&p| recur(db, p, false)),
         Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {

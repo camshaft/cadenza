@@ -3067,7 +3067,7 @@
       (export main)))
   (call main (: 2 Int64))
   (output (: 131 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- View-vs-rope equality both directions, and Bytes.compact as a CHAMP key. ---
 (case
