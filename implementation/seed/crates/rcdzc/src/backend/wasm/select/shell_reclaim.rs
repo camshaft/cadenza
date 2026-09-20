@@ -886,6 +886,65 @@ pub(crate) fn matchsum_expect_owned_reclaim_ok(
     consuming.is_empty()
 }
 
+/// The MATCH-EXTRACTION owned-locally twin of [`matchsum_expect_owned_reclaim_ok`] (the 4th such producer,
+/// after the proj/expect/view paths): a `MatchSum` whose SCRUTINEE is itself an INLINED `Core::MatchSum` that
+/// ESCAPES an owned heap child. `top`'s `(match (dn …) (#tuple(ast pos) ast))` inlines into `main`'s `(match
+/// (top …) ((AInt n) n) (_ -1))`, so `main`'s scrutinee node IS that inner `MatchSum`, and its runtime value
+/// is the escaping `AInt` shell the inner escaping-proj emit (#9391) already dup'd to rc>=1. The global
+/// `heap_operand_ownership` conservatively classes a match-extraction as BORROWED (as it does Proj/SumExpect/
+/// StrAt), so `sum_shell_reclaim_ok`'s `Owned` gate MISSES it and the extracted shell LEAKS one cell
+/// (02-binding-and-control:6042 RESIDUAL — `main`'s returned-`AInt` COMPOUND-payload shell). Treat it as owned
+/// LOCALLY (the same local>global discipline the proj/expect/view twins use): the child escaped OWNED, and it
+/// is dead-after in the outer match, so its shell is a dead owned temporary.
+///
+/// SOUNDNESS (UAF-sensitive — why the all-scalar TYPE floor forbade compound shells): a boxed-sum shell
+/// deep-drop is runtime-disc-aware (frees only the entered variant's children), so it is safe UNLESS an arm
+/// ALIASES a heap child out past the match (the sread UAF). `nontail_param_compound_extra_ok` (G4 no arm
+/// returns a heap payload / the shell whole; G5 no arm interior-view-aliases a child; not-re-matched; not-
+/// returns-scrutinee) is the PRECISE per-arm guard the coarse all-scalar TYPE floor over-approximated — gate
+/// on it directly. `main`'s `(AInt n) n` arm copies out a SCALAR (no alias) → passes; a heap-aliasing arm
+/// declines (leak beats UAF). The inner-match escaping-proj gate ([`matchsum_escaping_proj_node`]`.is_some`) is
+/// REQUIRED: it proves the child escaped OWNED (the inner emit dup'd it). A borrow-only inner match (no dup)
+/// would leave the child rc-SHARED with the inner shell, so the outer deep-drop would DOUBLE-FREE → declined.
+#[allow(dead_code)] // TEMP: inert until the emit.rs:4166 `reclaim_shell` OR-term is wired (co-fix w/ v-core-opt).
+pub(crate) fn matchsum_matchextract_owned_reclaim_ok(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    stashed_slot: Option<(u32, ValType)>,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> bool {
+    // Shared safety floor (identical to the proj/expect/view twins) + whole-scrutinee dead-after.
+    if !matches!(stashed_slot, Some((_, ValType::I32)))
+        || never_diverges
+        || !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+        || !scrutinee_dead_after_destructure(db, scrutinee, root)
+    {
+        return false;
+    }
+    // The scrutinee must be an INLINED `MatchSum` that ESCAPES an OWNED heap child — escaping-proj-recognized,
+    // so the inner emit dup'd the child (it escapes rc>=1 OWNED, not borrow-shared with the inner shell).
+    let Core::MatchSum {
+        scrutinee: inner,
+        root: inner_root,
+    } = core_of(db, scrutinee)
+    else {
+        return false;
+    };
+    let inner_ty = type_of(db, inner);
+    // `false` for the inner's `never_diverges`: permissive (the node fn bails on `true`); a never-diverging
+    // inner escapes NO value for the outer to match, so this cannot admit an unsound case.
+    if matchsum_escaping_proj_node(db, inner, &inner_ty, false, inner_root.as_ref()).is_none() {
+        return false;
+    }
+    // The PRECISE per-arm alias fence (G4/G5) the all-scalar TYPE floor over-approximated: a scalar-extracting
+    // / borrow-clean outer arm reclaims; any heap-child alias-out declines (leak-over-UAF).
+    nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)
+}
+
 /// Whether `id` is a child EXTRACTION — a `Core::SumPayload`/`Core::Proj`, or a chain of them — rooted at the
 /// match SCRUTINEE (by node id, or, for a `Param`/`LocalRef` scrutinee, its binder — the SAME identity test
 /// [`scrutinee_dead_after_destructure`] uses). A tuple pattern destructures via `Core::SumPayload` (path
