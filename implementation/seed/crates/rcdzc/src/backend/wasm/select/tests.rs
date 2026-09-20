@@ -4129,6 +4129,76 @@ fn g4relax_bare_compound_payload_is_escape_dup_marked() {
     );
 }
 
+// ── 14929 escaped-child-dup EXCLUSIVE-OWNED FENCE (v-memory-safety lane; co-design with v-core-opt). The
+// fence `payload_in_result_bare_escape_ok` is the SHARED predicate both v-core-opt's escape-dup collector and
+// the G4 `bare_payload_result_ok` PARAM-context relax key on. This witnesses the fence in isolation:
+//  ADMIT — the 14929 shape `s(t)=match t ((T.L n) n)((T.B a b)(+ (s a)(s b)))`: the L arm bare-RETURNS the
+//    heap payload `n` with NO consuming site (n is not threaded into a call/op in that arm) → safe to
+//    escape-dup + shell-drop, fence TRUE. (The B arm is not a bare-return arm — its result is `(+ …)`, a
+//    call/arith — so it is unconstrained; its consumed a/b are balanced by the shell child-dup.)
+//  DECLINE — the same shape but the L arm ALSO consumes n via a call: `((T.L n) (if (g n) n n))` — n is a
+//    consuming-payload-site (g's arg) AND bare-returned → escape-dup + shell cascade would not net → fence
+//    FALSE (leak-over-UAF). This is the same-arm return+consume hazard (the local analogue of the #9413
+//    aliased-spine OOB); a regression that dropped the consuming-site check would flip it TRUE and re-open
+//    the exact fence #9413's UAF lived behind.
+#[test]
+fn bare_escape_fence_admits_14929_leaf_return_declines_same_arm_consume() {
+    fn matchsum_of(db: &mut Db, fb: StructId) -> (StructId, std::rc::Rc<crate::core::SumCont>) {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![fb];
+        let mut found = None;
+        while let Some(nd) = stack.pop() {
+            if !seen.insert(nd) {
+                continue;
+            }
+            if let crate::core::Core::MatchSum { scrutinee, root } = core_of(db, nd) {
+                found = Some((scrutinee, root));
+            }
+            stack.extend(crate::core_analysis::licm_children(db, nd));
+        }
+        found.expect("MatchSum")
+    }
+    // ADMIT: 14929's exact shape.
+    let ast_ok = crate::testkit::parse(
+        "(module m \
+           (type T (L BigInt) (B T T)) \
+           (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0N))) \
+           (def (main (: k Int64)) (s (T.B (T.L 3N) (T.L 4N)))) \
+           (export main))",
+    );
+    let mut db = Db::load(ast_ok);
+    let layout = layout_of(&mut db);
+    let (sp, sb) = function_of(&mut db, "s");
+    let _ = select_function(&mut db, sb, &sp, &layout).expect("select s");
+    let (scrut, root) = matchsum_of(&mut db, sb);
+    assert!(
+        super::payload_in_result_bare_escape_ok(&mut db, &root, scrut),
+        "14929 L-arm bare payload return with no consuming site → fence ADMITS (escape-dup + shell-drop nets)"
+    );
+    // DECLINE: the L arm bare-returns n AND genuinely CONSUMES it — `List.push #list() n` MOVES n into a
+    // fresh list (a real consume, unlike a borrowing compare) in the non-result condition, then returns n.
+    let ast_bad = crate::testkit::parse(
+        "(module m \
+           (type T (L BigInt) (B T T)) \
+           (def (bad (: t T)) \
+             (match t \
+               ((T.L n) (if (< 0 (List.len (List.push #list() n))) n n)) \
+               ((T.B a b) (+ (bad a) (bad b))) (_ 0N))) \
+           (def (main (: k Int64)) (bad (T.B (T.L 3N) (T.L 4N)))) \
+           (export main))",
+    );
+    let mut db2 = Db::load(ast_bad);
+    let layout2 = layout_of(&mut db2);
+    let (bp, bb) = function_of(&mut db2, "bad");
+    let _ = select_function(&mut db2, bb, &bp, &layout2).expect("select bad");
+    let (scrut2, root2) = matchsum_of(&mut db2, bb);
+    assert!(
+        !super::payload_in_result_bare_escape_ok(&mut db2, &root2, scrut2),
+        "L-arm returns n AND consumes it via `g n` → non-empty consuming site → fence DECLINES (leak-over-UAF; \
+         the same-arm analogue of the #9413 aliased-spine hazard)"
+    );
+}
+
 // ── 465(b) ESCAPING-VIEW HUSK-ONLY admit classifier (DESIGN-o1-reclaim-parity §5(b), v-core-opt lane).
 // The 10-bytes:465 shape MINIMIZED to its essence: `match (Bytes.slice outer 1 3) Some i -> i` — an
 // `is_owned_single_view_producer` (BytesSlice) scrutinee whose inner `Some(view)` payload `i` escapes as the
@@ -4373,6 +4443,121 @@ fn param_consumed_reused_declines_base_escaping_as_terminal() {
         !param_consumed_reused_in_loop_body(&mut db, fb, base, &members, &param_slots, &slot_of),
         "base escapes as a terminal (`else base`) → the consumed-reused wrapper MUST decline (an exit drop \
          would double-free the escaped spine) — leak-over-UAF"
+    );
+}
+
+#[test]
+fn escape_dup_14929_admits_coupled_with_g4_relax() {
+    // 14929 escaped-child-dup (v-core-opt emit over v-mem's payload_in_result_bare_escape_ok fence): an owned
+    // recursive-sum PARAM `t` whose L arm BARE-returns a heap payload child `n`. Pins the COUPLED lockstep:
+    // the fence admits → the G4 relax admits the compound shell-drop (ReclaimKind::Compound) AND the escape-dup
+    // collector dups exactly the L-arm bare return (1 site). dup ⟺ relax BY CONSTRUCTION (single shared fence);
+    // a regression that fired the relax WITHOUT the dup (the #9413-locus UAF direction) flips escape_dup_sites
+    // to 0, and one that dropped the relax flips reclaim_kind off Compound. (The fence's DECLINE direction —
+    // a same-arm return+move — is v-mem's fence witness bare_escape_fence_admits_14929_leaf_return_declines_
+    // same_arm_consume.)
+    let ast = crate::testkit::parse(
+        "(module m \
+           (type T (L BigInt) (B T T)) \
+           (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0N))) \
+           (def (main) (s (T.B (T.L 3N) (T.L 4N)))) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (sp, sb) = function_of(&mut db, "s");
+    let _ = select_function(&mut db, sb, &sp, &layout).expect("select s");
+    // escape-dup sites
+    let mut sites = std::collections::HashSet::new();
+    collect_sumpayload_escape_dup_sites(&mut db, sb, &mut sites);
+    // find the MatchSum on t, check nontail_param_reclaim_kind
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![sb];
+    let mut kind = None;
+    let mut fence = false;
+    while let Some(nd) = stack.pop() {
+        if !seen.insert(nd) {
+            continue;
+        }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd)
+            && matches!(core_of(&mut db, scrutinee), crate::core::Core::Param { .. })
+        {
+            let sty = type_of(&mut db, scrutinee);
+            fence = payload_in_result_bare_escape_ok(&mut db, &root, scrutinee);
+            kind = nontail_param_reclaim_kind(&mut db, sb, scrutinee, &sty, false, &root);
+        }
+        stack.extend(crate::core_analysis::licm_children(&mut db, nd));
+    }
+    assert!(
+        fence,
+        "fence (payload_in_result_bare_escape_ok) must admit 14929's L-arm bare return"
+    );
+    assert!(
+        matches!(kind, Some(ReclaimKind::Compound)),
+        "G4 relax must ADMIT the compound shell-drop (ReclaimKind::Compound) via the fence — got {kind:?}"
+    );
+    assert_eq!(
+        sites.len(),
+        1,
+        "escape-dup must fire for EXACTLY the L-arm bare payload return (dup ⟺ relax); got {}",
+        sites.len()
+    );
+}
+
+#[test]
+fn escape_dup_14929_declines_mutually_recursive_body_not_owned() {
+    // 14929 OWNERSHIP fence (v-mem cad-test-json UAF, 2026-09-20): the escaped-payload relax + dup is sound ONLY
+    // for a DIRECTLY self-recursive fold (which OWNS its scrutinee). This is the MINIMIZED json-`encode` hazard:
+    // `f` has 14929's EXACT admitting shape (owned recursive-sum param `t`, L arm BARE-returns heap child `n`),
+    // but `f` is MUTUALLY recursive (`f`→`g`→`f`), so it does NOT own `t` (a real caller — e.g. `encode-elems` —
+    // may pass a BORROWED list element). The payload fence itself STILL admits (it does not know self-recursion),
+    // so this pins that the `body_is_self_recursive` OWNERSHIP gate — NOT the payload fence — is what DECLINES:
+    // reclaim_kind must NOT be Compound and the escape-dup must fire 0 sites (dup ⟺ relax lockstep). A regression
+    // dropping the ownership gate re-admits the mutual case = the 6 OOB traps. Leak-over-UAF: `f` stays a leak.
+    let ast = crate::testkit::parse(
+        "(module m \
+           (type T (L BigInt) (B T T)) \
+           (def (f (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (g a) (g b))) (_ 0N))) \
+           (def (g (: t T)) (f t)) \
+           (def (main) (g (T.B (T.L 3N) (T.L 4N)))) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (fp, fb) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, fb, &fp, &layout).expect("select f");
+    let mut sites = std::collections::HashSet::new();
+    collect_sumpayload_escape_dup_sites(&mut db, fb, &mut sites);
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![fb];
+    let mut kind = None;
+    let mut fence = false;
+    while let Some(nd) = stack.pop() {
+        if !seen.insert(nd) {
+            continue;
+        }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd)
+            && matches!(core_of(&mut db, scrutinee), crate::core::Core::Param { .. })
+        {
+            let sty = type_of(&mut db, scrutinee);
+            fence = payload_in_result_bare_escape_ok(&mut db, &root, scrutinee);
+            kind = nontail_param_reclaim_kind(&mut db, fb, scrutinee, &sty, false, &root);
+        }
+        stack.extend(crate::core_analysis::licm_children(&mut db, nd));
+    }
+    assert!(
+        fence,
+        "the payload fence itself STILL admits the L-arm bare return (it does not gate on self-recursion) — \
+         so the DECLINE below must come from the ownership gate, not the fence"
+    );
+    assert!(
+        !matches!(kind, Some(ReclaimKind::Compound)),
+        "mutually-recursive `f` does NOT own `t` → the G4 relax MUST decline the compound shell-drop \
+         (leak-over-UAF; the drop would double-free a borrowed element) — got {kind:?}"
+    );
+    assert_eq!(
+        sites.len(),
+        0,
+        "escape-dup MUST NOT fire for a non-self-recursive body (dup ⟺ relax); got {}",
+        sites.len()
     );
 }
 

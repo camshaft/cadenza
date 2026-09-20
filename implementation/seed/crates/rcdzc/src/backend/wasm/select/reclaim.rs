@@ -2739,6 +2739,14 @@ pub(super) fn collect_sumpayload_escape_dup_sites(
     sites: &mut HashSet<StructId>,
 ) {
     if !db.lifted.iter().any(|l| l.body == body) {
+        // NON-LIFTED self-recursive-fold — the 14929 escaped-child-dup branch (v-core-opt, over v-mem's
+        // `payload_in_result_bare_escape_ok` fence): a PARAM scrutinee whose compound shell
+        // `is_nontail_spine_param` reclaims, whose arm BARE-RETURNS a heap payload child the shell deep-drop
+        // would cascade-free → dup that child (feeds `code.dup_sites`, emitted at extraction, BEFORE the slot
+        // shell-drop, so dup precedes the cascade). SHARED-fence lockstep: the SAME fence gates the G4
+        // `bare_payload_result_ok` PARAM-context relax, so dup ⟺ relax by construction (the 5786/465b
+        // discipline). Over-dup (an arm the relax won't drop) = a leak, never a UAF.
+        collect_nontail_spine_escape_dup_sites(db, body, sites);
         return;
     }
     // #5833 OVER-MARK FIX (v-memory-safety-signed-off gate (a), 177 over-retention): the escape query below
@@ -2779,6 +2787,125 @@ pub(super) fn collect_sumpayload_escape_dup_sites(
         if binding_escapes_dup_aware(db, body, EscapeTarget::Node(node), false, None) {
             sites.insert(node);
         }
+    }
+}
+
+/// The 14929 escaped-child-dup collector (NON-LIFTED self-recursive-fold, v-core-opt lane over v-mem's
+/// [`payload_in_result_bare_escape_ok`] fence). For each `MatchSum` whose scrutinee is a PARAM that
+/// `is_nontail_spine_param` shell-reclaims AND whose arms pass the fence, collect the BARE payload-in-result
+/// nodes — the escaping children the shell deep-drop would cascade-free, so they must be dup'd before it.
+/// SHARED-fence lockstep with the G4 `bare_payload_result_ok` relax (dup ⟺ relax). Over-dup = leak, not UAF.
+fn collect_nontail_spine_escape_dup_sites(
+    db: &mut Db,
+    body: StructId,
+    sites: &mut HashSet<StructId>,
+) {
+    let mut matches: Vec<(StructId, crate::core::SumCont)> = Vec::new();
+    collect_param_matchsums(db, body, &mut matches);
+    for (scrut, root) in matches {
+        if is_nontail_spine_param(db, body, scrut, &root)
+            // OWNERSHIP fence (v-mem 14929 cad-test-json UAF, 2026-09-20; mirrors the drop side): the escaped-
+            // payload dup is sound ONLY for a DIRECTLY self-recursive fold, which OWNS its scrutinee (internally
+            // direct-called; a tail self-call carries no caller-drop — the same ownership proof
+            // `selfloop_scrut_shell_reclaim_ok` G6a + `def_inc1_reclaims_param` use). A MUTUALLY-recursive body
+            // (json `encode`↔`encode-elems`, invoked on BORROWED list elements) does NOT own its param → an
+            // escape-dup + shell-reclaim frees a value the caller/list still holds → UAF (6 OOB traps). Gating on
+            // `body_is_self_recursive` keeps dup ⟺ relax lockstep; a non-self-recursive body stays the pre-14929
+            // LEAK, never a UAF.
+            && body_is_self_recursive(db, body)
+            && payload_in_result_bare_escape_ok(db, &root, scrut)
+        {
+            let mut arm_bodies = Vec::new();
+            sumcont_leaf_bodies(&root, &mut arm_bodies);
+            for ab in arm_bodies {
+                collect_payload_in_result_nodes(db, ab, scrut, sites);
+            }
+        }
+    }
+}
+
+/// Walk `body` for every `MatchSum` whose scrutinee is a `Core::Param`, collecting `(scrutinee, root)`.
+/// Descends arm bodies too (`licm_children` does not enter `MatchSum` arms), so a nested param-match is found.
+fn collect_param_matchsums(
+    db: &mut Db,
+    body: StructId,
+    out: &mut Vec<(StructId, crate::core::SumCont)>,
+) {
+    fn go(
+        db: &mut Db,
+        id: StructId,
+        out: &mut Vec<(StructId, crate::core::SumCont)>,
+        seen: &mut HashSet<StructId>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        if let Core::MatchSum { scrutinee, root } = core_of(db, id) {
+            if matches!(core_of(db, scrutinee), Core::Param { .. }) {
+                out.push((scrutinee, (*root).clone()));
+            }
+            let mut bodies = Vec::new();
+            sumcont_leaf_bodies(&root, &mut bodies);
+            for b in bodies {
+                go(db, b, out, seen);
+            }
+        }
+        for c in crate::core_analysis::licm_children(db, id) {
+            go(db, c, out, seen);
+        }
+    }
+    let mut seen = HashSet::new();
+    go(db, body, out, &mut seen);
+}
+
+/// Flatten a `SumCont` decision tree to its arm leaf bodies (the `Leaf`/`Guarded`/`LitTest`/`Switch`
+/// continuations), mirroring the arm-body walk the reclaim analyses use.
+fn sumcont_leaf_bodies(root: &crate::core::SumCont, out: &mut Vec<StructId>) {
+    match root {
+        crate::core::SumCont::Leaf(b) => out.push(*b),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            out.push(*body);
+            sumcont_leaf_bodies(els, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sumcont_leaf_bodies(then_, out);
+            sumcont_leaf_bodies(els, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for a in arms {
+                sumcont_leaf_bodies(&a.cont, out);
+            }
+        }
+    }
+}
+
+/// Collect the BARE payload-in-result NODES of `id` (an arm body) that root at `scrut` — mirrors
+/// [`payload_in_result_position`]'s result-position tails (`If`/`Let`/`Seq`/`Block`/`Break`) but returns the
+/// escaping payload nodes (to escape-dup) instead of a bool. A call/ctor/arith as the result is NOT a bare
+/// payload escape (it consumes the payload inside), so it collects nothing there.
+fn collect_payload_in_result_nodes(
+    db: &mut Db,
+    id: StructId,
+    scrut: StructId,
+    out: &mut HashSet<StructId>,
+) {
+    if payload_proj_chain_roots_at_node(db, id, scrut)
+        && is_heap_type(&type_of(db, id))
+        && !matches!(get_op(db, id), Ok(Some(_)))
+    {
+        out.insert(id);
+        return;
+    }
+    match core_of(db, id) {
+        Core::If { then_, else_, .. } => {
+            collect_payload_in_result_nodes(db, then_, scrut, out);
+            collect_payload_in_result_nodes(db, else_, scrut, out);
+        }
+        Core::Let { body, .. } => collect_payload_in_result_nodes(db, body, scrut, out),
+        Core::Seq { tail, .. } => collect_payload_in_result_nodes(db, tail, scrut, out),
+        Core::Block { body, .. } => collect_payload_in_result_nodes(db, body, scrut, out),
+        Core::Break { value } => collect_payload_in_result_nodes(db, value, scrut, out),
+        _ => {}
     }
 }
 
@@ -5214,12 +5341,35 @@ pub(super) fn nontail_param_reclaim_kind(
     // emit's op_drop of the param slot CASCADES (frees the old shell + REPLACED children); the dup-pass
     // (collect_shell_reclaim_child_dups, same is_nontail_spine_param key) dups the CONSUMED/REUSED children
     // FIRST so dup ⟺ drop nets. NO-REUSE (recon) → 0; WITH-REUSE (BST del-min) → partial (27→11, pt3 residual).
-    if is_nontail_spine_param(db, top_body, scrutinee, root)
-        // PARAM path: bare_payload_result_ok = FALSE. A spine PARAM's payload may alias a shared spine the
-        // caller still holds (chor-driver render's `Ast.List(es)` → recursive render-list) → keep the G4 fence.
-        && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root, false)
-    {
-        return Some(ReclaimKind::Compound);
+    if is_nontail_spine_param(db, top_body, scrutinee, root) {
+        // PARAM path: bare_payload_result_ok is the 14929 escaped-child-dup relax (v-core-opt emit +
+        // v-mem's `payload_in_result_bare_escape_ok` fence). DEFAULT is the G4 fence (FALSE): a spine PARAM's
+        // payload may alias a shared spine the caller still holds (the chor-driver #9413 render `Ast.List(es)`
+        // → recursive render-list UAF). RELAXED to TRUE only when the fence proves every payload-in-result arm
+        // BARE-returns the payload with NO other consuming site in that arm — then the escape-dup collector
+        // (`collect_sumpayload_escape_dup_sites`'s non-lifted branch, keyed on the SAME fence) has dup'd that
+        // escaping child before the shell deep-drop, so the cascade nets 1:1 (the dup survives rc1 as the
+        // return). dup ⟺ relax BY CONSTRUCTION (single shared fence). guarded-all-gated pre-land (#9413 locus).
+        // OWNERSHIP fence (v-mem 14929 cad-test-json UAF, 2026-09-20): the escaped-payload relax is sound ONLY
+        // for a DIRECTLY self-recursive fold, which OWNS its scrutinee (internally direct-called; a tail
+        // self-call carries no caller-drop — the same ownership proof `selfloop_scrut_shell_reclaim_ok` G6a and
+        // `def_inc1_reclaims_param` use). A MUTUALLY-recursive body (json `encode`↔`encode-elems`, invoked on
+        // BORROWED list elements) does NOT own its param → escape-dup + shell-reclaim would free a value the
+        // caller/list still holds → UAF (6 OOB traps in cad-test-json). Gating `bare_escape_ok` on
+        // `body_is_self_recursive` mirrors the escape-dup collector → dup ⟺ relax stays lockstep; a
+        // non-self-recursive body falls back to the CONSUME path (bare_escape_ok=false) = the pre-14929 LEAK.
+        let bare_escape_ok = body_is_self_recursive(db, top_body)
+            && payload_in_result_bare_escape_ok(db, root, scrutinee);
+        if nontail_param_compound_extra_ok(
+            db,
+            scrutinee,
+            scrut_ty,
+            never_diverges,
+            root,
+            bare_escape_ok,
+        ) {
+            return Some(ReclaimKind::Compound);
+        }
     }
     None
 }
@@ -5380,6 +5530,121 @@ fn payload_in_result_position(db: &mut Db, id: StructId, scrut: StructId) -> boo
         // A call/constructor/arith as the result CONSUMES the payload inside its args — not a bare result
         // escape (constructor-as-result is separately blocked by sum_cont_arm_constructs_compound).
         _ => false,
+    }
+}
+
+/// v-memory-safety EXCLUSIVE-OWNED FENCE for the 14929 escaped-child-dup increment (co-design with
+/// v-core-opt; the SHARED predicate BOTH the escape-dup collector AND the G4 `bare_payload_result_ok`
+/// PARAM-context relax key on — so escape-dup fires IFF the fence admits IFF G4 relaxes, dup⟺drop⟺relax by
+/// construction, the 5786/465b shared-predicate discipline). Whether EVERY arm of `cont` that bare-RETURNS a
+/// payload-projection of `scrut` in result position does so SAFELY: that arm must NOT ALSO move a payload of
+/// `scrut` into a CONSUMING position (a member/self call, a consuming op) — i.e. the bare-returned child is
+/// the SOLE use of `scrut`'s payload in that arm, so escape-dup'ing it before the shell deep-drop nets 1:1
+/// (the cascade decrements the dup; the return survives rc1). 14929's L arm `((T.L n) n)` bare-returns `n`
+/// with no consuming site → ADMIT; a synthetic `((T.L n) (do (s n) n))` returns `n` AND consumes it via the
+/// self-call → the consuming site is non-empty → DECLINE (leak-over-UAF). The #9413 render hazard
+/// (`Ast.List(es)`→`render-list(es)`) never even trips this: its payload is CALL-CONSUMED, not bare-returned
+/// (`payload_in_result_position` is `_=>false` for a call-as-result), so that arm returns `true` here and the
+/// relax is decided by whether some OTHER arm bare-returns. Arms that do NOT bare-return are UNCONSTRAINED —
+/// their consumes are balanced by the existing shell-reclaim child-dup (`collect_shell_reclaim_child_dups`).
+/// CROSS-ARM is vacuous under variant-exclusivity (one arm runs per value; the escape-dup is on the EXACT
+/// returned node, so dup⟺drop nets regardless of a sibling arm); the per-arm "bare-return ⟹ no consuming
+/// site in that arm" test also directly rejects the same-arm return+consume hazard (the real one), and is
+/// STRICTER than a same-node coincidence check (it declines a bare-return arm that consumes ANY payload of
+/// `scrut`, even a disjoint sibling) — sound-conservative (an over-decline is a leak, never a double-free).
+/// WIRED (v-core-opt, 14929): consulted by `collect_sumpayload_escape_dup_sites`'s non-lifted branch (the
+/// escape-dup collector) AND `nontail_param_reclaim_kind`'s G4 `bare_payload_result_ok` relax — the SHARED
+/// predicate that makes dup ⟺ relax by construction. Gates guarded-all pre-land (this relax touches the exact
+/// fence #9413's UAF lived behind).
+pub(super) fn payload_in_result_bare_escape_ok(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrut: StructId,
+) -> bool {
+    // Whether a payload of `scrut` is consumed OUTSIDE the RESULT-position tail of this arm body — i.e. moved
+    // into a member/self call / a consuming op that is NOT itself the returned escape. The bare-returned
+    // payload (the result tail) is the escape we dup, so it is NOT a hazard; a consume in a condition / a
+    // let-initializer / a sequenced effect IS (the same-arm return+consume hazard, the local analogue of the
+    // #9413 aliased-spine OOB). Follows the SAME result-position tails as `payload_in_result_position`.
+    fn nonresult_payload_consume(db: &mut Db, id: StructId, scrut: StructId) -> bool {
+        fn consumes(db: &mut Db, sub: StructId, scrut: StructId) -> bool {
+            let mut sites = HashSet::new();
+            collect_consuming_payload_sites_expr(db, sub, scrut, true, &mut sites);
+            !sites.is_empty()
+        }
+        match core_of(db, id) {
+            Core::If { cond, then_, else_ } => {
+                consumes(db, cond, scrut) // cond is NON-result
+                    || nonresult_payload_consume(db, then_, scrut)
+                    || nonresult_payload_consume(db, else_, scrut)
+            }
+            Core::Let { bindings, body } => {
+                let inits: Vec<StructId> = bindings.iter().map(|&(_, v)| v).collect();
+                inits.into_iter().any(|v| consumes(db, v, scrut)) // initializers are NON-result
+                    || nonresult_payload_consume(db, body, scrut)
+            }
+            Core::Seq { stmts, tail } => {
+                let stmts: Vec<StructId> = stmts.iter().copied().collect();
+                stmts.into_iter().any(|s| consumes(db, s, scrut)) // sequenced effects are NON-result
+                    || nonresult_payload_consume(db, tail, scrut)
+            }
+            Core::Block { body, .. } => nonresult_payload_consume(db, body, scrut),
+            Core::Break { value } => nonresult_payload_consume(db, value, scrut),
+            // A bare payload result (the escape) or a call/op result: not a NON-result consume. (A call-as-
+            // result consuming the payload is the render shape — but then `payload_in_result_position` is
+            // false and `arm_ok` returns early, so this is never reached for it.)
+            _ => false,
+        }
+    }
+    // Whether the RESULT tail of this arm is a DIRECT single-level `SumPayload{scrutinee: scrut}` (heap,
+    // non-scalar) — the 14929 leaf shape `((T.L n) n)`. NOT a deeper/nested projection chain (a `Proj` of a
+    // record, or a payload-of-a-payload) — e.g. json `encode`'s `((JNum n) (match n (Num r) r.raw))` returns
+    // `r.raw = Proj(SumPayload(SumPayload(v)))`, a MULTI-LEVEL child whose exclusive ownership the single
+    // top-node escape-dup does NOT cover (the shell cascade frees an intermediate the dup didn't protect) →
+    // a cross-chapter UAF (cad-test-json encode/rpc OOB). Restricting to the DIRECT payload keeps 14929/14941
+    // (direct `SumPayload{t}`) and DECLINES the nested case (leak-over-UAF; a deeper escaped child needs a
+    // deeper co-design, not this increment). Follows the SAME result tails as `payload_in_result_position`.
+    fn result_tail_is_direct_payload(db: &mut Db, id: StructId, scrut: StructId) -> bool {
+        match core_of(db, id) {
+            Core::SumPayload { scrutinee, .. } => {
+                scrutinee == scrut
+                    && is_heap_type(&type_of(db, id))
+                    && get_op(db, id).ok().flatten().is_none()
+            }
+            Core::If { then_, else_, .. } => {
+                result_tail_is_direct_payload(db, then_, scrut)
+                    || result_tail_is_direct_payload(db, else_, scrut)
+            }
+            Core::Let { body, .. } => result_tail_is_direct_payload(db, body, scrut),
+            Core::Seq { tail, .. } => result_tail_is_direct_payload(db, tail, scrut),
+            Core::Block { body, .. } => result_tail_is_direct_payload(db, body, scrut),
+            Core::Break { value } => result_tail_is_direct_payload(db, value, scrut),
+            _ => false,
+        }
+    }
+    fn arm_ok(db: &mut Db, body: StructId, scrut: StructId) -> bool {
+        if !payload_in_result_position(db, body, scrut) {
+            return true; // not a bare-return arm — its consumes are balanced by the shell child-dup.
+        }
+        // Bare-return arm: (a) the returned payload must be a DIRECT single-level `SumPayload` of `scrut`
+        // (the escape-dup of that one node fully covers it under the shell cascade — a nested/deeper child is
+        // NOT covered → the encode/rpc OOB UAF), AND (b) it must be the SOLE use — no payload of `scrut` also
+        // consumed outside the result tail. Either failing → DECLINE (leak-over-UAF).
+        result_tail_is_direct_payload(db, body, scrut)
+            && !nonresult_payload_consume(db, body, scrut)
+    }
+    match cont {
+        crate::core::SumCont::Leaf(body) => arm_ok(db, *body, scrut),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            arm_ok(db, *body, scrut) && payload_in_result_bare_escape_ok(db, els, scrut)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            payload_in_result_bare_escape_ok(db, then_, scrut)
+                && payload_in_result_bare_escape_ok(db, els, scrut)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .all(|a| payload_in_result_bare_escape_ok(db, &a.cont, scrut)),
     }
 }
 
