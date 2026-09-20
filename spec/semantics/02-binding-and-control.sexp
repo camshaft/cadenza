@@ -6090,6 +6090,36 @@
   ; `binder_shell_droppable`); #9101 partition (moved-out child, not droppable) + dqe17 (whole-escape) stay KEPT.
   (live-objects 0))
 
+; The ISOLATED ev-recursive-match Neg-shell face of the recursive-descent parser above (6085): strip the
+; return tuple, the LET shell, and the two-compound-child projection, leaving ONLY mk's single Expr.Neg
+; chain and ev's recursive match that destructures each Neg shell (dead after its payload is extracted)
+; and consumes the payload with (ev x). This is the minimal witness for the per-level Neg-shell reclaim
+; (the nontail-spine scalar-payload path) — a refcount change that failed to reclaim the per-level shell
+; would red HERE without 6085's tuple / LET-shell / two-child moving parts confounding the attribution.
+(case
+  "a recursive match consumes a boxed-sum chain built by a recursive constructor and returns a scalar"
+  (doc
+    "`mk` builds a single Expr.Neg chain `Neg^n(Lit 5)` by recursive construction; `ev` recursively
+           matches it, destructuring each Expr.Neg SHELL (dead after the payload `x` is extracted) and
+           consuming the payload with `(ev x)`, bottoming out at `(Expr.Lit v) -> v`. Each Neg shell is a
+           nontail-spine scalar-payload reclaim — the scrutinee is Borrowed, the shell is dup'd once and
+           dropped — so the deep-drop epilogue reclaims the whole chain and `main` returns a bare Int64
+           scalar with no heap escaping the call: live-objects 0. Pins the per-level Neg-shell reclaim in
+           isolation from the 6085 parser confounds. `mk 3` = `Neg(Neg(Neg(Lit 5)))`, `ev` gives
+           `-(-(-5))` = -5; `mk 2` = `Neg(Neg(Lit 5))` gives 5.")
+  (input
+    (do
+      (type Expr (Lit Int64) (Neg Expr))
+      (def (mk (: n Int64)) (if (< n 1) (Expr.Lit 5) (Expr.Neg (mk (- n 1)))))
+      (def (ev (: e Expr)) (match e ((Expr.Lit v) v) ((Expr.Neg x) (- 0 (ev x)))))
+      (def (main (: n Int64)) (ev (mk n)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: -5 Int64))
+  (call main (: 2 Int64))
+  (output (: 5 Int64))
+  (live-objects 0))
+
 ; --- A binding position accepts an irrefutable pattern ---------------------------------------
 ; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a `let` binder (and a parameter)
 ; MAY hold an irrefutable pattern in place of a bare name, binding the names it introduces to the
