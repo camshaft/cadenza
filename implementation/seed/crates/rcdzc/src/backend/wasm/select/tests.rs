@@ -4129,6 +4129,76 @@ fn g4relax_bare_compound_payload_is_escape_dup_marked() {
     );
 }
 
+// ── 14929 escaped-child-dup EXCLUSIVE-OWNED FENCE (v-memory-safety lane; co-design with v-core-opt). The
+// fence `payload_in_result_bare_escape_ok` is the SHARED predicate both v-core-opt's escape-dup collector and
+// the G4 `bare_payload_result_ok` PARAM-context relax key on. This witnesses the fence in isolation:
+//  ADMIT — the 14929 shape `s(t)=match t ((T.L n) n)((T.B a b)(+ (s a)(s b)))`: the L arm bare-RETURNS the
+//    heap payload `n` with NO consuming site (n is not threaded into a call/op in that arm) → safe to
+//    escape-dup + shell-drop, fence TRUE. (The B arm is not a bare-return arm — its result is `(+ …)`, a
+//    call/arith — so it is unconstrained; its consumed a/b are balanced by the shell child-dup.)
+//  DECLINE — the same shape but the L arm ALSO consumes n via a call: `((T.L n) (if (g n) n n))` — n is a
+//    consuming-payload-site (g's arg) AND bare-returned → escape-dup + shell cascade would not net → fence
+//    FALSE (leak-over-UAF). This is the same-arm return+consume hazard (the local analogue of the #9413
+//    aliased-spine OOB); a regression that dropped the consuming-site check would flip it TRUE and re-open
+//    the exact fence #9413's UAF lived behind.
+#[test]
+fn bare_escape_fence_admits_14929_leaf_return_declines_same_arm_consume() {
+    fn matchsum_of(db: &mut Db, fb: StructId) -> (StructId, std::rc::Rc<crate::core::SumCont>) {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![fb];
+        let mut found = None;
+        while let Some(nd) = stack.pop() {
+            if !seen.insert(nd) {
+                continue;
+            }
+            if let crate::core::Core::MatchSum { scrutinee, root } = core_of(db, nd) {
+                found = Some((scrutinee, root));
+            }
+            stack.extend(crate::core_analysis::licm_children(db, nd));
+        }
+        found.expect("MatchSum")
+    }
+    // ADMIT: 14929's exact shape.
+    let ast_ok = crate::testkit::parse(
+        "(module m \
+           (type T (L BigInt) (B T T)) \
+           (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0N))) \
+           (def (main (: k Int64)) (s (T.B (T.L 3N) (T.L 4N)))) \
+           (export main))",
+    );
+    let mut db = Db::load(ast_ok);
+    let layout = layout_of(&mut db);
+    let (sp, sb) = function_of(&mut db, "s");
+    let _ = select_function(&mut db, sb, &sp, &layout).expect("select s");
+    let (scrut, root) = matchsum_of(&mut db, sb);
+    assert!(
+        super::payload_in_result_bare_escape_ok(&mut db, &root, scrut),
+        "14929 L-arm bare payload return with no consuming site → fence ADMITS (escape-dup + shell-drop nets)"
+    );
+    // DECLINE: the L arm bare-returns n AND genuinely CONSUMES it — `List.push #list() n` MOVES n into a
+    // fresh list (a real consume, unlike a borrowing compare) in the non-result condition, then returns n.
+    let ast_bad = crate::testkit::parse(
+        "(module m \
+           (type T (L BigInt) (B T T)) \
+           (def (bad (: t T)) \
+             (match t \
+               ((T.L n) (if (< 0 (List.len (List.push #list() n))) n n)) \
+               ((T.B a b) (+ (bad a) (bad b))) (_ 0N))) \
+           (def (main (: k Int64)) (bad (T.B (T.L 3N) (T.L 4N)))) \
+           (export main))",
+    );
+    let mut db2 = Db::load(ast_bad);
+    let layout2 = layout_of(&mut db2);
+    let (bp, bb) = function_of(&mut db2, "bad");
+    let _ = select_function(&mut db2, bb, &bp, &layout2).expect("select bad");
+    let (scrut2, root2) = matchsum_of(&mut db2, bb);
+    assert!(
+        !super::payload_in_result_bare_escape_ok(&mut db2, &root2, scrut2),
+        "L-arm returns n AND consumes it via `g n` → non-empty consuming site → fence DECLINES (leak-over-UAF; \
+         the same-arm analogue of the #9413 aliased-spine hazard)"
+    );
+}
+
 // ── 465(b) ESCAPING-VIEW HUSK-ONLY admit classifier (DESIGN-o1-reclaim-parity §5(b), v-core-opt lane).
 // The 10-bytes:465 shape MINIMIZED to its essence: `match (Bytes.slice outer 1 3) Some i -> i` — an
 // `is_owned_single_view_producer` (BytesSlice) scrutinee whose inner `Some(view)` payload `i` escapes as the
