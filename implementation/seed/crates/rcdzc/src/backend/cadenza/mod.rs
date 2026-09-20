@@ -4476,7 +4476,33 @@ fn build_arm_pat_inner(
         if let (crate::core::Probe::Str(s), Ty::Symbol) = (probe, ty) {
             return Ok(b.atom_leaf(Leaf::Sym(s.as_str().into())));
         }
-        return Ok(*lit);
+        // Rebuild a FRESH literal atom from the probe rather than returning the pre-built `lit` StructId.
+        // The one `lit` node (built once in `emit_switch_tree`'s `LitTest` arm) is threaded via `lit_choices`
+        // into EVERY arm that keeps this slot fixed to the literal — the matched `then_` arm AND any deeper
+        // `els` arm still holding this ancestor slot fixed. A 2-field record `(match t (#record((= a 1)
+        // (= b 2)) …) …)` fixes `Elem(0)=1` in both `(#record((= a 1) (= b 2)) …)` and the inner-els
+        // `(#record((= a 1) (= b k)) …)`; a tuple-of-bools / wide multi-column match reuses each literal
+        // across its sibling arms likewise. Returning the shared `*lit` id makes those arms share ONE
+        // structure node → the emitted AST is a DAG, and the binary codec's tree-ness guard (no shared
+        // subtree — a decode-bomb guard) rejects it on decode ("invalid binary encoding", HOP2 fails to
+        // recompile — 05-compound record-literal-fields / tuple-of-two-bools / wide-multi-column). A fresh
+        // atom per occurrence keeps the AST a tree; the value is identical, so the recompile is unchanged.
+        // (`Symbol`/`ListLen` above already rebuild fresh, hence were unaffected.) A probe kind that does not
+        // reach here as a scalar leaf (only `ListLen`/`MapHasKeys`, handled/declined earlier) keeps `*lit`.
+        let fresh = match probe {
+            crate::core::Probe::Int(v) => b.atom_leaf(Leaf::Int {
+                value: v.clone(),
+                radix: Radix::Dec,
+            }),
+            crate::core::Probe::Bool(x) => b.atom_leaf(Leaf::Bool(*x)),
+            crate::core::Probe::Str(s) => b.atom_leaf(Leaf::Str(s.as_str().into())),
+            crate::core::Probe::Char(c) => b.atom_leaf(Leaf::Char(*c)),
+            crate::core::Probe::Bytes(bytes) => {
+                b.atom_leaf(Leaf::Bytes(std::sync::Arc::from(bytes.as_ref())))
+            }
+            _ => *lit,
+        };
+        return Ok(fresh);
     }
     if let Some(choice) = choices.get(path) {
         return match choice {
