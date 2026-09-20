@@ -147,6 +147,59 @@
   (live-objects 0))
 
 (case
+  "an escaping String.at view returned from a helper is read TWICE across an allocation without a shell-drop UAF"
+  (doc
+    "The string-chapter end-to-end tripwire for the #9430 465(b) escaping-view husk-only reclaim fence
+           (v-core-opt+v-mem co-design). `mk-char` builds a RUNTIME-LOCAL parent rope
+           (`String.from-bytes (Bytes.of …)` = \"abcd\") and returns the ESCAPING arm of
+           `(match (String.at parent i) ((Some c) c) …)` — a single-consume escaping StrAt view, the EXACT
+           465(b) shape (view_escapes_as_arm_result ∧ consuming.len()==1). The 465(b) disjunct WOULD admit a
+           shell deep-drop here, but the dup provider `owned_compound_boxed` is Owned-gated and StrAt is
+           deliberately NOT `heap_operand_ownership==Owned` (the local>global discipline), so an admit would
+           shell-drop the Some WITHOUT a balancing child-dup of `c` → free the escaped view while it is still
+           read = UAF (double-free trap). v-core-opt's `owned_compound_boxed` fence DECLINES the admit for
+           StrAt (leak-over-UAF), so `c` survives and is value-correct. `main` reads `c`'s content (`first`),
+           allocates an intervening `filler` rope, then reads `c`'s length AND content AGAIN — a freed-then-
+           reused char cell would corrupt the second read. Values: 1000·len(filler=3) + 100·len(c=1) +
+           10·first + code(c) = 3000+100+10·k+k. i=0→3111 (\"a\"), 1→3122 (\"b\"), 3→3144 (\"d\"), oob 5→None→
+           \"z\"→3100. Confirmed by v-core-opt from the compiler side: this shape exercises the 465(b) StrAt
+           decline and the fence is the DECIDING factor (would-admit-without-fence=true). LEAK-OVER-UAF
+           RESIDUAL: the declined shell-drop leaks (nix debug-runtime census = 6, an accepted leak — native
+           --report-live-objects unfaithfully reads 0), so pinned `known-leak`; a change that removes/weakens
+           the `owned_compound_boxed` gate flips this to a content-oracle failure or a debug-counters TRAP
+           (double-free) — a distinguishable end-to-end UAF catch, the string-chapter coverage coarse-10-bytes
+           (BytesSlice-only) cannot give, complementing v-core-opt's predicate-level decline witness.
+           v-core-opt OWNS the flip known-leak → 0 (a StrAt-escaping child-dup co-placed with the husk-drop,
+           the O1-reclaim-parity follow-on, sibling to the 465 slice-of-slice source-transfer).")
+  (input
+    (do
+      (def
+        (code (: s String))
+        (if (= s "a") 1 (if (= s "b") 2 (if (= s "c") 3 (if (= s "d") 4 0)))))
+      (def
+        (mk-char (: i Int64))
+        (let ((parent (Option.expect (String.from-bytes (Bytes.of #list(97 98 99 100))) "p")))
+          (match (String.at parent i) ((Some c) c) ((None _u) "z"))))
+      (def
+        (main (: i Int64))
+        (let ((c (mk-char i)))
+          (let ((first (code c)))
+            (let ((filler (Option.expect (String.from-bytes (Bytes.of #list(120 121 122))) "f")))
+              (+ (* 1000 (String.byte-len filler))
+                 (+ (* 100 (String.byte-len c))
+                    (+ (* 10 first) (code c))))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3111 Int64))
+  (call main (: 1 Int64))
+  (output (: 3122 Int64))
+  (call main (: 3 Int64))
+  (output (: 3144 Int64))
+  (call main (: 5 Int64))
+  (output (: 3100 Int64))
+  (live-objects known-leak))
+
+(case
   "a String.at result then reuse of the source does not double-free"
   (doc
     "The String.at slice-compaction plus borrow-dup fix must not double-free the source: reading a
