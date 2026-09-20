@@ -1157,6 +1157,10 @@ pub(super) fn collect_used_ops_into_seen(
                         // the marshal calls (else the `CallImport` resolves to u32::MAX → an invalid module).
                         out.insert(OP_VEC_LEN);
                         out.insert(OP_VEC_GET);
+                        // Import mirror of the marshaled-list-arg reclaim (emit.rs `HostCall` `Ty::List` arm):
+                        // the emit deep-drops the list cell iff `Owned` or a dup-site — declare `drop` for every
+                        // list host-arg (safe superset, same policy as the String/Bytes + Record arms).
+                        out.insert(OP_DROP);
                         collect_list_elem_ops(db, &elem, out);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
@@ -1171,6 +1175,10 @@ pub(super) fn collect_used_ops_into_seen(
                     {
                         out.insert(OP_SUM_DISC);
                         out.insert(OP_SUM_PAYLOAD);
+                        // Import mirror of the marshaled-variant-arg reclaim (emit.rs `HostCall` variant arm):
+                        // the emit deep-drops the variant cell iff `Owned` or a dup-site — declare `drop` for
+                        // every variant host-arg (safe superset, same policy as the other compound arms).
+                        out.insert(OP_DROP);
                         if let Some(cases) =
                             crate::backend::wasm::host::variant_scalar_payload_cases(db, &at)
                             && let Some(pd) = cases.iter().position(|(_, p)| p.is_some())

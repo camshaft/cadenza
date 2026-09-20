@@ -1645,7 +1645,7 @@
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a record-with-a-list-field host arg emits, loads, and runs (via an imposed WIT world)"
@@ -1823,7 +1823,7 @@
       (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output #record((= requests #list()) (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer threading a list<tuple<bytes,bytes>> host-op result branches on its length (via an imposed WIT world)"
