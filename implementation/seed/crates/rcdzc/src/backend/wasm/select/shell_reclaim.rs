@@ -684,7 +684,10 @@ pub(crate) fn sum_shell_reclaim_ok(
                     | Core::HostCall { .. }
             )
                 && scrutinee_dead_after_destructure(db, scrutinee, root)
-                && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)))
+                // FRESH-PRODUCER path: bare_payload_result_ok = TRUE. The scrutinee is a Call/HostCall/
+                // AstDecode/StrFromBytes result — a freshly-minted owned value whose bare payload is owned
+                // exclusively by it, so a bare-payload-in-result reclaim nets 1:1 (28-wit:1043 run.run).
+                && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root, true)))
 }
 
 /// The owned-single-view-producer twin of [`sum_shell_reclaim_ok`] for `MatchSum` (the `SumExpect`
@@ -949,8 +952,10 @@ pub(crate) fn matchsum_matchextract_owned_reclaim_ok(
         return false;
     }
     // The PRECISE per-arm alias fence (G4/G5) the all-scalar TYPE floor over-approximated: a scalar-extracting
-    // / borrow-clean outer arm reclaims; any heap-child alias-out declines (leak-over-UAF).
-    nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)
+    // / borrow-clean outer arm reclaims; any heap-child alias-out declines (leak-over-UAF). bare_payload_result_ok
+    // = FALSE: the inner-match scrutinee here is NOT a proven fresh-owned producer, so keep the G4 fence
+    // (conservative; leak-over-UAF — the choreography-UAF-fix default for every non-fresh-producer context).
+    nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root, false)
 }
 
 /// Whether `id` is a child EXTRACTION — a `Core::SumPayload`/`Core::Proj`, or a chain of them — rooted at the

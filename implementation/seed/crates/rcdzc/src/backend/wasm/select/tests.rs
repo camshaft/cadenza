@@ -4051,14 +4051,25 @@ fn g4relax_bare_compound_payload_is_escape_dup_marked() {
     }
     let (scrut, root) = found.expect("f MatchSum");
     let scrut_ty = type_of(&mut db, scrut);
-    // (1) POST-RELAX: the compound non-tail-spine gate now ADMITS the bare-compound-payload-return shape
-    // (the G4 `sum_cont_payload_in_result` conjunct was removed; the interior-view + returns-scrutinee fences
-    // remain). This is the Class-B relax — safe because the returned payload is escape-dup'd (asserted below).
-    let gate = super::nontail_param_compound_extra_ok(&mut db, scrut, &scrut_ty, false, &root);
+    // (1) CONTEXT-CONDITIONAL G4 (choreography UAF #082469 fix): the bare-compound-payload-return relax is
+    // sound ONLY for a FRESH-OWNED PRODUCER scrutinee (bare_payload_result_ok = true — the sum_shell_reclaim_ok
+    // path, 28-wit:1043 run.run). For a general PARAM scrutinee (bare_payload_result_ok = false — this test's
+    // `o`) the payload may alias a shared spine, so the fence stays and the gate DECLINES (leak-over-UAF; the
+    // chor-driver render `Ast.List(es)` OOB the blanket #9413 relax caused).
+    let gate_param =
+        super::nontail_param_compound_extra_ok(&mut db, scrut, &scrut_ty, false, &root, false);
     assert!(
-        gate,
-        "post-G4-relax: nontail_param_compound_extra_ok must ADMIT the bare-compound-payload-return shape \
-         (interior-view + returns-scrutinee fences still guard the genuine sread/whole-return hazards)"
+        !gate_param,
+        "PARAM context (bare_payload_result_ok=false): the G4 fence must DECLINE the bare-compound-payload \
+         return — the payload may alias a shared spine (chor-driver render OOB). leak-over-UAF."
+    );
+    let gate_fresh =
+        super::nontail_param_compound_extra_ok(&mut db, scrut, &scrut_ty, false, &root, true);
+    assert!(
+        gate_fresh,
+        "FRESH-PRODUCER context (bare_payload_result_ok=true): the relax ADMITS the bare-compound-payload \
+         return — a fresh-owned producer's payload is owned exclusively, escape-dup'd (asserted below), \
+         so the shell deep-drop nets 1:1 (28-wit:1043)."
     );
     // (2) SAFETY PRECONDITION: the returned payload (the Some arm's `v` = a SumPayload of the scrutinee) must
     // be escape-dup'd, so a shell deep-drop nets 1:1. Collect dup_sites and look for the heap SumPayload of o.
