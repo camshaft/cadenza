@@ -969,9 +969,8 @@ pub(super) fn varying_param_epilogue_droppable(
 /// "not-rebound" guard, provided for free by invariance. (2) `looped_invariant_param_caller_owned` — HARD, the
 /// AXIS-A / CAESAR fence: reclaim `binder` only when THIS frame owns it. leak-over-UAF: a wrong admit only
 /// widens a caller-owned invariant reclaim (a leak if over-covered), never a double-free of a borrowed param.
-// `allow(dead_code)`: wired by v-memory-safety's parallel `param_consumed_reused_backedge` exit-drop at
-// select.rs:1322 (gated on this + `looped_invariant_param_caller_owned`); remove the allow at that placement.
-#[allow(dead_code)]
+// Wired by v-memory-safety's parallel exit-drop at the invariant-param path in `looped_owned_param_drops`
+// (select.rs), gated on this + `invariant.contains(binder)` + `looped_invariant_param_caller_owned`.
 pub(super) fn param_consumed_reused_in_loop_body(
     db: &mut Db,
     body: StructId,
