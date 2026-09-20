@@ -5754,7 +5754,53 @@ pub(super) fn emit(
                 heap_operand_ownership(db, closure),
                 Ok(HandleOwnership::Owned)
             );
-            if operand_owned && !result_is_fn {
+            // SITE-A (b'): a LocalRef closure operand at a whole-binder dup site whose BINDING is Owned.
+            // `mark_binder_dups` dup'd this occurrence into `cell_slot` (a SURPLUS owned copy — the binder is
+            // owned-and-live-after, so its own scope drop reclaims the original); the apply BORROWS the cell, so
+            // that copy is a dead owned temporary nothing else reclaims → leaks (09-functions:266 leak 2, `(f 2)`
+            // where `f` also escaped into `#list(f f)`). Drop it. GATED THREE WAYS for soundness: (1) LocalRef,
+            // never Param (a Param is borrowed-from-caller → dropping it UAFs the caller, the coarse-09 HOF
+            // `(h n)` trap); (2) ∈ `dup_sites` (a surplus copy provably exists in the cell — never a bare move/
+            // borrow); (3) the binder's binding initializer is Owned (`sitea_owned_binders` — excludes a LocalRef
+            // aliasing a borrowed Param/view/wrapper, whose drop would also UAF). All three ⟹ the cell is a
+            // surplus owned copy the frame must reclaim (v-core-opt-confirmed soundness condition, route (b)).
+            let operand_dup_owned = if let Core::LocalRef { binder } = core_of(db, closure) {
+                out.dup_sites.contains(&closure) && out.sitea_owned_binders.contains(&binder)
+            } else {
+                false
+            };
+            // SITE-A (b''): a closure extracted by `Option.expect` (SumExpect) over an OWNED, NON-VIEW source.
+            // `heap_operand_ownership` conservatively reports SumExpect Borrowed globally (the payload usually
+            // belongs to the live scrutinee), but when the SOURCE Option is a DIRECT non-view Owned producer —
+            // an element read (`List.at`/`Map.lookup`/`Bytes.at`), a constructor, or a `Call`/`CallClosure` —
+            // the SumExpect emit dups the payload out as an INDEPENDENT owned ref (rc1) and reclaims the shell,
+            // so the extracted CLOSURE is genuinely owned here (v-core-opt's shell-reclaim dup coupling — the
+            // payload is left at independent rc1 for exactly those producers, so this post-apply drop can never
+            // double-free). Applied LOCALLY (not by widening the global `heap_operand_ownership` oracle) so the
+            // shared drop-mirror `owned_proj_child_dupd` and every other consumer stay unperturbed. A VIEW source
+            // (`BytesSlice`/`StrSlice`/`StrAt`) aliases its source → excluded (interior-view UAF); a WRAPPER
+            // (`If`/`Let`/`Match`) could hide a view arm → excluded, leak-over-UAF. Fixes 09-functions:266 leak 1
+            // (`(f 5)` = `((Option.expect (List.at bag 0) "g") 5)`).
+            let operand_sumexpect_owned =
+                if let Core::SumExpect { scrutinee, .. } = core_of(db, closure) {
+                    matches!(
+                        heap_operand_ownership(db, scrutinee),
+                        Ok(HandleOwnership::Owned)
+                    ) && !matches!(
+                        core_of(db, scrutinee),
+                        Core::BytesSlice { .. }
+                            | Core::StrSlice { .. }
+                            | Core::StrAt { .. }
+                            | Core::If { .. }
+                            | Core::Let { .. }
+                            | Core::Match { .. }
+                            | Core::MatchList { .. }
+                            | Core::MatchSum { .. }
+                    )
+                } else {
+                    false
+                };
+            if (operand_owned || operand_dup_owned || operand_sumexpect_owned) && !result_is_fn {
                 out.push(Lir::LocalGet(cell_slot)); // [result, cell]
                 out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the owned env cell)
             }
