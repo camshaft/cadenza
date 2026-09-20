@@ -6046,12 +6046,17 @@
   ; shell (cascade nets it 2->1, result-safe) — reclaiming the tuple shell (v-mem rc-trace node#2). Emit:
   ; matchsum_escaping_proj_reclaim gate (emit.rs) + matchsum_escaping_proj_node dup (reclaim.rs); drop ⊆ dup
   ; ⇒ no UAF. Multi/conditional/FBIP-rebuild escapes stay KEPT (leak-over-UAF).
-  ; RESIDUAL 1 (a SEPARATE reclaim class, not this fix): `main`'s `(match (top …) ((AInt n) n) (_ -1))`
-  ; leaks the returned `AInt` shell — `Ast` is a COMPOUND-payload sum (the `AList (List Ast)` variant), so
-  ; `sum_shell_reclaim_ok`'s all-scalar-payload floor (the sread-UAF restriction) declines it even though the
-  ; arm is borrow-clean + scalar-result. That's the documented "reclaim-the-compound-shell" increment, a
-  ; harder UAF-sensitive class — tracked separately, not folded into the escaping-heap-child emit.
-  (live-objects 1))
+  ; then 1->0 (v-core-opt emit + v-memory-safety recognizer #9396, increment-1): the last cell was `main`'s
+  ; `(match (top …) ((AInt n) n) (_ -1))` returned `AInt` shell. top INLINES into main, so main's scrutinee is
+  ; top's escaping-proj MatchSum — #9391 already dup'd the escaping `ast` so it arrives OWNED; main extracts a
+  ; SCALAR `n` and the now-dead COMPOUND-payload sum shell (`Ast` has the `AList (List Ast)` variant) is a dead
+  ; owned temporary. `sum_shell_reclaim_ok`'s all-scalar-payload TYPE floor (the sread-UAF restriction)
+  ; over-approximated + declined it; matchsum_matchextract_owned_reclaim_ok is the owned-LOCALLY twin (proves
+  ; owned via the inner match's escaping-proj dup + the G4/G5 per-arm alias fences = the PRECISE guard the
+  ; coarse type floor stood in for). Emit: added it as a disjunct in the TAIL-match reclaim_shell (select.rs
+  ; emit_tail) — main's match is tail-position; the payload is scalar-copied so the post-match deep-drop nets
+  ; the shell alone (no child-dup owed). Reclaims 6042 fully.
+  (live-objects 0))
 
 ; The recursive-descent PARSER face of the mutual-recursion cursor thread: the decoder above destructures
 ; the returned (value, cursor) tuple with a tuple PATTERN in a match arm; a hand-written precedence parser
