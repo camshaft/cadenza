@@ -787,15 +787,29 @@ pub(crate) fn matchsum_view_shell_reclaim_ok(
     // could race). SOUND because (1) the scrutinee is an `is_owned_single_view_producer` (gated at the top) —
     // a single-node view holding its OWN source handle, so the shell deep-drop cascades ONE decrement into the
     // VIEW NODE only, never the source; (2) v-memory-safety CO-PLACES a child-dup(view) with that shell
-    // deep-drop (single-source-of-truth lockstep, like `strat_view_multi_consume`), so the escaped ref is
-    // independent BEFORE the drop on every path the drop is emitted — the child-dup keeps the escaped view
-    // (and, via its held source handle, the source chain) alive past the drop; the source is freed only when
-    // the escaped view is itself later consumed. A view with a SECOND consuming site (`consuming.len() > 1` —
-    // an additional builder/Call move) stays DECLINED (leak-over-UAF) pending the multi-use rc-trace
-    // co-design: a racing consume could free the view before the escaped ref is done. This is the escaping
-    // analogue of the borrow-clean floor above; the source-chain reclaim is independent (465 rc-trace: the
-    // rope + outer-slice source nodes are dropped/freed independently of the inner shells).
-    consuming.len() == 1 && view_escapes_as_arm_result(db, scrutinee, root)
+    // deep-drop, so the escaped ref is independent BEFORE the drop on every path the drop is emitted — the dup
+    // keeps the escaped view (and, via its held source handle, the source chain) alive past the drop.
+    //
+    // THE DUP PROVIDER IS `owned_compound_boxed` (reclaim.rs `collect_shell_reclaim_child_dups`: a fresh view
+    // scrutinee that is `heap_operand_ownership == Owned` has its consumed payload dup'd via the SAME
+    // `collect_consuming_payload_sites_cont` this `consuming` set is built from — so dup ⟺ this gate BY
+    // CONSTRUCTION for the Owned view producers). We therefore admit ONLY when the scrutinee is ALSO
+    // `owned_compound_boxed` (`compound_boxed && Owned`). This is load-bearing for CORRECTNESS, not just
+    // future-proofing: `is_owned_single_view_producer` (the outer gate) ALSO matches `StrAt`, which is
+    // deliberately NOT `Owned` (`heap_operand_ownership` keeps it Borrowed for Stage-B/value-eq) — so a
+    // single-consume ESCAPING `String.at` view is NOT dup'd by `owned_compound_boxed`, and admitting its
+    // shell deep-drop here without that dup would free the escaped view = UAF (measured: the StrAt-escaping
+    // shape reaches this disjunct with `escape_dupd_by_emit=false`). Gating on `owned_compound_boxed` excludes
+    // it (StrAt-escaping stays a leak-over-UAF residual). A view with a SECOND consuming site
+    // (`consuming.len() > 1`) also stays DECLINED pending the multi-use rc-trace co-design. Source-chain
+    // reclaim is independent (465 rc-trace: rope + outer-slice source nodes freed independently of the shells).
+    consuming.len() == 1
+        && view_escapes_as_arm_result(db, scrutinee, root)
+        && compound_boxed
+        && matches!(
+            heap_operand_ownership(db, scrutinee),
+            Ok(HandleOwnership::Owned)
+        )
 }
 
 /// The PROJECTION-of-a-fresh-owned-aggregate twin of [`matchsum_view_shell_reclaim_ok`]: a `MatchSum`
