@@ -4200,7 +4200,26 @@ pub(super) fn emit(
                 stashed_slot,
                 never_diverges,
                 &root,
-            );
+            )
+            // Also reclaim an ESCAPING-HEAP-CHILD MatchSum shell (02:6042): a fresh-OWNED, dead-after-
+            // destructure, stashed-I32 scrutinee whose SOLE escaping arm-value is one child-dup-able heap
+            // extraction (`(match (dn …) (#tuple(ast pos) ast))` — `ast` = SumPayload{[Elem(0)]} returned).
+            // The existing owned/borrow-clean gates DECLINE it (the arm escapes a heap child), so a bare husk
+            // drop would cascade-free the returned child → UAF. Sound here because the dup-pass
+            // (`collect_shell_reclaim_child_dups` → `matchsum_escaping_proj_node`, the SLOT-INDEPENDENT twin
+            // of this gate) marked that extraction node a `dup_site`, so it is `dup`'d (rc≥2) at emit before
+            // it escapes; this shell deep-drop's cascade nets it 2→1 (result-safe). This slot-GATED form =
+            // `matchsum_escaping_proj_node ∩ {stashed I32 slot}` ⊆ the dup-side node set ⇒ drop ⊆ dup ⇒ no
+            // UAF (v-memory-safety recognizer #9388; lockstep co-verified census 6042→0).
+            || matchsum_escaping_proj_reclaim(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
+            )
+            .is_some();
             emit_sum_cont(
                 db,
                 scrutinee,

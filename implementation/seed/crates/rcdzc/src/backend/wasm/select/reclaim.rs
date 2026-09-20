@@ -2114,6 +2114,23 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
             collect_consuming_payload_sites_cont(db, &root, scrutinee, &mut sites);
             dup_sites.extend(sites);
         }
+        // 02:6042 ESCAPING-HEAP-CHILD shell reclaim (v-memory-safety recognizer #9388; emit is v-core-opt).
+        // UNCONDITIONAL, NOT an `else if`: 6042's scrutinee is a `Call` result → `owned_compound_boxed` is
+        // TRUE, so the FIRST cascade arm already matched; an `else if` would be SKIPPED, leaving the escaping
+        // child un-`dup`'d while the emit shell deep-drop (emit.rs:4166/4218) fires → a cascade DOUBLE-FREE of
+        // the returned child (UAF). Its dup target is the ESCAPING arm-RESULT extraction (`collect_consuming_
+        // payload_sites_cont` marks only CONSUMING sites, not the borrowing arm-result projection), so it must
+        // be marked here regardless. Inserting into a SET is idempotent, so overlap with a cascade arm that
+        // already dup'd a (different) consuming child is harmless. The SLOT-INDEPENDENT node form (the dup-pass
+        // has no `stashed_slot`): `never_diverges = false` (dup-side over-permissive = orphaned-dup LEAK, never
+        // a UAF). LOCKSTEP: the emit gate `matchsum_escaping_proj_reclaim` = this node ∩ {stashed I32 slot}, so
+        // drop ⊆ dup ⇒ every shell-drop has its child-dup ⇒ no UAF; the only divergence is a slot-absent
+        // dup-without-drop = safe leak. The 3527 `Core::SumPayload`-in-`dup_sites` arm emits the `OP_DUP` at
+        // the extraction (rc≥2 before escape); the deep-drop cascade nets it 2→1, result-safe.
+        if let Some(n) = super::matchsum_escaping_proj_node(db, scrutinee, &scrut_ty, false, &root)
+        {
+            dup_sites.insert(n);
+        }
     }
     for child in core_child_ids(db, id) {
         collect_shell_reclaim_child_dups_seen(db, child, top_body, dup_sites, seen);
