@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(7);
+    let shape = c.variant(8);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -206,8 +206,15 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         ),
         // 6 — RECURSIVE-DESCENT: a depth-3 nested owned sum projected through three matches, each shell
         // reclaimed on the way out — the recursive-descent-tuple-proj reclaim path (#9385 / 02:7314 nesting).
-        _ => format!(
+        6 => format!(
             "(do (type A (Mk (List Int64))) (type B (W A)) (type C (W B)) (def (main) (match (C.W (B.W (A.Mk (list {a} {b} {d})))) ((W bx) (match bx ((W ax) (match ax ((Mk xs) (List.len xs)))))))) (export main))"
+        ),
+        // 7 — ESCAPING-HEAP-CHILD: the match RETURNS the owned `List` child, so it ESCAPES the arm — the
+        // MatchSum SHELL must be reclaimed while the escaping child is KEPT (a shell-reclaim that also frees
+        // the escaping child would return a freed/corrupted list). The #9388/#9391 escaping-heap-child class.
+        // `main` returns the List value, compared rendered (`#list(…)`) across backends / opt levels.
+        _ => format!(
+            "(do (type Box (Mk (List Int64))) (def (main) (match (Box.Mk (list {a} {b} {d})) ((Mk xs) xs))) (export main))"
         ),
     };
     Program { source }
@@ -4828,15 +4835,15 @@ mod tests {
     /// determinism oracles' counterpart to the corpus `(live-objects N)` leak pins) — must keep its two
     /// load-bearing invariants or every `--reclaim` sweep silently degrades: (1) EVERY generated program
     /// COMPILES cleanly (a declined shape stresses no reclaim path and contributes no value check); and
-    /// (2) ALL SEVEN owned-aggregate shapes stay reachable across varied entropy (matchsum-len, loop-accum
+    /// (2) ALL EIGHT owned-aggregate shapes stay reachable across varied entropy (matchsum-len, loop-accum
     /// rebind, scalar-project-drop-heap-sibling, nested sum-in-sum, in-arm push rebind, dup-used-twice,
-    /// depth-3 recursive-descent) — a generator edit that drops a shape would quietly stop exercising that
-    /// reclaim class.
+    /// depth-3 recursive-descent, escaping-heap-child) — a generator edit that drops a shape would quietly
+    /// stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the seven shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 7];
-        for seed in 0u64..160 {
+        // Distinctive, mutually-exclusive markers for the eight shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 8];
+        for seed in 0u64..200 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -4865,13 +4872,15 @@ mod tests {
                 reached[4] = true;
             } else if src.contains("(+ (List.len xs) (List.len xs))") {
                 reached[5] = true;
+            } else if src.contains("((Mk xs) xs))") {
+                reached[7] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all seven reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all eight reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
