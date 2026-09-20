@@ -999,6 +999,65 @@ fn site_a_record_cell_not_droppable_when_moved_out() {
 }
 
 #[test]
+fn site_a_closure_env_invariant_borrow_clean_admit_decline_boundary() {
+    // 771 SITE-A closure-env-cell reclaim (v-core-opt emit over v-mem's closure_env_invariant_borrow_clean_binders
+    // recognizer). Pins the RECOGNIZER→EMIT coupling boundary the new CallClosure SITE-A drop keys on: the drop
+    // fires only for a closure param IN this set (AND, per-site, dup'd). The census (leak 1→0) + emit drop are
+    // gated by v-mem's guarded-all corpus flip; this pins the set membership my emit disjunct reads.
+    //   ADMIT: `go`'s `f` is an INVARIANT (identity-passed back-edge `(go f …)`) borrow-clean closure param
+    //   applied twice `(+ (f 0) (f 1))` — the times/771 shape. Its per-application dup is spurious → in the set.
+    let admit = crate::testkit::parse(
+        "(module m \
+           (def (go (: f (-> Int64 Int64)) (: d Int64)) (if (< d 1) (+ (f 0) (f 1)) (go f (- d 1)))) \
+           (def (main (: n Int64)) (let ((xs #list(1 2 (+ n 1)))) (go (fn (_dd) (List.len xs)) n))) \
+           (export main))",
+    );
+    let mut db = Db::load(admit);
+    let (params, body) = function_of(&mut db, "go");
+    let self_def = db.def_by_name("go");
+    let set = closure_env_invariant_borrow_clean_binders(&mut db, body, &params, self_def);
+    assert!(
+        set.contains(&params[0].0),
+        "ADMIT: invariant borrow-clean closure param `f` must be in the set (drives the SITE-A per-app drop)"
+    );
+
+    // DECLINE (varying): the back-edge passes a NEW closure, not `f` — `f`'s slot is replaced each iteration, so
+    // its per-application dup is NOT the invariant-reclaim shape → default-deny (the SITE-A drop must not fire).
+    let varying = crate::testkit::parse(
+        "(module m \
+           (def (go (: f (-> Int64 Int64)) (: d Int64)) (if (< d 1) (+ (f 0) (f 1)) (go (fn (_x) 0) (- d 1)))) \
+           (def (main (: n Int64)) (go (fn (_dd) 7) n)) \
+           (export main))",
+    );
+    let mut db = Db::load(varying);
+    let (params, body) = function_of(&mut db, "go");
+    let self_def = db.def_by_name("go");
+    let set = closure_env_invariant_borrow_clean_binders(&mut db, body, &params, self_def);
+    assert!(
+        !set.contains(&params[0].0),
+        "DECLINE: a VARYING closure param (back-edge replaces its slot) must be absent → no SITE-A drop (leak, not UAF)"
+    );
+
+    // DECLINE (mutual dispatch): `go`↔`ng` share the param-slot set across two loop members — an unwitnessed
+    // shape (loop_members.len() != 1) → default-deny (empty set), never a per-app drop on a shared-group param.
+    let mutual = crate::testkit::parse(
+        "(module m \
+           (def (go (: f (-> Int64 Int64)) (: d Int64)) (if (< d 1) (+ (f 0) (f 1)) (ng f (- d 1)))) \
+           (def (ng (: f (-> Int64 Int64)) (: d Int64)) (go f (- d 1))) \
+           (def (main (: n Int64)) (go (fn (_dd) 3) n)) \
+           (export main))",
+    );
+    let mut db = Db::load(mutual);
+    let (params, body) = function_of(&mut db, "go");
+    let self_def = db.def_by_name("go");
+    let set = closure_env_invariant_borrow_clean_binders(&mut db, body, &params, self_def);
+    assert!(
+        !set.contains(&params[0].0),
+        "DECLINE: a MUTUAL dispatch group (loop_members != 1) must be absent → no SITE-A drop on a shared-group param"
+    );
+}
+
+#[test]
 fn site_b_reducer_forward_emits_no_surplus_parent_dups() {
     // SITE-B (node#4 census leak) positive witness for the RE-LANDED joint fix (escape-query Proj-arm
     // borrow-reclassification + v-core-opt's CHILD-DUP-aware mark_binder_dups gate). The payload-forwarding

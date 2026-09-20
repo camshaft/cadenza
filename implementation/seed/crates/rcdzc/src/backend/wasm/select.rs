@@ -133,6 +133,19 @@ pub struct Emit {
     /// a borrowed-from-caller cell (the 09-functions HOF `(h n)` param UAF). Empty for a body with no
     /// owned-initializer `let`-binding, so the fast path is untouched.
     sitea_owned_binders: HashSet<StructId>,
+    /// SITE-A INVARIANT-BORROW-CLEAN closure-param set (`closure_env_invariant_borrow_clean_binders`, v-mem
+    /// recognizer): the CLOSURE/fn-typed loop-PARAM binders that are INVARIANT (identity-passed every back-edge)
+    /// and whole-body BORROW-CLEAN, so the per-application caller-side dup (`mark_binder_dups` CallClosure arm) is
+    /// SPURIOUS (the borrowing apply never consumes the env cell). Read by the `Core::CallClosure` SITE-A env-cell
+    /// reclaim: when a closure operand is a `Core::Param` for such a binder AND its occurrence is a per-application
+    /// dup site (∈ `dup_sites` AT THAT SITE), the SITE-A drop reclaims that surplus per-application dup — while the
+    /// loop-exit `looped_owned_param_drops` (which ALREADY reclaims this exact invariant borrow-clean param once)
+    /// reclaims the entry-owned ref. The per-SITE dup check is LOAD-BEARING (v-mem-confirmed): for `(+ (f 0) (f 1))`
+    /// `mark_binder_dups` makes ONE dup for two uses, so only ONE application site carries the dup'd operand and the
+    /// OTHER carries the ENTRY ref — dropping at the entry-ref site would double-free the ref the loop-exit drop
+    /// owns (and UAF a borrowed caller). Empty for a body with no invariant borrow-clean closure param, so the fast
+    /// path is untouched.
+    closure_env_borrow_clean_binders: HashSet<StructId>,
     /// IF-JOIN PER-ARM DROP plan (v-memory-safety co-design, the Core::If analog of the loop-join per-arm
     /// reconciliation). Keyed by a `Core::If` node id → the `(slot, d_is_then)` of each DIVERGENT heap
     /// let-binding live-in to it: a binding that ESCAPES on one arm (W) but is DEAD on the other (D). The
@@ -1835,6 +1848,12 @@ pub fn select_function_of(
         // reference to one consumed by a BORROWING closure apply is a surplus owned copy the SITE-A env-cell
         // drop reclaims (a Param/view/wrapper-bound binder is excluded → never drops a borrowed-from-caller cell).
         collect_sitea_owned_binders(db, body, &mut code.sitea_owned_binders);
+        // SITE-A invariant-borrow-clean closure-param set: the CLOSURE/fn-typed loop-params whose per-application
+        // caller dup is spurious (invariant + borrow-clean), so the CallClosure SITE-A drop reclaims the surplus
+        // per-app dup (loop-exit `looped_owned_param_drops` owns the entry ref). Same threading shape as
+        // `sitea_owned_binders`; `params`/`self_def` here match `looped_owned_param_drops`'s call above.
+        code.closure_env_borrow_clean_binders =
+            closure_env_invariant_borrow_clean_binders(db, body, params, self_def);
         // The wrapper-scrutinee shell-reclaim's consumed-child dups: for each MatchSum over an owned
         // compound boxed-sum whose shell the emit will deep-drop, `dup` each consuming scrutinee-child
         // extraction so the drop does not double-free a moved-out child. Computed here (upfront) so the
