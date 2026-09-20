@@ -4503,6 +4503,64 @@ fn escape_dup_14929_admits_coupled_with_g4_relax() {
     );
 }
 
+#[test]
+fn escape_dup_14929_declines_mutually_recursive_body_not_owned() {
+    // 14929 OWNERSHIP fence (v-mem cad-test-json UAF, 2026-09-20): the escaped-payload relax + dup is sound ONLY
+    // for a DIRECTLY self-recursive fold (which OWNS its scrutinee). This is the MINIMIZED json-`encode` hazard:
+    // `f` has 14929's EXACT admitting shape (owned recursive-sum param `t`, L arm BARE-returns heap child `n`),
+    // but `f` is MUTUALLY recursive (`f`→`g`→`f`), so it does NOT own `t` (a real caller — e.g. `encode-elems` —
+    // may pass a BORROWED list element). The payload fence itself STILL admits (it does not know self-recursion),
+    // so this pins that the `body_is_self_recursive` OWNERSHIP gate — NOT the payload fence — is what DECLINES:
+    // reclaim_kind must NOT be Compound and the escape-dup must fire 0 sites (dup ⟺ relax lockstep). A regression
+    // dropping the ownership gate re-admits the mutual case = the 6 OOB traps. Leak-over-UAF: `f` stays a leak.
+    let ast = crate::testkit::parse(
+        "(module m \
+           (type T (L BigInt) (B T T)) \
+           (def (f (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (g a) (g b))) (_ 0N))) \
+           (def (g (: t T)) (f t)) \
+           (def (main) (g (T.B (T.L 3N) (T.L 4N)))) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (fp, fb) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, fb, &fp, &layout).expect("select f");
+    let mut sites = std::collections::HashSet::new();
+    collect_sumpayload_escape_dup_sites(&mut db, fb, &mut sites);
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![fb];
+    let mut kind = None;
+    let mut fence = false;
+    while let Some(nd) = stack.pop() {
+        if !seen.insert(nd) {
+            continue;
+        }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd)
+            && matches!(core_of(&mut db, scrutinee), crate::core::Core::Param { .. })
+        {
+            let sty = type_of(&mut db, scrutinee);
+            fence = payload_in_result_bare_escape_ok(&mut db, &root, scrutinee);
+            kind = nontail_param_reclaim_kind(&mut db, fb, scrutinee, &sty, false, &root);
+        }
+        stack.extend(crate::core_analysis::licm_children(&mut db, nd));
+    }
+    assert!(
+        fence,
+        "the payload fence itself STILL admits the L-arm bare return (it does not gate on self-recursion) — \
+         so the DECLINE below must come from the ownership gate, not the fence"
+    );
+    assert!(
+        !matches!(kind, Some(ReclaimKind::Compound)),
+        "mutually-recursive `f` does NOT own `t` → the G4 relax MUST decline the compound shell-drop \
+         (leak-over-UAF; the drop would double-free a borrowed element) — got {kind:?}"
+    );
+    assert_eq!(
+        sites.len(),
+        0,
+        "escape-dup MUST NOT fire for a non-self-recursive body (dup ⟺ relax); got {}",
+        sites.len()
+    );
+}
+
 // ── 02:6042 escaping-heap-child MatchSum shell reclaim: emit consumes matchsum_escaping_proj_{node,reclaim}
 // (v-memory-safety recognizer #9388, v-core-opt emit). Pins the dup⟺drop LOCKSTEP at the Core level: the
 // recognizer identifies the sole escaping extraction node, and the dup-pass marks THAT node — so the emit's
