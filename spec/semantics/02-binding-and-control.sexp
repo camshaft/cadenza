@@ -6082,7 +6082,13 @@
       (def (run) (let ((a (pa 0))) (let ((b (pa (. a 1)))) (+ (ev (. a 0)) (ev (. b 0))))))
       (export run)))
   (output (: -14 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0. The recursive-descent parser's `inner` (the tuple from the
+  ; mutual-recursion return) is a droppable LET shell — its compound child `(. inner 0)` is child-dup'd +
+  ; rewrapped into a NEW `Expr.Neg` ctor, its scalar `(. inner 1)` forwarded — so its DEEP-drop epilogue
+  ; cascade reclaims it and the per-projection parent keep-alive dup was SURPLUS (6 leaked cells → 0). Fixed
+  ; by admitting a dup-aware-droppable LET shell into the site-b child-dup parent-dup subtract (reclaim.rs
+  ; `binder_shell_droppable`); #9101 partition (moved-out child, not droppable) + dqe17 (whole-escape) stay KEPT.
+  (live-objects 0))
 
 ; --- A binding position accepts an irrefutable pattern ---------------------------------------
 ; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a `let` binder (and a parameter)

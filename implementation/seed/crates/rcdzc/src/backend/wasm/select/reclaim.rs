@@ -2855,6 +2855,28 @@ pub(super) fn collect_dup_sites(
         // Read by the `Core::Proj` arm via `binder_must_escapes`.
         let must_escapes = binder_must_escape(db, body, binder, false);
         let _me_guard = MustEscapesGuard::install(must_escapes);
+        // 02:6085 SHELL-DROPPABLE verdict: the dup-aware "dead owned temporary safe to deep-drop" query
+        // (`record_cell_param_droppable` — every consuming occurrence is a Perceus RETAIN/child-dup and the
+        // shell never escapes as a whole). TRUE ⇒ the epilogue's DEEP drop cascade already reclaims the shell
+        // (each child independently child-dup'd, none moved out un-dup'd), so a per-projection parent
+        // keep-alive dup is SURPLUS. The `Core::Proj` arm reads this via `binder_shell_droppable` to admit a
+        // LET binder into the site-b child-dup subtract (which otherwise gates on `binder_is_param`, KEEPING
+        // every LET to protect the #9101 partition SHALLOW-epilogue load-bearing dup). Non-droppable (a
+        // moved-out child = partition; a whole-escape = dqe17) ⇒ FALSE ⇒ KEEP. Uses the dup-FREE-computed
+        // sites internally, so it is free of the `dup_sites`↔`binding_escapes` circularity the base queries
+        // gate around. DEFAULT-KEEP (leak-over-UAF): any un-retained consume ⇒ not droppable ⇒ keep.
+        // RECURSION BREAK: `record_cell_param_droppable` itself calls `collect_dup_sites` (to compute the
+        // binder's dup_sites for its dup-aware escape query). Guard against unbounded mutual recursion — a
+        // NESTED `collect_dup_sites` (entered WHILE computing droppability) does not need its own droppable
+        // verdict (it only marks child-dup sites for the query), so install FALSE (conservative KEEP) and
+        // skip the recompute. The RAII guard restores the flag on scope-exit / unwind.
+        let shell_droppable = if COMPUTING_SHELL_DROPPABLE.with(|c| c.get()) {
+            false
+        } else {
+            let _rec_guard = ComputingShellDroppableGuard::install();
+            record_cell_param_droppable(db, body, binder)
+        };
+        let _sd_guard = ShellDroppableGuard::install(shell_droppable);
         // FRESH per-binder dup-marker memo (the guards above change per binder, so a cached bool is valid
         // only within THIS binder's walk); RAII-restored on scope-exit / unwind. Bounds the marker's
         // re-descent of a multiply-reached subtree to O(1) per (node, ctx). See [`DUP_MARK_MEMO`].
@@ -2996,6 +3018,72 @@ impl MustEscapesGuard {
 impl Drop for MustEscapesGuard {
     fn drop(&mut self) {
         BINDER_MUST_ESCAPES.with(|c| c.set(self.prev));
+    }
+}
+
+thread_local! {
+    // Whether the CURRENT `mark_binder_dups` binder's SHELL is dup-aware DROPPABLE — the dead-owned-temporary
+    // verdict (`record_cell_param_droppable`: every consuming occurrence is a Perceus RETAIN/child-dup and the
+    // shell never escapes as a whole). Set per-binder in `collect_dup_sites` before each `mark_binder_dups`
+    // call, consulted by the `Core::Proj` arm to ADMIT a LET (non-param) binder into the site-b child-dup
+    // parent-dup subtract: a droppable shell's DEEP-drop epilogue cascade already reclaims it (each child
+    // independently child-dup'd), so the per-projection parent keep-alive dup is SURPLUS (02:6085 `inner`).
+    // A non-droppable shell — one whose child moves out un-dup'd (partition's SHALLOW epilogue, the #9101
+    // load-bearing dup) or which escapes as a whole (dqe17) — stays FALSE → KEEP. Defaults to `false`
+    // (conservative — keep the dup, the SAFE leak-not-UAF direction) outside a `collect_dup_sites` run.
+    static BINDER_SHELL_DROPPABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the active `mark_binder_dups` binder's shell is dup-aware droppable (set by `collect_dup_sites`).
+/// Read by the `Core::Proj` arm to admit a LET binder into the child-dup parent-dup subtract (02:6085).
+fn binder_shell_droppable() -> bool {
+    BINDER_SHELL_DROPPABLE.with(|c| c.get())
+}
+
+thread_local! {
+    // Recursion break for the SHELL-DROPPABLE computation: `collect_dup_sites` computes each binder's
+    // droppable verdict via `record_cell_param_droppable`, which itself calls `collect_dup_sites` — set for
+    // the duration of that inner call so the nested pass skips the (unneeded, and otherwise infinitely
+    // recursive) droppable recompute. Defaults to `false` (outermost pass computes normally).
+    static COMPUTING_SHELL_DROPPABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII guard that sets [`COMPUTING_SHELL_DROPPABLE`] for the duration of one `record_cell_param_droppable`
+/// call and RESTORES the prior value on drop (normal return OR panic unwind), breaking the
+/// `collect_dup_sites`→`record_cell_param_droppable`→`collect_dup_sites` recursion.
+struct ComputingShellDroppableGuard {
+    prev: bool,
+}
+
+impl ComputingShellDroppableGuard {
+    fn install() -> Self {
+        let prev = COMPUTING_SHELL_DROPPABLE.with(|c| c.replace(true));
+        ComputingShellDroppableGuard { prev }
+    }
+}
+
+impl Drop for ComputingShellDroppableGuard {
+    fn drop(&mut self) {
+        COMPUTING_SHELL_DROPPABLE.with(|c| c.set(self.prev));
+    }
+}
+
+/// RAII guard for [`BINDER_SHELL_DROPPABLE`] — sets it for one `mark_binder_dups` binder and RESTORES the
+/// prior value on drop (normal return OR panic unwind), the `NeverEscapesGuard` twin (nesting-safe).
+struct ShellDroppableGuard {
+    prev: bool,
+}
+
+impl ShellDroppableGuard {
+    fn install(shell_droppable: bool) -> Self {
+        let prev = BINDER_SHELL_DROPPABLE.with(|c| c.replace(shell_droppable));
+        ShellDroppableGuard { prev }
+    }
+}
+
+impl Drop for ShellDroppableGuard {
+    fn drop(&mut self) {
+        BINDER_SHELL_DROPPABLE.with(|c| c.set(self.prev));
     }
 }
 
@@ -4166,8 +4254,16 @@ fn mark_binder_dups_body(
             // subtracts its surplus parent dup too. Gated on binder_is_param (param = reclaimed OUTSIDE the body =
             // surplus) ⇒ EXCLUDES LocalRef let-epilogue dups (#9101) + non-child-dup dqe move/escape shapes (flag
             // never set: it originates only at an is_child_dup_site && binder_is_param proj).
-            let in_child_dup_param_chain =
-                (is_child_dup_site || in_child_dup_chain) && binder_is_param(db, operand, binder);
+            // The subtract admits a child-dup'd (or chain) projection of EITHER a PARAM (reclaimed OUTSIDE
+            // the body — the site-b / back-edge case) OR a droppable LET shell (02:6085 `inner`: a DEEP-drop
+            // let-epilogue reclaims it, so the per-projection parent keep-alive dup is surplus). The LET
+            // admission is gated on `binder_shell_droppable` (every child independently child-dup'd, shell
+            // never escapes whole) — which KEEPS the #9101 partition SHALLOW-epilogue load-bearing dup (its
+            // moved-out child ⇒ not droppable) and dqe17 (whole-escape ⇒ not droppable). DEFAULT-KEEP on any
+            // un-retained consume. Strictly additive for LETs: params are unchanged (binder_is_param already
+            // admits them, back-edge-relaxed without never_escapes).
+            let in_child_dup_param_chain = (is_child_dup_site || in_child_dup_chain)
+                && (binder_is_param(db, operand, binder) || binder_shell_droppable());
             let parent_consuming = !scalar_element
                 && (consuming || (!never_escapes && !must_escapes))
                 && !in_child_dup_param_chain;
