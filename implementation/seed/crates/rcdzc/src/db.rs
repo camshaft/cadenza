@@ -2026,6 +2026,19 @@ pub struct Db {
     /// eager precompute pass. Cleared like the other emit memos on the relevant reset.
     pub(crate) referenced_closure_codes: Option<(usize, std::collections::HashSet<usize>)>,
 
+    /// `(body, binder) → record-cell-param DROPPABLE verdict` — the read-through memo for
+    /// [`crate::backend::wasm::select::reclaim::record_cell_param_droppable`]. That predicate does ~2 whole-
+    /// body walks (`collect_dup_sites` + `binding_escapes_dup_aware`) and — since #9385 admitted LET binders
+    /// into the site-b child-dup subtract — the shell-reclaim analysis queries it PER LET BINDER (reclaim.rs
+    /// :2877), re-running the walks each `collect_dup_sites` pass over a body ⇒ O(binders · body) on LET-dense
+    /// code (measured +6.7% sread / +15.7% eval-db / +19.3% lower-db). The verdict is a pure function of the
+    /// build-once-immutable Core graph — stable per `(body, binder)` within ONE `Db` load — so caching it is
+    /// BYTE-IDENTICAL (pure-function memo, no reclaim-semantics change; the #9385 leak→0 fix stays exactly as
+    /// landed). Scoped to this `Db` (a fresh load starts empty → no stale verdict leaks across compilations,
+    /// per v-core-opt's ask). Same lazy-memoized-database pattern as [`Self::referenced_closure_codes`].
+    pub(crate) record_cell_param_droppable_memo:
+        std::collections::HashMap<(StructId, StructId), bool>,
+
     /// `sum-decl occ → the set of sum decls its payloads TRANSITIVELY reach` — the memo behind the Rust
     /// backend's recursive-variant boxing cycle detector (`backend::rust::enums`). Deciding whether a
     /// variant is recursive asks "does this payload type reach the sum's own decl?", a graph reachability
@@ -2201,6 +2214,13 @@ pub struct Db {
     /// pass holds `&mut Db`) so the parallel test harness cannot pollute it; NOT surfaced to `CompileOutput`.
     #[cfg(test)]
     pub(crate) layout_closure_seed_body_walks: u64,
+    /// Test-only compile-cost counter: how many times [`crate::backend::wasm::select::reclaim::
+    /// record_cell_param_droppable`] MISSED [`Self::record_cell_param_droppable_memo`] and ran its ~2 body
+    /// walks. The lazy memo makes this O(distinct (body,binder)) — the regression guard
+    /// `record_cell_param_droppable_is_memoized_not_per_query` asserts it does NOT grow with the number of
+    /// QUERIES (the un-memoized #9385 walk was O(binders·body), re-run per `collect_dup_sites` pass).
+    #[cfg(test)]
+    pub(crate) record_cell_param_droppable_uncached_calls: u64,
     /// The solved-type column. Filled only by [`crate::infer`].
     pub(crate) types: Column<StructId, Ty>,
     /// The ground TYPE-VALUE memo — the read-through cache for [`crate::eval::typeval_of`]. Distinct from
@@ -3402,6 +3422,7 @@ impl Db {
             lifted: Vec::new(),
             lifted_by_body: crate::fxhash::FxHashMap::default(),
             referenced_closure_codes: None,
+            record_cell_param_droppable_memo: std::collections::HashMap::new(),
             sum_reachable: crate::fxhash::FxHashMap::default(),
             sum_out_edges: crate::fxhash::FxHashMap::default(),
             suggest_pool: [None, None, None],
@@ -3438,6 +3459,8 @@ impl Db {
             referenced_closure_codes_builds: 0,
             #[cfg(test)]
             layout_closure_seed_body_walks: 0,
+            #[cfg(test)]
+            record_cell_param_droppable_uncached_calls: 0,
             types: Column::new(),
             typeval: Column::new(),
             typeval_memo_live: false,
