@@ -8804,8 +8804,13 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 }
                 RearmAction::NudgeContinue => String::new(),
             };
+            // Surface the registry-vs-actual cadence drift (concierge stale-cron detector, pt.2 — mirrors
+            // the ×cadence flag on `fleet status`): idle ÷ registry interval. A high multiple on a
+            // ReissueLoop (prior nudge didn't stick) is the /loop-cron DESYNC signature — the cron never
+            // re-armed to the registry cadence — so the reader can tell a dead-cron from a one-off slow tick.
+            let drift = cadence_drift_ratio(age, interval);
             println!(
-                "  DRY-RUN would re-arm '{}' via {how} (idle {age}s > {stale_after}s stale window; interval {}){cmd_hint}",
+                "  DRY-RUN would re-arm '{}' via {how} (idle {age}s = {drift:.1}×cadence > {stale_after}s stale window; interval {}){cmd_hint}",
                 a.name, a.interval
             );
             rearmed += 1;
