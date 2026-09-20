@@ -4129,6 +4129,98 @@ fn g4relax_bare_compound_payload_is_escape_dup_marked() {
     );
 }
 
+// ── 465(b) ESCAPING-VIEW HUSK-ONLY admit classifier (DESIGN-o1-reclaim-parity §5(b), v-core-opt lane).
+// The 10-bytes:465 shape MINIMIZED to its essence: `match (Bytes.slice outer 1 3) Some i -> i` — an
+// `is_owned_single_view_producer` (BytesSlice) scrutinee whose inner `Some(view)` payload `i` escapes as the
+// arm result EXACTLY ONCE (its lone consuming site). Pre-465(b) this arm was DECLINED (the inner Some(view)
+// shell leaks, the known-leak pin); the 465(b) disjunct admits it in that provably-safe shape.
+//
+// This is a PREDICATE-level witness (like g4relax): it proves the classifier ADMITS the intended shape and
+// that the admit is decided by the 465(b) disjunct specifically — because the two PRIOR admit paths both
+// decline here: (borrow-only) `consuming` is NON-EMPTY, and (nonescaping) the view ESCAPES as the result. So
+// the only thing turning the gate TRUE is `consuming.len()==1 && view_escapes_as_arm_result` → the disjunct
+// is load-bearing; a regression removing it flips `admit` to false and re-opens the 465-family leak.
+//
+// NOT LANDABLE ALONE (asserted only at the classifier level here — no emit): admitting this arm makes the
+// emit shell-deep-drop the inner Some(view) shell, whose cascade decrements the escaped (single-consume, so
+// UN-dup'd by the dup pass's `>1`-gated `strat_view_multi_consume`) view → UAF. v-memory-safety CO-PLACES a
+// child-dup(view) with that shell-drop (single-source-of-truth lockstep) so the escaped ref is independent
+// BEFORE the drop; the two land TOGETHER gated guarded-all + rc-trace-balanced + census-0. This test guards
+// the ADMIT side of that contract; v-mem's placement guards the dup side.
+#[test]
+fn view_shell_465b_single_consume_escaping_view_admits_via_the_disjunct() {
+    let ast = crate::testkit::parse(
+        "(module m \
+           (def (f (: outer Bytes)) \
+             (match (Bytes.slice outer 1 3) ((Option.Some i) i) ((Option.None) outer))) \
+           (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (fp, fb) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, fb, &fp, &layout).expect("select f (465b view-shell)");
+    // Find f's sole MatchSum (scrutinee = the `Bytes.slice outer 1 3` view, root = its arms).
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![fb];
+    let mut found = None;
+    while let Some(nd) = stack.pop() {
+        if !seen.insert(nd) {
+            continue;
+        }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd) {
+            found = Some((scrutinee, root));
+        }
+        stack.extend(crate::core_analysis::licm_children(&mut db, nd));
+    }
+    let (scrut, root) = found.expect("f MatchSum over the Bytes.slice view");
+    let scrut_ty = type_of(&mut db, scrut);
+    // (1) OUTER GATE: the scrutinee is an owned single-view producer (BytesSlice) — the top guard of
+    // matchsum_view_shell_reclaim_ok. This is what EXCLUDES the choreography Ast.List compound-spine shape
+    // (not a single-view producer) whose deep-drop would cascade into shared interior cells → UAF.
+    assert!(
+        is_owned_single_view_producer(&mut db, scrut),
+        "465(b) precondition: the scrutinee `Bytes.slice outer 1 3` must be an owned single-view producer \
+         (the shell deep-drop then cascades ONE decrement into the VIEW node only, never the source)"
+    );
+    // (2) ESCAPE FACTOR: the view `i` escapes as the arm result → the PRIOR nonescaping admit path
+    // (strat_view_consume_nonescaping, which requires scalar-result OR !escapes) DECLINES this arm.
+    assert!(
+        view_escapes_as_arm_result(&mut db, scrut, &root),
+        "465(b): the inner Some(view) payload `i` must escape as the arm result — the case the earlier \
+         nonescaping/borrow-clean paths deliberately DECLINE (why the inner shell leaks pre-465(b))"
+    );
+    // (3) LONE-CONSUME FACTOR: the bare `-> i` escape is the view's SINGLE consuming site → `consuming` is
+    // NON-EMPTY (so the borrow-only early-return also DECLINES) and len==1 (so no second builder/Call consume
+    // a shell-drop could race — the exact provably-safe shape the disjunct admits).
+    let mut consuming = std::collections::HashSet::new();
+    collect_consuming_payload_sites_cont(&mut db, &root, scrut, &mut consuming);
+    assert_eq!(
+        consuming.len(),
+        1,
+        "465(b): the single bare-escape `-> i` is the view's LONE consuming site (non-empty rules out the \
+         borrow-only path; ==1 rules out a racing second consume) — got {}",
+        consuming.len()
+    );
+    // (4) THE ADMIT: with both prior paths declined (borrow-only: consuming non-empty; nonescaping: escapes),
+    // the gate turns TRUE ONLY via the 465(b) disjunct. stashed_slot Some(_, I32) + !never_diverges + the
+    // fn-body context mirror the emit call site (select.rs:3218).
+    let admit = matchsum_view_shell_reclaim_ok(
+        &mut db,
+        scrut,
+        &scrut_ty,
+        Some((0, ValType::I32)),
+        false,
+        &root,
+        Some(fb),
+    );
+    assert!(
+        admit,
+        "465(b) disjunct must ADMIT the single-consume escaping-view arm (its two prior admit paths both \
+         decline it, so this TRUE is decided by `consuming.len()==1 && view_escapes_as_arm_result`) — the \
+         load-bearing gate v-memory-safety pairs with a co-placed child-dup(view) before landing"
+    );
+}
+
 // ── 02:6042 escaping-heap-child MatchSum shell reclaim: emit consumes matchsum_escaping_proj_{node,reclaim}
 // (v-memory-safety recognizer #9388, v-core-opt emit). Pins the dup⟺drop LOCKSTEP at the Core level: the
 // recognizer identifies the sole escaping extraction node, and the dup-pass marks THAT node — so the emit's
