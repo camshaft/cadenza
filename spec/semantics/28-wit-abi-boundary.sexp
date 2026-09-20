@@ -1040,7 +1040,7 @@
             (= token #list(3))
             (= deadline-nanos (None unit)))))
       (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an option<s64> param field is read and rebuilt by the wrapper on both arms (via an imposed WIT world)"
