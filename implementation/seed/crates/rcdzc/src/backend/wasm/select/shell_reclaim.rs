@@ -882,6 +882,132 @@ pub(crate) fn matchsum_expect_owned_reclaim_ok(
     consuming.is_empty()
 }
 
+/// Whether `id` is a child EXTRACTION — a `Core::SumPayload`/`Core::Proj`, or a chain of them — rooted at the
+/// match SCRUTINEE (by node id, or, for a `Param`/`LocalRef` scrutinee, its binder — the SAME identity test
+/// [`scrutinee_dead_after_destructure`] uses). A tuple pattern destructures via `Core::SumPayload` (path
+/// `[Elem(i)]`), a record/tuple field via `Core::Proj` — both root here. `id` being the BARE scrutinee
+/// returns `false` (a whole-shell move, not a child extraction). A `Core::Call` scrutinee has no binder, so
+/// the node-id root is essential.
+#[allow(dead_code)] // TEMP: used only by the inert `matchsum_escaping_proj_reclaim` until the emit is wired.
+fn extraction_roots_at_scrutinee(
+    db: &mut Db,
+    id: StructId,
+    scrutinee: StructId,
+    binder: Option<StructId>,
+) -> bool {
+    match core_of(db, id) {
+        Core::SumPayload {
+            scrutinee: operand, ..
+        }
+        | Core::Proj { operand, .. } => {
+            operand == scrutinee
+                || binder.is_some_and(|b| is_ref_to(db, operand, b))
+                || extraction_roots_at_scrutinee(db, operand, scrutinee, binder)
+        }
+        _ => false,
+    }
+}
+
+/// RECOGNIZER (v-memory-safety recognition lane) for the escaping-heap-child `MatchSum` shell reclaim — the
+/// co-fix half v-core-opt's emit consumes at emit.rs:4166 (02-binding-and-control:6042, the mutual-recursion
+/// tuple-match; the recursive-descent-parser sibling of the landed 02:6085 Proj-of-LET fix). The sibling
+/// `matchsum_*_reclaim_ok` paths all DECLINE this shape because the arm ESCAPES a heap sub-value (its result
+/// IS the extracted child), so the borrow-clean floor fails — a bare shell deep-drop would cascade-free the
+/// still-live returned child (UAF). The reclaim is instead the project+dup+deep-drop shape: dup the escaping
+/// child (rc>=2) BEFORE it escapes, then deep-drop the shell (cascade nets the child rc 2->1, result-safe,
+/// and reclaims the shell + releases its cell-ref so the consequential child leak balances).
+///
+/// `Some(node)` = the recognized shape — return the SOLE escaping heap child's EXTRACTION NODE (a
+/// `Core::SumPayload`/`Core::Proj` off the scrutinee; the arm result IS this node), so the emit dups that
+/// node's result (rc>=2) before the escape and fires the shell deep-drop. `None` = BAIL (keep the sound
+/// leak, leak-over-UAF): not the shape, a CONDITIONAL / multi-arm escape (Guarded/LitTest/Switch — v1 admits
+/// only a single-`Leaf` arm), a bare-scrutinee (whole-shell) move, an FBIP-rebuild arm (a compound-
+/// constructing arm could reuse the projected cell), a scalar child (copies out — reclaimed by the
+/// all-scalar floor), or the standard owned/dead-after gates fail. ANY unproven condition → `None`.
+/// Conservative by construction — a false `None` only leaks, never a UAF.
+/// DROP-SIDE recognizer (emit.rs:4166, has the stashed slot). The shell deep-drop is only valid when the
+/// scrutinee was freshly stashed into an I32 reclaim slot; then delegate to the slot-INDEPENDENT
+/// [`matchsum_escaping_proj_node`] the DUP-side also calls. LOCKSTEP: the drop-side is the slot-gated SUBSET
+/// of the dup-side, so drop ⊆ dup ⇒ a shell deep-drop NEVER fires without the protecting child-dup (no UAF);
+/// a dup fired where the drop declines (slot absent) is only an orphaned-dup leak (safe, census-caught).
+#[allow(dead_code)] // TEMP: inert until v-core-opt wires the emit.rs:4166 dup-escaping-child + deep-drop path.
+pub(crate) fn matchsum_escaping_proj_reclaim(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    stashed_slot: Option<(u32, ValType)>,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> Option<StructId> {
+    if !matches!(stashed_slot, Some((_, ValType::I32))) {
+        return None;
+    }
+    matchsum_escaping_proj_node(db, scrutinee, scrut_ty, never_diverges, root)
+}
+
+/// The SLOT-INDEPENDENT recognition core of [`matchsum_escaping_proj_reclaim`] — every gate EXCEPT the
+/// drop-side's `stashed_slot` check. Consumed by the DUP-side (`collect_shell_reclaim_child_dups_seen`, which
+/// runs PRE-EMIT and has no stashed slot) so it inserts into `dup_sites` the SAME escaping-extraction node
+/// the drop-side reclaims — keeping dup⇔drop LOCKSTEP on one node. Returns `Some(node)`/`None` with the same
+/// semantics as [`matchsum_escaping_proj_reclaim`] (which see for the shape + bail conditions).
+#[allow(dead_code)] // TEMP: inert until v-core-opt wires the dup-side (collect_shell_reclaim_child_dups_seen).
+pub(crate) fn matchsum_escaping_proj_node(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> Option<StructId> {
+    // Shared safety floor (mirrors the proj/view/expect twins, minus the slot gate): returns normally (not
+    // never-diverging), heap non-enum sum, not re-matched by a nested MatchSum (Class-B), and the whole
+    // scrutinee is DEAD after the destructure (no non-extracting reference keeps it live past the shell drop).
+    if never_diverges
+        || !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+        || !scrutinee_dead_after_destructure(db, scrutinee, root)
+    {
+        return None;
+    }
+    // The scrutinee is an OWNED fresh producer (a Call/SumNew/inlined-If result, or globally Owned) — its
+    // shell is a dead owned temporary safe to deep-drop once the escaping child is independently retained.
+    // A borrowed/shared scrutinee would double-free the owner's ref → excluded.
+    if !matches!(
+        heap_operand_ownership(db, scrutinee),
+        Ok(HandleOwnership::Owned)
+    ) && !is_fresh_owned_sum_producer(db, scrutinee)
+    {
+        return None;
+    }
+    // FBIP-rebuild guard: an arm that CONSTRUCTS a compound could reuse the projected child's cell in place,
+    // which the shell deep-drop would then double-free even though the escape walk (seeing only borrowing
+    // projections) reports it safe. Decline any compound-constructing arm (leak, not UAF).
+    if sum_cont_arm_constructs_compound(db, root) {
+        return None;
+    }
+    // SOLE escaping heap child (v1): a SINGLE `Leaf` arm whose body IS a pure projection chain off the
+    // scrutinee returning a HEAP child (the arm result IS `(. scrut i)`). A multi-arm cont (Guarded/LitTest/
+    // Switch) is a CONDITIONAL escape → bail (a runtime-single-arm dup would over/under-count). A non-
+    // projection or bare-scrutinee (empty path = whole-shell move) → bail. A scalar child copies out (no
+    // shared ref) → not this path (the all-scalar floor reclaims it). Widened later; conservative now.
+    let crate::core::SumCont::Leaf(body) = root else {
+        return None;
+    };
+    let binder = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+        _ => None,
+    };
+    // The Leaf body IS the escaping child extraction: a SumPayload/Proj rooted at the (owned, dead-after)
+    // scrutinee, returning a HEAP child. A scalar child copies out (no shared ref → the all-scalar floor
+    // reclaims it); a non-extraction / bare-scrutinee body is a whole-shell move → bail.
+    if !is_heap_type(&type_of(db, *body))
+        || !extraction_roots_at_scrutinee(db, *body, scrutinee, binder)
+    {
+        return None;
+    }
+    Some(*body)
+}
+
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed
 /// temp vs proven-owned param slot): heap + non-enum + non-diverging + payload-safety + not-re-matched.
 /// [`sum_shell_reclaim_ok`] ANDs the stashed-Owned requirement on top; the non-tail-spine param path ANDs
