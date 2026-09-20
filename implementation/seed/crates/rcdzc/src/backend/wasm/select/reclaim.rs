@@ -260,6 +260,41 @@ fn collect_escaped_field_projs(
                 .into_iter()
                 .all(|c| collect_escaped_field_projs(db, c, binder, dup_sites, false, out))
         }
+        // `bytes-compact` is REFCOUNT-NEUTRAL (`op_bytes_compact` = flatten-in-place, return the SAME handle):
+        // the operand's cell IS the result's cell, so a binder-field projection flowing THROUGH it escapes
+        // identically to the raw projection. Passthrough the borrow classification (v-memory-safety, the
+        // 28-wit SHAPE-30 host-arg param-field escape — `#record((= contract (bytes-compact (. m contract))) …)`).
+        Core::BytesCompact { operand } => {
+            collect_escaped_field_projs(db, operand, binder, dup_sites, borrowed, out)
+        }
+        // A HOST-CALL ARG is a CONSUMING position: the owned arg structure is marshaled into memory then
+        // DEEP-DROPPED (#9402/#9403), so a binder-field projection embedded in it (`m.contract` moved into
+        // `sink.push #list(#record((= contract m.contract) …))`) MOVES OUT and its cell is freed by that arg
+        // deep-drop — the wrapper must dup it before the shell drop. Recurse args consuming, mirroring the
+        // `binder_must_escape` Call/HostCall arm. A bare whole-binder arg (`sink.push m`) reaches the `Param`
+        // arm and BAILS (a whole-shell move, not a dup-able field) — unchanged. Only `HostCall` (not the
+        // general `Core::Call`) is admitted here: the 28-wit host-arg-marshal deep-drop is the proven
+        // consuming site; a peer/member `Core::Call`'s per-callee param convention is not, so it stays in the
+        // `_ =>` bail (sound leak) until separately proven.
+        Core::HostCall { args, .. } => {
+            let args: Vec<StructId> = args.iter().copied().collect();
+            args.into_iter()
+                .all(|a| collect_escaped_field_projs(db, a, binder, dup_sites, false, out))
+        }
+        // SEQUENCING (`(do stmt… tail)`): each statement runs for side effect (a host call whose arg embeds an
+        // escaping field), then `tail` is the block value — all CONSUMING for escape purposes (mirror
+        // `binder_must_escape`). The reducer body `(host (sink) (do (sink.push …) #record(output)))` reaches
+        // the escaping `sink.push` through here; without this arm the whole body hit the `_ =>` bail.
+        Core::Seq { stmts, tail } => {
+            let stmts: Vec<StructId> = stmts.iter().copied().collect();
+            stmts
+                .into_iter()
+                .all(|s| collect_escaped_field_projs(db, s, binder, dup_sites, false, out))
+                && collect_escaped_field_projs(db, tail, binder, dup_sites, false, out)
+        }
+        Core::Block { body, .. } => {
+            collect_escaped_field_projs(db, body, binder, dup_sites, false, out)
+        }
         // Any other construct (control flow If/Match, calls, loops, rebinding, MapNew/SetOf, …): safe ONLY
         // if the binder does not occur inside — else the escape may be CONDITIONAL / key-owned / opaque, so
         // a single unconditional wrapper dup would mis-count → bail (keep the sound leak).
