@@ -93,17 +93,32 @@ pub(crate) fn param_escapes_body(db: &mut Db, body: StructId, binder: StructId) 
 /// `false` here → the wrapper SUPPRESSES the drop (never a double-free). Same (`collect_dup_sites` +
 /// `binding_escapes_dup_aware`) pair, same polarity, as the `let`-epilogue drop sites (reclaim.rs:83-95).
 pub(crate) fn record_cell_param_droppable(db: &mut Db, body: StructId, binder: StructId) -> bool {
+    // Lazy read-through memo (see `Db::record_cell_param_droppable_memo`): the verdict is a pure function of
+    // the build-once-immutable Core graph, stable per `(body, binder)` within a `Db` load, so caching it is
+    // byte-identical. Since #9385 admitted LET binders into the site-b child-dup subtract, the shell-reclaim
+    // analysis queries this per-LET-binder (reclaim.rs `mark_binder_dups`), re-running the ~2 body walks each
+    // `collect_dup_sites` pass → O(binders·body) on LET-dense code; the memo collapses the repeats to O(1).
+    if let Some(&cached) = db.record_cell_param_droppable_memo.get(&(body, binder)) {
+        return cached;
+    }
+    #[cfg(test)]
+    {
+        db.record_cell_param_droppable_uncached_calls += 1;
+    }
     let mut dup_sites: HashSet<StructId> = HashSet::new();
     collect_dup_sites(db, body, &[binder], &mut dup_sites);
     // tail_borrowed = false: the cell is a fresh wrapper-owned temporary at the call boundary, not a
     // tail-borrow position. Safe to drop ⟺ the dup-aware escape query is false (every consume retained).
-    !binding_escapes_dup_aware(
+    let droppable = !binding_escapes_dup_aware(
         db,
         body,
         EscapeTarget::Binder(binder),
         false,
         Some(&dup_sites),
-    )
+    );
+    db.record_cell_param_droppable_memo
+        .insert((body, binder), droppable);
+    droppable
 }
 
 /// One escaped-field projection: the chain of `Core::Proj.index` steps from a record-cell param binder

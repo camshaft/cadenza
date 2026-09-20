@@ -4082,6 +4082,50 @@ fn wit310_escaped_field_projections_none_when_same_field_used_twice_is_droppable
 }
 
 #[test]
+fn record_cell_param_droppable_is_memoized_not_per_query() {
+    // #9385 admitted LET binders into the site-b child-dup subtract, so the shell-reclaim analysis queries
+    // `record_cell_param_droppable` PER LET BINDER, re-running its ~2 whole-body walks each `collect_dup_
+    // sites` pass → O(binders·body) on LET-dense code (measured +6.7% sread / +15.7% eval-db / +19.3%
+    // lower-db, isolated to #9385). The lazy `(body,binder)` read-through memo collapses the REPEATS: after
+    // the first (building) query, every repeat of the SAME (body,binder) is served from the cache with zero
+    // extra body walks. This guard pins that — a reintroduced un-memoized walk would re-increment per query.
+    let ast = crate::testkit::parse(
+        "(module m (def (f (: m (Record (x Bytes) (y Bytes)))) \
+             (record (= items (list (record (= a (. m x)) (= b (. m y))))))) \
+           (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select record-cell param");
+    let binder = params[0].0;
+    // Start from a clean memo, then run one BUILDING query (it may miss more than once — its inner
+    // `collect_dup_sites` also computes nested binders' droppability, each its own keyed build) and record
+    // the miss count. Then hammer the SAME (body,binder): every repeat must HIT the top-level cache (return
+    // before any body walk), so the miss count must NOT rise.
+    db.record_cell_param_droppable_memo.clear();
+    db.record_cell_param_droppable_uncached_calls = 0;
+    let v0 = record_cell_param_droppable(&mut db, body, binder);
+    let misses_after_build = db.record_cell_param_droppable_uncached_calls;
+    assert!(
+        misses_after_build >= 1,
+        "the first query must build at least the queried (body,binder) verdict"
+    );
+    for _ in 0..20 {
+        assert_eq!(
+            record_cell_param_droppable(&mut db, body, binder),
+            v0,
+            "the memoized verdict must be stable across repeats"
+        );
+    }
+    assert_eq!(
+        db.record_cell_param_droppable_uncached_calls, misses_after_build,
+        "20 repeat queries of the SAME (body,binder) must ALL hit the memo (miss count unchanged); a \
+         reintroduced un-memoized per-query body walk would add 20 — the #9385 O(binders·body) regression"
+    );
+}
+
+#[test]
 fn wit310_escaped_field_projections_shape9_records_the_moved_out_field() {
     // SHAPE-9: a record param `m` whose Bytes field `tok` MOVES OUT VERBATIM through a list+nested-record
     // result (`(record (= items (list (record (= echo (. m tok))))))`). Unlike a direct compound-field
