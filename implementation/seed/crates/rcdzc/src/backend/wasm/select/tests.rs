@@ -4478,12 +4478,12 @@ fn escape_dup_14929_admits_coupled_with_g4_relax() {
         if !seen.insert(nd) {
             continue;
         }
-        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd) {
-            if matches!(core_of(&mut db, scrutinee), crate::core::Core::Param { .. }) {
-                let sty = type_of(&mut db, scrutinee);
-                fence = payload_in_result_bare_escape_ok(&mut db, &root, scrutinee);
-                kind = nontail_param_reclaim_kind(&mut db, sb, scrutinee, &sty, false, &root);
-            }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd)
+            && matches!(core_of(&mut db, scrutinee), crate::core::Core::Param { .. })
+        {
+            let sty = type_of(&mut db, scrutinee);
+            fence = payload_in_result_bare_escape_ok(&mut db, &root, scrutinee);
+            kind = nontail_param_reclaim_kind(&mut db, sb, scrutinee, &sty, false, &root);
         }
         stack.extend(crate::core_analysis::licm_children(&mut db, nd));
     }

@@ -14936,7 +14936,14 @@
       (export main)))
   (call main)
   (output (: 7 BigInt))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety + v-core-opt, 14929 escaped-child-dup): known-leak->0. The owned recursive-sum
+  ; scrutinee whose base (Leaf) arm RETURNS a heap BigInt payload leaked the whole tree (live-objects 6) —
+  ; is_nontail_spine_param admitted the shell reclaim but the G4 !sum_cont_payload_in_result fence declined the
+  ; bare payload return. Now reclaimed: the escaped payload is escape-dup'd before the shell deep-drop (dup
+  ; precedes the cascade -> the returned n survives rc1), gated on payload_in_result_bare_escape_ok (the arm
+  ; bare-returns the payload and does not also consume it) so the G4 relax fires IFF the escape-dup fires.
+  ; Measures live-objects 0; rc-trace balanced (LEAK: none). Int64 twin below never leaked (scalar payload).
+  (live-objects 0))
 
 (case
   "the list-recursion shape of the two-self-call BigInt fold also types and folds"
@@ -14950,7 +14957,14 @@
       (export main)))
   (call main)
   (output (: 7 BigInt))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety + v-core-opt, 14929 escaped-child-dup): known-leak->0. The owned recursive-sum
+  ; scrutinee whose base (Leaf) arm RETURNS a heap BigInt payload leaked the whole tree (live-objects 6) —
+  ; is_nontail_spine_param admitted the shell reclaim but the G4 !sum_cont_payload_in_result fence declined the
+  ; bare payload return. Now reclaimed: the escaped payload is escape-dup'd before the shell deep-drop (dup
+  ; precedes the cascade -> the returned n survives rc1), gated on payload_in_result_bare_escape_ok (the arm
+  ; bare-returns the payload and does not also consume it) so the G4 relax fires IFF the escape-dup fires.
+  ; Measures live-objects 0; rc-trace balanced (LEAK: none). Int64 twin below never leaked (scalar payload).
+  (live-objects 0))
 
 (case
   "the same two-self-call recursive fold at Int64 still types as Int64 (the defer re-grounds to the operands' type)"
