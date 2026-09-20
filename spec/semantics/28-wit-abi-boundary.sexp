@@ -2922,7 +2922,7 @@ cases
   (host-responses (respond hosti.put (: 42 UInt64)))
   (host-calls (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a record-with-a-MIXED-WIDTH-variant-field host arg emits, loads, and runs (via an imposed WIT world)"
@@ -3444,7 +3444,7 @@ cases
   (host-responses (respond hosti.put (: 42 Int64)))
   (host-calls (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- breaker batch 405 (2026-08-26): host-IMPORT result-shape coverage + record-param export
 ; controls. cq01/cq03 scalar-param imports with record/list results; cq02b/c/d NULLARY imports with
@@ -3555,7 +3555,7 @@ cases
   (call f (: #record((= x 3)) (Record (: x Int64))))
   (host-calls (call cadenza:demo/hosti.put))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cq02d NULLARY + RECORD result called TWICE with TWO respond clauses"

@@ -6038,6 +6038,25 @@ pub(super) fn emit(
                             scratch_ty,
                             out,
                         )?;
+                        // MARSHALED-ARG RECLAIM (v-memory-safety, compound analog of the String/Bytes host-arg
+                        // reclaim above): `emit_record_arg_marshal` READ each field (`arr-get` borrows) and
+                        // pushed the FLATTENED scalar/(ptr,len) leaves the component `record` param lowers to —
+                        // the host reads those, NOT the guest cell — so the record handle in `rec_slot` is DEAD
+                        // after the marshal. When the arg is a freshly-built OWNED record (a `#record(…)`
+                        // literal/builder — `heap_operand_ownership == Owned`) or a shell-reclaim CHILD-DUP site,
+                        // deep-drop it here to reclaim the shell + its owned fields: every field was COPIED to
+                        // the boundary (scalar get / rope→`mem`), NOT moved out as a live handle, so the cascade
+                        // is balanced (else one record cell leaks per host call — the `(host (io) (io.op
+                        // #record(…)))` shape, 28-wit cq04*). Stack-neutral: the flattened leaves stay below this
+                        // `local.get; drop`. A BORROWED record (a bare param whose owner reclaims it) is left
+                        // untouched — leak-over-UAF (never double-frees). Import mirror in
+                        // `collect_used_ops_into_seen`'s `HostCall` `Ty::Record` arm.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(rec_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
                     }
                     // A `list<T>` argument (`graph.set-edges`'s `targets: list<reducer-id>`) — the guest
                     // MARSHALS the value-heap `List` into the shared `mem`: an outer array of `count` element

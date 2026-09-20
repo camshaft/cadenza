@@ -1133,6 +1133,14 @@ pub(super) fn collect_used_ops_into_seen(
                     // → an invalid module), then descend to collect the ops that BUILD the record value.
                     Ty::Record(fields) if !peer_bound => {
                         out.insert(OP_ARR_GET);
+                        // Import mirror of the marshaled-record-arg reclaim (emit.rs `HostCall` `Ty::Record`
+                        // arm): the emit deep-drops the record cell iff `heap_operand_ownership == Owned` OR the
+                        // arg is a shell-reclaim child-dup site. The dup-site set is not computed in this import
+                        // pass, so declare `drop` for EVERY record host-arg — a SAFE SUPERSET of the emit's gate
+                        // (an unused import is a valid module; UNDER-declaring would make the emit's
+                        // `CallImport(OP_DROP)` resolve to u32::MAX → invalid). Same superset policy as the
+                        // String/Bytes arm above.
+                        out.insert(OP_DROP);
                         for fty in fields.values() {
                             collect_record_field_ops(db, fty, out);
                         }
