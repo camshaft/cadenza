@@ -954,7 +954,7 @@
             (= token #list(3))
             (= deadline-nanos (Some 42)))))
       (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a run.run result host op threads the Ok bytes into the step (via an imposed WIT world)"
@@ -1768,7 +1768,7 @@
             (= token #list(3))
             (= deadline-nanos (None unit)))))
       (= outcome (continue unit))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a typed reducer performing a list<tuple> host arg emits, loads, and runs (via an imposed WIT world)"
