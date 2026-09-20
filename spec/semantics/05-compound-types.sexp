@@ -23752,7 +23752,7 @@
   (input (do (def (main (: p (Tuple Int64 Int64))) #list((. p 0) (. p 1))) (export main)))
   (call main (: #tuple(7 9) (Tuple Int64 Int64)))
   (output (: #list(7 9) (List Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a tuple-parameter export returns a BigInt computed from its fields"
@@ -23765,7 +23765,7 @@
       (export main)))
   (call main (: #tuple(5000000000 6000000000) (Tuple Int64 Int64)))
   (output (: 11000000000 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a record-parameter export returns a tuple computed from its fields"
@@ -23775,7 +23775,7 @@
   (input (do (def (main (: p (Record (: x Int64) (: y Int64)))) #tuple(p.y p.x)) (export main)))
   (call main (: #record((= x 3) (= y 8)) (Record (: x Int64) (: y Int64))))
   (output (: (tuple 8 3) (Tuple Int64 Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an export mixing a scalar and a tuple parameter returns a list from both"
@@ -23787,7 +23787,7 @@
     (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) #list(a (. p 0) (. p 1))) (export main)))
   (call main (: 5 Int64) (: #tuple(7 9) (Tuple Int64 Int64)))
   (output (: #list(5 7 9) (List Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an export with a tuple parameter before a scalar returns a list from both"
@@ -23799,7 +23799,7 @@
     (do (def (main (: p (Tuple Int64 Int64)) (: a Int64)) #list((. p 0) (. p 1) a)) (export main)))
   (call main (: #tuple(20 30) (Tuple Int64 Int64)) (: 40 Int64))
   (output (: #list(20 30 40) (List Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an export with two tuple parameters returns a list from both"
@@ -23815,7 +23815,7 @@
       (export main)))
   (call main (: #tuple(1 2) (Tuple Int64 Int64)) (: #tuple(3 4) (Tuple Int64 Int64)))
   (output (: #list(1 2 3 4) (List Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an export mixing a scalar and a tuple parameter returns a BigInt from both"
@@ -23830,7 +23830,7 @@
       (export main)))
   (call main (: 1000000000 Int64) (: #tuple(2000000000 3000000000) (Tuple Int64 Int64)))
   (output (: 6000000000 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an export with a nested-tuple parameter returns a list from its leaves"
@@ -23847,7 +23847,7 @@
       (export main)))
   (call main (: #tuple(#tuple(1 2) 3) (Tuple (Tuple Int64 Int64) Int64)))
   (output (: #list(1 2 3) (List Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an export with a record-with-a-tuple-field parameter returns a list from its leaves"
@@ -23864,7 +23864,7 @@
     main
     (: #record((= pt #tuple(10 20)) (= n 30)) (Record (: pt (Tuple Int64 Int64)) (: n Int64))))
   (output (: #list(10 20 30) (List Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an export mixing a scalar and a nested-tuple parameter returns a list from both"
@@ -23879,7 +23879,7 @@
       (export main)))
   (call main (: 9 Int64) (: #tuple(#tuple(5 6) 7) (Tuple (Tuple Int64 Int64) Int64)))
   (output (: #list(9 5 7) (List Int64)))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a composed call over a record-transforming function with an arithmetic field compiles"

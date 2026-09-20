@@ -2668,14 +2668,14 @@ pub fn runtime_resource_core_module_form_ex2(
     // `emit_cell_rebuild` a closure `call` uses) and passes that one handle. So the compound is computed
     // from the host's arguments however they cross.
     {
-        let (inner, imp) = {
+        let (inner, imp, drop_cells) = {
             let imp = |name: &str| import_index[name] as u64;
             // Each COMPOUND slot needs one i32 local to stash its rebuilt cell handle (for the post-build
             // `local.tee`); scalar slots use no local. The flattened leaf params occupy locals `0..L`, so
             // the compound-cell locals start at `L` (`make_param_vts.len()`), one per compound slot.
             let n_cell_locals = make_core_slots
                 .iter()
-                .filter(|s| matches!(s, MakeCoreSlot::Tuple(_)))
+                .filter(|s| matches!(s, MakeCoreSlot::Tuple(..)))
                 .count();
             let mut inner = if n_cell_locals == 0 {
                 uleb_bytes(0) // no locals — scalar params are forwarded directly
@@ -2692,6 +2692,11 @@ pub fn runtime_resource_core_module_form_ex2(
             // reads its own contiguous run.
             let mut leaf_cursor = 0u32;
             let mut cell_local = make_param_vts.len() as u32;
+            // The cell-locals of the compound params the export only BORROWS — deep-dropped after the call
+            // (the make wrapper owns the freshly-rebuilt cell; `emit_tuple_rebuild` tee'd it into the local
+            // exactly "for the post-dispatch drop"). A non-droppable slot (a moved-out field) is omitted, so
+            // its cell stays live (a defined leak, never a double-free).
+            let mut drop_cells: Vec<u32> = Vec::new();
             for slot in make_core_slots {
                 match slot {
                     MakeCoreSlot::Scalar => {
@@ -2699,7 +2704,7 @@ pub fn runtime_resource_core_module_form_ex2(
                         uleb128(leaf_cursor as u64, &mut inner);
                         leaf_cursor += 1;
                     }
-                    MakeCoreSlot::Tuple(fields) => {
+                    MakeCoreSlot::Tuple(fields, drop_after) => {
                         // Rebuild this compound's cell from the leaves at `leaf_cursor..`; `emit_tuple_rebuild`
                         // stashes into `cell_local` and leaves the handle on the stack as the arg.
                         let rebuild = TupleArgRebuild {
@@ -2708,16 +2713,31 @@ pub fn runtime_resource_core_module_form_ex2(
                         };
                         emit_tuple_rebuild(&rebuild, cell_local, &imp, &mut inner);
                         leaf_cursor += fields.iter().map(FieldRebuild::leaf_count).sum::<u32>();
+                        if *drop_after {
+                            drop_cells.push(cell_local);
+                        }
                         cell_local += 1;
                     }
                 }
             }
-            (inner, imp)
+            (inner, imp, drop_cells)
         };
         let _ = imp;
         let mut inner = inner;
         inner.push(op::CALL);
         uleb128(export_abs as u64, &mut inner);
+        // Reclaim each borrow-only compound param cell the make wrapper owns (a dead owned temporary now the
+        // export has returned). `drop` takes the handle and leaves the export result beneath untouched
+        // (stack-balanced). Guarded on `drop` being imported (the heap-return escape path always imports it);
+        // a missing import can only skip the reclaim (leak), never mis-emit.
+        if let Some(&drop_idx) = import_index.get("drop") {
+            for dl in &drop_cells {
+                inner.push(op::LOCAL_GET);
+                uleb128(*dl as u64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(drop_idx as u64, &mut inner);
+            }
+        }
         // A SCALAR-ERASED result (a runtime Qty) leaves a bare scalar on the stack, not an i32 heap handle —
         // BOX it (`box-int` : (S64)->i32 handle) so `resource-new` gets a real rep. A compound export already
         // returns its handle, so no box for `Flat`/`Sum`/etc. A NARROW-int inner is an i32 core value, so
@@ -2995,8 +3015,11 @@ pub struct PlainExport {
 pub enum MakeCoreSlot {
     /// A scalar parameter — one flattened leaf, forwarded as-is.
     Scalar,
-    /// A fixed-shape scalar tuple/record parameter — its per-field rebuild; consumes its fields' leaves.
-    Tuple(Vec<FieldRebuild>),
+    /// A fixed-shape scalar tuple/record parameter — its per-field rebuild; consumes its fields' leaves. The
+    /// `bool` = the make wrapper deep-drops this rebuilt cell after the export call (the def only BORROWS it,
+    /// per `record_cell_param_droppable`); `false` keeps the cell (a moved-out field / unproven shape) so the
+    /// drop never double-frees a live child.
+    Tuple(Vec<FieldRebuild>, bool),
 }
 
 #[derive(Clone)]
