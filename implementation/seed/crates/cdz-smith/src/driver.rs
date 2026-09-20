@@ -58,6 +58,13 @@ pub enum GenMode {
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
     ReclaimShapes,
+    /// The ALGEBRAIC-EFFECT grammar (`astgen::generate_effect`) — `effect`/`handle`/`resume`/`abort`
+    /// programs (single-handler, nested-handler, effect+collection, multi-op state fold) that each return
+    /// a KNOWN Int64. PURE-GUEST (effects lower to guest continuation code, no host boundary), so unlike
+    /// host imports they RUN to a value and are VALUE-OBSERVABLE by all three sweeps. Densifies coverage of
+    /// the effects LOWERING (continuation capture, handler-stack resolution, the abort/continuation-drop
+    /// path) — a complex area whose `gen_effect_*` generators existed but fed no standing sweep. `--effect`.
+    Effect,
 }
 
 /// Configuration for a fuzzing run.
@@ -1210,6 +1217,7 @@ pub fn program_for_seed_with(seed: u64, mode: GenMode) -> String {
         GenMode::ReclaimShapes => {
             crate::astgen::generate_reclaim_shapes(&astgen_seed_entropy(seed)).source
         }
+        GenMode::Effect => crate::astgen::generate_effect(&astgen_seed_entropy(seed)).source,
     }
 }
 

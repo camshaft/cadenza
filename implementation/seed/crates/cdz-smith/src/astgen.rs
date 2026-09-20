@@ -220,6 +220,33 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     Program { source }
 }
 
+/// Generate an ALGEBRAIC-EFFECT program — a param-less `main` returning Int64 whose value flows through
+/// an `(effect …)` declaration + `(handle …)` frame (perform / resume / abort / nested-handler / stateful
+/// fold). These are PURE-GUEST programs (effects lower to guest continuation-passing + handler-frame code —
+/// NO host boundary), so unlike host imports they RUN to a concrete value and are fully VALUE-OBSERVABLE by
+/// the wasm-vs-rust `differential`, `opt-invariance`, and `determinism` sweeps. Densifies coverage of the
+/// effects LOWERING — continuation capture, handler-stack resolution across frames, the abort/continuation-
+/// DROP path — a complex, bug-prone area (active v-effects vertical) that had ready generators
+/// (`gen_effect_*`) but was wired to NO standing sweep. Reuses the four uniform effect-body generators,
+/// each of which is well-formed + terminating + computes a deterministic Int64.
+pub fn generate_effect(entropy: &[u8]) -> Program {
+    let mut c = ByteCursorChoice::new(entropy);
+    let mut body = String::new();
+    match c.variant(4) {
+        // Single-handler perform/resume/abort (continuation drop vs resume).
+        0 => gen_effect_body(&mut c, &mut body),
+        // Two effects, the inner handle NESTED in the outer — multi-frame handler-stack resolution.
+        1 => gen_effect_nested_body(&mut c, &mut body),
+        // A handler whose op result feeds a heap collection — effect + collection lowering.
+        2 => gen_effect_collection_body(&mut c, &mut body),
+        // A handler performing MULTIPLE ops, folding state across them.
+        _ => gen_effect_multiop_body(&mut c, &mut body),
+    }
+    Program {
+        source: format!("(do (def (main) {body}) (export main))"),
+    }
+}
+
 /// Which optional helpers are in scope for an expression, so the call arms (`gen_expr`) know what they
 /// may emit. A `Copy` struct threaded by value — cheaper to extend with a new helper than a positional
 /// `bool` per generator function.
@@ -4881,6 +4908,45 @@ mod tests {
         assert!(
             reached.iter().all(|&r| r),
             "all eight reclaim shapes must be reachable across seeds: reached={reached:?}"
+        );
+    }
+
+    /// [`generate_effect`] — the Effect generator behind `--effect` (value-observable coverage of the
+    /// effects lowering) — must keep its two load-bearing invariants: (1) EVERY generated program COMPILES
+    /// (an effect body that declines exercises no lowering); and (2) ALL FOUR forms stay reachable across
+    /// varied entropy (single-handler, nested-handler, effect+collection, multi-op) — a wiring edit that
+    /// drops a form would silently stop fuzzing that slice of the effects lowering.
+    #[test]
+    fn generate_effect_reaches_all_forms_and_compiles() {
+        // Distinctive, mutually-exclusive markers (see `generate_effect`): nested = two effects E1/E2;
+        // multiop = one effect E with two ops o1/o2; collection = a `List`; single = the plain one-op form.
+        let mut reached = [false; 4];
+        for seed in 0u64..200 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(97);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let src = generate_effect(&bytes).source;
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "every effect program must COMPILE: {src}"
+            );
+            if src.contains("(effect E1 ") {
+                reached[1] = true; // nested-handler
+            } else if src.contains("(effect E (op o1 ") {
+                reached[3] = true; // multi-op
+            } else if src.contains("List") {
+                reached[2] = true; // effect + collection
+            } else if src.contains("(effect E (op o ") {
+                reached[0] = true; // single-handler
+            }
+        }
+        assert!(
+            reached.iter().all(|&r| r),
+            "all four effect forms must be reachable across seeds: reached={reached:?}"
         );
     }
 
