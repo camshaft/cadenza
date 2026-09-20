@@ -112,7 +112,7 @@
   (output (: #record((= d (Some 42))) (record (d (Option Int64)))))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (output (: #record((= d (None unit))) (record (d (Option Int64)))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare Result<s64,String> RESULT round-trips DIRECTLY (unwrapped) via the run/encode envelope both arms"
@@ -185,7 +185,7 @@
   (output (: #record((= o (Continue unit))) (record (o Outcome))))
   (call f (: #record((= x 7)) (Record (: x Int64))))
   (output (: #record((= o (Close 7))) (record (o Outcome))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a scalar export crosses the WIT boundary and returns its argument"
@@ -206,7 +206,7 @@
   (input (do (def (f (: m (Record (: x Int64)))) #record((= a m.x) (= b (+ m.x m.x)))) (export f)))
   (call f (: #record((= x 21)) (Record (: x Int64))))
   (output (: (record (= a 21) (= b 42)) (Record (: a Int64) (: b Int64))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a bare list of scalars in a record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
@@ -218,7 +218,7 @@
     (do (def (f (: m (Record (: x Int64)))) #record((= xs #list(m.x (+ m.x m.x))))) (export f)))
   (call f (: #record((= x 5)) (Record (: x Int64))))
   (output (: #record((= xs #list(5 10))) (record (xs (List Int64)))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a list of records in a record result VALUE round-trips via the run/encode envelope (no wit-world clause; a typed record/sum EXPORT is a separate gap)"
@@ -240,7 +240,7 @@
     (:
       #record((= items #list(#record((= a 7) (= b 14)))))
       (record (items (List (record (a Int64) (b Int64)))))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a FLOAT-KEYED map result round-trips via the run/encode envelope, rendering its float keys (float map-key render, #6211 key-adopt/use + #6274 render)"
@@ -3806,7 +3806,7 @@ cases
       (export f)))
   (call f (: #record((= x 0)) (Record (: x Int64))))
   (output (: #record((= c (Red unit))) (record (c Color))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a payloadless enum EXPORT result crosses as a TYPED WIT enum (imposed world) — Direction A"
