@@ -14946,6 +14946,34 @@
   (live-objects 0))
 
 (case
+  "an escaped BigInt leaf payload is read THREE times across an intervening tree allocation without over-drop"
+  (doc
+    "Over-drop tripwire for the #9435 14929 escaped-child-dup: `s (T.L 5N)` bare-returns the leaf's
+           escaping BigInt payload `r` (the escape-dup fires — the payload is dup'd BEFORE the T.L shell
+           deep-drop so `r` survives at rc1), then `r` is READ THREE TIMES (`(+ r (+ q (+ r r)))`) with an
+           INTERVENING tree allocation+sum `q = s (T.B (T.L 10N) (T.L 20N)) = 30` between the reads. If the
+           escape-dup mis-counted and `r`'s cell were freed early, the `q` allocation could reuse it and the
+           later reads of `r` would corrupt — so the value oracle (5+30+5+5 = 45) is a loud over-drop witness,
+           and the census pins that both `r`'s dup'd cell AND every reclaimed shell (the T.L 5N shell, the
+           whole q tree) net to nothing live. Distinct from the sibling 14929 case (which reads the escaped
+           payload ONCE via main's return) — this exercises the escape-dup'd payload's rc SURVIVAL across
+           multiple post-shell-drop uses. Value + census verified on the debug-counters runtime (breaker,
+           via the fast single-case recipe).")
+  (input
+    (do
+      (type T (L BigInt) (B T T))
+      (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0N)))
+      (def
+        (main)
+        (let ((r (s (T.L 5N))))
+          (let ((q (s (T.B (T.L 10N) (T.L 20N)))))
+            (+ r (+ q (+ r r))))))
+      (export main)))
+  (call main)
+  (output (: 45 BigInt))
+  (live-objects 0))
+
+(case
   "the list-recursion shape of the two-self-call BigInt fold also types and folds"
   (input
     (do
