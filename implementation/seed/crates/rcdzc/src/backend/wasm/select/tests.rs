@@ -4217,7 +4217,71 @@ fn view_shell_465b_single_consume_escaping_view_admits_via_the_disjunct() {
         admit,
         "465(b) disjunct must ADMIT the single-consume escaping-view arm (its two prior admit paths both \
          decline it, so this TRUE is decided by `consuming.len()==1 && view_escapes_as_arm_result`) — the \
-         load-bearing gate v-memory-safety pairs with a co-placed child-dup(view) before landing"
+         load-bearing gate whose escaping shell-drop is dup-balanced by `owned_compound_boxed` (the scrutinee \
+         is `Owned`, so the emit dups the escaped view via the SAME `collect_consuming_payload_sites_cont`)"
+    );
+}
+
+#[test]
+fn view_shell_465b_strat_escaping_declines_no_owned_compound_boxed_dup() {
+    // 465(b) CORRECTNESS FENCE: `is_owned_single_view_producer` (the outer gate) ALSO matches `StrAt`
+    // (`String.at`), but StrAt is deliberately NOT `heap_operand_ownership == Owned` (kept Borrowed for
+    // Stage-B/value-eq). So the emit dup provider `owned_compound_boxed` does NOT dup a single-consume
+    // ESCAPING StrAt view — admitting its shell deep-drop WITHOUT that dup would free the escaped view = UAF.
+    // The disjunct's `&& Owned` gate (matching `owned_compound_boxed`, the dup provider, by construction) must
+    // DECLINE this shape. A regression that drops the `Owned` gate flips this test and re-opens the StrAt UAF.
+    let ast = crate::testkit::parse(
+        "(module m (def (g (: s String) (: i Int64)) \
+           (match (String.at s i) ((Some c) c) ((None _u) \"e\"))) \
+         (def (main) 0) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (gp, gb) = function_of(&mut db, "g");
+    let _ = select_function(&mut db, gb, &gp, &layout).expect("select g (StrAt escaping)");
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![gb];
+    let mut found = None;
+    while let Some(nd) = stack.pop() {
+        if !seen.insert(nd) {
+            continue;
+        }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd) {
+            if matches!(core_of(&mut db, scrutinee), crate::core::Core::StrAt { .. }) {
+                found = Some((scrutinee, root));
+            }
+        }
+        stack.extend(crate::core_analysis::licm_children(&mut db, nd));
+    }
+    let (scrut, root) = found.expect("g StrAt MatchSum");
+    let scrut_ty = type_of(&mut db, scrut);
+    // The outer gate DOES match StrAt, and it IS a single-consume escaping view (same shape the disjunct
+    // admits for an Owned producer) — so ONLY the `&& Owned` gate keeps it declined.
+    assert!(
+        is_owned_single_view_producer(&mut db, scrut),
+        "StrAt passes the outer single-view gate (that's exactly why the Owned fence is needed)"
+    );
+    assert!(
+        !matches!(
+            crate::backend::wasm::select::ownership::heap_operand_ownership(&mut db, scrut),
+            Ok(crate::backend::wasm::select::ownership::HandleOwnership::Owned)
+        ),
+        "StrAt must NOT be Owned — that is why owned_compound_boxed does not dup its escaped view"
+    );
+    let admit = matchsum_view_shell_reclaim_ok(
+        &mut db,
+        scrut,
+        &scrut_ty,
+        Some((0, ValType::I32)),
+        false,
+        &root,
+        Some(gb),
+    );
+    assert!(
+        !admit,
+        "465(b) MUST DECLINE a single-consume escaping StrAt view: owned_compound_boxed (Owned-gated) does \
+         not dup it, so admitting the shell deep-drop would free the escaped view = UAF. The `&& Owned` gate \
+         is the fence; a regression dropping it re-opens the StrAt shell-drop-without-dup UAF."
     );
 }
 
