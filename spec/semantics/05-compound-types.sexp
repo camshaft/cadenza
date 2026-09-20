@@ -5792,6 +5792,54 @@
   (live-objects 0))
 
 (case
+  "a consumed-reused invariant base ALSO read after the loop is caller-reclaimed, NOT loop-exit-dropped"
+  (doc
+    "The CALLER-OWNERSHIP-FENCE face of the #9432 5786(a) exit deep-drop: the SAME consume-reused
+           invariant `base` (`(List.push base 99)` scalar-reduced by `List.len`, threaded into `tot`) but
+           with `base` READ AGAIN AFTER the loop — `(+ (loop 0 m base 0) (List.len base))`. That post-loop
+           reuse makes `main` pass `base` as a REUSED LocalRef (dup-backed, not moved), so the 5786(a)
+           exit-drop's HARD `looped_invariant_param_caller_owned` gate reads FALSE (the loop does not
+           exclusively own `base`) and the exit deep-drop correctly DECLINES — no over-drop, value correct on
+           all faces (`4m+3`: m=0→3, 1→7, 2→11, 4→19), no UAF. This is the end-to-end guard for the
+           caller-ownership DROP-SITE fence — DISTINCT from the sibling 5786 case (which fires the exit-drop
+           because its base is NOT reused, caller_owned=true → 0) and from v-core-opt's in-process wrapper
+           witnesses (which test the admit/decline of `param_consumed_reused_in_loop_body`, NOT the
+           caller-owned gate). A regression that wrongly flipped `caller_owned` TRUE for a reused-LocalRef
+           base would fire the exit-drop → OVER-DROP `main`'s `base` → the debug-runtime TRAPS (assert_node_
+           live) instead of the current benign leak. KNOWN-LEAK (measured live-objects 2 on the authoritative
+           nix debug-runtime — the base spine node#1 + wrapper node#2, exactly the pre-#9432 residue; NB native
+           --report-live-objects AND a compiler-side prediction both said 0 — the census-flaky trap, do not
+           trust them): a CONSERVATIVE-SUPPRESSION leak, not a fixable-in-place gap — `main` cannot statically
+           know the invariant loop PRESERVED `base` (borrow-then-rebuild), so it treats `base` as moved-into
+           the consuming loop and suppresses its post-`List.len` drop. v-core-opt owns the flip known-leak→0
+           (a callee-preserves-invariant-param ⇒ caller-retains analysis, the caller-side sibling of
+           `looped_invariant_param_caller_owned`; queued follow-on). `mb` builds `base` as a runtime list (no
+           fold). Value verified correct + census 2 verified on the debug-counters runtime (breaker + v-core-opt).")
+  (input
+    (do
+      (def
+        (mb (: i Int64) (: n Int64) (: acc (List Int64)))
+        (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
+      (def
+        (loop (: j Int64) (: m Int64) (: base (List Int64)) (: tot Int64))
+        (if (< j m) (loop (+ j 1) m base (+ tot (List.len (List.push base 99)))) tot))
+      (def
+        (main (: m Int64))
+        (let ((base (mb 0 3 #list())))
+          (+ (loop 0 m base 0)
+             (List.len base))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (call main (: 1 Int64))
+  (output (: 7 Int64))
+  (call main (: 2 Int64))
+  (output (: 11 Int64))
+  (call main (: 4 Int64))
+  (output (: 19 Int64))
+  (live-objects known-leak))
+
+(case
   "a loop-invariant heap projection consumed in the loop body is not LICM-hoisted"
   (doc
     "The LOOP-INVARIANT-CODE-MOTION face of the still-live-binding family: LICM hoists a loop-invariant
