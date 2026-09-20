@@ -87,12 +87,16 @@ pub(crate) fn expr_refs_scrutinee_seen(
     if !seen.insert(id) {
         return false;
     }
-    // CONSERVATIVE OPAQUE-CAPTURE BACKSTOP: a `CallClosure`/`HostCall` env is invisible to this walk and
-    // could capture the scrutinee (a reduced resume-continuation is one) → treat as not-dead-after.
-    if matches!(
-        core_of(db, id),
-        Core::CallClosure { .. } | Core::HostCall { .. }
-    ) {
+    // CONSERVATIVE OPAQUE-CAPTURE BACKSTOP: a `Core::CallClosure`'s `closure` env is INVISIBLE to this
+    // syntactic walk and could capture the scrutinee — a reduced resume-continuation is a `CallClosure` of a
+    // reified `k` (the v-effects #048389 escape vector) — so treat it as not-dead-after. A `Core::HostCall`
+    // is NOT such a vector (v-effects soundness ruling): it is a TERMINAL host-delegated perform with no
+    // closure, no captured env, no continuation (the host resolves the WIT import and returns by value; there
+    // is no in-program handler and no `resume`), so its ONLY scrutinee refs are its EXPLICIT args, which the
+    // normal walk below descends — and if an arg is itself (or reaches) a `CallClosure`, the recursion hits
+    // this arm and stays conservative, so there is no hole. Keep `CallClosure` conservative; let `HostCall`
+    // fall through to the arg-descent. (#048389 not weakened — the vector is CallClosure, unchanged.)
+    if matches!(core_of(db, id), Core::CallClosure { .. }) {
         return true;
     }
     let is_scrut_ref =

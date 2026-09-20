@@ -5977,12 +5977,23 @@ pub(super) fn emit(
                             // DEAD after the copy loop. When the arg is a freshly-built OWNED producer (a
                             // `Bytes.of`/concat/slice rope — `heap_operand_ownership == Owned`), drop it here
                             // to reclaim it (else one buffer leaks per host call — the `(host (io) (io.op
-                            // (Bytes.of …)))` shape). Stack-neutral: `(ptr,len)` were already pushed above and
-                            // stay below this `local.get; drop`. A BORROWED arg (a param / match-binder whose
-                            // owner reclaims it) is left untouched — leak-safe: an unproven ownership just
-                            // leaves it un-dropped, never double-frees (leak-over-UAF). Import mirror in
-                            // `collect_used_ops_into_seen`'s `HostCall` arm (same Owned gate).
+                            // (Bytes.of …)))` shape). OWNED-BY-FLOW twin (04-capabilities:536, v-effects
+                            // #048389-backstop refined so the `Some` shell now reclaims): a marshaled arg that
+                            // is a CHILD-DUP site (`out.dup_sites.contains(&arg)` — a `SumPayload`/`Proj`
+                            // extraction the shell-reclaim pass dup'd so the scrutinee's deep-drop cascade
+                            // would not double-free it) likewise OWNS a reference in `rope_slot`. But the
+                            // marshal only READS it (a byte-copy into `mem` — NOT a consuming op that would
+                            // take the dup's ref, unlike `List.push`), so that child-dup is ORPHANED and
+                            // leaks (the `(match (String.from-bytes …) ((Some s) (host (hs) (hs.h s))) …)`
+                            // shape: `s` dup'd rc1->2, shell cascade nets 2->1, dup never freed). Drop it here
+                            // — after the copy, before the shell deep-drop, so: dup (1->2), THIS drop (2->1),
+                            // shell cascade (1->0), balanced. Stack-neutral: `(ptr,len)` were pushed above and
+                            // stay below this `local.get; drop`. A plain BORROWED arg (a bare param whose
+                            // owner reclaims it — NEITHER Owned NOR a dup site) is left untouched — leak-safe:
+                            // never double-frees (leak-over-UAF). Import mirror in
+                            // `collect_used_ops_into_seen`'s `HostCall` arm (same Owned || dup-site gate).
                             if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                                || out.dup_sites.contains(&arg)
                             {
                                 out.push(Lir::LocalGet(rope_slot));
                                 out.push(Lir::CallImport(OP_DROP));
