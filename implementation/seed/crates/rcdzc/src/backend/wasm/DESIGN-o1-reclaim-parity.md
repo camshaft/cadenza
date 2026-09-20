@@ -122,3 +122,44 @@ element-vs-view discriminator as (b), reused.
   existing husk-drop path? [v-mem placement lane]
 - Can the O1 loop-exit invariant-param drop reuse the O2 pipeline's drop-insertion, or a separate
   layout-preserving O1-emit pass (like B2)?
+
+## 6. Landed status + remaining follow-on cluster (2026-09-20)
+
+### LANDED to live-objects 0 (all guarded-all GREEN)
+- **266** (SITE-A env-cell reclaim for escaped+directly-applied closures) — #9423. Part-1 = `Core::CallClosure`
+  classified `Owned` in `heap_operand_ownership` (v-core-opt ownership co-verify); part-2 = the SITE-A env-cell
+  drop. 09-functions:266 → 0.
+- **465(b)** view-shell husk-only reclaim — #9430. `matchsum_view_shell_reclaim_ok` disjunct
+  (`is_owned_single_view_producer ∧ consuming.len()==1 ∧ view_escapes_as_arm_result ∧ owned_compound_boxed`)
+  admits the single-consume escaping-view inner shell; the emit dup is `owned_compound_boxed`'s
+  `collect_consuming_payload_sites_cont` (same set the gate reads → dup ⟺ gate BY CONSTRUCTION).
+  **StrAt fence**: the disjunct is gated on `owned_compound_boxed` (⟹ `Owned`) precisely because
+  `is_owned_single_view_producer` also matches `StrAt` (NOT `Owned`) — an un-Owned StrAt escaping view would
+  get a shell-drop-without-dup = UAF. Caught pre-land; fenced; end-to-end tripwire = #9431 (13-strings,
+  `known-leak`). 10-bytes:727 → 0.
+- **5786(a)** invariant-base-consume-reused exit deep-drop — #9432. `param_consumed_reused_in_loop_body`
+  (v-mem's inert `allow_base_consume_reduced` flag+arm + my wrapper: the walk with the flag + the
+  `varying_param_epilogue_droppable` no-heap-child-escape fences); v-mem's parallel branch at
+  `looped_owned_param_drops` fires the exit drop iff `invariant.contains ∧ wrapper ∧
+  looped_invariant_param_caller_owned`. 05-compound:5786 → 0.
+
+### REMAINING follow-on cluster (v-core-opt owns; each leak-over-UAF + guarded-all gated)
+1. **Interior-view-CHAIN source-transfer** — 465-nested + 1811/1860/2500 (multi-level slice-of-slice).
+   The nested OUTER shell is a CORRECT leak-over-UAF residual: the runtime `op_bytes_slice` COLLAPSES
+   slice-of-slice (`i` retains rope, not `outer`; bytes_string.rs:326-342), but the COMPILER cannot statically
+   assume `outer` is a slice at a general site, so its conservative model treats `i` as retaining its immediate
+   source `outer` and keeps `outer` alive → the outer shell can't be husk-dropped without dangling `i`. Path to
+   0: teach the reclaim to PROVE `outer` is a slice and re-root `i`'s retained ref `outer→rope`, making `outer`
+   surplus. Needs a static slice-chain proof (design-first).
+2. **StrAt-escaping → 0** — flip #9431 `known-leak`. `StrAt` is not `Owned`, so `owned_compound_boxed` doesn't
+   dup its escaping view → the 465(b) fence correctly DECLINES it (leak). Path to 0: a StrAt-escaping-specific
+   child-dup co-placed with the husk-drop (co-design w/ v-mem placement). On delivery, flip #9431 → 0
+   (value stays 3111/3122/3144/3100).
+3. **5890 SumPayload-base variant** — `(List.push (match bx ((B xs) xs)) 99)`: `xs` is a Sum-EXTRACTED child,
+   not a direct base, so `arg_reclaims_binder_as_base` (direct-base only) declines it. Path to 0: extend the
+   base-consume recognition through a SumPayload extraction, with aliasing care (`xs` aliases `bx` — the exit
+   drop must not free a child still reachable via `bx`). Likely a co-design.
+
+All three admit only under §3 (fresh-owned / proven-non-aliasing / source-chain-balanced); guarded-all
+(`gate-local`), NOT `coarse-<chapter>`, is the authoritative pre-land gate for every slice (chor-driver #9413:
+a reclaim UAF surfaces in a DIFFERENT chapter than the one changed).
