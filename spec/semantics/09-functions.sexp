@@ -271,6 +271,37 @@
   (live-objects 0))
 
 (case
+  "a shared reduced closure applied FOUR ways spans the SITE-A env-cell drop without over-drop"
+  (doc
+    "Over-drop tripwire for the #9423 SITE-A env-cell reclaim: the reduced closure `f = (mk-adder k)`
+           is used FOUR ways over ONE materialized slot — read out of BOTH `#list(f f)` escape slots
+           (`(f 5)`, `(f 20)` via `List.at 0`/`1`) AND directly applied TWICE (`(f 2)`, `(f 10)`), with the
+           two direct applies straddling the list reads so a use follows the SITE-A post-apply env-cell drop.
+           All four must observe the SAME captured `k`: `(5+k)+(2+k)+(10+k)+(20+k) = 37 + 4k`. k=3 → 49;
+           k=0 → 37; k=-4 → 21. If the SITE-A env-cell drop (which reclaims the shared cell after a direct
+           apply) fired too early, the later `(f 10)`/`(f 20)` would read a freed env — a UAF (wrong sum or a
+           trap). Pins that the reclaim keeps the ONE shared cell live across every use; live-objects 0 = the
+           cell is still reclaimed exactly once at end (no leak, no double-free).")
+  (input
+    (do
+      (def (mk-adder (: n Int64)) (fn ((: x Int64)) (+ x n)))
+      (def
+        (main (: k Int64))
+        (let
+          ((f (mk-adder k)))
+          (let ((bag #list(f f)))
+            (+ ((Option.expect (List.at bag 0) "g") 5)
+               (+ (f 2) (+ (f 10) ((Option.expect (List.at bag 1) "h") 20)))))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 49 Int64))
+  (call main (: 0 Int64))
+  (output (: 37 Int64))
+  (call main (: -4 Int64))
+  (output (: 21 Int64))
+  (live-objects 0))
+
+(case
   "a partial application captures a runtime parameter in the residual closure"
   (doc
     "Partially applying to a VARIABLE reference must CAPTURE it in the residual lambda: `((sub n) 3)`
