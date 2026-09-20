@@ -290,6 +290,42 @@ if [ "$RECLAIM_COUNT" -gt 0 ]; then
   fi
 fi
 
+# ── effect mini-pass (VALUE-OBSERVABLE coverage of the effects LOWERING) ─────────────────────────
+# The `--effect` grammar draws `effect`/`handle`/`resume`/`abort` programs (single-handler · nested-handler ·
+# effect+collection · multi-op state fold) that each return a KNOWN Int64. Unlike host imports (which the
+# value differential DECLINES — no host to run), an algebraic effect is PURE-GUEST: it lowers to guest
+# continuation + handler-frame code and RUNS to a value, so it is fully value-observable. A mislowering of a
+# captured continuation / handler-stack frame / the abort-drop path shows as a wrong value (or a byte-diff /
+# opt divergence) — which these oracles catch. Effects lowering is complex + bug-prone (active v-effects
+# vertical) and had ready generators but fed NO standing sweep until now. Small dedicated slice each cycle so
+# the cron continuously guards it; counts/caps SMALL to fit the tick slack. `determinism --effect` is
+# compile-only (always runs); `opt-differential --effect` (value + per-level validity) runs when the store
+# resolves. Findings file into the SAME fleet queue (`determinism-*` / `opt-invariance-*`, tagged `effect`).
+EFFECT_COUNT="${CDZ_SMITH_EFFECT_COUNT:-100}"
+if [ "$EFFECT_COUNT" -gt 0 ]; then
+  EF_BIN="$CRATE_DIR/target/release/cdz-smith"
+  if [ -x "$EF_BIN" ] || ( cd "$CRATE_DIR" && cargo build -q --release --features differential 2>/dev/null ); then
+    EFFECT_CAP="${CDZ_SMITH_EFFECT_CAP:-30}"
+    # (a) determinism --effect — compile-only, no store/cdz, always runnable.
+    log "effect mini-pass (determinism) | count $EFFECT_COUNT | cap ${EFFECT_CAP}s"
+    CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$EFFECT_CAP" \
+      "$EF_BIN" determinism --effect --count "$EFFECT_COUNT" --seed "$(date +%s)" \
+        --findings "$FINDINGS" 2>&1 | tail -3 || true
+    # (b) opt-invariance --effect — O0-vs-O1/O2/O3 VALUE + per-level validity; needs the store (skip cleanly if absent).
+    EFFECT_STORE="${CDZ_SMITH_STORE:-$ROOT/target/cadenza-store}"
+    if [ -d "$EFFECT_STORE" ]; then
+      log "effect mini-pass (opt-invariance) | count $EFFECT_COUNT | store $EFFECT_STORE | cap ${EFFECT_CAP}s"
+      CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$EFFECT_CAP" \
+        "$EF_BIN" opt-differential --effect --count "$EFFECT_COUNT" --seed "$(date +%s)" \
+          --findings "$FINDINGS" --store "$EFFECT_STORE" 2>&1 | tail -3 || true
+    else
+      log "effect mini-pass: store $EFFECT_STORE absent; ran determinism-only (compile-only)"
+    fi
+  else
+    log "effect mini-pass: cdz-smith --features differential build failed; skipping"
+  fi
+fi
+
 # ── type-differential sweep (SEPARATE, Lean TYPE oracle) ─────────────────────────────────────────
 # The third oracle dimension: for each program, compare the compiler's TYPE judgment (accept/reject)
 # against the Lean `oracle-check` — a divergence is a false-reject (compiler rejects a well-typed
