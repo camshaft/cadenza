@@ -2804,6 +2804,15 @@ fn collect_nontail_spine_escape_dup_sites(
     collect_param_matchsums(db, body, &mut matches);
     for (scrut, root) in matches {
         if is_nontail_spine_param(db, body, scrut, &root)
+            // OWNERSHIP fence (v-mem 14929 cad-test-json UAF, 2026-09-20; mirrors the drop side): the escaped-
+            // payload dup is sound ONLY for a DIRECTLY self-recursive fold, which OWNS its scrutinee (internally
+            // direct-called; a tail self-call carries no caller-drop — the same ownership proof
+            // `selfloop_scrut_shell_reclaim_ok` G6a + `def_inc1_reclaims_param` use). A MUTUALLY-recursive body
+            // (json `encode`↔`encode-elems`, invoked on BORROWED list elements) does NOT own its param → an
+            // escape-dup + shell-reclaim frees a value the caller/list still holds → UAF (6 OOB traps). Gating on
+            // `body_is_self_recursive` keeps dup ⟺ relax lockstep; a non-self-recursive body stays the pre-14929
+            // LEAK, never a UAF.
+            && body_is_self_recursive(db, body)
             && payload_in_result_bare_escape_ok(db, &root, scrut)
         {
             let mut arm_bodies = Vec::new();
@@ -5341,7 +5350,16 @@ pub(super) fn nontail_param_reclaim_kind(
         // (`collect_sumpayload_escape_dup_sites`'s non-lifted branch, keyed on the SAME fence) has dup'd that
         // escaping child before the shell deep-drop, so the cascade nets 1:1 (the dup survives rc1 as the
         // return). dup ⟺ relax BY CONSTRUCTION (single shared fence). guarded-all-gated pre-land (#9413 locus).
-        let bare_escape_ok = payload_in_result_bare_escape_ok(db, root, scrutinee);
+        // OWNERSHIP fence (v-mem 14929 cad-test-json UAF, 2026-09-20): the escaped-payload relax is sound ONLY
+        // for a DIRECTLY self-recursive fold, which OWNS its scrutinee (internally direct-called; a tail
+        // self-call carries no caller-drop — the same ownership proof `selfloop_scrut_shell_reclaim_ok` G6a and
+        // `def_inc1_reclaims_param` use). A MUTUALLY-recursive body (json `encode`↔`encode-elems`, invoked on
+        // BORROWED list elements) does NOT own its param → escape-dup + shell-reclaim would free a value the
+        // caller/list still holds → UAF (6 OOB traps in cad-test-json). Gating `bare_escape_ok` on
+        // `body_is_self_recursive` mirrors the escape-dup collector → dup ⟺ relax stays lockstep; a
+        // non-self-recursive body falls back to the CONSUME path (bare_escape_ok=false) = the pre-14929 LEAK.
+        let bare_escape_ok = body_is_self_recursive(db, top_body)
+            && payload_in_result_bare_escape_ok(db, root, scrutinee);
         if nontail_param_compound_extra_ok(
             db,
             scrutinee,
