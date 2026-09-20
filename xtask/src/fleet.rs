@@ -2250,6 +2250,68 @@ fn ensure_oracle_lean_cron(fleet: &Fleet) {
     }
 }
 
+/// The fleet WATCHDOG (reap wedged agents / recreate dead windows via `watchdog.sh` →
+/// `fleet watchdog --nudge-drain-stalls`) is INTENTIONALLY OFF per an OPERATOR BAN 2026-09-10: it was KILLING
+/// ACTIVE AGENTS mid-workstream (confirmed by concierge 2026-09-20). Detection is NOT lost — the concierge
+/// runs `fleet watchdog --dry-run` non-destructively each maintenance tick and acts on it by hand. This const
+/// is the single source of truth for the destructive run; it stays `false` until the OPERATOR chooses to
+/// re-enable. RE-ENABLE PROCEDURE (operator's call): flip this to `true` and land — [`watchdog_cron_line`]
+/// then emits the live schedule and `fleet up` installs it. Do NOT hand-edit the crontab to re-enable:
+/// [`reconcile_tagged_crons`] would revert an out-of-band line back to the disabled form on the next `up`.
+const WATCHDOG_ENABLED: bool = false;
+
+/// The desired `# fleet:watchdog` crontab line. Registering it as a FIRST-CLASS tagged entry (even while
+/// disabled) is the point: the watchdog historically rode a concierge ad-hoc UNTAGGED line that silently
+/// vanished (dead 10 days, invisible to `cron_stale` — v-fleet-tooling 2026-09-20). Tagged, it can never
+/// silently vanish (reconcile re-asserts it) and its state is DELIBERATE. When `enabled` it is the live
+/// every-10-min schedule; when disabled it is the SAME line COMMENTED OUT (leading `#DISABLED-…`) so cron
+/// never schedules the destructive run, yet the tag is retained (reconcile keeps/heals it) and the active
+/// form is documented inline for whoever re-enables. Pure/unit-tested. `watchdog.sh` is flock-singleton and
+/// runs from the freshest worktree, so the 10-min cadence is safe when live.
+fn watchdog_cron_line(hub_script: &str, enabled: bool) -> String {
+    let active = format!("*/10 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:watchdog");
+    if enabled {
+        active
+    } else {
+        format!("#DISABLED-BY-OPERATOR-2026-09-10-reaped-active-agents {active}")
+    }
+}
+
+/// Ensure the `# fleet:watchdog` entry exists + points at THIS hub's `watchdog.sh`, in the state
+/// [`WATCHDOG_ENABLED`] dictates (currently DISABLED per the operator ban). Same re-arm-on-relaunch +
+/// drift-heal + FAIL-OPEN discipline as the other self-crons, and INDEPENDENT of them (its own reconcile/write
+/// in `up`, preserving the others' lines). Skips silently if the script isn't materialized yet or `crontab`
+/// errs. Installing the DISABLED form makes the operator ban self-healing + visible instead of a vanished
+/// untagged accident, WITHOUT scheduling the destructive reap/recreate run.
+fn ensure_watchdog_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("watchdog.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:watchdog",
+        watchdog_cron_line(&script.display().to_string(), WATCHDOG_ENABLED),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// The desired every-3-min user-crontab line for the autonomous DRAIN-NUDGE heartbeat (v-fleet-tooling
 /// 2026-09-01, operator-GO'd wake-path hardening), tagged `# fleet:drain-nudge` so [`reconcile_tagged_crons`]
 /// can find/heal it. Runs the HUB copy of `drain-nudge.sh`, which runs a worktree's `xtask fleet drain-nudge
@@ -2664,6 +2726,12 @@ fn up(fleet: &Fleet) {
     // concierge-down alert path (#8931, which posts through the bridge) can't fail silently. Independent +
     // fail-open + drift-healed.
     ensure_slack_bridge_guard_cron(fleet);
+    // Re-assert the `# fleet:watchdog` entry as a FIRST-CLASS tagged cron — but DISABLED per the operator ban
+    // 2026-09-10 (the destructive reap/recreate watchdog was killing active agents). This does NOT schedule
+    // the run (the line is commented); it exists so the ban is self-healing + visible instead of a vanished
+    // untagged-cron accident (dead 10 days, invisible to cron_stale). Re-enable = operator flips
+    // WATCHDOG_ENABLED + lands. Independent of the other self-crons; fail-open + drift-healed.
+    ensure_watchdog_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -3844,6 +3912,12 @@ fn cron_interval_secs(minute: &str, hour: &str) -> Option<u64> {
 /// the SCRIPT name, not the `# fleet:<tag>` (they differ — e.g. `# fleet:reap-orphans` runs
 /// `reap-wedged-nix-clients.sh` → the stamp is `reap-wedged-nix-clients.last-run`).
 fn parse_cron_line(line: &str) -> Option<(u64, String)> {
+    // A commented-out line is not a live schedule — cron never fires it — so it must never be judged for
+    // staleness (e.g. a deliberately-DISABLED `# fleet:watchdog` line; else its leading comment word would
+    // shift the field columns and mis-parse into a bogus interval, false-flagging an intentionally-off cron).
+    if line.trim_start().starts_with('#') {
+        return None;
+    }
     if !line.contains("# fleet:") {
         return None;
     }
@@ -4325,6 +4399,21 @@ fn status(fleet: &Fleet) {
                 );
             }
         }
+    }
+
+    // FLEET WATCHDOG deliberate-OFF surfacing (v-fleet-tooling 2026-09-20, concierge-directed). The
+    // destructive reap/recreate watchdog is OFF by operator ban 2026-09-10 (it killed active agents). It is
+    // registered as a DISABLED `# fleet:watchdog` cron (so it can't silently vanish + cron_stale skips the
+    // commented line), but that OFF state would otherwise be invisible in status — so state it plainly as
+    // DELIBERATE, not a dead cron. Keyed on the WATCHDOG_ENABLED source-of-truth: when the operator re-enables
+    // (flip + land) it is actually running, so this note disappears and cron_stale takes over.
+    if !WATCHDOG_ENABLED {
+        println!(
+            "  ⓘ fleet watchdog: INTENTIONALLY OFF (operator ban 2026-09-10 — it reaped ACTIVE agents \
+             mid-workstream). Registered as a disabled `# fleet:watchdog` cron so it can't silently vanish; \
+             non-destructive detection runs via the concierge's `fleet watchdog --dry-run`. Re-enabling the \
+             live run is the operator's call."
+        );
     }
 
     // DISTRIBUTED-BUILD OFFLOAD HEALTH (distributed-nix seq-946): if remote builders are configured
@@ -21980,6 +22069,40 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert_eq!(
             parse_cron_line("bogus sched bash /hub/x.sh # fleet:x"),
             None
+        );
+        // A COMMENTED-OUT line (leading #) is not a live schedule → None, even though it carries the tag and
+        // an embedded schedule (a deliberately-DISABLED cron). Without this the comment word would shift the
+        // columns and mis-parse into a bogus interval, false-flagging an intentionally-off cron as STALE.
+        assert_eq!(
+            parse_cron_line(
+                "#DISABLED-BY-OPERATOR-2026-09-10-reaped-active-agents */10 * * * * bash /hub/watchdog.sh >/dev/null 2>&1 # fleet:watchdog"
+            ),
+            None
+        );
+        assert_eq!(parse_cron_line("# fleet:watchdog just a note"), None);
+    }
+
+    #[test]
+    fn watchdog_cron_line_is_disabled_by_default_and_not_schedulable() {
+        // Default state: the destructive watchdog is OFF per the operator ban 2026-09-10.
+        assert!(!WATCHDOG_ENABLED);
+        let disabled = watchdog_cron_line("/hub/watchdog.sh", false);
+        // Tagged so reconcile_tagged_crons keeps/heals it — it can never silently vanish like the old
+        // untagged ad-hoc line did.
+        assert!(disabled.contains("# fleet:watchdog"));
+        // Commented so cron never schedules the destructive reap/recreate run.
+        assert!(disabled.trim_start().starts_with('#'));
+        // Documents the active form inline (so an operator re-enabling sees exactly what it would run).
+        assert!(disabled.contains("bash /hub/watchdog.sh"));
+        // MUST be skipped by parse_cron_line → cron_stale never false-flags the deliberately-off cron.
+        assert_eq!(parse_cron_line(&disabled), None);
+        // Enabled form (operator re-enable = flip WATCHDOG_ENABLED + land) IS a live 10-min schedule that
+        // cron_stale can then monitor.
+        let enabled = watchdog_cron_line("/hub/watchdog.sh", true);
+        assert!(!enabled.trim_start().starts_with('#'));
+        assert_eq!(
+            parse_cron_line(&enabled),
+            Some((600, "watchdog".to_string()))
         );
     }
 
