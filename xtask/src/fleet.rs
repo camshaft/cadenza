@@ -6962,11 +6962,13 @@ fn set_interval(fleet: &Fleet, name: &str, interval: &str) {
         // the registry (v-effects showed 3h in the registry while its 2h cron went stale → a 6h heartbeat
         // freeze that looked exactly like a dead agent). Don't claim "adopted"; tell the caller to VERIFY.
         println!(
-            "  re-issued '{name}''s /loop {interval} (send-keys delivered). VERIFY it took: the durable cron \
+            "  re-issued '{name}''s /loop {interval} (send-keys delivered) — VERIFY it took: the durable cron \
              re-arms only if '{name}''s session processed the /loop (a mid-tick pane won't), and the old cron \
-             isn't auto-deleted — so confirm '{name}' HEARTBEATS at ~{interval} within a tick or two. The \
-             registry ({interval}) is the durable source and re-arms cleanly on next launch, so if it stays \
-             quiet, relaunch '{name}' rather than trusting this re-issue."
+             isn't auto-deleted, so the live cadence can silently DRIFT from the registry. Confirm '{name}' \
+             HEARTBEATS at ~{interval} within a tick or two; if it goes quiet its CronList likely has no fresh \
+             {interval} cron — '{name}' self-heals in-session by CronCreate-ing one at {interval} (what \
+             recovered v-effects + v-corpus-declines), or relaunch '{name}' (the registry {interval} re-arms \
+             cleanly on launch). `fleet status` / the watchdog dry-run flag this drift as a high ×cadence."
         );
     } else {
         println!(
