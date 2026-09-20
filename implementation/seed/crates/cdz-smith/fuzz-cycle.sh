@@ -254,6 +254,42 @@ if [ "$DET_COUNT" -gt 0 ]; then
   fi
 fi
 
+# ── reclaim-shapes mini-pass (VALUE-OBSERVABLE guard on the reclaim-PRECISION churn) ─────────────
+# The `--reclaim` grammar is a NARROW family of owned-aggregate programs (matchsum-len · loop-accumulator
+# rebind · scalar-project-drop-heap-sibling · nested sum-in-sum · in-arm push) that each return a KNOWN
+# Int64. A LEAK is invisible to a value oracle, but an OVER-aggressive reclaim that frees a still-live cell
+# corrupts the returned VALUE (or traps) — which these oracles catch. This runs a small dedicated slice
+# each cycle so the standing cron CONTINUOUSLY guards the reclaim-precision work the fleet is grinding (the
+# value-oracle counterpart to the corpus `(live-objects N)` leak pins, which the value oracles structurally
+# cannot observe). The family is narrow, so a modest count saturates it — counts + caps are deliberately
+# SMALL so this fits inside the tick's slack. `determinism --reclaim` is compile-only (always runs, fast);
+# the `opt-differential --reclaim` value+validity pass runs only when the store resolves. Findings file into
+# the SAME fleet queue (`determinism-*` / `opt-invariance-*`, tagged `reclaim-shapes` in the sweep log).
+RECLAIM_COUNT="${CDZ_SMITH_RECLAIM_COUNT:-100}"
+if [ "$RECLAIM_COUNT" -gt 0 ]; then
+  RC_BIN="$CRATE_DIR/target/release/cdz-smith"
+  if [ -x "$RC_BIN" ] || ( cd "$CRATE_DIR" && cargo build -q --release --features differential 2>/dev/null ); then
+    RECLAIM_CAP="${CDZ_SMITH_RECLAIM_CAP:-30}"
+    # (a) determinism --reclaim — compile-only, no store/cdz, always runnable (the narrow family compiles fast).
+    log "reclaim mini-pass (determinism) | count $RECLAIM_COUNT | cap ${RECLAIM_CAP}s"
+    CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$RECLAIM_CAP" \
+      "$RC_BIN" determinism --reclaim --count "$RECLAIM_COUNT" --seed "$(date +%s)" \
+        --findings "$FINDINGS" 2>&1 | tail -3 || true
+    # (b) opt-invariance --reclaim — O0-vs-O1/O2/O3 VALUE + per-level validity; needs the store (skip cleanly if absent).
+    RECLAIM_STORE="${CDZ_SMITH_STORE:-$ROOT/target/cadenza-store}"
+    if [ -d "$RECLAIM_STORE" ]; then
+      log "reclaim mini-pass (opt-invariance) | count $RECLAIM_COUNT | store $RECLAIM_STORE | cap ${RECLAIM_CAP}s"
+      CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$RECLAIM_CAP" \
+        "$RC_BIN" opt-differential --reclaim --count "$RECLAIM_COUNT" --seed "$(date +%s)" \
+          --findings "$FINDINGS" --store "$RECLAIM_STORE" 2>&1 | tail -3 || true
+    else
+      log "reclaim mini-pass: store $RECLAIM_STORE absent; ran determinism-only (compile-only)"
+    fi
+  else
+    log "reclaim mini-pass: cdz-smith --features differential build failed; skipping"
+  fi
+fi
+
 # ── type-differential sweep (SEPARATE, Lean TYPE oracle) ─────────────────────────────────────────
 # The third oracle dimension: for each program, compare the compiler's TYPE judgment (accept/reject)
 # against the Lean `oracle-check` — a divergence is a false-reject (compiler rejects a well-typed
