@@ -8181,7 +8181,12 @@ fn export_make_params(
     // params; each compound slot's rebuild reads its own run (a leaf cursor threaded across slots at emit).
     let mut leaf_vts = Vec::new();
     let mut slots: Vec<MakeSlot> = Vec::new();
-    for (_, t) in &params {
+    // The export body — used to prove a compound param's rebuilt cell is a dead owned temporary the make
+    // wrapper must reclaim after the call (`record_cell_param_droppable`, the same dup-aware gate the typed-
+    // interface-member route uses at `record_interface_export`). `None` (body unavailable) → no drop (leak,
+    // never a UAF).
+    let export_body = def_body(db, export_def).ok();
+    for (binder, t) in &params {
         match t.strip_nominal() {
             crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) => {
                 // A fixed-shape compound param — including NESTED ones (a tuple-of-tuples, a record with a
@@ -8201,9 +8206,18 @@ fn export_make_params(
                     )));
                 };
                 leaf_vts.extend(field_vts);
+                // #9014-analog boundary shell-drop: the make wrapper OWNS this freshly-rebuilt compound cell
+                // and passes it BORROWED to the export def. When the dup-aware gate proves it a dead owned
+                // temporary after the call (every forwarded field dup'd, or all-scalar so nothing moves out),
+                // the wrapper deep-drops it post-dispatch — else it leaks the cell (05:tuple/record-param
+                // heap-return exports). A moved-out field → gate false → no drop (leak, never a double-free).
+                let drop_after = export_body.is_some_and(|body| {
+                    crate::backend::wasm::select::record_cell_param_droppable(db, body, *binder)
+                });
                 slots.push(MakeSlot::Tuple {
                     shape,
                     rebuild: rebuild_fields,
+                    drop_after,
                 });
             }
             _ => match (
@@ -8254,6 +8268,10 @@ enum MakeSlot {
     Tuple {
         shape: Vec<crate::backend::wasm::envelope::TupleFieldShape>,
         rebuild: Vec<crate::backend::wasm::serialize::FieldRebuild>,
+        /// The make wrapper deep-drops this rebuilt cell after the export call iff the def only BORROWS it
+        /// (`record_cell_param_droppable`) — the boundary shell-reclaim gate. `false` → keep the cell (a
+        /// moved-out field, or an unproven shape) so the drop never double-frees a live child.
+        drop_after: bool,
     },
 }
 
@@ -8328,7 +8346,11 @@ impl MakeParams {
             .iter()
             .map(|s| match s {
                 MakeSlot::Scalar(_) => MakeCoreSlot::Scalar,
-                MakeSlot::Tuple { rebuild, .. } => MakeCoreSlot::Tuple(rebuild.clone()),
+                MakeSlot::Tuple {
+                    rebuild,
+                    drop_after,
+                    ..
+                } => MakeCoreSlot::Tuple(rebuild.clone(), *drop_after),
             })
             .collect()
     }
