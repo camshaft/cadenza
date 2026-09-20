@@ -281,7 +281,17 @@ pub(super) fn param_only_borrowed_or_backedge(
     param_slots: &[u32],
     slots: &HashMap<StructId, u32>,
 ) -> bool {
-    param_only_borrowed_or_backedge_rec(db, id, binder, members, param_slots, slots, false, false)
+    param_only_borrowed_or_backedge_rec(
+        db,
+        id,
+        binder,
+        members,
+        param_slots,
+        slots,
+        false,
+        false,
+        false,
+    )
 }
 
 /// VARYING-REBOUND variant (INC2 (a) (B) slice-1): like [`param_only_borrowed_or_backedge`] but a member
@@ -302,7 +312,17 @@ pub(super) fn param_only_borrowed_or_reclaimed_backedge(
     param_slots: &[u32],
     slots: &HashMap<StructId, u32>,
 ) -> bool {
-    param_only_borrowed_or_backedge_rec(db, id, binder, members, param_slots, slots, false, true)
+    param_only_borrowed_or_backedge_rec(
+        db,
+        id,
+        binder,
+        members,
+        param_slots,
+        slots,
+        false,
+        true,
+        false,
+    )
 }
 
 /// lgx1 (v-memory-safety co-design): whether a member back-edge ARG reboxes `binder` by CONSUMING it as the
@@ -351,7 +371,10 @@ pub(super) fn arg_reclaims_binder_as_base(db: &mut Db, arg: StructId, binder: St
 /// pure read (OK); `false` in a CONSUME/result position, where a direct `Param(binder)` is an ownership
 /// transfer OUT (deny). Mirrors `binding_escapes`'s `tail_borrowed` threading. `allow_reclaimed_rebox`
 /// relaxes ONLY the member back-edge arm (see `param_only_borrowed_or_reclaimed_backedge`); `false` = the
-/// original coarse `!occurs_in` back-edge rule (the invariant-param path, UNCHANGED).
+/// original coarse `!occurs_in` back-edge rule (the invariant-param path, UNCHANGED). `allow_base_consume_
+/// reduced` relaxes ONLY a base-collection consume of `binder` whose RESULT is scalar-reduced / discarded
+/// (5786; see the guarded arm below + `param_consumed_reused_in_loop_body`); `false` = UNCHANGED (arm inert).
+/// Both wrappers pass `false` for it, so this fn is behaviour-identical until a caller opts in.
 /// Whether `id` reads a HEAP CHILD out of `binder` via a borrow-derived EXTRACTION (a `List.at`/`Str.at`/
 /// `Str.slice`/`Bytes.slice`/`Map.lookup` interior read, or a `Proj`/`SumPayload`/`SumExpect` chain bottoming
 /// in one whose source contains `binder`) — i.e. NOT the whole `binder`. Consumed by a DUP-RETAINING
@@ -389,6 +412,7 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
     slots: &HashMap<StructId, u32>,
     borrowed: bool,
     allow_reclaimed_rebox: bool,
+    allow_base_consume_reduced: bool,
 ) -> bool {
     // Fast path: a subtree that does not reference `binder` at all is trivially fine (nothing to consume).
     if !occurs_in(db, id, binder) {
@@ -404,6 +428,7 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
             slots,
             borrowed,
             allow_reclaimed_rebox,
+            allow_base_consume_reduced,
         )
     };
     match core_of(db, id) {
@@ -643,6 +668,23 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         Core::Let { bindings, body } => {
             bindings.iter().all(|&(_, v)| recur(db, v, false)) && recur(db, body, false)
         }
+        // allow_base_consume_reduced (5786, v-memory-safety + v-core-opt co-design; INERT unless the caller
+        // opts in — the two wrappers pass `false`): an op that CONSUMES `binder` as its BASE COLLECTION
+        // (`List.push binder x` / `Set.insert`/`Map.insert` base / a `concat`/`NfcNormalize` operand — the
+        // `arg_reclaims_binder_as_base` shape) whose RESULT is scalar-REDUCED or DISCARDED (never threaded
+        // back to `binder`'s own slot). For the target class — an INVARIANT `binder` identity-threaded to its
+        // own slot on the back-edge AND caller-owned (the wrapper's HARD `looped_invariant_param_caller_owned`
+        // fence) — the consume's result CANNOT be rebound to `binder`'s slot (the slot carries the identity
+        // pass-through), so `binder` is dup-backed (used ≥2×/iter: this consume + the identity thread) ⟹ the
+        // op PATH-COPIES, leaving `binder`'s own ref intact to the loop-EXIT reclaim (5786: `(+ tot (List.len
+        // (List.push base 99)))` — `base` reused every iteration, its `List.push` result folded to a scalar
+        // `List.len`, so the base spine + wrapper leak constant-across-`m` without the exit reclaim). Treat
+        // the base consume as a BORROW ⟹ admit (`arg_reclaims_binder_as_base`'s `!occurs_in` guards already
+        // prove the element/key/value/other operand is `binder`-free, so recursing them is trivially true).
+        // Leak-over-UAF: only reclaims MORE; the caller fences a non-invariant / not-caller-owned / terminal-
+        // escaping consume off (those stay leaking), and a WHOLE `Param(binder)` element (not a base) is not
+        // matched here — it falls to the consuming arms below and DENIES (its shell would escape).
+        _ if allow_base_consume_reduced && arg_reclaims_binder_as_base(db, id, binder) => true,
         // CONSUMING value-building ops a self-loop fold's TERMINAL arm builds its result with (INC2 (a) (B)
         // slice-2): recurse EACH value operand in a CONSUME position (`borrowed = false`). SOUND by the
         // existing leaf arms — a DIRECT `Param(binder)` operand is `binder` consumed WHOLE → the `Param` arm
@@ -752,6 +794,9 @@ pub(super) fn cont_only_borrowed_or_backedge(
             slots,
             false,
             allow_reclaimed_rebox,
+            // cont path stays conservative: a base-consume inside a match arm is not admitted (leaks
+            // safely). 5786's consume flows through the `If`/back-edge general recursion, not a cont.
+            false,
         )
     };
     match cont {
