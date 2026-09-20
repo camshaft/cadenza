@@ -950,6 +950,54 @@ pub(super) fn varying_param_epilogue_droppable(
         && terminal_arms_no_heapchild_escape(db, body, binder, members)
 }
 
+/// 5786 (a) (v-core-opt wrapper over v-mem's `allow_base_consume_reduced` base): whether an INVARIANT loop
+/// param `binder` is CONSUMED-AND-REUSED and its shell is loop-exit reclaimable. The 5786 gap: an invariant
+/// `base` CONSUMED as the BASE of a persistent-extend op whose result is scalar-REDUCED / discarded
+/// (`(List.len (List.push base 99))` threaded into a DIFFERENT slot) is denied by
+/// `param_only_borrowed_or_backedge` (the `List.push base` recurses in a result position with no admit arm →
+/// `_ => false`), so `base`'s spine + wrapper leak per-run. This admits exactly that shape by running the
+/// borrow/back-edge walk with `allow_base_consume_reduced = true` (v-mem's arm: an `arg_reclaims_binder_as_base`
+/// consume in a result position is a borrow), guarded by the SAME no-heap-child-escape fences
+/// [`varying_param_epilogue_droppable`] uses (a heap child of `binder` returned from a terminal would be
+/// deep-freed by the exit drop → UAF).
+///
+/// SOUNDNESS relies on the DROP-SITE gates (NOT rechecked here, mirroring `param_compared_in_loop_body`):
+/// (1) `invariant.contains(binder)` — the enclosing invariant-path block. This is load-bearing: an invariant
+/// `binder` is identity-threaded to its OWN slot on every back-edge, so a base-consume's result CANNOT be
+/// rebound to `binder`'s slot (that would make it VARYING) — hence `binder` is dup-backed, the persistent-
+/// extend path-copies, and `binder`'s own ref survives to the loop exit unconsumed. This is exactly the
+/// "not-rebound" guard, provided for free by invariance. (2) `looped_invariant_param_caller_owned` — HARD, the
+/// AXIS-A / CAESAR fence: reclaim `binder` only when THIS frame owns it. leak-over-UAF: a wrong admit only
+/// widens a caller-owned invariant reclaim (a leak if over-covered), never a double-free of a borrowed param.
+// `allow(dead_code)`: wired by v-memory-safety's parallel `param_consumed_reused_backedge` exit-drop at
+// select.rs:1322 (gated on this + `looped_invariant_param_caller_owned`); remove the allow at that placement.
+#[allow(dead_code)]
+pub(super) fn param_consumed_reused_in_loop_body(
+    db: &mut Db,
+    body: StructId,
+    binder: StructId,
+    members: &[usize],
+    param_slots: &[u32],
+    slots: &HashMap<StructId, u32>,
+) -> bool {
+    // The heap-child-escape fences, verbatim from `varying_param_epilogue_droppable` (a terminal returning a
+    // live heap child of `binder` would be cascade-freed by the exit deep-drop).
+    if is_heap_type(&type_of(db, body)) && result_reaches_binder_or_heapchild(db, body, binder) {
+        return false;
+    }
+    param_only_borrowed_or_backedge_rec(
+        db,
+        body,
+        binder,
+        members,
+        param_slots,
+        slots,
+        false,
+        false,
+        true,
+    ) && terminal_arms_no_heapchild_escape(db, body, binder, members)
+}
+
 /// COMPLETENESS walk for [`varying_param_epilogue_droppable`]: every TERMINAL (does-not-reach-a-member-tail-
 /// call) arm of a `Match`/`MatchList` whose SCRUTINEE is `binder` must have NO heap-CHILD escape — the rc-
 /// aware epilogue shell-drop of the final value would cascade-free a moved-out heap child. A terminal arm may
