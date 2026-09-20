@@ -64,11 +64,23 @@ fi
 # Primary: rebuild-from-source (always current). Fallback: the freshest worktree's prebuilt binary (may be
 # slightly stale, but WORKS) if cargo is unresolvable — degrade gracefully, never leave `fleet` dark.
 # `exec` so the exit code propagates cleanly and no wrapper process lingers.
-if command -v cargo >/dev/null 2>&1; then
-  cd "$best" && exec cargo xtask fleet "$@"
+# Build the FRESHEST xtask (newest landed fleet logic) in a SUBSHELL — so our OWN cwd stays the CALLER's —
+# then exec that binary FROM the caller's cwd. This decouples WHAT to build (freshest source, the deploy-gap
+# discipline) from WHERE to run (the caller's own worktree). CRITICAL for cwd-scoped verbs: `fleet sync`
+# operates on `git rev-parse HEAD` of its cwd, so the OLD `cd "$best" && cargo xtask` ran `sync` in the
+# FRESHEST worktree instead of the caller's — silently syncing the WRONG worktree and stranding the caller's
+# own branch (v-hivemind-deploy 2026-09-20: correct cwd + no GIT_DIR, yet sync moved a different worktree).
+# Agent-scoped verbs (inbox/heartbeat/send, keyed on $TMUX_PANE, inherited by the child) are cwd-independent,
+# so running them from the caller's cwd is equally correct. `--profile release` matches the `xtask` alias.
+if command -v cargo >/dev/null 2>&1 \
+   && ( cd "$best" && cargo build -q --package xtask --profile release ) \
+   && [ -x "${best}target/release/xtask" ]; then
+  exec "${best}target/release/xtask" fleet "$@"
 elif [ -x "${best}target/release/xtask" ]; then
+  # cargo unavailable OR the freshest-source build failed → the freshest prebuilt binary (may be slightly
+  # stale but WORKS), still run from the caller's cwd. Degrade gracefully, never leave `fleet` dark.
   exec "${best}target/release/xtask" fleet "$@"
 else
-  echo "fleet: cargo not found AND no prebuilt ${best}target/release/xtask — run a fleet build first." >&2
+  echo "fleet: cargo unavailable AND no prebuilt ${best}target/release/xtask — run a fleet build first." >&2
   exit 127
 fi

@@ -346,6 +346,12 @@ const MATERIALIZED_FLEET_FILES: &[&str] = &[
     // Manually-run ops runbook, but `fleet status`'s peer-fault line tells the responder to run
     // `.claude/fleet/setup-nix-builder-peer.sh verify <peer>` — the HUB path — so it must live there.
     "setup-nix-builder-peer.sh",
+    // The first-class `fleet` window-env command (seq-987). refresh-tools.sh symlinks ~/.local/bin/fleet →
+    // `<dirname>/bin/fleet`; when refresh-tools runs from the HUB copy that resolves to the hub's
+    // `bin/fleet`, so the hub MUST carry it or the symlink dangles (it was never materialized → the hub
+    // copy was missing, and only machines whose symlink happened to point at a worktree copy had a working
+    // `fleet`). A subpath entry ("bin/…"): materialize_source create_dir_all's the parent and +x's it.
+    "bin/fleet",
 ];
 
 impl Fleet {
@@ -447,9 +453,15 @@ impl Fleet {
             let src = self.src.join(f);
             if src.exists() {
                 let dst = self.root.join(f);
+                // A subpath entry (e.g. `bin/fleet`) needs its parent dir in the hub before the copy —
+                // `std::fs::copy` does NOT create it. Harmless for flat entries (parent = the fleet root).
+                if let Some(parent) = dst.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
                 let _ = std::fs::copy(&src, &dst);
                 #[cfg(unix)]
-                if f.ends_with(".sh") {
+                if f.ends_with(".sh") || f.starts_with("bin/") {
+                    // `.sh` shims AND the `bin/` command (`fleet`, no extension) must be executable.
                     use std::os::unix::fs::PermissionsExt;
                     let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
                 }
@@ -20526,7 +20538,12 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         std::fs::create_dir_all(&root).unwrap();
         for s in MATERIALIZED_FLEET_FILES {
-            std::fs::write(src.join(s), format!("#!/usr/bin/env bash\necho {s}\n")).unwrap();
+            let sp = src.join(s);
+            // An entry may be a subpath (e.g. `bin/fleet`) — create its parent in the fake src first.
+            if let Some(parent) = sp.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(sp, format!("#!/usr/bin/env bash\necho {s}\n")).unwrap();
         }
 
         let fleet = Fleet {
@@ -20545,10 +20562,10 @@ mod tests {
                 format!("#!/usr/bin/env bash\necho {s}\n"),
                 "{s} content is copied verbatim"
             );
-            // Only `.sh` files get the executable bit (AGENTS-fleet.md is a doc snapshot); matches the
-            // impl's own `if f.ends_with(".sh")` chmod guard.
+            // `.sh` shims AND the `bin/` command (`fleet`) get the executable bit (AGENTS-fleet.md is a
+            // doc snapshot, so it doesn't); matches the impl's `f.ends_with(".sh") || f.starts_with("bin/")`.
             #[cfg(unix)]
-            if s.ends_with(".sh") {
+            if s.ends_with(".sh") || s.starts_with("bin/") {
                 use std::os::unix::fs::PermissionsExt;
                 let mode = std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777;
                 assert_eq!(mode, 0o755, "the materialized {s} gets the executable bit");
