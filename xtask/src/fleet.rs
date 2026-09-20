@@ -702,10 +702,15 @@ pub enum FleetCmd {
         full: bool,
     },
     /// Change an agent's `/loop` INTERVAL (e.g. retighten a sluggish vertical `30m`→`15m`). Updates the
-    /// registry row (the durable source of truth `window.sh` reads at (re)launch) AND re-issues the
-    /// agent's `/loop <new-interval> <tick>` NOW so the change takes effect without a relaunch — the
-    /// registry field alone only governs the NEXT kickoff, so a running agent keeps its old cron until
-    /// re-issued. Same mechanism as the watchdog's `reissue_loop`. Validates the interval string. Use
+    /// registry row (the durable source of truth `window.sh` reads at (re)launch) AND best-effort re-issues
+    /// the agent's `/loop <new-interval> <tick>` NOW. ⚠ The re-issue is NOT a guaranteed cron rewrite: the
+    /// durable schedule is a harness CronCreate cron only the agent's own `/loop` skill can rewrite (xtask
+    /// has no CronCreate API), so the re-issue re-arms it ONLY if the agent's session PROCESSES the `/loop`
+    /// (a mid-tick pane won't), and the old cron isn't auto-deleted — the live cadence can then silently
+    /// DRIFT from the registry (v-effects 2026-09-17: registry 3h while its 2h cron went stale → 6h freeze
+    /// mimicking a dead agent). The registry field is the durable fix and re-arms cleanly on next launch, so
+    /// the RELIABLE adopt path is a relaunch; verify the agent heartbeats at the new cadence after a change.
+    /// Same send-keys mechanism as the watchdog's `reissue_loop`. Validates the interval string. Use
     /// for the per-agent loop-latency retighten (operator priority): shorten an active vertical's cycle
     /// so its next self-driven slice starts sooner. MEASURE tick-load after (the load-109 lesson) — a
     /// too-tight fleet-wide sweep can thrash the box; retighten targeted agents, not everyone at once.
@@ -6911,7 +6916,20 @@ fn set_interval(fleet: &Fleet, name: &str, interval: &str) {
     }
     let prompt = watchdog_tick_prompt(fleet, &agent);
     if reissue_loop(&session, name, interval, &prompt) {
-        println!("  re-issued '{name}''s /loop at {interval} (adopted now).");
+        // HONEST re-arm caveat (v-effects drift 2026-09-17, routed via concierge 2026-09-20): send-keys
+        // DELIVERY is not the same as the durable cron being re-armed. The durable schedule is a harness
+        // CronCreate cron that ONLY the agent's own `/loop` skill can rewrite (xtask has no CronCreate API);
+        // this send-keys re-arms it iff the agent's session actually PROCESSES the `/loop` — a mid-tick/busy
+        // pane will not, and the OLD cron is not auto-deleted, so the live cadence can silently DRIFT from
+        // the registry (v-effects showed 3h in the registry while its 2h cron went stale → a 6h heartbeat
+        // freeze that looked exactly like a dead agent). Don't claim "adopted"; tell the caller to VERIFY.
+        println!(
+            "  re-issued '{name}''s /loop {interval} (send-keys delivered). VERIFY it took: the durable cron \
+             re-arms only if '{name}''s session processed the /loop (a mid-tick pane won't), and the old cron \
+             isn't auto-deleted — so confirm '{name}' HEARTBEATS at ~{interval} within a tick or two. The \
+             registry ({interval}) is the durable source and re-arms cleanly on next launch, so if it stays \
+             quiet, relaunch '{name}' rather than trusting this re-issue."
+        );
     } else {
         println!(
             "  (re-issue send-keys failed — the {interval} interval is persisted + takes effect on next \
