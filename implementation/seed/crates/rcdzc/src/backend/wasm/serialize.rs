@@ -1756,6 +1756,13 @@ fn core_module_impl(
                 wrap_i64,
             } = &wrap.result
             {
+                // Save the def's record result HANDLE before the borrowing field read, so the wrapper can
+                // reclaim it after (the def returns an OWNED record — callee-owns-result — and `arr-get` only
+                // BORROWS it). SHAPE 76 reclaim, the flat-1-value twin of the SpillRecord path's deep-drop.
+                let rec = next_local;
+                next_local += 1;
+                inner.push(op::LOCAL_TEE);
+                uleb128(rec as u64, &mut inner); // [handle] (also stashed in `rec`)
                 inner.push(op::I32_CONST);
                 crate::backend::wasm::encode::sleb128(*field_cell as i64, &mut inner); // [handle, field_cell]
                 inner.push(op::CALL);
@@ -1765,6 +1772,13 @@ fn core_module_impl(
                 if *wrap_i64 {
                     inner.push(op::I32_WRAP_I64); // narrow the i64 heap cell to its ≤32-bit result slot
                 }
+                // Reclaim the owned record result handle — deep-drop (its sole scalar child was copied out by
+                // the unbox above, so the cascade is balanced). Stack-neutral: the scalar result stays below
+                // this `local.get; drop`.
+                inner.push(op::LOCAL_GET);
+                uleb128(rec as u64, &mut inner); // [scalar, handle]
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner); // [scalar]
             }
             inner.push(op::END);
             let n_locals = next_local - p;

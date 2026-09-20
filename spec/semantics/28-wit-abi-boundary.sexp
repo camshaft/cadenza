@@ -4481,7 +4481,7 @@ cases
       (export f)))
   (call f (: 5 Int64))
   (output (: #record((= v 6)) (Record (: v Int64))))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a spilled record EXPORT result RECLAIMS the def's result handle — ZERO live objects"

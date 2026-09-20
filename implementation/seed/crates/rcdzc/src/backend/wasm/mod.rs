@@ -691,6 +691,10 @@ pub fn emit(
             if let serialize::ResultLower::FlatScalarField { read, .. } = &w.result {
                 used.insert("arr-get");
                 used.insert(*read);
+                // The wrapper reclaims the def's OWNED record result handle after the borrowing field read
+                // (deep-drop, exactly like the SpillRecord result path) — else the flat-1-value record cell +
+                // its boxed field LEAK one per call (the SpillRecord-result known-leak class, SHAPE 76).
+                used.insert("drop");
             }
             // A TOP-LEVEL memory-bearing leaf PARAM: a `Bytes`/`String` copies the incoming `(ptr, len)` out
             // of linear memory via a `bytes-alloc` + `bytes-set` loop; a `list<scalar>` builds a value-heap vec
