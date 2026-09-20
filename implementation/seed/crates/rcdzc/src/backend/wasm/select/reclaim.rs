@@ -5215,7 +5215,9 @@ pub(super) fn nontail_param_reclaim_kind(
     // (collect_shell_reclaim_child_dups, same is_nontail_spine_param key) dups the CONSUMED/REUSED children
     // FIRST so dup ⟺ drop nets. NO-REUSE (recon) → 0; WITH-REUSE (BST del-min) → partial (27→11, pt3 residual).
     if is_nontail_spine_param(db, top_body, scrutinee, root)
-        && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root)
+        // PARAM path: bare_payload_result_ok = FALSE. A spine PARAM's payload may alias a shared spine the
+        // caller still holds (chor-driver render's `Ast.List(es)` → recursive render-list) → keep the G4 fence.
+        && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root, false)
     {
         return Some(ReclaimKind::Compound);
     }
@@ -5258,20 +5260,25 @@ pub(super) fn nontail_param_compound_extra_ok(
     scrut_ty: &Ty,
     never_diverges: bool,
     root: &crate::core::SumCont,
+    // G4 CONTEXT FLAG (choreography UAF #082469 fix): whether the caller's scrutinee is a FRESH-OWNED PRODUCER
+    // (a `Core::Call`/`HostCall`/`AstDecode`/`StrFromBytes` result — the `sum_shell_reclaim_ok` compound
+    // increment, e.g. 28-wit:1043's `run.run`). Only there is a BARE-payload-in-result reclaim sound: the
+    // scrutinee is a freshly-minted owned value, so its payload is owned EXCLUSIVELY by it — the escape-dup +
+    // shell deep-drop net 1:1, no external aliasing. For a general PARAM scrutinee (the `nontail_param_reclaim_
+    // kind` spine path) the payload may ALIAS a shared spine the caller still holds (chor-driver `render`'s
+    // `Ast.List(es)` payload flows into the recursive `render-list(es)`, whose walk the shell-drop would free →
+    // OOB), so the `!sum_cont_payload_in_result` fence MUST stay there. #9413's blanket removal of that fence
+    // over-relaxed the param path → the choreography UAF; this restores it for every context EXCEPT the proven
+    // fresh-producer one, keeping 28-wit:1043 at live-objects 0.
+    bare_payload_result_ok: bool,
 ) -> bool {
     !never_diverges
         && is_heap_type(scrut_ty)
         && !ty_is_enum_disc(db, scrut_ty)
         && !cont_rematches_scrutinee(db, scrutinee, root)
-        // G4 RELAX (Class B, v-mem-safety-signed-off, operator seq-1202 correct-memory): the blanket
-        // `!sum_cont_payload_in_result` conjunct is REMOVED. It was the over-conservative floor from the
-        // sread interior-view UAF, but that UAF is the ALIAS-OUT shape caught SEPARATELY by
-        // `!sum_cont_arm_interior_view_on_scrutinee` below. A BARE payload of the scrutinee returned in
-        // result position is ALWAYS escape-dup'd by the dup pass (verified in-process: the returned
-        // `Core::SumPayload` of the scrutinee is a dup site, dup_marked=true), so the shell deep-drop nets
-        // 1:1 against the escape — no double-free. Removing this admits the bare-compound-payload-in-result
-        // reclaim (28-wit:1043 run.run Ok-arm returns the payload bare) while the interior-view fence keeps
-        // the genuine alias-out (10-bytes:702 Bytes.slice VIEW) declined. guarded-all is the UAF backstop.
+        // G4 bare-payload-in-result fence: enforced UNLESS the scrutinee is a fresh-owned producer (see the
+        // `bare_payload_result_ok` doc). The sread interior-view ALIAS-OUT shape is caught separately below.
+        && (bare_payload_result_ok || !sum_cont_payload_in_result(db, root, scrutinee))
         && !sum_cont_arm_interior_view_on_scrutinee(db, root, scrutinee)
         // 05:9972: exclude a persistent-structure fold whose dedup arm returns the SCRUTINEE unchanged (`… t`)
         // — the shell-drop would free a returned node (the 13589→589 UAF). Leak beats UAF.
