@@ -4446,6 +4446,63 @@ fn param_consumed_reused_declines_base_escaping_as_terminal() {
     );
 }
 
+#[test]
+fn escape_dup_14929_admits_coupled_with_g4_relax() {
+    // 14929 escaped-child-dup (v-core-opt emit over v-mem's payload_in_result_bare_escape_ok fence): an owned
+    // recursive-sum PARAM `t` whose L arm BARE-returns a heap payload child `n`. Pins the COUPLED lockstep:
+    // the fence admits → the G4 relax admits the compound shell-drop (ReclaimKind::Compound) AND the escape-dup
+    // collector dups exactly the L-arm bare return (1 site). dup ⟺ relax BY CONSTRUCTION (single shared fence);
+    // a regression that fired the relax WITHOUT the dup (the #9413-locus UAF direction) flips escape_dup_sites
+    // to 0, and one that dropped the relax flips reclaim_kind off Compound. (The fence's DECLINE direction —
+    // a same-arm return+move — is v-mem's fence witness bare_escape_fence_admits_14929_leaf_return_declines_
+    // same_arm_consume.)
+    let ast = crate::testkit::parse(
+        "(module m \
+           (type T (L BigInt) (B T T)) \
+           (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b))) (_ 0N))) \
+           (def (main) (s (T.B (T.L 3N) (T.L 4N)))) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (sp, sb) = function_of(&mut db, "s");
+    let _ = select_function(&mut db, sb, &sp, &layout).expect("select s");
+    // escape-dup sites
+    let mut sites = std::collections::HashSet::new();
+    collect_sumpayload_escape_dup_sites(&mut db, sb, &mut sites);
+    // find the MatchSum on t, check nontail_param_reclaim_kind
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![sb];
+    let mut kind = None;
+    let mut fence = false;
+    while let Some(nd) = stack.pop() {
+        if !seen.insert(nd) {
+            continue;
+        }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(&mut db, nd) {
+            if matches!(core_of(&mut db, scrutinee), crate::core::Core::Param { .. }) {
+                let sty = type_of(&mut db, scrutinee);
+                fence = payload_in_result_bare_escape_ok(&mut db, &root, scrutinee);
+                kind = nontail_param_reclaim_kind(&mut db, sb, scrutinee, &sty, false, &root);
+            }
+        }
+        stack.extend(crate::core_analysis::licm_children(&mut db, nd));
+    }
+    assert!(
+        fence,
+        "fence (payload_in_result_bare_escape_ok) must admit 14929's L-arm bare return"
+    );
+    assert!(
+        matches!(kind, Some(ReclaimKind::Compound)),
+        "G4 relax must ADMIT the compound shell-drop (ReclaimKind::Compound) via the fence — got {kind:?}"
+    );
+    assert_eq!(
+        sites.len(),
+        1,
+        "escape-dup must fire for EXACTLY the L-arm bare payload return (dup ⟺ relax); got {}",
+        sites.len()
+    );
+}
+
 // ── 02:6042 escaping-heap-child MatchSum shell reclaim: emit consumes matchsum_escaping_proj_{node,reclaim}
 // (v-memory-safety recognizer #9388, v-core-opt emit). Pins the dup⟺drop LOCKSTEP at the Core level: the
 // recognizer identifies the sole escaping extraction node, and the dup-pass marks THAT node — so the emit's
