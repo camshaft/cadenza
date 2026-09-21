@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(11);
+    let shape = c.variant(12);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -252,8 +252,25 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // shape driving a CLOSURE-env (not aggregate-payload) SITE-A drop; no prior generator reached an
         // invariant closure loop-param applied per iteration. Prime OPT-INVARIANCE target: O2/O3 may inline
         // `times`/specialize `f`, changing the env-cell lifetime — a divergence from O0 is the bug.
-        _ => format!(
+        10 => format!(
             "(do (def (times (: f (-> Int64 Int64)) (: n Int64) (: x Int64)) (if (< n 1) x (times f (- n 1) (f x)))) (def (main) (let ((k {b})) (times (fn (y) (+ y k)) {n} {a}))) (export main))"
+        ),
+        // 11 — F5 SITE-A CALLER-OWNERSHIP FENCE tripwire (the #9449 shipped-UAF fix). STRUCTURALLY identical
+        // to shape 10's per-iteration invariant-closure loop, but the closure is NOT a fresh producer at the
+        // loop-entry call: `drive`'s `g` is a caller-owned PARAM threaded into `iter`. #9440's per-application
+        // SITE-A env-drop was NOT gated on caller-ownership, so it FREED a caller-owned / boundary-consumed
+        // closure per iteration (the 21-host-closures `iter g n acc` regression: the next iteration read freed
+        // env → wasm-unreachable trap — a SHIPPED UAF). #9449 fences the b‴ admit on
+        // `looped_invariant_param_caller_owned` (the SAME AXIS-A caller-ownership fence the loop-exit drop
+        // uses): a caller-owned invariant closure param DECLINES the SITE-A drop (benign leak, value-correct),
+        // never a double-free. This shape drives the DECLINE branch of that fence (shape 10 drives the ADMIT
+        // branch — a fresh main-owned producer). Leak-over-UAF: at the fenced tip it runs CLEAN to the KNOWN
+        // value `n*b` (the leaked env does not corrupt the value); it goes RED only on a REGRESSION — if the
+        // #9449 caller-ownership fence is ever relaxed, the per-application drop re-frees the caller's env →
+        // double-free / UAF → wrong value or trap, caught by determinism / opt-invariance / differential. The
+        // canonical "pin the invariant even when it passes" tripwire on a shipped-UAF fence.
+        _ => format!(
+            "(do (def (iter (: g (-> Int64 Int64)) (: n Int64) (: acc Int64)) (if (< n 1) acc (iter g (- n 1) (g acc)))) (def (drive (: g (-> Int64 Int64)) (: n Int64)) (iter g n 0)) (def (main) (let ((k {b})) (drive (fn (y) (+ y k)) {n}))) (export main))"
         ),
     };
     Program { source }
@@ -4907,9 +4924,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the eleven shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 11];
-        for seed in 0u64..320 {
+        // Distinctive, mutually-exclusive markers for the twelve shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 12];
+        for seed in 0u64..384 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -4946,13 +4963,15 @@ mod tests {
                 reached[9] = true;
             } else if src.contains("(def (times (: f (-> Int64 Int64))") {
                 reached[10] = true;
+            } else if src.contains("(def (drive (: g (-> Int64 Int64))") {
+                reached[11] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all eleven reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all twelve reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
