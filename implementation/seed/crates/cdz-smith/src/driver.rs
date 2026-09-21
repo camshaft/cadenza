@@ -64,7 +64,9 @@ pub enum GenMode {
     /// the #9476 shipped-UAF fence, a giter-takedrop non-tail self-recursion whose projected param must
     /// DECLINE the per-arm drop or re-trap unreachable — and the #9497 flat-scalar-container heap-return
     /// reclaim, a heap-returning non-tail self-recursion over an invariant Set-of-scalar borrow whose
-    /// fn-exit owner-drop is admitted only when the param has no extractable heap child). Densifies
+    /// fn-exit owner-drop is admitted only when the param has no extractable heap child, and its #9502
+    /// P0-UAF DECLINE edge — a flat-scalar List param RETURNED via a MatchList base arm that the fn-exit
+    /// drop must DECLINE or double-free the returned param). Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.

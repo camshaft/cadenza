@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(16);
+    let shape = c.variant(17);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -344,8 +344,28 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // pushes one flag per i∈[1,i]); a regression double-frees under some O-level or backend → an
         // opt-invariance / differential DIVERGENCE (a value-observable trap), or corrupts the fold → wrong
         // length. Opens the SET-collection coverage the S547 log flagged as a zero-coverage gap.
-        _ => format!(
+        15 => format!(
             "(do (def (g (: s (Set Int64)) (: i Int64)) (if (< i 1) #list() (List.push (g s (- i 1)) (if (Set.contains s i) 1 0)))) (def (main) (List.len (g (Set.insert (Set.insert #set() 2) {a}) (+ {n} 1)))) (export main))"
+        ),
+        // 16 — #9497→#9502 P0-UAF DECLINE tripwire (flat-scalar List param RETURNED via a MatchList base arm,
+        // 06-numeric 15330). The DECLINE-edge complement of shape 15's ADMIT: `f xs ys` is a HEAP-returning
+        // (List) non-tail selfrec whose flat-scalar `ys : (List Int64)` param is (a) all-scalar, (b) VERBATIM
+        // self-forwarded, AND (c) RETURNED in the Core::MatchList `#list()` BASE ARM. #9497's flat-scalar
+        // heap-return admit relies on `param_ref_reaches_result` to detect a param escaping into the result;
+        // pre-#9502 that check did NOT recurse `Core::MatchList` arms → it reported ys's base-arm return as
+        // FALSE → the admit fired → the fn-exit epilogue DROPPED the RETURNED ys → double-free (a P0 UAF that
+        // shipped to main invisibly, trapping ONLY @test-suites-only — cad-test-iterators giter-takedrop — the
+        // SAME surface gap that missed #9466). #9502 recurses MatchList arms → prrp(ys)=true → the gate
+        // correctly DECLINES → ys LEAKS (known-leak, value-correct). Leak-over-UAF: at the fenced tip it runs
+        // CLEAN to the KNOWN `n+2` (`f (build 0 n) (build 0 2)` — the n concatenated heads + the 2-elem ys) with
+        // NO TRAP; it goes RED only on a REGRESSION — a reach-check that stops recursing MatchList re-drops the
+        // returned ys → re-trap `unreachable` / wrong length, caught by determinism / opt-invariance /
+        // differential. LOAD-BEARING: BOTH lists are runtime-`build`t (a `#list()` literal ys is const-folded
+        // and would NOT fire the admit → a hollow guard). Distinct emit path from shape 15 (which returns a
+        // FRESH List and never returns its param); completes the flat-scalar heap-return family (ADMIT Set 15 /
+        // DECLINE MatchList-return 16). This exact class was @test-suites-only-caught twice (#9466, #9497→#9502).
+        _ => format!(
+            "(do (def (build (: i Int64) (: n Int64)) (if (< i n) (List.push (build (+ i 1) n) i) #list())) (def (f (: xs (List Int64)) (: ys (List Int64))) (match xs (#list() ys) (#list(h (.. t)) (List.concat #list(h) (f t ys))))) (def (main) (List.len (f (build 0 {n}) (build 0 2)))) (export main))"
         ),
     };
     Program { source }
@@ -4999,9 +5019,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the sixteen shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 16];
-        for seed in 0u64..640 {
+        // Distinctive, mutually-exclusive markers for the seventeen shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 17];
+        for seed in 0u64..704 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5048,13 +5068,15 @@ mod tests {
                 reached[14] = true;
             } else if src.contains("(def (g (: s (Set Int64))") {
                 reached[15] = true;
+            } else if src.contains("(def (f (: xs (List Int64)) (: ys (List Int64)))") {
+                reached[16] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all sixteen reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all seventeen reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
