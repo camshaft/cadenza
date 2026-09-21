@@ -20900,7 +20900,10 @@
   (output (: 10 Int64))
   (call main (: 0 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): the escaping-into-sibling-initializer capturing closure (#5980 force-keep +
+  ; the Ty::Fn heap-classification / per-occurrence dup landed for the closure-retention family) now reclaims —
+  ; census 0 (v-memory-safety tighten-sweep + breaker fresh-cdz two-signal verify). Re-baselined from known-leak.
+  (live-objects 0))
 
 (case
   "ck2 a closure DOUBLED inside one collection literal AND applied directly runs (dup-counted per occurrence)"
@@ -20926,7 +20929,10 @@
   (output (: 5 Int64))
   (call main (: 0 Int64))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): the doubled-in-literal closure (#6022 Ty::Fn heap-classification +
+  ; mark_binder_dups per-occurrence dup) now reclaims the rc-counted closure+capture — census 0
+  ; (v-memory-safety tighten-sweep + breaker fresh-cdz two-signal verify). Re-baselined from known-leak.
+  (live-objects 0))
 
 ; A CONSTANT argument passed to a NARROW-typed parameter is range-checked against the parameter's declared
 ; width, exactly as a direct `(: 200 Int8)` is — β-reduction carries the parameter's annotation onto the
