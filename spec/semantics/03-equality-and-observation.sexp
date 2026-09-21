@@ -5274,7 +5274,9 @@
     "The interning identity cell: a symbol built at runtime from a concat-computed string must be
            the SAME key as the #\"foo\" literal everywhere — equality, champ lookup, set membership —
            or runtime-symbol code silently misses literal-keyed tables. The n=0 trial derives \"fox\"
-           and must miss on all three. Fixed 1-cell residue (the runtime string), both trials.")
+           and must miss on all three. RECLAIMED (live-objects 0): the runtime string that fed Symbol.of is
+           reclaimed on both trials (was a known-leak 1-cell residue; the CHAMP borrow-op reclaim family now
+           frees it) — census 0, breaker fresh-cdz + v-memory-safety tighten-sweep two-signal.")
   (input
     (do
       (def
@@ -5296,7 +5298,7 @@
   (output (: 1421 Int64))
   (call main (: 0 Int64))
   (output (: -10 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── breaker batch 591: the NaN self-equal-but-UNORDERED invariant across =/<=/>= (03-equality's
 ; "self-equal and unordered downstream" pinned for the RELATIONAL ops specifically), plus the
