@@ -703,12 +703,17 @@ fn binding_escapes_dup_aware_inner(
                 || binding_escapes_dup_aware(db, key, binder, false, dup_sites)
                 || binding_escapes_dup_aware(db, val, binder, false, dup_sites)
         }
-        // `Map.lookup` BORROWS the map (returns a fresh Option; the boxed key is an owned temporary the
-        // emit drops), so a map bound here does NOT escape through the lookup. The key flows into an owned
-        // temporary — consuming — so it escapes if used there.
+        // `Map.lookup` BORROWS both the map AND the key (`map-lookup` reads them and returns a fresh Option;
+        // emit.rs:2019 — "map-lookup BORROWS the key (never consumes it)"). The boxed/compacted key TEMPORARY
+        // the emit builds+drops is a FRESH value read FROM the binder (`box-int` copies a scalar VALUE;
+        // `bytes-compact` is refcount-neutral, minting a fresh flat twin), NOT the binder itself — so a key
+        // binder does NOT escape through the lookup and must NOT be dup'd here. Dup'ing a live-after key
+        // binder for a BORROW leaks the surplus ref (10-bytes:2482 borrowed rope key `k` read as the lookup
+        // key AND `Bytes.len k`: dup 1→2, one epilogue drop 2→1, rc1 leak). Matches the already-borrow
+        // `collect_consuming_payload_sites` seam-b (reclaim.rs:1661), v-mem-safety co-designed.
         Core::MapLookup { map, key, .. } => {
             binding_escapes_dup_aware(db, map, binder, true, dup_sites)
-                || binding_escapes_dup_aware(db, key, binder, false, dup_sites)
+                || binding_escapes_dup_aware(db, key, binder, true, dup_sites)
         }
         // `Map.remove` CONSUMES the map into the new map (persistent op takes ownership); the key is boxed
         // into an owned temporary (consuming), dropped by the emit after the borrow-compare.
@@ -1069,8 +1074,10 @@ fn binder_must_escape(db: &mut Db, id: StructId, binder: StructId, tail_borrowed
                 || binder_must_escape(db, key, binder, false)
                 || binder_must_escape(db, val, binder, false)
         }
+        // `Map.lookup` BORROWS both map and key (emit.rs:2019; the key temporary is a fresh read-derived
+        // value, not the binder) — neither escapes. Consistent with the dup-aware site (reclaim.rs:711).
         Core::MapLookup { map, key, .. } => {
-            binder_must_escape(db, map, binder, true) || binder_must_escape(db, key, binder, false)
+            binder_must_escape(db, map, binder, true) || binder_must_escape(db, key, binder, true)
         }
         Core::MapRemove { map, key, .. } => {
             binder_must_escape(db, map, binder, false) || binder_must_escape(db, key, binder, false)
