@@ -1129,7 +1129,7 @@
   (output (: 1 Int64))
   (call main (: 3 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a view-interned Symbol participates in Set.to-list content order"
