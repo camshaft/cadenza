@@ -2505,7 +2505,46 @@
             (Bytes.len k))))
       (export main)))
   (call main)
-  (output (: 4202 Int64)))
+  (output (: 4202 Int64))
+  ; RECLAIMED (live-objects 0): #9483 completed the borrowed-CHAMP-key reclaim — the escape flip (#9472,
+  ; binding_escapes_dup_aware:711 / binder_must_escape:1073) dropped the let-epilogue key, and #9483 flipped
+  ; the dup-EMISSION site (mark_binder_dups MapLookup arm, reclaim.rs:4717) from consume→borrow, so the
+  ; live-after key binder `k` (kept for the Bytes.len read) stays rc1 and is reclaimed by the single let-drop.
+  ; Finalizes this case's census pin (was a value-only blind spot; census-verified 0 on the #9483 compiler,
+  ; v-core-opt-unblocked). Complements the multi-lookup strengthening below.
+  (live-objects 0))
+
+(case
+  "a BORROWED runtime Bytes rope map key looked up TWICE (multi-borrow) plus a length read still reclaims to 0"
+  (doc
+    "Multi-borrow strengthening of the borrowed-rope-CHAMP-key reclaim (#9472 escape flip + #9483 dup-emission
+           flip, reclaim.rs:4717). The rope `k = (rep [104] 1)` = the rope for [104,120] is borrowed at THREE
+           sites in one `let` body: TWO distinct `Map.lookup m k` key uses (each borrowed, not consumed, each
+           compacted at the CHAMP key site to hash to the flat twin's slot → each finds 42) plus a final
+           `Bytes.len k` (2). `k` must stay rc-stable across all three borrows and reclaim via the single
+           let-drop: 100·42 + 10·42 + 2 = 4622. Stresses that the dup-emission fix (key binder marked BORROW,
+           not consume) holds when the same live-after borrowed key feeds MULTIPLE map lookups, not just one —
+           a regression that re-marks the key consume at any lookup re-leaks (rc grows per surplus dup) → fails
+           this grade. Complements the single-lookup borrowed-rope-key case directly above (value 4202).")
+  (input
+    (do
+      (def
+        (rep (: b Bytes) (: n Int64))
+        (if (< n 1) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1))))
+      (def
+        (main)
+        (let
+          ((m (Map.insert Map.empty (Bytes.of #list(104 120)) 42))
+           (k (rep (Bytes.of #list(104)) 1)))
+          (+
+            (+
+              (* 100 (Option.expect (Map.lookup m k) "a"))
+              (* 10 (Option.expect (Map.lookup m k) "b")))
+            (Bytes.len k))))
+      (export main)))
+  (call main)
+  (output (: 4622 Int64))
+  (live-objects 0))
 
 (case
   "a runtime Bytes rope in a SUM payload compares equal to its flat twin"
