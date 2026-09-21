@@ -993,6 +993,25 @@ pub enum FleetCmd {
         #[arg(long, default_value = "aarch64")]
         arch: String,
     },
+    /// Guardian-proof per-MR COARSE gate: build `.#checks.<arch>-linux.corpus-gate-coarse-<stem>` DETACHED
+    /// (under `setsid --fork`, reparented to init) so the harness low-mem guardian's tracked-task-tree kill
+    /// (#79845 — it keys on MemFree<1GB not MemAvailable, so it false-fires on a nix box whose page cache
+    /// pins MemFree low even with the box half-free) CANNOT reap the build mid-run, then poll the RC-sentinel
+    /// and report GREEN/RED. The pr-sync-down land-bar tells every agent to run `nix build
+    /// .#checks.<sys>.corpus-gate-coarse-<stem>` per MR, but a RAW nix build is a tracked task the guardian
+    /// kills — killing the per-MR safety net across verticals (v-nix/v-reducer-pooling, 2026-09-21). This
+    /// wraps that exact build in the proven #9081 detach machinery so it survives + caches. ADDITIVE: the raw
+    /// nix build still works; this is the guardian-proof convenience path. Exit 0=GREEN, 1=RED (a corpus
+    /// regression vs `.gate-baseline`), 2=NO-VERDICT (poll timeout / launch fail / wrong stem — never a false
+    /// GREEN, never a false RED for a typo'd stem). Server-independent (no tmux); run from a worktree.
+    GateCoarse {
+        /// The corpus file STEM to coarse-gate (e.g. `06-numeric-model`, `subset`) → builds
+        /// `.#checks.<arch>-linux.corpus-gate-coarse-<stem>`.
+        stem: String,
+        /// The arch leg (the fleet host is aarch64). Defaults to aarch64.
+        #[arg(long, default_value = "aarch64")]
+        arch: String,
+    },
     /// Query GitHub Actions for a pushed candidate's check verdict and print it (GREEN | RED | PENDING |
     /// NO-CHECKS) + a per-check breakdown. The polling PRIMITIVE for the CI-gated land path (operator
     /// ruling 2026-08-02: pr-sync pushes a candidate, then relies ENTIRELY on GitHub Actions for the gate
@@ -1596,6 +1615,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
         FleetCmd::GateLocal { arch } => gate_local(&fleet, &arch),
+        FleetCmd::GateCoarse { stem, arch } => gate_coarse(&fleet, &stem, &arch),
         FleetCmd::CiStatus { target } => ci_status(&target),
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
@@ -15329,6 +15349,142 @@ fn gate_local(fleet: &Fleet, arch: &str) {
     }
 }
 
+/// Map a detached coarse-gate build result to a process exit code: 0=GREEN (clean build), 1=RED (a genuine
+/// corpus regression — a `Todo→Fail` flip / coarse-gate failure vs `.gate-baseline`), 2=NO-VERDICT. A
+/// nonzero build is only RED when it is a REAL regression: an attribute-not-found nonzero (a wrong/absent
+/// `<stem>`, `attr_missing`) is NOT a corpus regression, so it maps to NO-VERDICT (2), never a false RED that
+/// would make an agent think its MR broke the corpus when it only typo'd the stem. A `None` result (poll
+/// timeout / launch fail) is NO-VERDICT (2) — the detached build keeps caching, so a re-run picks it up;
+/// never a false GREEN. Pure so the mapping is unit-tested.
+fn coarse_gate_exit_code(build_result: Option<bool>, attr_missing: bool) -> i32 {
+    match build_result {
+        Some(true) => 0,                  // GREEN — clean build, no regression
+        Some(false) if attr_missing => 2, // bad/absent stem (no such attr) → NO-VERDICT, NOT a corpus RED
+        Some(false) => 1,                 // RED — a genuine corpus regression
+        None => 2, // poll timeout / launch fail → NO-VERDICT (never a false GREEN)
+    }
+}
+
+/// Does the nix build log indicate the requested flake attribute does not exist (a wrong/absent coarse-gate
+/// `<stem>`) rather than a corpus regression? Best-effort match on nix's attribute-resolution error
+/// signatures (wording varies across nix versions, so match a few) — used to demote a typo'd-stem nonzero
+/// from RED to NO-VERDICT. If it MISSES a variant the worst case is the prior behavior (reported RED with the
+/// log pointing at the attr error), so it degrades gracefully. Pure/unit-tested.
+fn log_shows_missing_attr(log: &str) -> bool {
+    log.contains("does not provide attribute")
+        || log.contains("is not a valid attribute")
+        || log.contains("cannot find flake attribute")
+        || (log.contains("attribute '") && log.contains("' missing"))
+}
+
+/// Handler for `fleet gate-coarse <stem>` — build `.#checks.<arch>-linux.corpus-gate-coarse-<stem>` DETACHED
+/// (guardian-proof) and report GREEN/RED/NO-VERDICT via exit code. Reuses the proven `run_gate_local`
+/// machinery — a weight-1 check-lease (lighter than the full local-gate's weight 2, but still capped so
+/// several per-MR coarse gates don't thrash the daemon), the `GATE_LOCAL_DETACHED_WRAPPER` under `setsid
+/// --fork` (reparents the build to init, out of the harness task subtree, so the #79845 low-mem-guardian
+/// tracked-tree kill can't reap it), and `poll_gate_local_rc` reading the RC-sentinel. Additive: agents can
+/// still run the raw `nix build .#checks.<sys>.corpus-gate-coarse-<stem>`; this is the guardian-proof
+/// convenience path (v-nix/v-reducer-pooling request 2026-09-21 — their raw builds were killed with the box
+/// half-free). Exits 0=GREEN, 1=RED, 2=NO-VERDICT.
+fn gate_coarse(fleet: &Fleet, stem: &str, arch: &str) {
+    let target = format!(".#checks.{arch}-linux.corpus-gate-coarse-{stem}");
+    // Weight-1 NON-priority check-lease: a coarse SUBSET is lighter than the full local-gate (weight 2) but
+    // still a heavy nix build, so cap concurrency (CDZ_CHECK_LEASE_MAX) to avoid thrashing the daemon when
+    // several agents gate per-MR at once. FAIL-OPEN; a timed-out acquire → NO-VERDICT (exit 2), same
+    // discipline as gate-local (do not oversubscribe; re-run when the lock frees).
+    let lease = acquire_check_lease(&fleet.repo, false);
+    if lease.timed_out {
+        eprintln!(
+            "gate-coarse {stem}: could not acquire a check-lease slot under contention — NO-VERDICT (exit 2). \
+             The box is running ~cap heavy builds; re-run when the nix lock frees."
+        );
+        std::process::exit(2);
+    }
+    let nix_bin = nix_binary();
+    let log = std::env::temp_dir().join(format!("cdz-gate-coarse-{}.log", std::process::id()));
+    let lease_path = lease.lease_path().map(Path::to_path_buf);
+    eprintln!(
+        "gate-coarse {stem}: building `{nix_bin} build {target}` DETACHED (guardian-proof — reparented to \
+         init so the #79845 harness low-mem killer can't reap it; --max-jobs {NIX_GATE_MAX_JOBS}); live log: {}",
+        log.display()
+    );
+    // Same detached invocation as `run_gate_local`: `setsid --fork` the positional-argv wrapper ($1=lease
+    // path re-keyed to the build's own pid + trap-released on exit, $2=log, $3..=nix + args). No `-w` → the
+    // build reparents to init and the verdict is read from the RC-sentinel, not a process wait.
+    let mut cmd = Command::new("setsid");
+    cmd.arg("--fork")
+        .arg("sh")
+        .arg("-c")
+        .arg(GATE_LOCAL_DETACHED_WRAPPER)
+        .arg("sh") // $0
+        .arg(
+            lease_path
+                .as_deref()
+                .map(Path::as_os_str)
+                .unwrap_or_default(),
+        ) // $1
+        .arg(&log) // $2
+        .arg(&nix_bin); // $3
+    cmd.args(nix_gate_argv(&target)) // $4..
+        .env("CDZ_LEASED_NIX", "1") // sanctioned leased build → nix-shim exempts this heavy attr
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let launched = match cmd.status() {
+        Ok(s) => s.success(),
+        Err(e) => {
+            eprintln!(
+                "gate-coarse {stem}: could not invoke `setsid`/`nix` ({e}) — NO-VERDICT (exit 2)."
+            );
+            false
+        }
+    };
+    let poll_max = std::env::var("CDZ_GATE_LOCAL_POLL_MAX_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(GATE_LOCAL_POLL_MAX_SECS);
+    let build_result = if launched {
+        poll_gate_local_rc(&log, poll_max)
+    } else {
+        None
+    };
+    let captured = std::fs::read_to_string(&log).unwrap_or_default();
+    let attr_missing = build_result == Some(false) && log_shows_missing_attr(&captured);
+    let code = coarse_gate_exit_code(build_result, attr_missing);
+    match code {
+        0 => {
+            let _ = std::fs::remove_file(&log); // clean pass — nothing to inspect
+            println!("gate-coarse {stem}: GREEN (no corpus regression vs .gate-baseline)");
+        }
+        1 => {
+            eprintln!(
+                "gate-coarse {stem}: RED — a corpus case regressed (Todo→Fail / coarse-gate failure). FULL \
+                 log preserved at {} — or re-run `{nix_bin} build {target} -L`.",
+                log.display()
+            );
+            println!("gate-coarse {stem}: RED");
+        }
+        _ => {
+            if attr_missing {
+                eprintln!(
+                    "gate-coarse {stem}: NO-VERDICT — nix reports no such attribute `{target}`; the STEM is \
+                     likely wrong (pass a corpus file stem, e.g. 06-numeric-model). NOT a corpus regression. \
+                     Log: {}",
+                    log.display()
+                );
+            } else if launched {
+                eprintln!(
+                    "gate-coarse {stem}: NO-VERDICT — the detached build didn't report an exit code within \
+                     {poll_max}s. It is reparented to init and keeps building + caching, so re-run to pick up \
+                     the cached result. Log: {}",
+                    log.display()
+                );
+            }
+            println!("gate-coarse {stem}: NO-VERDICT");
+        }
+    }
+    std::process::exit(code);
+}
+
 /// Minimum wall-clock gap between nix-store GC passes fired by the pr-sync-loop hook (~3h). At the fleet's
 /// ~10m tick cadence that is roughly every 18 ticks; the exact tick count doesn't matter — the timestamp
 /// gate keys off elapsed seconds, so a slower/faster loop self-adjusts. v-nix-agreed default (2026-08-08).
@@ -26326,6 +26482,40 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // spawn-fail dominates even if build_ok were somehow true (defensive — a not-run gate is unknown).
         assert_eq!(local_gate_verdict(false, true), NoChecks);
         // local_gate_verdict NEVER returns Pending (nix build blocks to completion) — only the 3 above.
+    }
+
+    #[test]
+    fn coarse_gate_exit_code_reds_only_on_a_real_regression() {
+        // Clean build → GREEN (0).
+        assert_eq!(coarse_gate_exit_code(Some(true), false), 0);
+        // Genuine regression (nonzero, attr present) → RED (1).
+        assert_eq!(coarse_gate_exit_code(Some(false), false), 1);
+        // Nonzero BUT the attr was missing (typo'd/absent stem) → NO-VERDICT (2), NOT a false corpus RED.
+        assert_eq!(coarse_gate_exit_code(Some(false), true), 2);
+        // No result (poll timeout / launch fail) → NO-VERDICT (2), never a false GREEN.
+        assert_eq!(coarse_gate_exit_code(None, false), 2);
+        // attr_missing is irrelevant when there is no result → still NO-VERDICT.
+        assert_eq!(coarse_gate_exit_code(None, true), 2);
+    }
+
+    #[test]
+    fn log_shows_missing_attr_matches_nix_attr_errors_only() {
+        // The common nix flake-output-attr-not-found signatures → true (demote a typo'd stem from RED).
+        assert!(log_shows_missing_attr(
+            "error: flake 'git+file:///w' does not provide attribute 'checks.aarch64-linux.corpus-gate-coarse-BOGUS'"
+        ));
+        assert!(log_shows_missing_attr(
+            "error: attribute 'corpus-gate-coarse-x' missing"
+        ));
+        assert!(log_shows_missing_attr(
+            "error: cannot find flake attribute 'checks.aarch64-linux.foo'"
+        ));
+        // A genuine corpus regression / ordinary build failure has NO attr-resolution signature → false, so
+        // it stays a RED (never demoted). This is the discriminator that keeps a real regression a RED.
+        assert!(!log_shows_missing_attr(
+            "error: builder for '/nix/store/…-corpus-gate-coarse-06-numeric-model.drv' failed: case 14929 Todo→Fail"
+        ));
+        assert!(!log_shows_missing_attr(""));
     }
 
     #[test]
