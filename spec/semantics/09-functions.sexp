@@ -2980,7 +2980,9 @@
       (def (main) (fold-t (fn ((: x Int64)) (* x 10)) (T.Node #tuple((T.Leaf 1) (T.Leaf 2)))))
       (export main)))
   (output (: 30 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): the branching-recursion tree + inferred callback closure now reclaim —
+  ; census 0 (v-memory-safety tighten-sweep round-2 + breaker fresh-cdz two-signal). Re-baselined from known-leak.
+  (live-objects 0))
 
 (case
   "a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT"
@@ -9226,7 +9228,9 @@
       (def (main) (icount (scan (from-list #list()) 0 (fn (a x) (+ a x)))))
       (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): the empty-iterator scan (seed-only Iter.Cons) + fold closure now reclaim —
+  ; census 0 (v-memory-safety tighten-sweep round-2 + breaker fresh-cdz two-signal). Re-baselined from known-leak.
+  (live-objects 0))
 
 (case
   "a recursive-generic transformer threading an IDENTITY closure composes at a single element type"
