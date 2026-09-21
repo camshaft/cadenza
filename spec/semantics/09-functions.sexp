@@ -823,6 +823,37 @@
   (live-objects 0))
 
 (case
+  "a self-recursive fn APPLYING its owned closure param THREE times on the base arm reclaims the captured env without over-drop (k=3 borrow-count strengthening)"
+  (doc
+    "The k=3 borrow-count strengthening of the multi-apply case above (which applies the owned closure `f`
+           TWICE). Here the base arm applies it THREE times — `(+ (f 0) (+ (f 1) (f 2)))` — beside the identity
+           thread on the back-edge `(go f (- d 1))`. Each apply BORROWS `f` (CallClosure), so THREE borrows
+           precede the SINGLE loop-exit epilogue drop of the owned closure + its captured 3-cell env. All three
+           borrows must release before that one drop with no race: a drop between/at any apply would free the
+           captured env a later apply still reads (rc-underflow/UAF), and a per-apply drop would double- or
+           triple-free. The closure ignores its arg (returns `List.len xs` = 3), so value = f(0)+f(1)+f(2) = 9,
+           invariant across depth (d=0/2/4 → 9). Extends the k=2 sibling to stress that the borrow-count-before-
+           single-drop invariant generalizes past two (the closure-apply analogue of the k=2→k=3 sibling-self-
+           call generalization at the two/three-sibling cases). Census 0 + no trap witnesses the multi-apply
+           reclaim stays UAF-safe at k=3.")
+  (input
+    (do
+      (def
+        (go (: f (-> Int64 Int64)) (: d Int64))
+        (if (< d 1) (+ (f 0) (+ (f 1) (f 2))) (go f (- d 1))))
+      (def
+        (main (: n Int64))
+        (let ((xs #list(1 2 (+ n 1)))) (go (fn (_d) (List.len xs)) n)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 9 Int64))
+  (call main (: 2 Int64))
+  (output (: 9 Int64))
+  (call main (: 4 Int64))
+  (output (: 9 Int64))
+  (live-objects 0))
+
+(case
   "a closure param passed to TWO SIBLING self-calls reclaims its captured env — the closure twin of the sibling consume-spare (#9155 × #9175)"
   (doc
     "Crosses #9175's closure-env reclaim with #9155's sibling-self-call consume-spare. `go` passes its
