@@ -326,6 +326,37 @@
   (live-objects 0))
 
 (case
+  "ab8 a cross-handler abort — an outer-handled abort performed inside a MIDDLE heap-stated handler unwinds PAST it, and the middle handler's heap state reclaims on pass-through"
+  (doc
+    "The cross-handler-unwind RECLAIM face. 14:3249 pins the VALUE of an abort unwinding past OTHER
+           differently-effect resumptive frames, but its crossed handlers carry SCALAR states and it has no
+           census pin; ab8 adds the HEAP-state reclaim dimension. `A.abort` is handled by the OUTERMOST
+           handler, but is performed INSIDE the MIDDLE `B` handler whose state is a HEAP tree `(T.B (T.L 100)
+           (T.L 200))`. `(A.abort 42)` returns 42 without resume, so the non-local exit unwinds from inside
+           B's body OUT THROUGH B's frame TO the A handler, abandoning the pending `(+ _ 999)` and the whole
+           B handle. B's heap tree state must be torn down exactly once on that pass-through unwind: census 0
+           witnesses no leak (the crossed handler's heap state freed) and no double-free (a regression
+           dropping it both on B's normal teardown path and on the unwind path would UAF). B is exercised
+           first (`(B.bget)` sums its state = 300, discarded) so its state is live at the abort. Value 42,
+           O0==O3==rust.")
+  (input
+    (do
+      (effect A (op abort (-> Int64 Int64)))
+      (effect B (op bget (-> Int64)))
+      (type T (L Int64) (B T T))
+      (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b)))))
+      (def (main)
+        (handle A 0
+          ((abort (v) ast v))
+          (handle B (T.B (T.L 100) (T.L 200))
+            ((bget () bst (resume (s bst) bst)))
+            (do (B.bget) (+ (A.abort 42) 999)))))
+      (export main)))
+  (call main)
+  (output (: 42 Int64))
+  (live-objects 0))
+
+(case
   "cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance"
   (input
     (do
