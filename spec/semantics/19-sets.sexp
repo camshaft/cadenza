@@ -4156,9 +4156,12 @@
   (output (: 42 Int64))
   (call main (: 0 Int64))
   (output (: -1 Int64))
-  ; per-call (B2): coarse whole-case known-leak 3 matched only call 0; call 1 reclaims one more. true vector: 3/2.
-  ; (v-memory-safety re-baseline, coord v-corpus-harness)
-  (live-objects known-leak))
+  ; RECLAIMED: the Map.take desugar (tuple (Map.lookup m s) (Map.remove m s)) materializes a runtime
+  ; Core::Tuple that the decision-tree match arr-alloc'd + never dropped (its moved-in Map.lookup Option
+  ; husk leaked with it). A tuple-scrutinee shell reclaim (matchsum_tuple_shell_reclaim_ok) deep-drops the
+  ; materialized fresh-Owned tuple after the arms — one drop cascades the shell + husks. Census 0 at O0..O3
+  ; both trials, rc-trace none, base-vs-branch sweep clean. (v-memory-safety, co-design v-core-opt)
+  (live-objects 0))
 
 (case
   "a float-field RECORD as a SET element dedups by content including the float leaf"

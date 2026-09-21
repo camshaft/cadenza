@@ -3781,6 +3781,20 @@ fn emit_tail(
                 never_diverges,
                 &root,
             );
+            // MATERIALIZED runtime-TUPLE scrutinee shell reclaim (19-sets:0204, Map.take desugar): a fresh
+            // `Core::Tuple` with runtime elements is arr-alloc'd by the decision-tree builder and its shell +
+            // moved-in component husks LEAK (no tuple analog of `sum_shell_reclaim` existed). Deep-drop the
+            // materialized tuple after the arms — one drop cascades to node#6 (the tuple array) + node#7 (its
+            // moved-in Option husk). STRICT borrow-clean floor (zero consuming sites), gated on `Core::Tuple`
+            // so it goes INERT under a future in-place-destructure SROA (v-core-opt owns that separately).
+            let tuple_reclaim = matchsum_tuple_shell_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
+            );
             let reclaim_shell = view_reclaim
                 || looped_scalar_shell
                 || (!arms_tail_call
@@ -3788,7 +3802,8 @@ fn emit_tail(
                         || param_reclaim
                         || proj_reclaim
                         || expect_reclaim
-                        || matchextract_reclaim));
+                        || matchextract_reclaim
+                        || tuple_reclaim));
             // Thread the owned-view shell slot into the arms' loop context so a member tail-call in an arm
             // (`find-at`'s recursive branch) drops the dead shell before its back-edge `br`. Only when the
             // match actually loops (`arms_tail_call`) and the view reclaim holds; else the arms' `tl` is

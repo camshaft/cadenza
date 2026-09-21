@@ -1011,6 +1011,67 @@ pub(crate) fn matchsum_proj_owned_aggregate_reclaim_ok(
     consuming.is_empty()
 }
 
+/// The runtime-TUPLE-scrutinee twin of [`matchsum_proj_owned_aggregate_reclaim_ok`]: a `MatchSum` whose
+/// scrutinee is a fresh `Core::Tuple` with RUNTIME elements (e.g. the `Map.take` desugar `(tuple (Map.lookup
+/// m s) (Map.remove m s))` — 19-sets:0204). A `Ty::Tuple` scrutinee has no discriminant, so `lower_match`'s
+/// decision-tree builder MATERIALIZES the tuple into a scratch slot (`arr-alloc` + per-element `arr-set`) and
+/// reads components via `Elem` = `arr-get`; the const-only Elem-of-`Core::Tuple` fold (`match_tree.rs`) does
+/// NOT fire for runtime elements, so the materialized tuple is a real heap temporary. Unlike a boxed-SUM
+/// match, a heap-TUPLE match has NO shell reclaim today — `sum_shell_reclaim_ok`'s `Owned` gate passes
+/// (`Core::Tuple` IS `Owned`) but `sum_shell_reclaim_payload_ok` DECLINES it (its payload-safety disjuncts are
+/// sum-shaped / all-scalar-product / extraction-scrutinee; a heap-component tuple whose arm builds an
+/// UNRELATED compound falls through them), so the materialized tuple + its moved-in component husks LEAK one
+/// cell each per match (0204: node#6 = the tuple array, node#7 = the moved-in `Map.lookup` Option husk —
+/// `arr-set` MOVED it into the tuple, so a single deep-drop of the tuple reclaims BOTH via cascade).
+///
+/// SOUND by the SAME strict-borrow-clean fence as the proj/expect/view twins. `Core::Tuple` is globally
+/// `Owned` (ownership.rs), so `collect_shell_reclaim_child_dups`'s `owned_compound_boxed` arm ALREADY handles
+/// any CONSUMED component-extraction dup in lockstep — but we require ZERO consuming sites here, so no child
+/// is moved out: the deep-drop's cascade frees only the shell + its dead/husk children, each of which the
+/// tuple exclusively owns (`arr-set` moved it in; a reconstruction-dup at build time is exactly balanced by
+/// the cascade). A consuming site would transfer a component out, so the cascade freeing that same component
+/// = a DOUBLE-FREE (leak beats UAF → excluded). The all-scalar-payload safety v-core-opt confirmed applies
+/// AS this floor: a scalar component copies out via `get-int`/`get-bool` (no live alias for the cascade to
+/// free); a heap component read out as a live handle is a consuming/borrowing site → excluded. GATED on the
+/// scrutinee being an actual materialized `Core::Tuple` so a future SROA that destructures in place (no
+/// materialization) leaves NO `Core::Tuple` scrutinee for this to match → it goes INERT, never a double-free.
+pub(crate) fn matchsum_tuple_shell_reclaim_ok(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    stashed_slot: Option<(u32, ValType)>,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> bool {
+    // Shared safety floor (identical to the proj/expect/view twins): freshly-stashed I32 slot,
+    // diverging-clean, heap non-enum, and not re-matched by a nested MatchSum (Class-B).
+    if !matches!(stashed_slot, Some((_, ValType::I32)))
+        || never_diverges
+        || !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+    {
+        return false;
+    }
+    // The scrutinee must be a MATERIALIZED fresh `Core::Tuple` (a runtime tuple literal the decision-tree
+    // builder arr-alloc'd). `Core::Tuple` is globally `Owned`, so the deep-drop reclaims a genuine fresh
+    // temporary; gating on `Core::Tuple` (not merely a `Ty::Tuple` scrutinee) keeps it INERT under a future
+    // in-place-destructure SROA that never materializes the tuple.
+    if !matches!(core_of(db, scrutinee), Core::Tuple { .. })
+        || !matches!(
+            heap_operand_ownership(db, scrutinee),
+            Ok(HandleOwnership::Owned)
+        )
+    {
+        return false;
+    }
+    // STRICT BORROW-CLEAN floor (NO child-dup on this local path): every component is purely BORROWED/dead —
+    // zero consuming sites. Same classifier as the proj/expect twins + the owned-scrutinee dup collection.
+    let mut consuming = HashSet::new();
+    collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
+    consuming.is_empty()
+}
+
 /// The `Option.expect`-result twin of [`matchsum_proj_owned_aggregate_reclaim_ok`]: a `MatchSum` scrutinee
 /// that is a `Core::SumExpect` (`(Option.expect <owned-Some> …)`) extracting a HEAP-SUM payload out of an
 /// OWNED source Option. `SumExpect` is deliberately NOT in `heap_operand_ownership` (like `Core::Proj` /
