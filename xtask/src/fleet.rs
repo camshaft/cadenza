@@ -337,6 +337,7 @@ const MATERIALIZED_FLEET_FILES: &[&str] = &[
     "baseline-drift-monitor.sh",
     "stage-oracle-lean.sh",
     "drain-nudge.sh",
+    "rearm-stale.sh",
     "compact-nudge.sh",
     "reap-leases.sh",
     "aea-refresh.sh",
@@ -1303,6 +1304,39 @@ pub enum FleetCmd {
         #[arg(long, default_value_t = 900)]
         drain_nudge_grace: u64,
     },
+    /// Autonomous STALE-HEARTBEAT RE-ARM scan (the non-destructive `/loop`-cron self-heal): re-arm any
+    /// active agent whose heartbeat has gone stale past its window with a send-keys `continue` / `/loop`
+    /// — and NOTHING else. A strict SUBSET of `watchdog`, exactly like `drain-nudge` is: same
+    /// heartbeat-staleness verdict (`stale_window_secs`), the SAME never-interrupt-a-heads-down-agent
+    /// pane-busy guard + 2-capture confirming recapture, the SAME anti-thrash grace, and the SAME
+    /// `rearm_action`/`escalate_repeated_nudge` dead-cron escalation + streak bookkeeping (sharing the
+    /// watchdog's rearm markers so running both never double-arms). It takes NONE of the watchdog's
+    /// DESTRUCTIVE actions — no window recreate, no wedge-Escape, no dead-letter/spent-note reap, no window
+    /// reap, no compaction restart: none of that code EXISTS in this path, so it is non-destructive
+    /// BY CONSTRUCTION. That restraint is what makes it safe to run FREQUENTLY as an autonomous fleet-up
+    /// cron, DECOUPLED from the concierge, once the operator GOes it (until then its cron ships DISABLED —
+    /// see `REARM_STALE_ENABLED` — but the command itself is runnable, dry-run especially, for inspection).
+    /// Server-direct (explicit `--session`, no `$TMUX` needed). EXCLUDES pr-sync (whose stale-mid-batch
+    /// shape needs the watchdog's trunk/gate/lease exonerations; re-arming it here would false-fire).
+    RearmStale {
+        /// Report what WOULD be re-armed, sending no keys (safe anytime).
+        #[arg(long)]
+        dry_run: bool,
+        /// The tmux session the fleet windows live in (targeted server-direct, so it works with no `$TMUX`).
+        #[arg(long, default_value = "main")]
+        session: String,
+        /// Presume a loop stalled once its heartbeat is older than this multiple of its interval (mirrors
+        /// the watchdog's default).
+        #[arg(long, default_value_t = 2)]
+        stale_mult: u32,
+        /// CAP (seconds) on the GRACE portion of the stale window (see the watchdog's `--stale-cap`).
+        #[arg(long, default_value_t = 600)]
+        stale_cap: u64,
+        /// Anti-thrash grace (seconds): don't re-arm an agent re-armed this recently (gives the nudge time
+        /// to land). Shares the watchdog's rearm marker, so overlapping never double-arms.
+        #[arg(long, default_value_t = 120)]
+        grace_secs: u64,
+    },
     /// The autonomous CONCIERGE COMPACTION scan — an out-of-band `/compact` + 100%-restart for the concierge,
     /// DECOUPLED from any agent tick (run by `fleet/compact-nudge.sh`'s system cron). WHY: the fleet watchdog
     /// (which sends the pre-wall `/compact` + does the at-wall restart) is FOLDED INTO the concierge's
@@ -1513,6 +1547,13 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             session,
             drain_nudge_grace,
         } => drain_nudge_scan(&fleet, &session, dry_run, drain_nudge_grace),
+        FleetCmd::RearmStale {
+            dry_run,
+            session,
+            stale_mult,
+            stale_cap,
+            grace_secs,
+        } => rearm_stale_scan(&fleet, &session, dry_run, stale_mult, stale_cap, grace_secs),
         FleetCmd::CompactNudge {
             dry_run,
             session,
@@ -2329,6 +2370,69 @@ fn ensure_watchdog_cron(fleet: &Fleet) {
     }
 }
 
+/// Master switch for the autonomous STALE-HEARTBEAT RE-ARM cron. DISABLED by default: the re-arm scan is
+/// non-destructive BY CONSTRUCTION (send-keys `continue`/`/loop` only — see `rearm_stale_scan`), but whether
+/// a non-destructive send-keys `/loop` re-arm is IN or OUT of scope of the 2026-09-10 destructive-watchdog
+/// operator ban is an OPEN operator decision (ASK1, routed via the concierge). So we ship the mechanism
+/// LANDED-BUT-OFF exactly like [`WATCHDOG_ENABLED`]: the cron line is installed COMMENTED-OUT (reconcile
+/// keeps/heals the tag, so it can never silently vanish, yet cron never schedules it) and flipping this one
+/// bool to `true` + landing re-enables it the instant the operator says GO. Gates ONLY the cron line — the
+/// `fleet rearm-stale` command stays manually runnable (dry-run inspection) regardless, mirroring how
+/// `fleet watchdog` runs by hand while its cron is disabled.
+const REARM_STALE_ENABLED: bool = false;
+
+/// The desired `# fleet:rearm-stale` crontab line, in the state [`REARM_STALE_ENABLED`] dictates. When
+/// enabled it is a live every-4-min schedule (between the */3 drain-nudge and the */10 watchdog — a stale
+/// `/loop` cron should self-heal well inside a stale window without hammering); when disabled it is the SAME
+/// line COMMENTED OUT (leading `#DISABLED-…`) so cron never schedules it, yet the tag is retained (reconcile
+/// keeps/heals it) and the active form is documented inline for whoever flips [`REARM_STALE_ENABLED`]. Pure/
+/// unit-tested. `rearm-stale.sh` is flock-singleton and runs a worktree's built `xtask`, so the cadence is
+/// safe when live.
+fn rearm_stale_cron_line(hub_script: &str, enabled: bool) -> String {
+    let active = format!("*/4 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:rearm-stale");
+    if enabled {
+        active
+    } else {
+        format!("#DISABLED-PENDING-OPERATOR-ASK1-nondestructive-loop-rearm-ban-scope {active}")
+    }
+}
+
+/// Ensure the `# fleet:rearm-stale` entry exists + points at THIS hub's `rearm-stale.sh`, in the state
+/// [`REARM_STALE_ENABLED`] dictates (currently DISABLED pending ASK1). Same re-arm-on-relaunch, drift-heal,
+/// and FAIL-OPEN discipline as [`ensure_watchdog_cron`] / [`ensure_drain_nudge_cron`], and INDEPENDENT of the
+/// other fleet crons (its own reconcile/write in `up`, preserving their lines via [`reconcile_tagged_crons`]).
+/// Installing the DISABLED form makes the LANDED-BUT-OFF state self-healing and visible (a retained, greppable
+/// tag) instead of a mechanism that only exists in source, WITHOUT scheduling any run. Skips silently if the
+/// script isn't materialized yet (older tree) or `crontab` is absent/errs — never blocks `fleet up`.
+fn ensure_rearm_stale_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("rearm-stale.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:rearm-stale",
+        rearm_stale_cron_line(&script.display().to_string(), REARM_STALE_ENABLED),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// The desired every-3-min user-crontab line for the autonomous DRAIN-NUDGE heartbeat (v-fleet-tooling
 /// 2026-09-01, operator-GO'd wake-path hardening), tagged `# fleet:drain-nudge` so [`reconcile_tagged_crons`]
 /// can find/heal it. Runs the HUB copy of `drain-nudge.sh`, which runs a worktree's `xtask fleet drain-nudge
@@ -2749,6 +2853,13 @@ fn up(fleet: &Fleet) {
     // untagged-cron accident (dead 10 days, invisible to cron_stale). Re-enable = operator flips
     // WATCHDOG_ENABLED + lands. Independent of the other self-crons; fail-open + drift-healed.
     ensure_watchdog_cron(fleet);
+    // Re-assert the `# fleet:rearm-stale` entry as a FIRST-CLASS tagged cron — but DISABLED pending the
+    // operator's ASK1 ruling on whether a NON-destructive send-keys `/loop` re-arm is in scope of the
+    // 2026-09-10 ban. Like the watchdog line this does NOT schedule any run (it's commented); it exists so
+    // the LANDED-BUT-OFF re-arm mechanism is self-healing + visible (a retained, greppable tag) and ready to
+    // flip the instant the operator GOes it. Re-enable = flip REARM_STALE_ENABLED + land. Independent of the
+    // other self-crons; fail-open + drift-healed.
+    ensure_rearm_stale_cron(fleet);
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
@@ -7204,6 +7315,152 @@ fn drain_nudge_scan(fleet: &Fleet, session: &str, dry_run: bool, drain_nudge_gra
     // Quiet on the cron hot path: summarize only when something happened (or a dry-run found candidates).
     if nudged > 0 || (dry_run && suspected > 0) {
         eprintln!("drain-nudge: {nudged} nudged, {suspected} suspected [session {session}]");
+    }
+}
+
+/// The autonomous STALE-HEARTBEAT RE-ARM scan (see the `RearmStale` CLI doc). A strict, non-destructive
+/// SUBSET of `watchdog` — same heartbeat-staleness verdict + never-interrupt-a-heads-down-agent guard +
+/// anti-thrash grace + dead-cron escalation, but ONLY the send-keys `continue`/`/loop` re-arm and NONE of
+/// the watchdog's destructive actions (window recreate/reap/Escape/reap-dead-letters/compaction-restart do
+/// not exist in this path). Shares the watchdog's rearm/streak markers, so running both never double-arms.
+/// Server-direct (explicit `session`, no `$TMUX`). Meant for a frequent decoupled cron once the operator
+/// GOes it (its cron ships DISABLED — see [`REARM_STALE_ENABLED`]); runnable by hand (dry-run) meanwhile.
+fn rearm_stale_scan(
+    fleet: &Fleet,
+    session: &str,
+    dry_run: bool,
+    stale_mult: u32,
+    stale_cap: u64,
+    grace_secs: u64,
+) {
+    let reg = fleet.load();
+    let now = now_unix();
+    let live = tmux_windows(session);
+    let mut rearmed = 0usize;
+    let mut reissued = 0usize;
+    for a in &reg.agents {
+        // Only ACTIVE, non-stop-filed agents are candidates — a stopped/rested agent must NEVER be re-armed
+        // back to life (the watchdog's double-guard rationale).
+        if watchdog_skips_agent(&a.status, fleet.stopfile(&a.name).exists()) {
+            continue;
+        }
+        // pr-sync's minutes-long synchronous gate batches legitimately go heartbeat-stale MID-BATCH; its
+        // trunk/gate/lease exonerations live in the full watchdog. Never re-arm it from here (it would
+        // false-fire), matching `drain-nudge`'s exclusion.
+        if a.name == "pr-sync" {
+            continue;
+        }
+        // No live window → nothing to re-arm. NON-DESTRUCTIVE: unlike the watchdog we NEVER recreate a
+        // missing window (that recreate IS the destructive path the ban covers) — we only ever send keys to
+        // an already-live one. A tmux-errored (false-empty) list makes us skip everyone → we under-act
+        // (send nothing), which is the safe failure: we never nudge blind.
+        if !live.iter().any(|w| w == &a.name) {
+            continue;
+        }
+        // Liveness = heartbeat mtime. A never-heartbeated agent (cold start, maybe still booting) is left to
+        // the full watchdog's cold-start handling — this narrow scan acts ONLY on a PROVEN-stale heartbeat,
+        // never on heartbeat-absence.
+        let Some(age) = heartbeat_age_secs(fleet, &a.name, now) else {
+            continue;
+        };
+        let hb_age = Some(age);
+        let interval = parse_interval_secs(&a.interval);
+        let stale_after = stale_window_secs(interval, stale_mult, stale_cap);
+        if age <= stale_after {
+            // Ticked within its window — healthy. Clear the consecutive-nudge streak ONLY if the freshness
+            // is genuinely SELF-PRODUCED (its own cron fired ≥1 interval after the last re-arm), not a
+            // leftover heartbeat from a recent nudge — see `should_clear_nudge_streak`. Mirrors the watchdog
+            // so a recovered agent doesn't carry a stale streak into a later stall (which would over-escalate
+            // a cheap nudge straight to a `/loop` re-issue). Shared marker, so it stays consistent with the
+            // watchdog if both ever run.
+            if should_clear_nudge_streak(rearm_age_secs(fleet, &a.name, now), hb_age, interval) {
+                clear_nudge_streak(fleet, &a.name, dry_run);
+            }
+            continue;
+        }
+        // Anti-thrash: don't re-arm one we re-armed within the grace (give the nudge time to land and refresh
+        // the heartbeat before judging it stale again). Shares the watchdog's rearm marker.
+        if let Some(since) = rearm_age_secs(fleet, &a.name, now)
+            && since < grace_secs
+        {
+            continue;
+        }
+        // Never interrupt a heads-down agent (operator 2026-09-09): if the pane shows work in flight, a stale
+        // heartbeat is just a long tick, not a dead loop. SUSPECT from one capture, then CONFIRM with a
+        // 2-capture recheck (a single snapshot can catch the sub-second gap between tool-turns) before
+        // treating it as re-armable — identical to the drain-nudge / watchdog discipline.
+        let pane = capture_pane(session, &a.name);
+        if pane.as_deref().is_some_and(pane_shows_working) {
+            continue;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(
+            DRAIN_STALL_CONFIRM_DELAY_SECS,
+        ));
+        if window_is_working(session, &a.name) {
+            continue; // work in flight on the recheck → mid-tick, not stalled.
+        }
+        // Choose the re-arm action, IDENTICAL to the watchdog: cheap `continue` for a loop that merely missed
+        // a tick; escalate to re-issuing `/loop` only when a prior nudge didn't stick (the dead-cron
+        // signature), including the repeated-nudge streak escalation.
+        let action = escalate_repeated_nudge(
+            rearm_action(rearm_age_secs(fleet, &a.name, now), hb_age),
+            consecutive_nudge_streak(fleet, &a.name),
+            REPEATED_NUDGE_ESCALATE_THRESHOLD,
+        );
+        let drift = cadence_drift_ratio(age, interval);
+        if dry_run {
+            let how = match action {
+                RearmAction::NudgeContinue => "nudge `continue`",
+                RearmAction::ReissueLoop => "re-issue `/loop` (prior nudge didn't stick)",
+            };
+            println!(
+                "  DRY-RUN would re-arm '{}' via {how} (idle {age}s = {drift:.1}×cadence > {stale_after}s stale window; interval {})",
+                a.name, a.interval
+            );
+            rearmed += 1;
+            if matches!(action, RearmAction::ReissueLoop) {
+                reissued += 1;
+            }
+            continue;
+        }
+        let sent = match action {
+            RearmAction::NudgeContinue => rearm_window(session, &a.name, &a.interval),
+            RearmAction::ReissueLoop => {
+                let prompt = watchdog_tick_prompt(fleet, a);
+                reissue_loop(session, &a.name, &a.interval, &prompt)
+            }
+        };
+        if sent {
+            stamp_rearm(fleet, &a.name);
+            record_nudge_streak(
+                fleet,
+                &a.name,
+                matches!(action, RearmAction::NudgeContinue),
+                dry_run,
+            );
+            rearmed += 1;
+            match action {
+                RearmAction::NudgeContinue => println!(
+                    "  + re-armed '{}' (idle {age}s = {drift:.1}×cadence > {stale_after}s; nudged `continue` to run a tick)",
+                    a.name
+                ),
+                RearmAction::ReissueLoop => {
+                    reissued += 1;
+                    println!(
+                        "  ++ re-armed '{}' (idle {age}s = {drift:.1}×cadence > {stale_after}s; prior nudge didn't stick → re-issued `/loop {}` to ARM a cron)",
+                        a.name, a.interval
+                    );
+                }
+            }
+        } else {
+            eprintln!("  ! failed to send re-arm keys to '{}'", a.name);
+        }
+    }
+    // Quiet on the cron hot path: summarize only when something happened.
+    if rearmed > 0 {
+        eprintln!(
+            "rearm-stale: {rearmed} re-armed ({reissued} via /loop re-issue) [session {session}]"
+        );
     }
 }
 
@@ -22206,6 +22463,32 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert_eq!(
             parse_cron_line(&enabled),
             Some((600, "watchdog".to_string()))
+        );
+    }
+
+    // Same LANDED-BUT-OFF discipline as the watchdog line: the tagged `# fleet:rearm-stale` cron ships
+    // COMMENTED (REARM_STALE_ENABLED=false, pending ASK1) so cron never schedules it, yet the tag is retained
+    // (reconcile keeps/heals it) and the active every-4-min form is documented inline for whoever flips the
+    // const. Does NOT assert on the const itself — flipping it is the sanctioned re-enable path, so a
+    // const-block assert would be wrong (and trip clippy::assertions_on_constants); both forms are validated
+    // via the `enabled` arg, so the test stays green whichever way it's set.
+    #[test]
+    fn rearm_stale_cron_line_is_disabled_by_default_and_not_schedulable() {
+        let disabled = rearm_stale_cron_line("/hub/rearm-stale.sh", false);
+        // Tagged so reconcile_tagged_crons keeps/heals it — it can never silently vanish.
+        assert!(disabled.contains("# fleet:rearm-stale"));
+        // Commented so cron never schedules the re-arm run while the ban scope is undecided.
+        assert!(disabled.trim_start().starts_with('#'));
+        // Documents the active form inline (so an operator flipping the const sees exactly what would run).
+        assert!(disabled.contains("bash /hub/rearm-stale.sh"));
+        // MUST be skipped by parse_cron_line → cron_stale never false-flags the deliberately-off cron.
+        assert_eq!(parse_cron_line(&disabled), None);
+        // Enabled form (flip REARM_STALE_ENABLED + land) IS a live 4-min schedule cron_stale can monitor.
+        let enabled = rearm_stale_cron_line("/hub/rearm-stale.sh", true);
+        assert!(!enabled.trim_start().starts_with('#'));
+        assert_eq!(
+            parse_cron_line(&enabled),
+            Some((240, "rearm-stale".to_string()))
         );
     }
 
