@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(10);
+    let shape = c.variant(11);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -235,8 +235,25 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // relax of the escaped-child-dup fence frees the param spine while the recursion still walks it → UAF
         // (the #9435/#9436 tripwire class). Returns the KNOWN element sum, so a corrupted spine shows as a
         // wrong value. Self-recursive sum traversal was reached by NO prior generator (astgen included).
-        _ => format!(
+        9 => format!(
             "(do (type NL (Nil) (Cons Int64 NL)) (def (sum (: xs NL)) (match xs ((Nil) 0) ((Cons h t) (+ h (sum t))))) (def (main) (sum (Cons {a} (Cons {b} (Cons {d} (Nil)))))) (export main))"
+        ),
+        // 10 — F5 SITE-A CLOSURE-ENV-CELL reclaim (09-functions 771 family, LANDED #9440). A self-recursive
+        // `times` takes an INVARIANT borrow-clean CLOSURE loop-param `f` — passed identity-unchanged on every
+        // back-edge (`times f (- n 1) (f x)`) — and APPLIES it once per iteration (`(f x)`). The apply BORROWS
+        // the closure's env cell, so `mark_binder_dups`'s per-application dup is a SPURIOUS surplus that the
+        // #9440 CallClosure SITE-A env-drop now reclaims. The capturing lambda `(fn (y) (+ y k))` gives `f` a
+        // NON-TRIVIAL env cell (holds `k`) — a no-capture lambda would lower to an env-less top-level fn and
+        // exercise no env-cell path. The SITE-A drop is gated PER-SITE on `dup_sites` (v-mem-confirmed
+        // LOAD-BEARING): it fires only at the dup'd application site; firing at the entry-ref site too would
+        // DOUBLE-FREE the borrowed env cell → UAF (a freed `k` → wrong value or trap). Returns the KNOWN value
+        // `a + n*b`, so an over-drop of the env cell corrupts the fold and shows as a wrong value / trap —
+        // value-observable by the differential / opt-invariance / determinism sweeps. This is the SOLE reclaim
+        // shape driving a CLOSURE-env (not aggregate-payload) SITE-A drop; no prior generator reached an
+        // invariant closure loop-param applied per iteration. Prime OPT-INVARIANCE target: O2/O3 may inline
+        // `times`/specialize `f`, changing the env-cell lifetime — a divergence from O0 is the bug.
+        _ => format!(
+            "(do (def (times (: f (-> Int64 Int64)) (: n Int64) (: x Int64)) (if (< n 1) x (times f (- n 1) (f x)))) (def (main) (let ((k {b})) (times (fn (y) (+ y k)) {n} {a}))) (export main))"
         ),
     };
     Program { source }
@@ -4890,9 +4907,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the ten shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 10];
-        for seed in 0u64..280 {
+        // Distinctive, mutually-exclusive markers for the eleven shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 11];
+        for seed in 0u64..320 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -4927,13 +4944,15 @@ mod tests {
                 reached[8] = true;
             } else if src.contains("(type NL (Nil)") {
                 reached[9] = true;
+            } else if src.contains("(def (times (: f (-> Int64 Int64))") {
+                reached[10] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all ten reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all eleven reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
