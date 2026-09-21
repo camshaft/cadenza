@@ -3968,7 +3968,7 @@
   (output (: 3 Int64))
   (call main (: 5 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The projection-persistence cases above bind a child by DOT-projection (`. t 0`) and consume-then-read.
 ; These two pin the MATCH-BINDER child fate that rcdzc's site-b child-dup / binder_is_param parent-dup
@@ -5806,7 +5806,7 @@
            witnesses (which test the admit/decline of `param_consumed_reused_in_loop_body`, NOT the
            caller-owned gate). A regression that wrongly flipped `caller_owned` TRUE for a reused-LocalRef
            base would fire the exit-drop → OVER-DROP `main`'s `base` → the debug-runtime TRAPS (assert_node_
-           live) instead of the current benign leak. KNOWN-LEAK (measured live-objects 0 on the authoritative nix
+           live) instead of the clean reclaim. RECLAIMED (measured live-objects 0 on the authoritative nix
            debug-runtime — was known-leak 2 (base spine node#1 + wrapper node#2), NOW RECLAIMED). FIXED (5786
            caller-retains): the callee-preserves-invariant-param ⇒ caller-retains analysis landed. `def_consumes_
            param` reclassifies the dup-backed invariant base-consume (`List.push base`) as a BORROW, and the
@@ -6013,7 +6013,7 @@
   (output (: 9 Int64))
   (call main (: 4 Int64))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "all five List ops on an unwrapped newtype-list payload re-emit correctly through the cadenza backend (push/prepend/concat/update/at)"
@@ -6734,7 +6734,7 @@
   (output (: 103 Int64))
   (call main (: 9 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a returned lookup result consumed with a wildcard never inspects the payload"
@@ -6755,7 +6755,7 @@
       (def (main) (present (get (Map.insert #map() "x" (Ty.Con "Int")) "x")))
       (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A STRING used as a Map VALUE — the symbol-table idiom (a name maps to a canonical name / type string /
 ; opcode mnemonic), the string companion of the sum-/list-/set-valued map cases. The looked-up String is
