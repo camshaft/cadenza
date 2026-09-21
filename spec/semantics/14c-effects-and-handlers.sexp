@@ -271,6 +271,31 @@
   (live-objects 0))
 
 (case
+  "ab6 a HEAP-valued abort — the abort value is a nested-sum tree built from the consumed state, escapes the aborted handle and is summed after"
+  (doc
+    "The abort-VALUE companion to ab5's abort-STATE pin: here the aborting arm RETURNS a heap value that
+           ESCAPES the aborted handle. ab3's abort value is a SCALAR (an Int64 draw); this one is a user sum
+           `T` (the abort op is typed `-> Int64 T`). The `bail` arm consumes the tree state `st` INTO a fresh
+           `(T.B (T.L (BigInt.of v)) st)` and returns it WITHOUT resume, so the handle unwinds to that tree.
+           It escapes as the handle result and is folded by `s` outside: `s (T.B (T.L 7N) (T.L 100N))` = 7 +
+           100 = 107. Pins that a heap abort value survives the unwind (not dropped with the abandoned
+           continuation) AND the state it consumed folds in with no leak/double-free — census 0. Value
+           107, O0==O3==rust.")
+  (input
+    (do
+      (effect Bail (op bail (-> Int64 T)))
+      (type T (L BigInt) (B T T))
+      (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b)))))
+      (def (main)
+        (s (handle Bail (T.L 100N)
+             ((bail (v) st (T.B (T.L (BigInt.of v)) st)))
+             (do (Bail.bail 7) (T.L 0N)))))
+      (export main)))
+  (call main)
+  (output (: 107 Int64))
+  (live-objects 0))
+
+(case
   "cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance"
   (input
     (do
