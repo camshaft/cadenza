@@ -15276,6 +15276,57 @@
   ; dups xs and the inner frame reclaims at its own epilogue — balanced, rc-trace LEAK SUMMARY none).
   (live-objects 0))
 
+; --- ADMIT/DECLINE complement pair for the #9497 flat-scalar-container heap-return reclaim (cf/15266 above). ---
+(case
+  "the #9497 flat-scalar-container heap-return reclaim generalizes to a Set Int64 invariant borrow (ADMIT: another ty_heap_children_all_scalar arm)"
+  (doc
+    "Strengthens the #9497 admit (cf/15266 reclaimed a `List Int64` invariant borrow through a HEAP-returning
+           non-tail self-recursion) to a DIFFERENT all-scalar container: `g` carries an invariant `Set Int64`
+           borrow `s` (verbatim self-forwarded `(g s (- i 1))`, varying `i`), reads it each frame via
+           `Set.contains`, and RETURNS heap (`List.push` onto the recursive result → non-tail). A `Set Int64`
+           has NO extractable heap child (ty_heap_children_all_scalar), so — exactly like cf's `List Int64` — no
+           param-child can embed in the heap List result and the fn-exit epilogue owner-drop reclaims `s`.
+           Census 0 at k=4 (value 5, the built list's length), verified on the post-#9497 compiler — proves the
+           flat-scalar-container heap-return admit is container-general (List/Set of scalar), not List-specific.
+           Contrast the heap-child DECLINE case directly below.")
+  (input
+    (do
+      (def
+        (g (: s (Set Int64)) (: i Int64))
+        (if (< i 1) #list() (List.push (g s (- i 1)) (if (Set.contains s i) 1 0))))
+      (def (main (: k Int64)) (List.len (g (Set.insert (Set.insert #set() 2) k) 5)))
+      (export main)))
+  (call main (: 4 Int64))
+  (output (: 5 Int64))
+  (live-objects 0))
+
+(case
+  "a HEAP-returning non-tail-selfrec whose invariant borrow param has a HEAP CHILD (List (List Int64)) stays DECLINED (known-leak — the #9497 carve-out that guards the ctor-embed UAF)"
+  (doc
+    "The DECLINE-edge complement of the #9497 flat-scalar-container heap-return admit — the carve-out whose
+           full-coarse UAF net caught two double-free traps. `walk` carries an invariant `List (List Int64)`
+           borrow `xs` (verbatim self-forwarded, varying `i`) and RETURNS heap by `List.concat inner (walk …)`
+           where `inner` is a HEAP CHILD of `xs` — so the heap result can embed a param-child (the tr3 ctor-embed
+           UAF shape). Because `xs` has an extractable heap child, ty_heap_children_all_scalar is FALSE and #9497
+           correctly leaves the fn-exit owner-drop DECLINED (leak-over-UAF): `xs` LEAKS (census 4, value 6 = the
+           flattened length, NO trap — verified on the post-#9497 compiler). Pinned known-leak: a real guard —
+           a regression that over-extends the flat-scalar admit to heap-child params would reclaim `xs` while the
+           result still refs an inner list ⟹ re-trap unreachable → fail this grade. Complements the Set-Int64
+           ADMIT case above and cf/15266.")
+  (input
+    (do
+      (def
+        (walk (: xs (List (List Int64))) (: i Int64))
+        (match
+          (List.at xs i)
+          ((Option.Some inner) (List.concat inner (walk xs (+ i 1))))
+          ((Option.None _u) #list())))
+      (def (main (: k Int64)) (List.len (walk #list(#list(1 2) #list(k) #list(3 4 5)) 0)))
+      (export main)))
+  (call main (: 9 Int64))
+  (output (: 6 Int64))
+  (live-objects known-leak))
+
 (case
   "a binary-search isqrt with an overflow-safe hi bound computes at i64::MAX"
   (doc
