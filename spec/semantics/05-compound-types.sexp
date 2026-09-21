@@ -34833,7 +34833,7 @@
 (case
   "spr2 a threaded sum's payload consumed per-iteration is retained (no drift)"
   (doc
-    "The loop form of spr1: `bx` is threaded UNCHANGED to the self-call, and its payload is consumed each iteration via `(List.push (match bx ((B xs) xs)) 99)` → len 3 each of 4 iters = 12. A borrowed payload FBIP-mutated at rc==1 would grow the threaded scrutinee and drift (per-iter 3,4,5,6 → 18 not 12).")
+    "The loop form of spr1: `bx` is threaded UNCHANGED to the self-call, and its payload is consumed each iteration via `(List.push (match bx ((B xs) xs)) 99)` → len 3 each of 4 iters = 12. A borrowed payload FBIP-mutated at rc==1 would grow the threaded scrutinee and drift (per-iter 3,4,5,6 → 18 not 12). RECLAIMED (v-memory-safety tighten): the SumPayload-base leak the F4 caller-drop wrapper originally declined (payload extracted via `(match bx ((B xs) xs))`, not a direct base) is now reclaimed to 0 by the accumulated reclaim campaign (the SumPayload retain-child dup + the threaded-scrutinee reclaim) — census 0 on every m (1/2/4/8), rc-trace LEAK SUMMARY none, value 3m held.")
   (input
     (do
       (type Box (B (List Int64)))
@@ -34848,7 +34848,7 @@
       (export main)))
   (call main)
   (output (: 12 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- Option.expect (SumExpect) payload retain, the twin of spr1/spr2: `Option.expect s` reads sum-payload (a
 ; BORROW), so consuming it (List.push) while `s` is threaded UNCHANGED to the self-call must RETAIN — else the
