@@ -2505,8 +2505,7 @@
             (Bytes.len k))))
       (export main)))
   (call main)
-  (output (: 4202 Int64))
-  (live-objects known-leak))
+  (output (: 4202 Int64)))
 
 (case
   "a runtime Bytes rope in a SUM payload compares equal to its flat twin"
