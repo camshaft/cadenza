@@ -1653,6 +1653,150 @@ fn nonlooped_owned_param_drops(
     drops
 }
 
+/// Whether the subtree `node` contains a direct `Core::Call` to `self_def` — i.e. this arm carries the
+/// self-recursive call. Used by the 14966 non-tail-self-recursive param last-use reclaim to pick the
+/// RECURSIVE arm of a tail `If` (the arm whose over-dup of an invariant borrow-param leaks), so the drop
+/// self-yields on the base-case arm (which has no self-call → reclaims via the dead-param path).
+fn arm_contains_self_call(db: &mut Db, node: StructId, self_def: usize) -> bool {
+    fn go(db: &mut Db, id: StructId, self_def: usize, seen: &mut HashSet<StructId>) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::Call { callee, .. } = core_of(db, id)
+            && callee == self_def
+        {
+            return true;
+        }
+        core_child_ids(db, id)
+            .into_iter()
+            .any(|c| go(db, c, self_def, seen))
+    }
+    let mut seen = HashSet::new();
+    go(db, node, self_def, &mut seen)
+}
+
+/// 14966 (06-numeric): the LAST-USE-PER-ARM drop plan for a NON-TAIL self-recursive fn's INVARIANT
+/// borrow-used-after heap params — the BORROW-classified sibling of F6(ii). `mpow(base,e,md)` is NON-TAIL
+/// self-recursive (`hh = mpow(base, e/2, md)`, result squared); `base`/`md` are invariant heap params the
+/// emit DUP's at the recursive self-call arg (a conservative over-dup — the emit does not honor the
+/// `def_consumes_param==false` borrow verdict) and BORROW-uses after (BigInt arith borrows), but NEVER
+/// drops → leak (rc climbs, the incoming owned ref of each recursive frame is orphaned). The base-case arm
+/// reclaims them (the param is unused / borrow-read-then-dead → the existing dead-param/dead-binding drop);
+/// the RECURSIVE arm does not.
+///
+/// Reclaim each frame's incoming ref at base's LAST USE PER ARM by planning an ifjoin arm-drop on the
+/// RECURSIVE arm of the fn's tail `If` (the arm carrying the self-call), consumed by the `Core::If` emit's
+/// per-arm-drop after the arm's reads / before its `End`. This SELF-YIELDS at the base-case arm (no
+/// self-call there → no plan entry → the dead-param drop stands alone → no e=0 double-free), which a
+/// frame-exit epilogue drop does NOT (it fires regardless of arm → the base-case double-free, the
+/// v-memory-safety cycle-1 probe). Returns `(if_node, slot, is_then)` triples for `code.ifjoin_arm_drops`;
+/// ALSO consulted by `collect_module_used_ops` (`def_emits_nontail_selfrec_borrow_param_drop`) so the `drop`
+/// import matches the emit.
+///
+/// GATES (v-core-opt condition (a), ALL; leak-over-UAF strict):
+///   - body is directly the fn's tail `Core::If` (a Let/Do-wrapped If is conservatively skipped);
+///   - the param is heap AND `def_consumes_param(self, i) == false` (BORROW-classified — the callee never
+///     drops it internally, so a per-arm drop is the reclaim, not a double);
+///   - guest-owned at every external entry (`looped_invariant_param_caller_owned`) — LOAD-BEARING;
+///   - dup-backed (`collect_dup_sites` non-empty — the over-dup this reclaims);
+///   - NON-escaping (`binding_escapes_dup_aware == false` — no verbatim ctor-embed/return → no double-free);
+///   - DISJOINT from F6(ii)'s `nontail_selfrec_owned_closure_param_drops` (a Fn closure param used in the
+///     base-case arm gets F6(ii)'s frame-exit drop as its SOLE reclaim; adding a per-arm drop double-frees —
+///     the (G')-twin, caught by the 857 sentinel).
+fn plan_nontail_selfrec_borrow_param_arm_drops(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+    layout: &Layout,
+) -> Vec<(StructId, u32, bool)> {
+    let mut out = Vec::new();
+    let Some(self_d) = self_def else {
+        return out;
+    };
+    if !body_is_self_recursive(db, body) {
+        return out;
+    }
+    let Core::If { then_, else_, .. } = core_of(db, body) else {
+        return out; // only a direct tail `If` (the recursion discriminant); else conservatively skip.
+    };
+    let then_rec = arm_contains_self_call(db, then_, self_d);
+    let else_rec = arm_contains_self_call(db, else_, self_d);
+    if !then_rec && !else_rec {
+        return out;
+    }
+    // Re-derive the dense param-slot assignment (Unit elided), matching `select_function_of`.
+    let mut slot_of: HashMap<StructId, u32> = HashMap::new();
+    let mut next: u32 = 0;
+    for (binder, ty) in params.iter() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        if valtype_of(ty).is_none() {
+            return Vec::new();
+        }
+        slot_of.insert(*binder, next);
+        next += 1;
+    }
+    // YIELD to F6(ii) (disjoint-set, the (G')-twin): a Fn closure param F6(ii) frame-exit-drops must not
+    // also get a per-arm drop (double-free — the 857 sentinel).
+    let f6ii: HashSet<u32> =
+        nontail_selfrec_owned_closure_param_drops(db, body, params, self_def, layout)
+            .into_iter()
+            .collect();
+    for (param_index, (binder, ty)) in params.iter().enumerate() {
+        if !is_heap_type(ty) {
+            continue;
+        }
+        let Some(&slot) = slot_of.get(binder) else {
+            continue;
+        };
+        if f6ii.contains(&slot) {
+            continue;
+        }
+        if def_consumes_param(db, self_d, param_index) {
+            continue; // callee CONSUMES → it owns the reclaim; not the borrow-used case.
+        }
+        if !looped_invariant_param_caller_owned(db, self_d, body, *binder) {
+            continue; // guest-owned at external entry (load-bearing).
+        }
+        let mut dup_sites: HashSet<StructId> = HashSet::new();
+        collect_dup_sites(db, body, &[*binder], &mut dup_sites);
+        if dup_sites.is_empty() {
+            continue; // not dup-backed → no over-dup to reclaim.
+        }
+        if binding_escapes_dup_aware(
+            db,
+            body,
+            EscapeTarget::Binder(*binder),
+            false,
+            Some(&dup_sites),
+        ) {
+            continue; // escapes verbatim → a drop here would double-free.
+        }
+        if then_rec {
+            out.push((body, slot, true));
+        }
+        if else_rec {
+            out.push((body, slot, false));
+        }
+    }
+    out
+}
+
+/// Import-side companion of [`plan_nontail_selfrec_borrow_param_arm_drops`]: whether the def emits at least
+/// one such per-arm drop, so `collect_module_used_ops` imports `drop` iff the emit fires (mirrors
+/// `def_emits_ifjoin_param_drop`). `pub` for the module's op-collection.
+pub fn def_emits_nontail_selfrec_borrow_param_drop(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+    layout: &Layout,
+) -> bool {
+    !plan_nontail_selfrec_borrow_param_arm_drops(db, body, params, self_def, layout).is_empty()
+}
+
 /// F6(ii) (09-functions:857): a per-FRAME drop of an OWNED CLOSURE PARAM in a NON-TAIL self-recursive
 /// function. `go f d = (if (< d 1) (f 0) (+ (go f (- d 1)) (go f (- d 1))))` is TREE-recursive — both
 /// self-calls are OPERANDS of `+` (NON-TAIL) — so `f` falls through all three existing owned-param
@@ -2154,6 +2298,19 @@ pub fn select_function_of(
                 let aliases = std::collections::HashSet::from([*binder]);
                 plan_ifjoin_nested(db, body, &aliases, slot, &dup, &mut code.ifjoin_arm_drops);
             }
+        }
+    }
+    // 14966: non-tail self-recursive INVARIANT borrow-used-after param LAST-USE-PER-ARM drop (v-core-opt
+    // condition (a)). Plan drops on the RECURSIVE arm(s) of the tail `If` (reuses the ifjoin per-arm-drop
+    // emit). See `plan_nontail_selfrec_borrow_param_arm_drops`.
+    if !loops {
+        for (if_node, slot, is_then) in
+            plan_nontail_selfrec_borrow_param_arm_drops(db, body, params, self_def, layout)
+        {
+            code.ifjoin_arm_drops
+                .entry(if_node)
+                .or_default()
+                .push((slot, is_then));
         }
     }
     // A MUTUAL group (more than one member) dispatches on a `which` state local: the first scratch slot

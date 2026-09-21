@@ -8390,6 +8390,13 @@ fn collect_module_used_ops(
         if select::def_emits_ifjoin_param_drop(db, body, &params, Some(def), layout) {
             used.insert("drop");
         }
+        // 14966: the non-tail self-recursive INVARIANT borrow-param LAST-USE-PER-ARM drop also emits `drop`
+        // (via `ifjoin_arm_drops` on the recursive arm) — import it iff the plan actually fires, matching
+        // the emit (mirrors `def_emits_ifjoin_param_drop`).
+        if select::def_emits_nontail_selfrec_borrow_param_drop(db, body, &params, Some(def), layout)
+        {
+            used.insert("drop");
+        }
         // The CALLER-side owned-temporary-arg drop (`Core::Call` emit, boundary-owned non-looped callee) also
         // emits `drop` — import it iff the body actually has such a call, so the import matches the emit.
         if select::body_has_caller_drop(db, body, layout, Some(def)) {
