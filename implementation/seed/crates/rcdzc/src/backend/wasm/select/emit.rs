@@ -1587,7 +1587,12 @@ pub(super) fn emit(
             // OWNERSHIP GATE (mirrors `MapLookup`): `map-remove` BORROWS the key, so drop it AFTER only when
             // it is an OWNED TEMPORARY. A BORROWED String/compound key (param / kept-local / a live
             // sum-payload projection) is left to its owner — dropping it would free a live reference.
-            let key_owned = key_handle_is_owned_temporary(db, key, &key_ty)?;
+            // ALSO drop an escaping nested-MatchSum VIEW key operand (465 sibling, #9500 known-leak): the
+            // 465(b) escaping-view dup leaves the extracted view at rc1 flowing in as this BORROWED key;
+            // `map-remove` borrows it, so with no consumer-drop the view husk leaks — drop ⟺ that preserving
+            // dup (symmetric with the value-eq/Map.lookup operand drops #9499 added).
+            let key_owned = key_handle_is_owned_temporary(db, key, &key_ty)?
+                || matchsum_view_operand_escaping_reclaim_ok(db, key);
             out.push(Lir::LocalTee(key_slot)); // [map, key], key_slot = key (for the later drop)
             out.push(Lir::CallImport(OP_MAP_REMOVE)); // → [map'] (consumes map, borrows key)
             if key_owned {
@@ -1719,7 +1724,12 @@ pub(super) fn emit(
             // OWNERSHIP GATE (mirrors `SetContains`): `set-remove` BORROWS the element, so drop it AFTER only
             // when it is an OWNED TEMPORARY. A BORROWED element (param / kept-local / a live sum-payload
             // projection) is left to its owner — dropping it would free a live reference.
-            let elem_owned = key_handle_is_owned_temporary(db, elem, &elem_ty)?;
+            // ALSO drop an escaping nested-MatchSum VIEW elem operand (465 sibling, #9500 known-leak): the
+            // 465(b) escaping-view dup leaves the extracted view at rc1 flowing in as this BORROWED elem;
+            // `set-remove` borrows it, so with no consumer-drop the view husk leaks — drop ⟺ that preserving
+            // dup (symmetric with the value-eq/Map.lookup operand drops #9499 added).
+            let elem_owned = key_handle_is_owned_temporary(db, elem, &elem_ty)?
+                || matchsum_view_operand_escaping_reclaim_ok(db, elem);
             out.push(Lir::LocalTee(elem_slot)); // [set, elem], elem_slot = elem (for the later drop)
             out.push(Lir::CallImport(OP_SET_REMOVE)); // → [set'] (consumes set, borrows elem)
             if elem_owned {
@@ -1947,7 +1957,12 @@ pub(super) fn emit(
             // only when it is an OWNED TEMPORARY (a boxed scalar, a compacted rope, or a fresh owned
             // compound). A BORROWED String/compound element — a param / kept-local / a live sum-payload or
             // element projection — is used as-is; dropping it would free a reference its owner still holds.
-            let elem_owned = key_handle_is_owned_temporary(db, elem, &elem_ty)?;
+            // ALSO drop an escaping nested-MatchSum VIEW elem operand (465 sibling, #9500 known-leak): the
+            // 465(b) escaping-view dup leaves the extracted view at rc1 flowing in as this BORROWED elem;
+            // `set-contains` borrows it, so with no consumer-drop the view husk leaks — drop ⟺ that preserving
+            // dup (symmetric with the value-eq/Map.lookup operand drops #9499 added).
+            let elem_owned = key_handle_is_owned_temporary(db, elem, &elem_ty)?
+                || matchsum_view_operand_escaping_reclaim_ok(db, elem);
             out.push(Lir::LocalTee(elem_slot)); // [set, elem], elem_slot = elem (for the later drop)
             out.push(Lir::CallImport(OP_SET_CONTAINS)); // [bool] (borrows set + elem)
             if elem_owned {
