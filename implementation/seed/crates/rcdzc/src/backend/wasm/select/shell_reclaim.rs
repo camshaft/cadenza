@@ -823,12 +823,18 @@ pub(crate) fn matchsum_view_shell_reclaim_ok(
     // stashed-owned-computed-compound increment). The single deep-drop cascades ONE decrement into the view node,
     // which the child-dup gave the BUILDER its own copy of (a champ key is COMPACTED to a separate flat leaf; a
     // non-compacting consumer holds the dup'd ref), so the drop reclaims the husk's own view ref 1:1 — never the
-    // builder's. SINGLE-consume (`consuming.len() == 1`) keeps it EXACT: N consuming sites → N dups but ONE
-    // shell cascade = an over-dup LEAK (not a double-free), so multi-consume stays a leak-over-UAF residual
-    // pending the rc-trace co-design. StrAt is EXCLUDED (deliberately not `Owned`) → its Stage-B / value-eq
-    // path is unchanged. guarded-all (the corpus generation-guard net) backstops any residual edge; 0202 is
-    // OPT-INDEPENDENT so the coarse O1 gate verifies it, and v-mem-safety census-verifies O0..O3 all-0 + pins.
-    let consumed_by_builder = consuming.len() == 1
+    // builder's. MULTI-consume (`consuming.len() >= 1`) is BALANCED, not an over-dup leak: the dup pass dups
+    // EACH consuming site, and EACH consume drops its own dup, against ONE shell cascade — so the view rc nets
+    // `1 + N - N - 1 = 0` for any N executed consumes (branch-mutually-exclusive sites — 0202's intersection
+    // vs difference `if` arms — execute exactly ONE per path; same-path multi-consume dups+consumes each). This
+    // is EXACTLY why the proven StrAt path `strat_view_consume_nonescaping` gates `total_consumes >= 1`, NOT
+    // `== 1`. So `!consuming.is_empty()` (originally `== 1` for 0200/0201, relaxed for 0202's two-branch
+    // `consuming.len() == 2`). StrAt is EXCLUDED (deliberately not `Owned`) → its Stage-B / value-eq path is
+    // unchanged. dup ⊇ drop (my admit ⊆ `owned_compound_boxed`) so no double-free; guarded-all (the corpus
+    // generation-guard net) + v-mem-safety's pre-merge census (0202-04 + a broad sibling double-free sweep)
+    // backstop it; 0202 is OPT-INDEPENDENT so the coarse O1 gate verifies it. (The 465(b) `escaping_husk`
+    // branch KEEPS `== 1`: a returned/borrowed view is genuinely single-use; only the CONSUME case relaxes.)
+    let consumed_by_builder = !consuming.is_empty()
         && !view_escapes_as_arm_result(db, scrutinee, root)
         && sum_cont_result_all_scalar(db, root)
         && compound_boxed
