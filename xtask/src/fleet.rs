@@ -1011,6 +1011,11 @@ pub enum FleetCmd {
         /// The arch leg (the fleet host is aarch64). Defaults to aarch64.
         #[arg(long, default_value = "aarch64")]
         arch: String,
+        /// Force a fresh build: skip the cached-verdict short-circuit (which otherwise recovers a prior
+        /// detached build's verdict when the current source's drvPath still matches). Use after you want to
+        /// re-verify unchanged source, or to bypass a suspect cached verdict.
+        #[arg(long)]
+        fresh: bool,
     },
     /// Query GitHub Actions for a pushed candidate's check verdict and print it (GREEN | RED | PENDING |
     /// NO-CHECKS) + a per-check breakdown. The polling PRIMITIVE for the CI-gated land path (operator
@@ -1615,7 +1620,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
         FleetCmd::GateLocal { arch } => gate_local(&fleet, &arch),
-        FleetCmd::GateCoarse { stem, arch } => gate_coarse(&fleet, &stem, &arch),
+        FleetCmd::GateCoarse { stem, arch, fresh } => gate_coarse(&fleet, &stem, &arch, fresh),
         FleetCmd::CiStatus { target } => ci_status(&target),
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
@@ -15377,21 +15382,143 @@ fn log_shows_missing_attr(log: &str) -> bool {
         || (log.contains("attribute '") && log.contains("' missing"))
 }
 
+/// The `sh -c` body the DETACHED coarse-gate build runs under `setsid --fork`. Like
+/// [`GATE_LOCAL_DETACHED_WRAPPER`] it re-keys the lease to its OWN pid ($$) + trap-releases it on exit, and
+/// logs nix output — but instead of a lone RC-sentinel it writes a STABLE, stem-keyed VERDICT FILE recording
+/// BOTH the derivation fingerprint it built (`DRV=<drvPath>`) and the exit code (`RC=<n>`). That is what makes
+/// a killed poll RECOVERABLE: the build is reparented to init (survives the #79845 guardian), and when it
+/// finishes it stamps the verdict at a STABLE path a re-run can read — with the `DRV=` line so the re-run only
+/// trusts it when the CURRENT source's drvPath still matches (content-addressed freshness → never a stale
+/// verdict). Positional: `$1`=lease, `$2`=verdict file, `$3`=log, `$4`=drv fingerprint, `$5..`=nix + args.
+const GATE_COARSE_DETACHED_WRAPPER: &str = r#"lease="$1"; verdict="$2"; log="$3"; fp="$4"; shift 4; if [ -n "$lease" ]; then _nl="$(dirname "$lease")/$$-${lease##*-}"; mv -f "$lease" "$_nl" 2>/dev/null && lease="$_nl"; fi; trap 'test -n "$lease" && rm -f "$lease"' EXIT; "$@" >"$log" 2>&1; _rc=$?; printf 'DRV=%s\nRC=%s\n' "$fp" "$_rc" > "$verdict""#;
+
+/// Parse a coarse-gate verdict file written by [`GATE_COARSE_DETACHED_WRAPPER`]: return `(drv_fingerprint,
+/// exit_code)` iff BOTH a `DRV=` and an `RC=<int>` line are present (a partial file — build still running, or
+/// an interrupted write — yields `None` so the caller keeps polling, never a false verdict). The DRV value
+/// MAY be empty: a build spawned WITHOUT a fingerprint (the eval failed — e.g. a bogus/absent stem, or a nix
+/// hiccup) writes `DRV=` empty but still records its `RC`, and the caller must still see that verdict (so a
+/// bogus stem fast-fails via the log's attr-missing signature instead of the poll hanging forever). An empty
+/// DRV simply never matches a real fingerprint, so it is never RECOVERED across re-runs — only consumed by
+/// the in-flight poll of the build that wrote it. Pure/unit-tested.
+fn parse_coarse_verdict(s: &str) -> Option<(String, i32)> {
+    let drv = s.lines().find_map(|l| l.strip_prefix("DRV="))?.trim();
+    let rc = s
+        .lines()
+        .find_map(|l| l.strip_prefix("RC="))
+        .and_then(|v| v.trim().parse::<i32>().ok())?;
+    Some((drv.to_string(), rc))
+}
+
+/// Eval the content-addressed FRESHNESS FINGERPRINT for a coarse-gate target: its `.drvPath` (input-addressed,
+/// so it changes with ANY source change — the correct key for "is a cached verdict still valid?"). Cheap
+/// (~2s eval, no build). `None` if the eval fails (e.g. a wrong/absent `<stem>` → no such attr, OR a nix
+/// hiccup) — the caller then simply can't short-circuit and falls through to a fresh build (which fail-fasts
+/// + is caught by `log_shows_missing_attr` on a bad stem). `--accept-flake-config` matches the gate builds.
+fn eval_coarse_drv_fingerprint(nix_bin: &str, target: &str) -> Option<String> {
+    let out = Command::new(nix_bin)
+        .args([
+            "eval",
+            "--raw",
+            "--accept-flake-config",
+            &format!("{target}.drvPath"),
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let drv = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!drv.is_empty()).then_some(drv)
+}
+
+/// Poll a coarse-gate VERDICT FILE (written by the detached build) until it holds a complete `DRV=`+`RC=`
+/// record or `max_secs` elapses. Mirrors [`poll_gate_local_rc`] but reads the stable verdict file (so a
+/// killed poll's result is recoverable by a later re-run) rather than a per-run log's RC-sentinel. `None` on
+/// timeout (build still running → re-run to collect). Same 2s cadence as the gate-local poll.
+fn poll_coarse_verdict(verdict_path: &Path, max_secs: u64) -> Option<(String, i32)> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(max_secs);
+    loop {
+        if let Some(v) = std::fs::read_to_string(verdict_path)
+            .ok()
+            .and_then(|s| parse_coarse_verdict(&s))
+        {
+            return Some(v);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
 /// Handler for `fleet gate-coarse <stem>` — build `.#checks.<arch>-linux.corpus-gate-coarse-<stem>` DETACHED
-/// (guardian-proof) and report GREEN/RED/NO-VERDICT via exit code. Reuses the proven `run_gate_local`
-/// machinery — a weight-1 check-lease (lighter than the full local-gate's weight 2, but still capped so
-/// several per-MR coarse gates don't thrash the daemon), the `GATE_LOCAL_DETACHED_WRAPPER` under `setsid
-/// --fork` (reparents the build to init, out of the harness task subtree, so the #79845 low-mem-guardian
-/// tracked-tree kill can't reap it), and `poll_gate_local_rc` reading the RC-sentinel. Additive: agents can
-/// still run the raw `nix build .#checks.<sys>.corpus-gate-coarse-<stem>`; this is the guardian-proof
-/// convenience path (v-nix/v-reducer-pooling request 2026-09-21 — their raw builds were killed with the box
-/// half-free). Exits 0=GREEN, 1=RED, 2=NO-VERDICT.
-fn gate_coarse(fleet: &Fleet, stem: &str, arch: &str) {
+/// (guardian-proof) and report GREEN/RED/NO-VERDICT via exit code, with STALENESS-SAFE VERDICT RECOVERY so a
+/// killed poll never loses the result. The detached build (setsid --fork → reparented to init, out of the
+/// harness task subtree, so the #79845 low-mem guardian's tracked-tree kill can't reap it) stamps a STABLE,
+/// stem-keyed verdict file (`DRV=<drvPath>`, `RC=<n>`) when it finishes. So even if THIS invocation's poll is
+/// itself killed mid-build — the poll runs in the killable tracked subtree, the gap v-nix hit 2026-09-21 on a
+/// cold ch-06 rebuild — a re-run RECOVERS the verdict from that file, but ONLY when the CURRENT source's
+/// drvPath still matches the recorded `DRV` (content-addressed freshness: a source change → a different
+/// drvPath → no match → a fresh build, never a stale GREEN). Reuses the proven detach + weight-1 check-lease
+/// machinery. Additive: agents can still run the raw `nix build`; this is the guardian-proof convenience path.
+/// `--fresh` forces a rebuild (skips the cached-verdict short-circuit). Exits 0=GREEN, 1=RED, 2=NO-VERDICT
+/// (poll timeout / launch fail / wrong stem — re-run to collect; never a false GREEN).
+fn gate_coarse(fleet: &Fleet, stem: &str, arch: &str, fresh: bool) {
     let target = format!(".#checks.{arch}-linux.corpus-gate-coarse-{stem}");
-    // Weight-1 NON-priority check-lease: a coarse SUBSET is lighter than the full local-gate (weight 2) but
-    // still a heavy nix build, so cap concurrency (CDZ_CHECK_LEASE_MAX) to avoid thrashing the daemon when
-    // several agents gate per-MR at once. FAIL-OPEN; a timed-out acquire → NO-VERDICT (exit 2), same
-    // discipline as gate-local (do not oversubscribe; re-run when the lock frees).
+    let nix_bin = nix_binary();
+    // Stem-keyed STABLE paths (not per-pid): the verdict file survives + is readable across re-runs, which is
+    // what makes a killed poll's result recoverable. Sanitize the stem for a filesystem-safe name.
+    let safe_stem: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let verdict_path = std::env::temp_dir().join(format!("cdz-gate-coarse-{safe_stem}.verdict"));
+    let log = std::env::temp_dir().join(format!("cdz-gate-coarse-{safe_stem}.log"));
+
+    // Content-addressed FRESHNESS FINGERPRINT (cheap ~2s eval, no build). `None` → a wrong/absent stem or a
+    // nix hiccup: we simply can't short-circuit and fall through to a fresh build (which fail-fasts on a bad
+    // stem, caught by `log_shows_missing_attr` below).
+    let fp = eval_coarse_drv_fingerprint(&nix_bin, &target);
+
+    // RECOVERY SHORT-CIRCUIT (no lease, no rebuild, no poll): if a prior detached build already recorded a
+    // verdict for the CURRENT drvPath, report it INSTANTLY — this is how a re-run collects a verdict a killed
+    // poll would otherwise have lost. Skipped by --fresh. SAFE: the `DRV` match guarantees the cached verdict
+    // is for the exact current source (a mismatch → we rebuild below).
+    if !fresh
+        && let Some(fpv) = fp.as_deref()
+        && let Some((drv, rc)) = std::fs::read_to_string(&verdict_path)
+            .ok()
+            .and_then(|s| parse_coarse_verdict(&s))
+        && drv == fpv
+    {
+        let code = coarse_gate_exit_code(Some(rc == 0), false);
+        if code == 0 {
+            let _ = std::fs::remove_file(&log);
+            println!(
+                "gate-coarse {stem}: GREEN (no corpus regression vs .gate-baseline) [recovered the detached \
+                 build's cached verdict — current source matches]"
+            );
+        } else {
+            eprintln!(
+                "gate-coarse {stem}: RED — a corpus case regressed (recovered cached verdict for the current \
+                 source). FULL log at {} — or re-run `{nix_bin} build {target} -L`.",
+                log.display()
+            );
+            println!("gate-coarse {stem}: RED");
+        }
+        std::process::exit(code);
+    }
+
+    // No usable cached verdict → build. Weight-1 NON-priority check-lease: a coarse subset is lighter than the
+    // full local-gate (weight 2) but still a heavy nix build, so cap concurrency (CDZ_CHECK_LEASE_MAX) to
+    // avoid thrashing the daemon when several agents gate per-MR at once. FAIL-OPEN; a timed-out acquire →
+    // NO-VERDICT (exit 2): don't oversubscribe; re-run when the lock frees.
     let lease = acquire_check_lease(&fleet.repo, false);
     if lease.timed_out {
         eprintln!(
@@ -15400,22 +15527,24 @@ fn gate_coarse(fleet: &Fleet, stem: &str, arch: &str) {
         );
         std::process::exit(2);
     }
-    let nix_bin = nix_binary();
-    let log = std::env::temp_dir().join(format!("cdz-gate-coarse-{}.log", std::process::id()));
     let lease_path = lease.lease_path().map(Path::to_path_buf);
+    // Clear any stale verdict so the poll below can only read THIS build's result (the `DRV` guard already
+    // prevents cross-source reuse; clearing keeps a re-run tidy).
+    let _ = std::fs::remove_file(&verdict_path);
     eprintln!(
         "gate-coarse {stem}: building `{nix_bin} build {target}` DETACHED (guardian-proof — reparented to \
-         init so the #79845 harness low-mem killer can't reap it; --max-jobs {NIX_GATE_MAX_JOBS}); live log: {}",
+         init so the #79845 harness low-mem killer can't reap it; --max-jobs {NIX_GATE_MAX_JOBS}); live log: \
+         {}. If THIS poll is killed the build keeps going — re-run `fleet gate-coarse {stem}` to collect it.",
         log.display()
     );
-    // Same detached invocation as `run_gate_local`: `setsid --fork` the positional-argv wrapper ($1=lease
-    // path re-keyed to the build's own pid + trap-released on exit, $2=log, $3..=nix + args). No `-w` → the
-    // build reparents to init and the verdict is read from the RC-sentinel, not a process wait.
+    // `setsid --fork` the coarse wrapper: $1=lease (re-keyed to the build's pid + trap-released), $2=verdict
+    // file, $3=log, $4=drv fingerprint (empty if the eval failed → recovery disabled but the build still runs
+    // + reports), $5..=nix + args. No `-w` → the build reparents to init; the verdict is read from the file.
     let mut cmd = Command::new("setsid");
     cmd.arg("--fork")
         .arg("sh")
         .arg("-c")
-        .arg(GATE_LOCAL_DETACHED_WRAPPER)
+        .arg(GATE_COARSE_DETACHED_WRAPPER)
         .arg("sh") // $0
         .arg(
             lease_path
@@ -15423,9 +15552,11 @@ fn gate_coarse(fleet: &Fleet, stem: &str, arch: &str) {
                 .map(Path::as_os_str)
                 .unwrap_or_default(),
         ) // $1
-        .arg(&log) // $2
-        .arg(&nix_bin); // $3
-    cmd.args(nix_gate_argv(&target)) // $4..
+        .arg(&verdict_path) // $2
+        .arg(&log) // $3
+        .arg(fp.as_deref().unwrap_or_default()) // $4
+        .arg(&nix_bin); // $5
+    cmd.args(nix_gate_argv(&target)) // $6..
         .env("CDZ_LEASED_NIX", "1") // sanctioned leased build → nix-shim exempts this heavy attr
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -15442,8 +15573,14 @@ fn gate_coarse(fleet: &Fleet, stem: &str, arch: &str) {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(GATE_LOCAL_POLL_MAX_SECS);
+    // Poll the STABLE verdict file. Accept only a verdict whose `DRV` matches this build's fingerprint (a
+    // mismatch = a stale/other-source verdict that a still-running build hasn't overwritten yet, or the
+    // edited-source-mid-build race) → keep it as NO-VERDICT rather than reporting the wrong result.
     let build_result = if launched {
-        poll_gate_local_rc(&log, poll_max)
+        match poll_coarse_verdict(&verdict_path, poll_max) {
+            Some((drv, rc)) if fp.as_deref().is_none_or(|f| f == drv.as_str()) => Some(rc == 0),
+            _ => None,
+        }
     } else {
         None
     };
@@ -15473,9 +15610,10 @@ fn gate_coarse(fleet: &Fleet, stem: &str, arch: &str) {
                 );
             } else if launched {
                 eprintln!(
-                    "gate-coarse {stem}: NO-VERDICT — the detached build didn't report an exit code within \
-                     {poll_max}s. It is reparented to init and keeps building + caching, so re-run to pick up \
-                     the cached result. Log: {}",
+                    "gate-coarse {stem}: NO-VERDICT — the detached build didn't report a verdict within \
+                     {poll_max}s. It is reparented to init and keeps building + caching, so re-run `fleet \
+                     gate-coarse {stem}` to collect it (recovers instantly once the current-source build \
+                     finishes). Log: {}",
                     log.display()
                 );
             }
@@ -26496,6 +26634,36 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert_eq!(coarse_gate_exit_code(None, false), 2);
         // attr_missing is irrelevant when there is no result → still NO-VERDICT.
         assert_eq!(coarse_gate_exit_code(None, true), 2);
+    }
+
+    #[test]
+    fn parse_coarse_verdict_needs_both_drv_and_rc() {
+        // A complete verdict → (drv, rc). Order-independent; trailing content ignored.
+        assert_eq!(
+            parse_coarse_verdict("DRV=/nix/store/abc-corpus-gate-coarse-05.drv\nRC=0\n"),
+            Some(("/nix/store/abc-corpus-gate-coarse-05.drv".to_string(), 0))
+        );
+        assert_eq!(
+            parse_coarse_verdict("RC=1\nDRV=/nix/store/xyz.drv"),
+            Some(("/nix/store/xyz.drv".to_string(), 1))
+        );
+        // A killed-137 build records its code faithfully (still a verdict, mapped RED by coarse_gate_exit_code).
+        assert_eq!(
+            parse_coarse_verdict("DRV=/nix/store/x.drv\nRC=137"),
+            Some(("/nix/store/x.drv".to_string(), 137))
+        );
+        // PARTIAL / in-flight (only one line, or the RC not yet written) → None (keep polling; never a false
+        // verdict from a half-written file).
+        assert!(parse_coarse_verdict("DRV=/nix/store/x.drv\n").is_none());
+        assert!(parse_coarse_verdict("RC=0\n").is_none());
+        assert!(parse_coarse_verdict("").is_none());
+        // Empty DRV but both lines present → Some(("", rc)): a fingerprint-less build (bogus stem / eval
+        // hiccup) still records its RC so the caller sees the verdict (bogus stem fast-fails via the log's
+        // attr-missing signature rather than the poll hanging forever). An empty DRV never matches a real
+        // fingerprint, so it is never recovered across re-runs.
+        assert_eq!(parse_coarse_verdict("DRV=\nRC=0"), Some((String::new(), 0)));
+        // Non-integer RC → None (malformed, not trusted).
+        assert!(parse_coarse_verdict("DRV=/nix/store/x.drv\nRC=green").is_none());
     }
 
     #[test]
