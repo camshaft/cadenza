@@ -8409,6 +8409,12 @@ fn collect_module_used_ops(
         if select::def_rebinds_fresh_accumulator(db, body, &params, Some(def)) {
             used.insert("drop");
         }
+        // F6(ii) (09-functions:857): the NON-TAIL self-recursive owned-CLOSURE-param frame-exit drop
+        // (`select_body`) emits `drop` iff it reclaims a per-frame closure param — import it iff the
+        // epilogue actually fires (precise import/emit agreement, mirrors `def_drops_owned_param`).
+        if select::def_drops_nontail_selfrec_closure_param(db, body, &params, Some(def), layout) {
+            used.insert("drop");
+        }
     }
     for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
         if layout.lifted_reached.get(code).copied().unwrap_or(true) {
