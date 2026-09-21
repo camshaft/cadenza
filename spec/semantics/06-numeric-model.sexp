@@ -15014,7 +15014,13 @@
            Oracle recomputed: 7^100 mod (2^61 - 1) = 969801349263044856 (the modulus built by limb
            arithmetic as 2·2^60 - 1); 7^8 = 5764801 (below the modulus, exercises the odd/even split);
            e=0 answers 1 via the `(% 1N md)` base. Companions: the corpus-bugfix pin gates the
-           single-use CDZ0201 spelling; this pins the squared-use spelling that previously diverged.")
+           single-use CDZ0201 spelling; this pins the squared-use spelling that previously diverged.
+           RECLAIMED (v-memory-safety, non-tail borrowing-param): `base`/`md` are INVARIANT heap params the
+           emit over-dups at the recursive self-call arg and BORROW-uses after (BigInt arith borrows) but
+           never drops — the base-case arm reclaims them (dead-param), the recursive arm did not. Fixed with
+           a LAST-USE-PER-ARM drop on the tail-If's RECURSIVE arm (`plan_nontail_selfrec_borrow_param_arm_
+           drops`), which self-yields at the base-case arm (no self-call → the dead-param drop stands alone,
+           no double-free). Census now 0 at every e (incl. e=100).")
   (input
     (do
       (def
@@ -15037,7 +15043,7 @@
   (output (: 5764801 Int64))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "runtime UInt64 division and remainder above the Int64 boundary compute unsigned"
