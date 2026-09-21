@@ -171,9 +171,14 @@ is read from the NIX debug-counters runtime — native `--report-live-objects` i
   and (G) yield to the callee loop epilogue — admit only if the callee's `looped_owned_param_drops` does NOT
   contain the param slot (05:3709 `sum-at`, a recursive `List.at` consumer that epilogue-drops `xs`, so the
   caller-drop was a second drop; (G) is the caller-drop ⊕ callee-self-reclaim complementarity, twin of gates
-  (6)/(6b)). IN-FLIGHT (v-mem's caller-drop on `vms/5786-callerdrop`, rebased onto the #9449 fence; all three
-  repros — fst-sum, sum-at, #9434 — census 0 no trap; v-core-opt owns + verifies the condition; flip #9434
-  known-leak 2→0 on guarded-all GREEN).
+  (6)/(6b)). LANDED #9452 (final admit = the v-core-opt classifier + 5 gates A/B/C/E/G; #9434 (05:5795)
+  flipped known-leak 2→0; local-gate + coarse-05 hard-0 + cad-test-json 120/0 + full rcdzc 1544/0 GREEN,
+  census 4m+3 correct live-objects 0 for m 0..7 no trap; rebased cleanly onto the #9449 fence). The
+  05:5794 caller-BORROWED variant (main does NOT own the base) correctly STAYS known-leak — gate (E)
+  Borrowed + (B) caller-surplus decline it (the over-reclaim tripwire, breaker re-fenced). NB v-mem's broader
+  caller-drop also reclaims a small bonus tighten pile in coarse-05 (a shared-aggregate projection consumed-
+  then-read, a sum-payload child consumed while scrutinee live, a map-returned scalar-payload sum via ctor, a
+  wildcard-consumed lookup) — v-mem verifies + flips those in a corpus-only follow-up (their census lane).
 
 - **F5 — SITE-A closure-env-cell reclaim (09-functions 771 family, ~11 cases).** An INVARIANT borrow-clean
   closure loop-PARAM applied per iteration: its per-application caller dup is spurious → drop it per apply
