@@ -548,6 +548,36 @@
   (live-objects 0))
 
 (case
+  "an escaping Bytes.slice-view Some husk CONSUMED by a non-compacting List.push builder reclaims cleanly with no double-free (the #9513 builder-consume SAFETY edge)"
+  (doc
+    "The consume-side SAFETY guard for #9513 (reclaim the escaping-view Some husk consumed by a Set/Map builder).
+           #9513's shell-drop admit fires for ANY single-consume builder with an all-scalar arm result + an
+           Owned+compound-boxed view scrutinee — it does NOT gate on the builder COMPACTING the view. Set/Map CHAMP
+           builders compact (a canonical flat leaf, so the husk deep-drop is trivially safe); `List.push` does NOT
+           compact — it may hold the view directly, so the shell-drop's safety rests entirely on the dup-lockstep
+           (owned_compound_boxed dups the consuming site → the builder gets its own ref → the shell-drop reclaims
+           ONLY the husk's ref, no double-free). This pins that reasoning as INSTRUMENT-VERIFIED: `match (Bytes.slice
+           rope 1 3) ((Some v) (List.len (List.push l v)))` — v is the escaping slice-view husk moved into a runtime
+           List Bytes, scalar result via List.len so the admit fires — censuses live-objects 0 with the correct
+           value (2) and NO trap on the post-#9513 compiler (rope runtime-built via pick to defeat const-fold).
+           A regression that made the non-compacting builder-consume double-free (dropped the husk's backing while
+           the builder still refs it) would trap unreachable → fail this grade; a regression that dropped the dup
+           would re-leak. Locks the compact-independence of the #9513 admit.")
+  (input
+    (do
+      (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
+      (def
+        (main (: s Int64))
+        (do
+          (def rope (Bytes.concat (pick s (Bytes.of #list(10 20 30 40 50)) (Bytes.of #list(99))) (Bytes.of #list(60 70))))
+          (def l (List.push #list() (Bytes.of #list(1))))
+          (match (Bytes.slice rope 1 3) ((Some v) (List.len (List.push l v))) ((None _u) 0))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
   "Bytes.concat of two runtime SLICES splices window content in order"
   (doc
     "The concat-of-views face (the seam case below slices a CONCAT; this concatenates two SLICES):
