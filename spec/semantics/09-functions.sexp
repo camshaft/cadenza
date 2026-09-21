@@ -864,7 +864,13 @@
            an over-drop double-frees the shared closure a sibling still holds; a missed drop leaks the env.
            The closure returns `List.len xs` = 3, and the recursive tree has 2^d leaves each applying `f`, so
            value = 3·2^d (d=0→3, d=2→12, d=3→24) — no scaling residue if balanced. Guards the closure-param
-           face of the sibling reclaim, distinct from the list-param #9157 three-sibling case.")
+           face of the sibling reclaim, distinct from the list-param #9157 three-sibling case. RECLAIMED
+           (v-memory-safety F6(ii)): `go` is NON-TAIL tree-recursive (both self-calls are `+` operands), so
+           `f` falls through SITE-A (its non-tail-selfcall fence excludes it), the TCO loop-exit drop (no
+           loop opened), and the non-looped drop. A NEW per-frame owned-closure-param frame-exit drop
+           (`nontail_selfrec_owned_closure_param_drops`) reclaims each frame's `f` copy — gated guest-owned
+           (the #9440 boundary fence), owned-per-frame (dup-backed), apply-borrow-only/non-escaping
+           (dup-aware), and disjoint from the two existing drop-sets. Census now 0 on every trial.")
   (input
     (do
       (def
@@ -880,7 +886,7 @@
   (output (: 12 Int64))
   (call main (: 3 Int64))
   (output (: 24 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a tail loop that BORROWS its owned heap accumulator while THREADING it leaks PER-ITERATION (O(n) residue)"

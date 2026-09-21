@@ -1653,6 +1653,137 @@ fn nonlooped_owned_param_drops(
     drops
 }
 
+/// F6(ii) (09-functions:857): a per-FRAME drop of an OWNED CLOSURE PARAM in a NON-TAIL self-recursive
+/// function. `go f d = (if (< d 1) (f 0) (+ (go f (- d 1)) (go f (- d 1))))` is TREE-recursive — both
+/// self-calls are OPERANDS of `+` (NON-TAIL) — so `f` falls through all three existing owned-param
+/// reclaims:
+///   - SITE-A per-application env-drop EXCLUDES it (its non-tail-selfcall fence
+///     [`param_threaded_through_nontail_selfcall`] is EXACTLY this shape — 8750 `filt`);
+///   - [`looped_owned_param_drops`] fires only for a TCO'd single-exit loop (`go` is not TCO'd → the
+///     emit never opens a `loop`, so no loop-exit epilogue);
+///   - [`nonlooped_owned_param_drops`] fires only for a NON-recursive callee-owned borrow param.
+///
+/// Each real recursive frame receives its OWN `f` copy — an immutable arg slot, since non-tail recursion
+/// is real wasm calls with distinct frames (no back-edge slot reuse) — and the two sibling consumes
+/// `(go f ..)(go f ..)` each `dup` `f` (the consume-spare), but NOTHING drops the frame's own copy, so
+/// `rc` climbs 1→7 with ZERO drops and leaks 3 (the env cell + captured `xs`). Reclaim it at the
+/// per-frame owned-param epilogue (this fn's result already on the stack; `drop` takes `f` as a call ARG
+/// and returns nothing, leaving the result undisturbed — the SAME shape as the looped/nonlooped epilogue
+/// drops emitted alongside). The last frame's `f`-drop cascades the env-cell dtor to `xs`.
+///
+/// GATES (v-core-opt condition #82679, ALL must hold, per-param; leak-over-UAF strict):
+///   (4) NON-TAIL self-recursion: [`body_is_self_recursive`] AND `f` threaded into a member self-call in
+///       a NON-TAIL position ([`param_threaded_through_nontail_selfcall`] == TRUE) — the SAME predicate
+///       SITE-A uses to EXCLUDE, so a closure param gets the SITE-A per-application drop XOR this
+///       frame-exit drop, NEVER both (single-source complementarity). That predicate is SAFE-BIASED
+///       toward TRUE/non-tail; here that is the OVER-FREE direction, so (G') below re-adds the yield.
+///   (1) GUEST-OWNED at every external entry ([`looped_invariant_param_caller_owned`]) — LOAD-BEARING:
+///       a BOUNDARY-CONSUMED closure (an export / host-resource param) must NOT get a frame-exit drop,
+///       else the non-tail analog of the #9440 21-host-closures UAF. Declines `iter g n acc` (Borrowed
+///       export `g`), admits a fresh guest `(mk-adder k)` producer.
+///   (2) OWNED per-frame: `f` is dup-backed (∈ [`collect_dup_sites`]) — the sibling consume-spare, so
+///       the frame genuinely OWNS the copy it must drop (not a bare borrow).
+///   (3) APPLY-BORROW-ONLY + NON-ESCAPING, via the DUP-AWARE (member-aware) escape query
+///       [`binding_escapes_dup_aware`]: a dup-backed consuming self-call arg is a RETAIN, not an escape,
+///       so the query reports escape ONLY for a VERBATIM move — `f` embedded in a rebuilt ctor or
+///       returned (the tr3 hazard). Such an escape would make the frame-exit drop a double-free.
+///   (G') DISJOINT from the existing epilogue drop-sets ([`looped_owned_param_drops`] ∪
+///       [`nonlooped_owned_param_drops`]) — the gate-(G) analog: never emit a second drop of a slot
+///       those already reclaim. A no-op for 857 (neither fires for `f`), but fences an exotic over-free
+///       where the safe-biased-toward-non-tail predicate (4) admits a param an existing set also drops.
+fn nontail_selfrec_owned_closure_param_drops(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+    layout: &Layout,
+) -> Vec<u32> {
+    let Some(self_d) = self_def else {
+        return Vec::new();
+    };
+    // (4a) whole-body: must be self-recursive at all (else nothing to reclaim per-frame).
+    if !body_is_self_recursive(db, body) {
+        return Vec::new();
+    }
+    // The self-recursion member set for the non-tail-selfcall predicate. `mutual_loop_group` returns the
+    // TCO'd SCC — EMPTY for a PURE non-tail self-recursive fn like `go` (no tail self-call) — so fall
+    // back to the sole self def, the only member whose self-calls we must detect. A narrower member set
+    // only makes the predicate return FALSE more often (leak-over-UAF safe).
+    let mut members = mutual_loop_group(db, self_d);
+    if members.is_empty() {
+        members = vec![self_d];
+    }
+    // The existing epilogue drop-sets this runs ALONGSIDE — gate (G') yields to them (no double-drop).
+    let looped: HashSet<u32> = looped_owned_param_drops(db, body, params, self_def)
+        .into_iter()
+        .collect();
+    let nonlooped: HashSet<u32> = nonlooped_owned_param_drops(db, params, self_def, layout)
+        .into_iter()
+        .collect();
+
+    let mut drops = Vec::new();
+    let mut slot = 0u32;
+    for (binder, ty) in params.iter() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue; // Unit is zero-width — occupies no slot (mirrors the slot assignment).
+        }
+        if valtype_of(ty).is_none() {
+            return Vec::new(); // a param with no machine rep → this def won't select; no drops.
+        }
+        let this_slot = slot;
+        slot += 1;
+        // Fn/closure-typed + heap (a closure cell is a heap value, `core_analysis::is_heap_type`).
+        if !matches!(ty.strip_nominal(), Ty::Fn(_, _)) || !is_heap_type(ty) {
+            continue;
+        }
+        // (G') never double-drop a slot an existing epilogue set already reclaims.
+        if looped.contains(&this_slot) || nonlooped.contains(&this_slot) {
+            continue;
+        }
+        // (1) guest-owned at every external entry — LOAD-BEARING (else the 21-host boundary UAF, non-tail form).
+        if !looped_invariant_param_caller_owned(db, self_d, body, *binder) {
+            continue;
+        }
+        // (4) non-tail self-recursion: `f` threaded into a member self-call in a NON-TAIL position.
+        if !param_threaded_through_nontail_selfcall(db, body, *binder, &members, true) {
+            continue;
+        }
+        // (2)+(3) owned-per-frame + apply-borrow-only/non-escaping, via the DUP-AWARE (member-aware) escape
+        // query: build `f`'s dup sites, require it dup-backed (owned copy), and require no verbatim escape.
+        let mut dup_sites: HashSet<StructId> = HashSet::new();
+        collect_dup_sites(db, body, &[*binder], &mut dup_sites);
+        if dup_sites.is_empty() {
+            continue; // (2) not dup-backed → the frame does not own a spare copy to drop.
+        }
+        if binding_escapes_dup_aware(
+            db,
+            body,
+            EscapeTarget::Binder(*binder),
+            false,
+            Some(&dup_sites),
+        ) {
+            continue; // (3) escapes verbatim (ctor-embed / return) → a frame-exit drop would double-free.
+        }
+        drops.push(this_slot);
+    }
+    drops
+}
+
+/// Import-side companion of [`nontail_selfrec_owned_closure_param_drops`]: whether the def with
+/// `body`/`params`/`self_def` emits at least one non-tail-self-recursive owned-closure-param frame-exit
+/// drop, so `collect_module_used_ops` imports `drop` iff the epilogue actually emits one (precise, not the
+/// over-declaration the drop-minimization tests forbid). Mirrors [`def_drops_owned_param`]. `pub` for the
+/// module's op-collection.
+pub fn def_drops_nontail_selfrec_closure_param(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+    layout: &Layout,
+) -> bool {
+    !nontail_selfrec_owned_closure_param_drops(db, body, params, self_def, layout).is_empty()
+}
+
 /// Select a function body with `params` — each a `(name-occurrence, solved-type)`, in signature order.
 /// The parameters occupy wasm local slots `0..n` in order; a `Core::Param` reference to a parameter
 /// emits `local.get <slot>`. The return type is the body's solved type. A parameter whose type has no
@@ -2315,6 +2446,16 @@ pub fn select_function_of(
     // Gated on `def_nonlooped_reclaims_param` (SAME query the `call_arg_caller_drops` (6b) yield uses → no
     // double-free). Same exit-drop shape as the looped case (result undisturbed beneath on the stack).
     for slot in nonlooped_owned_param_drops(db, params, self_def, layout) {
+        code.push(Lir::LocalGet(slot));
+        code.push(Lir::CallImport(OP_DROP));
+    }
+    // F6(ii) (09-functions:857): the NON-TAIL self-recursive owned-CLOSURE-param frame-exit drop — the
+    // tree-recursion analog of the two loop/non-loop epilogue drops above. A closure param threaded into a
+    // NON-TAIL member self-call (`(+ (go f ..) (go f ..))`) is dup'd per sibling consume but never dropped;
+    // each real recursive frame owns its `f` copy and must reclaim it here (result already on the stack).
+    // Gated (guest-owned + owned-per-frame + apply-borrow-only/non-escaping + disjoint from the two sets
+    // above) so it NEVER double-frees — see `nontail_selfrec_owned_closure_param_drops`. Same drop shape.
+    for slot in nontail_selfrec_owned_closure_param_drops(db, body, params, self_def, layout) {
         code.push(Lir::LocalGet(slot));
         code.push(Lir::CallImport(OP_DROP));
     }
