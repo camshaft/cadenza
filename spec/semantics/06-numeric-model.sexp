@@ -15046,6 +15046,43 @@
   (live-objects 0))
 
 (case
+  "a non-tail self-recursive fn carrying THREE invariant BigInt borrow-params reclaims them all (the N=3 generalization of the mpow non-tail borrow-param drop)"
+  (doc
+    "The N=3 borrow-param generalization of the mpow reclaim above (#9466 flipped mpow's TWO invariant
+           borrow-params base/md to 0). Here `f` is non-tail self-recursive over `e` and carries THREE
+           invariant heap BigInt params `a`/`b`/`c` threaded UNCHANGED: the recursive arm binds the self-call
+           result `hh` then borrow-uses all three — `(% (* hh (* a b)) c)` — computing `(a·b)^e mod c`; the
+           base-case arm `(% (BigInt.of 1) c)` uses only `c` (so `a`/`b` are dead-param there, self-yielding).
+           With a=2, b=3, c=1e9+7 the value is `6^e mod (1e9+7)` (e=0→1, 3→216, 10→60466176, 12→176782322,
+           the last exercising the modular reduction). Each of the three invariant params is over-dup'd at the
+           self-call arg + borrow-used after but never consumed; the last-use-per-arm drop on the tail-If's
+           recursive arm (`plan_nontail_selfrec_borrow_param_arm_drops`) must fire for ALL THREE, self-yielding
+           at the base case (no double-free at e=0). Census 0 witnesses the per-arm drop generalizes past the
+           two-param mpow shape; a missed drop leaks one param's spine per frame (O(depth) residue), an
+           over-drop double-frees an invariant a later frame still borrows. O0==O3.")
+  (input
+    (do
+      (def
+        (f (: a BigInt) (: b BigInt) (: c BigInt) (: e Int64))
+        (if (= e 0)
+            (% (BigInt.of 1) c)
+            (do
+              (def hh (f a b c (- e 1)))
+              (% (* hh (* a b)) c))))
+      (def (main (: e Int64))
+        (Int64.of (f (BigInt.of 2) (BigInt.of 3) (BigInt.of 1000000007) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64))
+  (call main (: 3 Int64))
+  (output (: 216 Int64))
+  (call main (: 10 Int64))
+  (output (: 60466176 Int64))
+  (call main (: 12 Int64))
+  (output (: 176782322 Int64))
+  (live-objects 0))
+
+(case
   "runtime UInt64 division and remainder above the Int64 boundary compute unsigned"
   (doc
     "A GENUINE runtime UInt64 above 2^63 (x=3037000500 squares to 2^63 + 145474192, top bit
