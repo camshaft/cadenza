@@ -291,6 +291,7 @@ pub(super) fn param_only_borrowed_or_backedge(
         false,
         false,
         false,
+        None,
     )
 }
 
@@ -322,6 +323,7 @@ pub(super) fn param_only_borrowed_or_reclaimed_backedge(
         false,
         true,
         false,
+        None,
     )
 }
 
@@ -491,6 +493,47 @@ pub(super) fn arg_reclaims_binder_as_base(db: &mut Db, arg: StructId, binder: St
     }
 }
 
+/// The DUP-BACKED (path-copy, rc>1) variant of [`arg_reclaims_binder_as_base`] for the CALLER-RETAIN gate
+/// (5786 flip-to-0, v-core-opt + v-mem co-design): true iff `arg` reclaims `binder` as its BASE collection AND
+/// that base-operand OCCURRENCE is in `dup_sites` (the callee's emit-dup set) — i.e. the persistent-extend op
+/// PATH-COPIES the base (dup-backed, rc>1) rather than FBIP-reusing it in place (rc1). This is the load-bearing
+/// distinction that makes it SAFE for the CALLER to retain+drop the base: a path-copy leaves the caller's base
+/// live (so the caller owns + drops it at its last use — the 5786 leak→0); a rc1 FBIP-reuse CONSUMES it (so a
+/// caller drop would double-free). Mirrors `arg_reclaims_binder_as_base`'s shapes 1:1, adding a
+/// `dup_sites.contains` check on the base operand of each. NfcNormalize recurses (the dup lands on the inner
+/// concat's base operand).
+pub(super) fn arg_reclaims_binder_as_base_dupbacked(
+    db: &mut Db,
+    arg: StructId,
+    binder: StructId,
+    dup_sites: &HashSet<StructId>,
+) -> bool {
+    match core_of(db, arg) {
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
+            is_ref_to(db, list, binder) && !occurs_in(db, elem, binder) && dup_sites.contains(&list)
+        }
+        Core::SetInsert { set, elem, .. } => {
+            is_ref_to(db, set, binder) && !occurs_in(db, elem, binder) && dup_sites.contains(&set)
+        }
+        Core::MapInsert { map, key, val, .. } => {
+            is_ref_to(db, map, binder)
+                && !occurs_in(db, key, binder)
+                && !occurs_in(db, val, binder)
+                && dup_sites.contains(&map)
+        }
+        Core::ListConcat { lhs, rhs } | Core::BytesConcat { lhs, rhs } => {
+            (is_ref_to(db, lhs, binder) && !occurs_in(db, rhs, binder) && dup_sites.contains(&lhs))
+                || (is_ref_to(db, rhs, binder)
+                    && !occurs_in(db, lhs, binder)
+                    && dup_sites.contains(&rhs))
+        }
+        Core::NfcNormalize { string } => {
+            arg_reclaims_binder_as_base_dupbacked(db, string, binder, dup_sites)
+        }
+        _ => false,
+    }
+}
+
 /// The worker, with a `borrowed` flag: `true` iff THIS occurrence is reached through a BORROW position (a
 /// projection / len / sum-payload read / match-dispatch scrutinee), where a direct `Param(binder)` is a
 /// pure read (OK); `false` in a CONSUME/result position, where a direct `Param(binder)` is an ownership
@@ -538,6 +581,15 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
     borrowed: bool,
     allow_reclaimed_rebox: bool,
     allow_base_consume_reduced: bool,
+    // CALLER-RETAIN dup-backed gate (5786 flip-to-0, v-core-opt + v-mem): when `Some`, a base-consume admitted
+    // under `allow_base_consume_reduced` is treated as a BORROW only if its BASE operand occurrence is in this
+    // set (the callee's `dup_sites`) — i.e. the op path-copies (rc>1, dup-backed) rather than FBIP-reuses-in-
+    // place (rc1). `None` = the pre-existing UNCONDITIONAL behavior (the 5786(a) loop-EXIT-drop path, where the
+    // loop reclaims only the final un-consumed value so a rc1 FBIP consume is harmless). Gating on the SAME
+    // dup_sites the emit dups from keeps dup ⟺ reclassify in lockstep: reclassify=borrow ⟺ a dup landed here ⟺
+    // path-copy ⟺ safe for the CALLER to retain+drop. Without it, a rc1 FBIP-reuse base wrongly reclassified as
+    // borrow → the caller drops a consumed value → double-free.
+    dup_sites: Option<&HashSet<StructId>>,
 ) -> bool {
     // Fast path: a subtree that does not reference `binder` at all is trivially fine (nothing to consume).
     if !occurs_in(db, id, binder) {
@@ -554,6 +606,7 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
             borrowed,
             allow_reclaimed_rebox,
             allow_base_consume_reduced,
+            dup_sites,
         )
     };
     match core_of(db, id) {
@@ -809,7 +862,18 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         // Leak-over-UAF: only reclaims MORE; the caller fences a non-invariant / not-caller-owned / terminal-
         // escaping consume off (those stay leaking), and a WHOLE `Param(binder)` element (not a base) is not
         // matched here — it falls to the consuming arms below and DENIES (its shell would escape).
-        _ if allow_base_consume_reduced && arg_reclaims_binder_as_base(db, id, binder) => true,
+        _ if allow_base_consume_reduced
+            && match dup_sites {
+                // CALLER-RETAIN (5786 flip): only a DUP-BACKED (path-copy, rc>1) base-consume is a borrow the
+                // CALLER may reclaim; a rc1 FBIP-reuse consumes the base → caller-drop would double-free.
+                Some(ds) => arg_reclaims_binder_as_base_dupbacked(db, id, binder, ds),
+                // EXIT-DROP (5786(a)): unconditional — the loop reclaims only the final un-consumed value on the
+                // disjoint loop-EXIT path, so a rc1 FBIP consume on the back-edge is harmless (no double-free).
+                None => arg_reclaims_binder_as_base(db, id, binder),
+            } =>
+        {
+            true
+        }
         // CONSUMING value-building ops a self-loop fold's TERMINAL arm builds its result with (INC2 (a) (B)
         // slice-2): recurse EACH value operand in a CONSUME position (`borrowed = false`). SOUND by the
         // existing leaf arms — a DIRECT `Param(binder)` operand is `binder` consumed WHOLE → the `Param` arm
@@ -922,6 +986,7 @@ pub(super) fn cont_only_borrowed_or_backedge(
             // cont path stays conservative: a base-consume inside a match arm is not admitted (leaks
             // safely). 5786's consume flows through the `If`/back-edge general recursion, not a cont.
             false,
+            None,
         )
     };
     match cont {
@@ -1119,6 +1184,7 @@ pub(super) fn param_consumed_reused_in_loop_body(
         false,
         false,
         true,
+        None, // exit-drop path: unconditional (the loop reclaims only the final un-consumed value)
     ) && terminal_arms_no_heapchild_escape(db, body, binder, members)
 }
 
