@@ -53,9 +53,10 @@ pub enum GenMode {
     /// The OWNED-AGGREGATE-RECLAIM grammar (`astgen::generate_reclaim_shapes`) — a narrow family of
     /// owned List / tagged-sum-payload programs (matchsum-len, loop-accumulator rebind, scalar-project-
     /// drop-heap-sibling, nested sum-in-sum, in-arm push rebind, dup-used-twice, depth-3 recursive-descent,
-    /// escaping-heap-child, param-scrutinee bare-payload-reuse, self-recursive sum-fold, and the F5 SITE-A
-    /// invariant borrow-clean closure-env loop-param applied per iteration) that each return a
-    /// KNOWN value (Int64, or the escaped List). Densifies
+    /// escaping-heap-child, param-scrutinee bare-payload-reuse, self-recursive sum-fold, the F5 SITE-A
+    /// invariant borrow-clean closure-env loop-param applied per iteration, and its F5 caller-ownership
+    /// fence tripwire — the #9449 shipped-UAF fence, a caller-owned closure param that must DECLINE the
+    /// SITE-A drop) that each return a KNOWN value (Int64, or the escaped List). Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
