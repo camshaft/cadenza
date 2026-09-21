@@ -8201,6 +8201,21 @@ fn param_ref_reaches_result_flagged(
                 .into_iter()
                 .any(|b| param_ref_reaches_result_flagged(db, b, aliases, recurse_matchsum))
         }
+        // A LIST destructure (`match xs with [] => ys | [h,..t] => …`) is a control node whose ARM bodies
+        // are tail-result positions — a bare param ref there ESCAPES as the result (`concat-lists`'s
+        // `[] => ys` base arm RETURNS the borrowed `ys` param). It was previously UNHANDLED (fell to the
+        // `_ => false` "does not reach" default), so the flat-scalar heap-return admit + self-forward relax
+        // wrongly admitted `ys` and its fn-exit epilogue DOUBLE-freed the returned value (the P0
+        // cad-test-iterators take-drop-partition UAF, @test-suites-only — the corpus net missed it). Recurse
+        // the arm bodies like `Core::Match`. The head/rest pattern binders are PROJECTIONS of the scrutinee
+        // (`SumPayload`/`RestFrom`), never bare param aliases, so — as with `Core::Match`/`MatchSum` — only a
+        // bare param ref in an arm body reaches (aliases unchanged).
+        Core::MatchList { arms, .. } => {
+            let bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
+            bodies
+                .into_iter()
+                .any(|b| param_ref_reaches_result_flagged(db, b, aliases, recurse_matchsum))
+        }
         Core::Seq { tail, .. } => {
             param_ref_reaches_result_flagged(db, tail, aliases, recurse_matchsum)
         }
