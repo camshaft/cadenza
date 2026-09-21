@@ -1065,6 +1065,44 @@
   (live-objects 0))
 
 (case
+  "F7 the non-tail-selfrec drop declines for a PROJECTED (varying) heap param — take recursing on the tail leaks (known-leak), MUST NOT over-drop"
+  (doc
+    "The DECLINE-EDGE guard for the #9466/F7 non-tail-selfrec borrow-param drop class (the varying-param
+           complement of 14966 mpow's invariant-verbatim ADMIT case). `take` is a giter-takedrop-style
+           non-tail self-recursion that MATCHES its heap `Lst` param `it` and recurses on the PROJECTED tail
+           `rest` (`(Cons h (take rest (- n 1)))`), with the `(if (< n 1) …)` guard BEFORE the match so `it`
+           can be a dead-param borrow on the guard arm. Because `it` is projected (a fresh frame holds a CHILD
+           of it), there is NO sound per-arm drop — dropping the incoming frame ref UAFs the child a later
+           frame still reads. #9466's original F7 per-arm drop WRONGLY fired here → over-drop → the debug
+           runtime TRAPPED `unreachable` (verified by reverse-applying #9476's select.rs hunk to a pre-fix
+           compiler: this exact shape traps pre-#9476). #9476 correctly DECLINES the drop for varying/projected
+           params (select.rs:1336, same family as the 3049 varying-Bytes-param decline), so it no longer traps
+           — the value then LEAKS (known-leak): a sound varying-param reclaim is the separate per-back-edge
+           stale-drop mechanism (future work), NOT the F7 invariant-param drop's job. Pinned known-leak (v-core-
+           opt ruling): value-correct min(3,n) (n=0→0, 2→2, 5→3) + NO TRAP is the guard — a regression that
+           re-introduces the F7 over-drop for a varying param would re-trap `unreachable` and FAIL this grade,
+           locking the #9466 UAF class into the coarse gate (which previously missed it: it was @test-suites-
+           only). Contrast the case above (a non-tail VERBATIM-thread borrow reclaims to 0) and 14966 mpow (the
+           invariant-verbatim case that STAYS census-0): only the PROJECTED/varying param declines-to-leak.")
+  (input
+    (do
+      (type Lst (Nil) (Cons Int64 Lst))
+      (def (mk (: i Int64) (: n Int64)) (if (< i n) (Cons i (mk (+ i 1) n)) (Nil)))
+      (def
+        (take (: it Lst) (: n Int64))
+        (if (< n 1) (Nil) (match it ((Nil) (Nil)) ((Cons h rest) (Cons h (take rest (- n 1)))))))
+      (def (count (: it Lst)) (match it ((Nil) 0) ((Cons h rest) (+ 1 (count rest)))))
+      (def (main (: n Int64)) (count (take (mk 0 n) 3)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  (call main (: 2 Int64))
+  (output (: 2 Int64))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects known-leak))
+
+(case
   "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
