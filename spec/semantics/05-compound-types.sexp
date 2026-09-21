@@ -20924,7 +20924,10 @@
       (export main)))
   (call main)
   (output (: 12 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (#9518): the inner `(match #tuple((fold a) (fold b)) …)` materializes a runtime tuple of
+  ; recursive-call results; the tuple-scrutinee shell reclaim (matchsum_tuple_shell_reclaim_ok) deep-drops
+  ; it after the arms. Census 0 at O0..O3 (val 12). (v-memory-safety)
+  (live-objects 0))
 
 (case
   "a match through an erased single-variant newtype dispatches on the inner sum's discriminant"
@@ -22323,7 +22326,10 @@
   (output (: 22 Int64))
   (call main (: 9 Int64))
   (output (: -3 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (#9518): the Map.take desugar's materialized runtime tuple is deep-dropped by the
+  ; tuple-scrutinee shell reclaim (matchsum_tuple_shell_reclaim_ok). Census 0 at O0..O3 both trials
+  ; (k=2->22, k=9->-3). Sibling of 19-sets:0204 with a runtime scalar key. (v-memory-safety)
+  (live-objects 0))
 
 (case
   "Map.swap at a RUNTIME key replaces on a hit and adds on a miss through one compiled body"
@@ -22348,7 +22354,10 @@
   (output (: 119 Int64))
   (call main (: 7 Int64))
   (output (: -3 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (#9518): the Map.swap desugar's materialized runtime tuple is deep-dropped by the
+  ; tuple-scrutinee shell reclaim; here component1 m2 is BORROW-used (Map.lookup m2 k / Map.len m2), so the
+  ; borrow-clean floor (zero consuming sites) holds. Census 0 at O0..O3 both trials (k=2->119, k=7->-3). (v-memory-safety)
+  (live-objects 0))
 
 (case
   "Map.remove at a RUNTIME key shrinks only on a hit"
