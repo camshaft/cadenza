@@ -743,11 +743,13 @@ fn binding_escapes_dup_aware_inner(
             binding_escapes_dup_aware(db, map, binder, true, dup_sites)
                 || binding_escapes_dup_aware(db, key, binder, true, dup_sites)
         }
-        // `Map.remove` CONSUMES the map into the new map (persistent op takes ownership); the key is boxed
-        // into an owned temporary (consuming), dropped by the emit after the borrow-compare.
+        // `Map.remove` CONSUMES the map into the new map (persistent op takes ownership), but BORROWS the
+        // key: the boxed/compacted key temporary is a FRESH value the emit builds+drops after the borrow-
+        // compare (bytes-compact refcount-neutral), not the binder. So a live-after key binder does NOT
+        // escape and must NOT be dup'd (10-bytes CHAMP sibling of MapLookup:711 / 2482 — same 2-site fix).
         Core::MapRemove { map, key, .. } => {
             binding_escapes_dup_aware(db, map, binder, false, dup_sites)
-                || binding_escapes_dup_aware(db, key, binder, false, dup_sites)
+                || binding_escapes_dup_aware(db, key, binder, true, dup_sites)
         }
         // `Map.size` BORROWS its map operand (`map-size` reads the root without consuming) — like `List.len`.
         Core::MapSize { map } => binding_escapes_dup_aware(db, map, binder, true, dup_sites),
@@ -756,18 +758,25 @@ fn binding_escapes_dup_aware_inner(
         Core::SetOf { elems, .. } => elems
             .iter()
             .any(|&e| binding_escapes_dup_aware(db, e, binder, false, dup_sites)),
-        // `Set.insert` CONSUMES the set and the element into the new set (persistent op takes ownership) —
-        // both escape if used here. `Set.remove` CONSUMES the set; its element is boxed into an owned
-        // temporary (consuming), dropped by the emit after the borrow-compare.
-        Core::SetInsert { set, elem, .. } | Core::SetRemove { set, elem, .. } => {
+        // `Set.insert` CONSUMES the set AND the element into the new set (persistent op takes ownership) —
+        // both escape if used here.
+        Core::SetInsert { set, elem, .. } => {
             binding_escapes_dup_aware(db, set, binder, false, dup_sites)
                 || binding_escapes_dup_aware(db, elem, binder, false, dup_sites)
         }
-        // `Set.contains` BORROWS the set (returns a bool; the boxed element is an owned temporary the emit
-        // drops), so a set bound here does NOT escape; the element flows into an owned temporary (consuming).
+        // `Set.remove` CONSUMES the set, but BORROWS the element: the boxed/compacted elem temporary is a
+        // FRESH value the emit builds+drops after the borrow-compare (bytes-compact refcount-neutral), not
+        // the binder. A live-after elem binder does NOT escape and must NOT be dup'd (CHAMP sibling of
+        // MapLookup:711 / MapRemove — same 2-site borrow fix; SetInsert genuinely consumes so stays split off).
+        Core::SetRemove { set, elem, .. } => {
+            binding_escapes_dup_aware(db, set, binder, false, dup_sites)
+                || binding_escapes_dup_aware(db, elem, binder, true, dup_sites)
+        }
+        // `Set.contains` BORROWS the set (returns a bool) AND the element: the boxed/compacted element is a
+        // FRESH temporary the emit builds+drops, not the binder — so neither escapes (CHAMP sibling of 711).
         Core::SetContains { set, elem, .. } => {
             binding_escapes_dup_aware(db, set, binder, true, dup_sites)
-                || binding_escapes_dup_aware(db, elem, binder, false, dup_sites)
+                || binding_escapes_dup_aware(db, elem, binder, true, dup_sites)
         }
         // `Set.len` BORROWS its set operand (`set-size` reads the root without consuming) — like `Map.size`.
         Core::SetLen { set } => binding_escapes_dup_aware(db, set, binder, true, dup_sites),
@@ -1107,19 +1116,27 @@ fn binder_must_escape(db: &mut Db, id: StructId, binder: StructId, tail_borrowed
         Core::MapLookup { map, key, .. } => {
             binder_must_escape(db, map, binder, true) || binder_must_escape(db, key, binder, true)
         }
+        // Map.remove CONSUMES the map, BORROWS the key (fresh boxed/compacted temporary, not the binder) —
+        // consistent with the dup-aware site + MapLookup (reclaim.rs:711/1110).
         Core::MapRemove { map, key, .. } => {
-            binder_must_escape(db, map, binder, false) || binder_must_escape(db, key, binder, false)
+            binder_must_escape(db, map, binder, false) || binder_must_escape(db, key, binder, true)
         }
         Core::MapSize { map } => binder_must_escape(db, map, binder, true),
         Core::SetOf { elems, .. } => elems
             .iter()
             .any(|&e| binder_must_escape(db, e, binder, false)),
-        Core::SetInsert { set, elem, .. } | Core::SetRemove { set, elem, .. } => {
+        // Set.insert CONSUMES both set and element.
+        Core::SetInsert { set, elem, .. } => {
             binder_must_escape(db, set, binder, false)
                 || binder_must_escape(db, elem, binder, false)
         }
+        // Set.remove CONSUMES the set, BORROWS the element (fresh boxed/compacted temporary, not the binder).
+        Core::SetRemove { set, elem, .. } => {
+            binder_must_escape(db, set, binder, false) || binder_must_escape(db, elem, binder, true)
+        }
+        // Set.contains BORROWS the set AND the element (fresh boxed temporary, not the binder) — neither escapes.
         Core::SetContains { set, elem, .. } => {
-            binder_must_escape(db, set, binder, true) || binder_must_escape(db, elem, binder, false)
+            binder_must_escape(db, set, binder, true) || binder_must_escape(db, elem, binder, true)
         }
         Core::SetLen { set } => binder_must_escape(db, set, binder, true),
         Core::SetToList { set, .. } => binder_must_escape(db, set, binder, true),
@@ -4764,19 +4781,27 @@ fn mark_binder_dups_body(
         // rc1 leak; both must say borrow). A fresh owned-temporary key (a bare `(rep …)` expr) is not a
         // binder, so this marking is inert there — the emit's own `key_owned` drop reclaims that twin.
         Core::MapLookup { map, key, .. } => seq(db, &[(map, true), (key, true)], live_after, sites),
+        // Map.remove consumes the map (strict) but BORROWS the key (fresh boxed/compacted temporary) — do
+        // not dup a live-after key binder (dup-emission sibling of MapLookup:4717 / 2482).
         Core::MapRemove { map, key, .. } => {
-            seq_strict(db, &[(map, false), (key, false)], live_after, sites)
+            seq_strict(db, &[(map, false), (key, true)], live_after, sites)
         }
         Core::SetOf { elems, .. } => {
             let cs: Vec<(StructId, bool)> = elems.iter().map(|&e| (e, false)).collect();
             seq(db, &cs, live_after, sites)
         }
-        Core::SetInsert { set, elem, .. } | Core::SetRemove { set, elem, .. } => {
+        // Set.insert consumes both set and element (strict).
+        Core::SetInsert { set, elem, .. } => {
             seq_strict(db, &[(set, false), (elem, false)], live_after, sites)
         }
-        // `Set.contains` BORROWS the set; the element is consumed into an owned temporary.
+        // Set.remove consumes the set (strict) but BORROWS the element (fresh boxed/compacted temporary) —
+        // do not dup a live-after elem binder (dup-emission sibling of MapLookup:4717 / MapRemove).
+        Core::SetRemove { set, elem, .. } => {
+            seq_strict(db, &[(set, false), (elem, true)], live_after, sites)
+        }
+        // `Set.contains` BORROWS the set AND the element (fresh boxed temporary the emit drops) — no dup.
         Core::SetContains { set, elem, .. } => {
-            seq(db, &[(set, true), (elem, false)], live_after, sites)
+            seq(db, &[(set, true), (elem, true)], live_after, sites)
         }
         Core::SetAlgebra { lhs, rhs, .. } => {
             // Consume-both-in-place (union/intersection/difference) → `spare_last` (szf family).
