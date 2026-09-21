@@ -803,13 +803,37 @@ pub(crate) fn matchsum_view_shell_reclaim_ok(
     // it (StrAt-escaping stays a leak-over-UAF residual). A view with a SECOND consuming site
     // (`consuming.len() > 1`) also stays DECLINED pending the multi-use rc-trace co-design. Source-chain
     // reclaim is independent (465 rc-trace: rope + outer-slice source nodes freed independently of the shells).
-    consuming.len() == 1
+    let owned = matches!(
+        heap_operand_ownership(db, scrutinee),
+        Ok(HandleOwnership::Owned)
+    );
+    let escaping_husk = consuming.len() == 1
         && view_escapes_as_arm_result(db, scrutinee, root)
         && compound_boxed
-        && matches!(
-            heap_operand_ownership(db, scrutinee),
-            Ok(HandleOwnership::Owned)
-        )
+        && owned;
+    // 0202 CONSUMED-BY-A-BUILDER husk (v-core-opt, 19-sets 0200-0204; v-mem-safety rc-trace-confirmed the
+    // balance). The 465(b) branch above handles the view RETURNED as the arm result; this handles the view
+    // CONSUMED (moved) by a payload-consuming builder INSIDE the arm — `Set.of`/`Set.insert`/`Set.union`/
+    // `Map.take`/`Map.remove` keyed/elemented by the extracted view — with an ALL-SCALAR arm result (so the
+    // view provably does NOT escape as the result: `!view_escapes_as_arm_result` + `sum_cont_result_all_scalar`).
+    // SOUND by the SAME lockstep as 465(b): an `owned_compound_boxed` scrutinee (Owned + compound-boxed) has
+    // its consuming payload site DUP'd by the dup pass UNCONDITIONALLY (`collect_shell_reclaim_child_dups`,
+    // reclaim.rs:2145 — the `owned_compound_boxed` arm), so the Some-shell deep-drop is the MISSING half of that
+    // lockstep (an orphaned dup = the leak — the SAME "dup ⊇ drop, complete it" shape as `sum_shell_reclaim_ok`'s
+    // stashed-owned-computed-compound increment). The single deep-drop cascades ONE decrement into the view node,
+    // which the child-dup gave the BUILDER its own copy of (a champ key is COMPACTED to a separate flat leaf; a
+    // non-compacting consumer holds the dup'd ref), so the drop reclaims the husk's own view ref 1:1 — never the
+    // builder's. SINGLE-consume (`consuming.len() == 1`) keeps it EXACT: N consuming sites → N dups but ONE
+    // shell cascade = an over-dup LEAK (not a double-free), so multi-consume stays a leak-over-UAF residual
+    // pending the rc-trace co-design. StrAt is EXCLUDED (deliberately not `Owned`) → its Stage-B / value-eq
+    // path is unchanged. guarded-all (the corpus generation-guard net) backstops any residual edge; 0202 is
+    // OPT-INDEPENDENT so the coarse O1 gate verifies it, and v-mem-safety census-verifies O0..O3 all-0 + pins.
+    let consumed_by_builder = consuming.len() == 1
+        && !view_escapes_as_arm_result(db, scrutinee, root)
+        && sum_cont_result_all_scalar(db, root)
+        && compound_boxed
+        && owned;
+    escaping_husk || consumed_by_builder
 }
 
 /// CONSUMER-side recognizer (v-memory-safety 465 operand-drop; v-core-opt-spec'd condition) for the escaping
