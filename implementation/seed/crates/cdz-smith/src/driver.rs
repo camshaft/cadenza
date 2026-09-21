@@ -56,9 +56,11 @@ pub enum GenMode {
     /// escaping-heap-child, param-scrutinee bare-payload-reuse, self-recursive sum-fold, the F5 SITE-A
     /// invariant borrow-clean closure-env loop-param applied per iteration, its F5 caller-ownership
     /// fence tripwire — the #9449 shipped-UAF fence, a caller-owned closure param that must DECLINE the
-    /// SITE-A drop — and the F7 non-tail self-recursive invariant-BORROW-param modpow (#9466: two invariant
-    /// BigInt params reclaimed per-arm, never a frame-exit e=0 double-free)) that each return a KNOWN value
-    /// (Int64, or the escaped List). Densifies
+    /// SITE-A drop — the F7 non-tail self-recursive invariant-BORROW-param modpow (#9466: two invariant
+    /// BigInt params reclaimed per-arm, never a frame-exit e=0 double-free), and the borrowed CHAMP
+    /// Map.lookup rope key read twice (#9472: key borrowed not consumed, compacted to its flat twin —
+    /// an over-drop between the lookup and the Bytes.len read corrupts the value)) that each return a
+    /// KNOWN value (Int64, or the escaped List). Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
