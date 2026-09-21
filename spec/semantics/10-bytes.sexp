@@ -2553,17 +2553,17 @@
 ;     v-core-opt to land the batch fix (flip mark_binder_dups arms + SPLIT the combined SetInsert|SetRemove
 ;     arm + escape predicates 717/1076, 737/1087, 729-731/1082-1084 to borrow) then re-baseline to 0. ---
 (case
-  "a BORROWED runtime Bytes rope Map.remove KEY is compacted + found (removes the flat twin) but the live-after key leaks (known-leak, sibling of 2482)"
+  "a BORROWED runtime Bytes rope Map.remove KEY is compacted + found (removes the flat twin) and the live-after key RECLAIMS to 0 (2482 sibling, reclaimed by #9487)"
   (doc
     "MapRemove sibling of the borrowed-CHAMP-key reclaim (2482/#9483). A rope key `k = (rep [104] sel)` (sel-
            dependent to defeat const-fold) is borrowed at the `Map.remove m k` key site (compacted to hash to the
            flat twin's slot → removes the [104,120]→42 entry, leaving len 1) AND read again by `Bytes.len k` (2):
            100·1 + 2 = 102. Value-correct (compaction already borrows-and-hits), but the live-after key binder
            carries the identical 2-site consume-misclass as 2482 — mark_binder_dups' MapRemove-key arm marks it
-           CONSUME so a surplus dup is minted for the borrow ⟹ net rc1 leak (census 1, no trap). Pinned known-
-           leak: an honest immediate UAF-class guard (a regression that instead OVER-drops the still-borrowed key
-           re-traps → fails the grade). v-core-opt to flip the MapRemove dup-emission + escape arms to borrow and
-           re-baseline to 0 (the exact 2-site pattern that fixed 2482).")
+           CONSUME so a surplus dup is minted for the borrow ⟹ net rc1 leak PRE-#9487 (was pinned known-leak).
+           #9487 borrow-classified the MapRemove key at BOTH the dup-emission and escape sites (the 2-site pattern
+           that fixed 2482), so the surplus dup is gone → census 0 (re-baselined). Still a guard: a regression that
+           instead OVER-drops the still-borrowed key re-traps unreachable → fails the grade.")
   (input
     (do
       (def
@@ -2578,18 +2578,22 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 102 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): #9487 borrow-classified the MapRemove key at both the dup-emission and escape
+  ; sites (the 2482 sibling batch) → the live-after borrowed key no longer leaks its surplus dup. Re-baselined
+  ; from known-leak; census-verified 0 on the #9487 compiler (breaker fresh-cdz + v-core-opt guarded-all, two-signal).
+  (live-objects 0))
 
 (case
-  "a BORROWED runtime Bytes rope Set.contains ELEM is compacted + found but the live-after elem leaks (known-leak, sibling of 2482)"
+  "a BORROWED runtime Bytes rope Set.contains ELEM is compacted + found and the live-after elem RECLAIMS to 0 (2482 sibling, reclaimed by #9487)"
   (doc
     "SetContains sibling of the borrowed-CHAMP-key reclaim (2482/#9483). A rope elem `e = (rep [104] sel)`
            (sel-dependent to defeat const-fold) is borrowed at the `Set.contains s e` membership site (compacted
            to hash to the flat twin's slot → member of {[104,120],[200]} → true → 100) AND read again by
            `Bytes.len e` (2): 100 + 2 = 102. Value-correct, but the live-after elem binder carries the identical
            2-site consume-misclass as 2482 (mark_binder_dups SetContains-elem arm marks consume ⟹ surplus dup ⟹
-           net rc1 leak, census 1, no trap). Pinned known-leak (honest UAF-class guard; re-over-drop re-traps →
-           fails). v-core-opt to flip the SetContains dup-emission + escape arms to borrow and re-baseline to 0.")
+           net rc1 leak PRE-#9487; was pinned known-leak). #9487 borrow-classified the SetContains elem at both the
+           dup-emission and escape sites → surplus dup gone → census 0 (re-baselined). Still a guard: an over-drop
+           of the still-borrowed elem re-traps → fails.")
   (input
     (do
       (def
@@ -2604,19 +2608,22 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 102 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): #9487 borrow-classified the SetContains elem at both the dup-emission and escape
+  ; sites (the 2482 sibling batch) → the live-after borrowed elem no longer leaks its surplus dup. Re-baselined
+  ; from known-leak; census-verified 0 on the #9487 compiler (breaker fresh-cdz + v-core-opt guarded-all, two-signal).
+  (live-objects 0))
 
 (case
-  "a BORROWED runtime Bytes rope Set.remove ELEM is compacted + found (removes the flat twin) but the live-after elem leaks (known-leak, sibling of 2482)"
+  "a BORROWED runtime Bytes rope Set.remove ELEM is compacted + found (removes the flat twin) and the live-after elem RECLAIMS to 0 (2482 sibling, reclaimed by #9487)"
   (doc
     "SetRemove sibling of the borrowed-CHAMP-key reclaim (2482/#9483). A rope elem `e = (rep [104] sel)` (sel-
            dependent to defeat const-fold) is borrowed at the `Set.remove s e` site (compacted to hash to the flat
            twin's slot → removes [104,120] from {[104,120],[200]}, leaving len 1) AND read again by `Bytes.len e`
            (2): 100·1 + 2 = 102. Value-correct, but the live-after elem binder carries the identical 2-site
            consume-misclass as 2482 — and note SetRemove's dup-emission is currently the COMBINED SetInsert|SetRemove
-           arm (Insert must stay CONSUME, Remove must become BORROW) which the batch fix SPLITS. Census 1, no trap.
-           Pinned known-leak (honest UAF-class guard; re-over-drop re-traps → fails). v-core-opt to split the arm +
-           flip the SetRemove escape predicate to borrow and re-baseline to 0.")
+           arm (Insert must stay CONSUME, Remove must become BORROW) which the batch fix SPLITS. Leaked 1 PRE-#9487; was pinned known-leak.
+           #9487 SPLIT that combined arm (Insert stays consume, Remove→borrow) + borrow-classified the SetRemove
+           escape site → surplus dup gone → census 0 (re-baselined). Still a guard: an over-drop re-traps → fails.")
   (input
     (do
       (def
@@ -2631,7 +2638,11 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 102 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): #9487 SPLIT the combined SetInsert|SetRemove dup-emission arm (Insert stays
+  ; consume, Remove→borrow) + borrow-classified the SetRemove escape site → the live-after borrowed elem no
+  ; longer leaks its surplus dup. Re-baselined from known-leak; census-verified 0 on the #9487 compiler
+  ; (breaker fresh-cdz + v-core-opt guarded-all, two-signal).
+  (live-objects 0))
 
 (case
   "a runtime Bytes rope in a SUM payload compares equal to its flat twin"
