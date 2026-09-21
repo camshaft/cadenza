@@ -9564,7 +9564,7 @@
   (host-calls (call io.sink2))
   (call main (: 65 Int64))
   (output (: 9 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a host result captured by closures in a NESTED tuple fires the host op once (adv-62 nested face)"

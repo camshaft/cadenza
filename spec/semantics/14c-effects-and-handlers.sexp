@@ -9773,7 +9773,7 @@
   (output (: 19 Int64))
   (call main (: -6 Int64))
   (output (: -9 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "sw5 DISTINCT-count over the window — a Set built per dispatch from the last-3 list measures dedupe, n=7 collides with the constant feed"
@@ -11437,7 +11437,7 @@
   (output (: 122 Int64))
   (call main (: 1 Int64))
   (output (: 122 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an aborting arm's unread op-argument still threads its foreign perform's state advance"
@@ -11982,7 +11982,7 @@
   (output (: 461 Int64))
   (call main (: 1 Int64))
   (output (: 161 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ── Per-branch strides + square-and-multiply (breaker batch 235) ──────────────
 ; pbr1/pbr2 pin the arm resuming under a CONDITIONAL where each branch carries
@@ -12263,7 +12263,7 @@
   (output (: 11216060 Int64))
   (call main (: 7 Int64))
   (output (: 11224140 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "mk21 a scalar-map handler whose second put uses a COMPUTED key — the checked-add scratch and the Option-handle slot stay width-partitioned"
@@ -12709,7 +12709,7 @@
   (output (: 230 Int64))
   (call main (: 1 Int64))
   (output (: 120 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run"
@@ -13730,7 +13730,7 @@
   (output (: 111221031 Int64))
   (call main (: 0 Int64))
   (output (: 111221001 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "bud1 a BUDGET-GATED accumulator — two spends consume the budget, the third answers the negated total from exhaustion, a refill re-arms exactly one more spend, the final read exposes the accumulated total"
@@ -14115,7 +14115,7 @@
   (output (: 153213303 Int64))
   (call main (: 95 Int64))
   (output (: 245205395 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "swt1 VALUE-YIELDING map ops in the arm — Map.swap answers the PRIOR value it replaced and Map.take answers the value it removed, both tuple-projected in the arm with absent-key sentinels"
