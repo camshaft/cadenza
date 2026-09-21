@@ -173,9 +173,14 @@ is read from the NIX debug-counters runtime — native `--report-live-objects` i
   caller-drop was a second drop; (G) is the caller-drop ⊕ callee-self-reclaim complementarity, twin of gates
   (6)/(6b)). LANDED #9452 (final admit = the v-core-opt classifier + 5 gates A/B/C/E/G; #9434 (05:5795)
   flipped known-leak 2→0; local-gate + coarse-05 hard-0 + cad-test-json 120/0 + full rcdzc 1544/0 GREEN,
-  census 4m+3 correct live-objects 0 for m 0..7 no trap; rebased cleanly onto the #9449 fence). The
-  05:5794 caller-BORROWED variant (main does NOT own the base) correctly STAYS known-leak — gate (E)
-  Borrowed + (B) caller-surplus decline it (the over-reclaim tripwire, breaker re-fenced). NB v-mem's broader
+  census 4m+3 correct live-objects 0 for m 0..7 no trap; rebased cleanly onto the #9449 fence). Breaker
+  re-fenced #9434 (4m+3, census 2→0, O0=O3) + landed #9454 (a multi-post-loop-use tripwire: `base` read
+  TWICE post-loop, retained across both borrows + dropped once, 4m+7, census 0). The over-reclaim guards
+  are (B) caller-surplus (fst-sum's shell-child is not a surplus) and (G) callee-epilogue-yield (sum-at self-
+  reclaims) — those are the double-free tripwires. NB (breaker-corrected): there is NO caller-BORROWED
+  "stays-known-leak" tripwire — a base main only BORROWS (a helper threads it through the loop while main
+  owns it) is correctly reclaimed by its TRUE owner (census 0), and a borrowed-not-dup-backed base fails
+  gate (B) so the admit never fires; nothing to fence there. NB v-mem's broader
   caller-drop also reclaims a small bonus tighten pile in coarse-05 (a shared-aggregate projection consumed-
   then-read, a sum-payload child consumed while scrutinee live, a map-returned scalar-payload sum via ctor, a
   wildcard-consumed lookup) — v-mem verifies + flips those in a corpus-only follow-up (their census lane).
