@@ -2545,7 +2545,11 @@
            parent binding dies at the helper's return while the view escapes. The caller compares the
            escaped view by CONTENT against a flat literal: a=1 windows \"bc\" → equal (1); a=0 windows
            \"ab\" → unequal (0). A reclaim at scope exit (rather than last-reference) would hand the
-           caller a dangling view; a stale window would flip an answer.")
+           caller a dangling view; a stale window would flip an answer.
+           RECLAIMS to 0 (reclaimed by #9504): the escaped String.slice view flows into the caller's
+           value-eq borrow operand, which matchsum_view_operand_escaping_reclaim_ok now drops — the
+           husk's rc1 is balanced at the last borrow. Opt-independent (0 at O0..O3), values correct on
+           both windows (the reclaim fires after last-use, not at the helper's scope exit — no dangle).")
   (input
     (do
       (def
@@ -2559,7 +2563,7 @@
   (output (: 1 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Symbol.of over a slice of a dying rope interns the WINDOW content"
