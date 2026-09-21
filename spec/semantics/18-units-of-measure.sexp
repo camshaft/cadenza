@@ -4515,7 +4515,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 6 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a Rational-inner quantity stored in a List reads back canonicalized through List.at"
@@ -4538,7 +4538,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 5/2 Rational))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- Quantity inside a COMPOUND key (list-of-Qty / tuple-of-Qty): key canonicalization -------------
 ; A list-typed or list-CONTAINING Map/Set key is CANONICALIZED at the key site (value-canonicalize into
