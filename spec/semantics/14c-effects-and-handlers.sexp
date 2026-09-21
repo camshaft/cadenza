@@ -632,6 +632,35 @@
   (live-objects 0))
 
 (case
+  "cc13 TWO closures each capturing a DISTINCT heap effect draw both escape the handle and are applied after — each captured heap draw reclaims independently"
+  (doc
+    "The TWO-independent-heap-captures extension of cc12. cc4/cc5 build multiple closures over SCALAR
+           draws; cc12 captures ONE heap draw. Here two consecutive performs each RETURN a distinct heap tree
+           (`fresh` from state 10 then 15), captured by TWO separate closures `c1`/`c2` carried out of the
+           handle in a #tuple; both escape and are applied AFTER the handle exits: `(pair.0 1)` = 1 + s(c1) =
+           1 + 20 = 21, `(pair.1 2)` = 2 + s(c2) = 2 + 30 = 32, sum 53. Pins that TWO distinct heap draws each
+           carried in a SEPARATE escaping closure's environment reclaim INDEPENDENTLY on their post-handle
+           applications — census 0 (neither draw leaks, no cross-contamination that double-frees one against
+           the other or against the handler teardown). State advances 10→15→20. Value 53, O0==O3==rust.")
+  (input
+    (do
+      (effect St (op fresh (-> T)))
+      (type T (L Int64) (B T T))
+      (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b)))))
+      (def (main)
+        (let ((pair
+               (handle St 10
+                 ((fresh () st (resume (T.B (T.L st) (T.L st)) (+ st 5))))
+                 (let ((c1 (St.fresh)))
+                   (let ((c2 (St.fresh)))
+                     #tuple((fn ((: x Int64)) (+ x (s c1))) (fn ((: x Int64)) (+ x (s c2)))))))))
+          (+ ((. pair 0) 1) ((. pair 1) 2))))
+      (export main)))
+  (call main)
+  (output (: 53 Int64))
+  (live-objects 0))
+
+(case
   "dd1b consecutive do-DEF draws — both binders hold their reads, the tail draw sees the doubled-twice state"
   (input
     (do
