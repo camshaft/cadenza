@@ -1103,6 +1103,40 @@
   (live-objects known-leak))
 
 (case
+  "F7 the non-tail-selfrec invariant reclaim generalizes across HEAP KINDS — an invariant user-ADT (Lst) borrow read multiple times per frame reclaims to 0 (the type-general ADMIT complement of the projected-param leak above)"
+  (doc
+    "The invariant-BORROW-param ADMIT side of the #9466/F7 non-tail-selfrec reclaim, proving it is TYPE-GENERAL
+           (not BigInt-limb-specific like 14966 mpow / 06-numeric:14920 / the (a·b)^e N=3 case). `g` carries an
+           invariant heap `Lst` borrow `xs` UNCHANGED through a non-tail self-recursion on a varying Int64 index
+           `k` — the recursive result `hh` feeds `(+ hh …)` (non-tail), and `xs` is READ at TWO distinct sites per
+           frame (`llen xs` + `lsum xs`), a multi-use invariant borrow. Because `xs` is truly invariant (verbatim-
+           threaded, never rebound) the #9466 arm-drop + #9476 TRUE-invariance tightening drop `g`'s per-frame
+           invariant borrow ref soundly — the single `xs` allocation stays live until `g` returns, then is
+           reclaimed (main returns a scalar 63·k, no escaping-heap artifact). Census 0 at k=0/2/4 (values
+           0/126/252), verified on the post-#9466/#9476/#9479 compiler. Contrast the projected/varying-param case
+           directly above (#9477 known-leak: `take` recurses on a CHILD of its param ⟹ no sound per-arm drop) and
+           the BigInt invariant cases in 06-numeric — this locks the invariant-borrow reclaim across a user ADT,
+           not just numeric limbs. A regression that loses the invariant-borrow reclaim re-leaks; one that
+           over-drops the still-borrowed list re-traps ⟹ either fails this grade.")
+  (input
+    (do
+      (type Lst (Nil) (Cons Int64 Lst))
+      (def (llen (: xs Lst)) (match xs ((Nil) 0) ((Cons h t) (+ 1 (llen t)))))
+      (def (lsum (: xs Lst)) (match xs ((Nil) 0) ((Cons h t) (+ h (lsum t)))))
+      (def
+        (g (: xs Lst) (: k Int64))
+        (if (= k 0) 0 (do (def hh (g xs (- k 1))) (+ hh (+ (llen xs) (lsum xs))))))
+      (def (main (: k Int64)) (g (Cons 10 (Cons 20 (Cons 30 (Nil)))) k))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  (call main (: 2 Int64))
+  (output (: 126 Int64))
+  (call main (: 4 Int64))
+  (output (: 252 Int64))
+  (live-objects 0))
+
+(case
   "a partial built-in operation (at at 1 of 2 args) curries — completing it yields a value (should-work)"
   (doc
     "`(String.at s)` is at partially applied (index missing) — it SHOULD curry to a closure awaiting the
