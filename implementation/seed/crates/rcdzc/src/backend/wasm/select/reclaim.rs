@@ -4755,10 +4755,15 @@ fn mark_binder_dups_body(
             live_after,
             sites,
         ),
-        // `Map.lookup` BORROWS the map; the key is consumed into an owned temporary.
-        Core::MapLookup { map, key, .. } => {
-            seq(db, &[(map, true), (key, false)], live_after, sites)
-        }
+        // `Map.lookup` BORROWS both the map AND the key: `map-lookup` reads the key without consuming it
+        // (emit.rs), and the boxed/compacted key temporary is a FRESH value the emit builds+drops (`box-int`
+        // copies a scalar; `bytes-compact` is refcount-neutral). So a live-after key BINDER must NOT be
+        // dup-preserved here — dup'ing it for a borrow leaks the surplus ref (10-bytes:2482 borrowed rope
+        // key `k` read as the lookup key AND `Bytes.len k`: the escape-predicate flip alone (#9472
+        // reclaim.rs:711/1073) fixed the let-DROP but this dup-EMISSION site still minted the surplus dup →
+        // rc1 leak; both must say borrow). A fresh owned-temporary key (a bare `(rep …)` expr) is not a
+        // binder, so this marking is inert there — the emit's own `key_owned` drop reclaims that twin.
+        Core::MapLookup { map, key, .. } => seq(db, &[(map, true), (key, true)], live_after, sites),
         Core::MapRemove { map, key, .. } => {
             seq_strict(db, &[(map, false), (key, false)], live_after, sites)
         }
