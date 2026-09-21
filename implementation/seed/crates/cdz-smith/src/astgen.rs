@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(15);
+    let shape = c.variant(16);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -325,8 +325,27 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // verbatim-invariance gate is ever relaxed, the per-arm drop re-frees the projected child → re-trap
         // `unreachable` / wrong count, caught by determinism / opt-invariance / differential. Together with
         // shape 12 this brackets BOTH branches of the #9476 F7 fence, as shapes 10/11 bracket the F5 fence.
-        _ => format!(
+        14 => format!(
             "(do (type Lst (Nil) (Cons Int64 Lst)) (def (mk (: i Int64) (: n Int64)) (if (< i n) (Cons i (mk (+ i 1) n)) (Nil))) (def (take (: it Lst) (: n Int64)) (if (< n 1) (Nil) (match it ((Nil) (Nil)) ((Cons h rest) (Cons h (take rest (- n 1))))))) (def (count (: it Lst)) (match it ((Nil) 0) ((Cons h rest) (+ 1 (count rest))))) (def (main) (count (take (mk 0 {n}) 3))) (export main))"
+        ),
+        // 15 — F#9497 FLAT-SCALAR-CONTAINER heap-return reclaim (06-numeric 15266 `cf`; ADMIT arm, Set Int64
+        // strengthening 15281). A HEAP-RETURNING non-tail self-recursive `g` carries an INVARIANT borrow-only
+        // FLAT-SCALAR-CONTAINER param `s : (Set Int64)` — verbatim self-forwarded `(g s (- i 1))`, read each
+        // frame via `Set.contains s i`, and returns heap (`List.push` onto the recursive result → non-tail).
+        // The FIRST shape exercising (a) a `Set`, (b) a flat-scalar-CONTAINER borrow-param (shapes 12/14 carry
+        // a BigInt scalar / a projected Lst), and (c) a HEAP-returning invariant-borrow self-recursion — a
+        // DISTINCT emit path invisible to every other shape. #9497 opens the fn-exit epilogue owner-drop for
+        // this case ONLY when `ty_heap_children_all_scalar` (a List/Set of scalars has NO extractable heap
+        // child, so no param-child can embed in the heap result → the tr3 ctor-embed UAF is impossible BY
+        // TYPE STRUCTURE); a param WITH any heap child stays DECLINED (leak-over-UAF — the DECLINE-edge at
+        // 15303). The scoping is LOAD-BEARING: the full-coarse UAF net caught TWO double-free traps before it
+        // (an over-extended admit / a bad self-forward relax re-frees `s` a parent non-tail frame still reads
+        // via Set.contains → double-free → trap). Returns the KNOWN `n+1` (the built list's length; `g s i`
+        // pushes one flag per i∈[1,i]); a regression double-frees under some O-level or backend → an
+        // opt-invariance / differential DIVERGENCE (a value-observable trap), or corrupts the fold → wrong
+        // length. Opens the SET-collection coverage the S547 log flagged as a zero-coverage gap.
+        _ => format!(
+            "(do (def (g (: s (Set Int64)) (: i Int64)) (if (< i 1) #list() (List.push (g s (- i 1)) (if (Set.contains s i) 1 0)))) (def (main) (List.len (g (Set.insert (Set.insert #set() 2) {a}) (+ {n} 1)))) (export main))"
         ),
     };
     Program { source }
@@ -4980,9 +4999,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the fifteen shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 15];
-        for seed in 0u64..576 {
+        // Distinctive, mutually-exclusive markers for the sixteen shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 16];
+        for seed in 0u64..640 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5027,13 +5046,15 @@ mod tests {
                 reached[13] = true;
             } else if src.contains("(def (take (: it Lst)") {
                 reached[14] = true;
+            } else if src.contains("(def (g (: s (Set Int64))") {
+                reached[15] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all fifteen reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all sixteen reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
