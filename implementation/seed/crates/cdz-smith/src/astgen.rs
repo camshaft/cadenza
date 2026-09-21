@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(9);
+    let shape = c.variant(10);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -224,8 +224,19 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // the helper still walks it → use-after-free / OOB. A distinct reclaim path from every other shape
         // here (all of which match a FRESH-owned producer). Also a prime OPT-INVARIANCE target: at O0 `t` is
         // a genuine param (fence path); O2/O3 inlining can turn it fresh (relax path) — a divergence is the bug.
-        _ => format!(
+        8 => format!(
             "(do (type Tree (Leaf Int64) (Node (List Int64))) (def (walk (: xs (List Int64))) (List.len xs)) (def (eval (: t Tree)) (match t ((Leaf n) n) ((Node xs) (walk xs)))) (def (main) (eval (Node (list {a} {b} {d})))) (export main))"
+        ),
+        // 9 — SELF-RECURSIVE SUM-FOLD (the F2 escaped-child-dup discriminator, #9435): `sum` matches its
+        // recursive-sum PARAM `xs` and the `(Cons h t)` arm RECURSES on the bare heap payload child `t`.
+        // This is the canonical recursive-list traversal — and exactly F2's `body_is_self_recursive` shape,
+        // which shape 8 (non-recursive helper call) CANNOT exercise: F2's ownership fence hinges on the body
+        // being self-recursive (a mutually-recursive body on borrowed elements does NOT own its param). A
+        // relax of the escaped-child-dup fence frees the param spine while the recursion still walks it → UAF
+        // (the #9435/#9436 tripwire class). Returns the KNOWN element sum, so a corrupted spine shows as a
+        // wrong value. Self-recursive sum traversal was reached by NO prior generator (astgen included).
+        _ => format!(
+            "(do (type NL (Nil) (Cons Int64 NL)) (def (sum (: xs NL)) (match xs ((Nil) 0) ((Cons h t) (+ h (sum t))))) (def (main) (sum (Cons {a} (Cons {b} (Cons {d} (Nil)))))) (export main))"
         ),
     };
     Program { source }
@@ -4873,15 +4884,15 @@ mod tests {
     /// determinism oracles' counterpart to the corpus `(live-objects N)` leak pins) — must keep its two
     /// load-bearing invariants or every `--reclaim` sweep silently degrades: (1) EVERY generated program
     /// COMPILES cleanly (a declined shape stresses no reclaim path and contributes no value check); and
-    /// (2) ALL NINE owned-aggregate shapes stay reachable across varied entropy (matchsum-len, loop-accum
+    /// (2) ALL TEN owned-aggregate shapes stay reachable across varied entropy (matchsum-len, loop-accum
     /// rebind, scalar-project-drop-heap-sibling, nested sum-in-sum, in-arm push rebind, dup-used-twice,
-    /// depth-3 recursive-descent, escaping-heap-child, param-scrutinee bare-payload-reuse) — a generator edit
-    /// that drops a shape would quietly stop exercising that reclaim class.
+    /// depth-3 recursive-descent, escaping-heap-child, param-scrutinee bare-payload-reuse, self-recursive
+    /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the nine shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 9];
-        for seed in 0u64..240 {
+        // Distinctive, mutually-exclusive markers for the ten shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 10];
+        for seed in 0u64..280 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -4914,13 +4925,15 @@ mod tests {
                 reached[7] = true;
             } else if src.contains("(type Tree (Leaf Int64)") {
                 reached[8] = true;
+            } else if src.contains("(type NL (Nil)") {
+                reached[9] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all nine reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all ten reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
