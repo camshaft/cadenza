@@ -338,6 +338,33 @@
   (live-objects 0))
 
 (case
+  "an invariant borrow-clean closure loop-param applied TWICE per iteration reclaims its env without over-drop"
+  (doc
+    "F5 SITE-A over-drop tripwire (guards #9440 rcdzc(select) SITE-A"
+    "closure-env-cell reclaim). The invariant closure (mk-adder k) is a"
+    "borrow-clean loop-param applied at TWO distinct call sites per"
+    "iteration ((f 1) and (f 2)); the spurious per-application env dup is"
+    "SITE-A-dropped ONLY at the dup'd site. The per-SITE dup_sites gate is"
+    "load-bearing: a regression dropping at BOTH use-sites, or at the"
+    "entry-ref site, would double-free the env cell -> UAF / value"
+    "corruption. Census 0 witnesses the env is reclaimed exactly once.")
+  (input
+    (do
+      (def (mk-adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+      (def
+        (times2 (: f (-> Int64 Int64)) (: n Int64) (: acc Int64))
+        (if (< n 1) acc (times2 f (- n 1) (+ acc (+ (f 1) (f 2))))))
+      (def (main (: k Int64)) (times2 (mk-adder k) 3 0))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 9 Int64))
+  (call main (: 1 Int64))
+  (output (: 15 Int64))
+  (call main (: 5 Int64))
+  (output (: 39 Int64))
+  (live-objects 0))
+
+(case
   "a partial application captures a runtime parameter in the residual closure"
   (doc
     "Partially applying to a VARIABLE reference must CAPTURE it in the residual lambda: `((sub n) 3)`
