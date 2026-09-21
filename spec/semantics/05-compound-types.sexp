@@ -27989,7 +27989,10 @@
   (output (: 0 Int64))
   (call main (: 4 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): the Set-as-Map-value escape (Map.take + Set.insert on the taken set) now
+  ; reclaims per the landed heap-collection reclaims — census 0 on every heap trial (v-memory-safety
+  ; tighten-sweep + breaker independent fresh-cdz two-signal verify). Re-baselined from known-leak.
+  (live-objects 0))
 
 (case
   "a record key with a SET field matches by set content across build orders"
@@ -35593,7 +35596,9 @@
       (export main)))
   (call main (: true Bool))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): the refutable map-value sub-pattern's matched ctor-payload bind now reclaims
+  ; the runtime map — census 0 (v-memory-safety tighten-sweep + breaker fresh-cdz two-signal verify). Re-baselined.
+  (live-objects 0))
 
 (case
   "a refutable map value sub-pattern falls through on a non-matching variant"
@@ -35612,7 +35617,9 @@
       (export main)))
   (call main (: false Bool))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): the refutable map-value sub-pattern's fall-through (refuted arm) now reclaims
+  ; the runtime map — census 0 (v-memory-safety tighten-sweep + breaker fresh-cdz two-signal verify). Re-baselined.
+  (live-objects 0))
 
 (case
   "a refutable map value sub-pattern folds the same over a constant map"
