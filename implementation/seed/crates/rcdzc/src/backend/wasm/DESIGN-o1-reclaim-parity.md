@@ -154,7 +154,17 @@ is read from the NIX debug-counters runtime — native `--report-live-objects` i
   instead. `def_consumes_param` reclassifies a DUP-BACKED base-consume as a BORROW (base occurrence ∈ the
   callee's `dup_sites` ⟺ the op path-copies rc>1, NOT a rc1 FBIP-reuse) → the caller retains + drops at its
   last use. CONTAINED to `def_consumes_param` (no global `param_only_borrowed_or_backedge` edit — the #9423
-  blast-radius lesson). IN-FLIGHT (v-core-opt built; v-mem verify → flip #9434 known-leak 2→0).
+  blast-radius lesson). The classifier (`c861652be2`) is only load-bearing once CONSULTED at the ACTUAL
+  caller-drop decision in `call_arg_caller_drops`, admitted (bypassing its boundary-owned /
+  `param_escapes_body` / looped gates) iff FOUR conjuncts: (A) `!def_consumes_param(callee,i)` [back-edge-
+  aware borrow]; (B) arg DUP-BACKED (∈ the caller's `dup_sites`); (C) `self_def ∉ mutual_loop_group(callee)`
+  [EXTERNAL caller — EXCLUDES self/mutual recursive calls]; (D) non-tail. Conjunct (C) is LOAD-BEARING: a
+  first attempt SUPPRESSING the dup at the `mark_binder_dups` `Core::Call` site (instead of adding a caller-
+  drop) RED'd guarded-all — it fired on the callee's OWN non-tail self-call args (a recursive fold's
+  `(f … arg …)`), where the retain-dup is load-bearing per frame → UAF (06-numeric BigInt `unreachable`,
+  guide-0406 OOB); the mark site lacks the caller context to exclude self-calls. IN-FLIGHT (v-mem prototyping
+  the caller-drop off `vms/5786-verify` per the corrected 4-conjunct admit; v-core-opt owns the condition +
+  verifies; flip #9434 known-leak 2→0 on guarded-all GREEN).
 
 - **F5 — SITE-A closure-env-cell reclaim (09-functions 771 family, ~11 cases).** An INVARIANT borrow-clean
   closure loop-PARAM applied per iteration: its per-application caller dup is spurious → drop it per apply
@@ -164,8 +174,24 @@ is read from the NIX debug-counters runtime — native `--report-live-objects` i
   param threaded into a NON-TAIL loop-member self-call (require a PURE self-tail-loop; the `filt` shell-drop
   cascade otherwise overlaps a child frame's reclaim → UAF); (b) **shared-heap-capture dup** at the
   `Core::Closure` build — a SHARED (multi-used) heap capture must be dup'd into the env (json-`encode`-style
-  `3485`: an un-dup'd borrowed fn capture is over-freed by the env-drop cascade). IN-FLIGHT (v-mem lands
-  SITE-A + both fences as one PR; `3485` + `filt` stay known-leak, only the cases measuring 0 flip).
+  `3485`: an un-dup'd borrowed fn capture is over-freed by the env-drop cascade). LANDED #9440 (SITE-A +
+  both fences + the capture-retain (Y); DBG-runtime census main 5→32 live-objects 0, coarse-11 + cad-test-
+  json + local-gate GREEN). Only the CLEAN `1383` case flipped; `3485`/`filt`/`714 771/798` stay known-leak
+  (leak-over-UAF) — the fences + (Y) are load-bearing UAF guards.
+
+- **F6 (queued) — multi-borrow / multi-sibling closure-env residual (09-functions 771, 798).** The SITE-A
+  (F5) env-drop flips the SINGLE-application invariant borrow-clean closure loop (09:713 → 0); two harder
+  shapes stay known-leak. (i) **multi-apply base (771):** the owned closure `f` is applied k>1 times on the
+  base arm (`(+ (f 0) (f 1))`) — k `CallClosure` BORROWS precede the ONE loop-exit env-drop; the captured
+  heap env (`xs`) leaks because the reclaim declines when >1 borrow precedes the drop. ADMIT SKETCH (v-core-
+  opt): the exit-drop is safe when EVERY base-arm use of `f` is a `CallClosure` BORROW sequenced BEFORE the
+  loop-exit drop (all k borrows release before the single drop → no race) — relax the SITE-A single-borrow
+  gate to k-borrow-all-borrows. (ii) **two-sibling self-call (798):** `f` passed to two sibling self-calls
+  (`(+ (go f …) (go f …))`) forces a dup-per-frame (last-sibling consume-spare) + a base-arm borrow; the dup
+  + spare + loop-exit env-drop must BALANCE (an over-drop double-frees the shared closure a sibling still
+  holds). HARDER — the sibling consume-spare interacts with the env-dtor; needs an emitted rc-trace to ground
+  the balance. Condition = v-core-opt; PLACEMENT = v-mem (blanket auth). ADJACENT to F5 — coordinate, do not
+  double-drive.
 
 - **QUEUED:** 14966 (non-tail borrowing-param — invariant borrow-only heap param dup'd per non-tail arg,
   never dropped on unwind); interior-view-chain 1811/1860/2500 (source-transfer: re-root the view's ref
