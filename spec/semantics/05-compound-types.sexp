@@ -5876,6 +5876,42 @@
   (live-objects 0))
 
 (case
+  "an invariant base BORROWED via an intermediate helper while main retains ownership is caller-reclaimed at MAIN, not the borrowing helper"
+  (doc
+    "The OWNERSHIP-LOCUS over-reclaim guard for the #9452 F4 caller-drop admit (`call_arg_caller_drops`).
+           The two siblings above have `main` call the consume-reuse loop DIRECTLY (main is both the loop's
+           external caller AND the owner of `base`). Here an intermediate helper `run` BORROWS `base` (a param
+           it does not own) and is the loop's external caller, while `main` retains ownership and reads `base`
+           AFTER `run` returns — `(+ (run base m) (List.len base))`, value `4m+3` (3/7/11/19). The caller-drop
+           admit must resolve the surplus-owner to `main` (which dups `base` for the borrow into `run` and drops
+           its retained copy after the post-loop read), NOT to the borrowing `run` frame. A regression that
+           fired the caller-drop inside `run` — treating the borrowed param as a droppable surplus — would free
+           `base` before `main`'s `(List.len base)` read → UAF / debug-runtime trap (the `assert_node_live`
+           face). Census 0 + no trap across m=0..4 witnesses the admit reclaims at the true owner. `mb` builds
+           `base` as a runtime list; O0==O3.")
+  (input
+    (do
+      (def (mb (: i Int64) (: n Int64) (: acc (List Int64)))
+        (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
+      (def (loop (: j Int64) (: m Int64) (: base (List Int64)) (: tot Int64))
+        (if (< j m) (loop (+ j 1) m base (+ tot (List.len (List.push base 99)))) tot))
+      (def (run (: base (List Int64)) (: m Int64))
+        (loop 0 m base 0))
+      (def (main (: m Int64))
+        (let ((base (mb 0 3 #list())))
+          (+ (run base m) (List.len base))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (call main (: 1 Int64))
+  (output (: 7 Int64))
+  (call main (: 2 Int64))
+  (output (: 11 Int64))
+  (call main (: 4 Int64))
+  (output (: 19 Int64))
+  (live-objects 0))
+
+(case
   "a loop-invariant heap projection consumed in the loop body is not LICM-hoisted"
   (doc
     "The LOOP-INVARIANT-CODE-MOTION face of the still-live-binding family: LICM hoists a loop-invariant
