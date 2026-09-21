@@ -8220,7 +8220,21 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 || recent_trunk_exonerates
                 || gate_procs_exonerates,
         );
-        if drain_stall {
+        // REPORT-ONLY exoneration (concierge-confirmed 2026-09-21): a SLOW-cadence agent legitimately holds
+        // actionable mail between its own ticks, so the drain-stall REPORT re-fired every ~4min maintenance
+        // tick on an agent that had not actually missed a self-drain (v-core-opt, retracted). If the OLDEST
+        // unconsumed actionable message is YOUNGER than the agent's OWN interval, it has not had a scheduled
+        // tick since that mail arrived → not a stall → suppress the REPORT + counter + auto-restart
+        // escalation. The drain-nudge ACTION below is deliberately LEFT UNTOUCHED — nudging a slow
+        // idle-with-mail agent drains it early, exactly the wake-miss fix `drain-nudge` exists for, so an
+        // own-interval gate on the nudge would regress it. Read the oldest actionable message's arrival mtime
+        // (I/O here; the verdict is the pure `drain_stall_report_exonerated`). `interval` is this agent's
+        // parsed loop interval (in scope above).
+        let oldest_actionable_age = oldest_actionable_inbox_message(fleet, &a.name)
+            .and_then(|id| file_mtime_unix(&fleet.inbox(&a.name).join(id)))
+            .map(|m| now.saturating_sub(m));
+        let report_exonerated = drain_stall_report_exonerated(oldest_actionable_age, interval);
+        if drain_stall && !report_exonerated {
             drain_stalls += 1;
             eprintln!(
                 "  ⚠ '{}' is IDLE at prompt with {actionable_depth} UNCONSUMED ACTIONABLE message(s) in \
@@ -8231,6 +8245,8 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 fleet.inbox(&a.name).display(),
                 a.name
             );
+        }
+        if drain_stall {
             // OPT-IN auto-nudge (`--nudge-drain-stalls`): send the canonical drain instruction to the
             // idle pane so it re-reads its charter + adopts the resolver, self-healing — instead of the
             // concierge hand-arming each one. Hard-guarded (see `decide_drain_nudge`): skips a
@@ -8265,6 +8281,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 .is_some_and(|s| s < WEDGE_RESTART_GRACE);
             let escalate_restart = action == DrainNudge::Stuck
                 && !permission_wedge // a restart can't answer a Yes/No dialog + would abandon the pending op
+                && !report_exonerated // a slow agent that hasn't missed a self-drain is not stalled — never restart it
                 && decide_drain_escalation(
                     stuck_count,
                     DRAIN_STALL_RESTART_THRESHOLD,
@@ -10744,6 +10761,32 @@ fn is_probable_drain_stall(role: &str, actionable_depth: usize, pane_idle: bool)
 /// agent still shows no work on the recheck → confirmed. Pure so the two-sample AND is unit-tested.
 fn drain_stall_confirmed(suspected: bool, working_on_recheck: bool) -> bool {
     suspected && !working_on_recheck
+}
+
+/// Should a confirmed drain-stall be EXONERATED from the human-facing REPORT/escalation surface because the
+/// agent has not actually missed a self-drain yet? A SLOW-cadence agent (e.g. a 6h vertical) legitimately
+/// holds actionable mail between its own ticks: mail arrives, and the agent will drain it on its NEXT
+/// scheduled tick — which for a 6h agent can be up to ~6h away, far longer than the ~4min watchdog/concierge
+/// maintenance cadence. So the drain-stall REPORT re-fires every maintenance tick on an agent that is not
+/// stalled at all (it just has not reached its next self-tick), which the concierge over-read as
+/// "never-drains" and escalated (v-core-opt 2026-09-21, retracted). The discriminator: the OLDEST unconsumed
+/// actionable message's AGE (its arrival mtime) vs the agent's OWN loop interval. If the oldest actionable
+/// mail is YOUNGER than one interval, the agent has NOT had a scheduled tick since it arrived → it has not
+/// missed a self-drain → NOT a stall (report-exonerate). Once the oldest actionable mail is OLDER than the
+/// agent's interval it has missed at least one self-tick → a genuine stall → still reported.
+///
+/// REPORT/ESCALATION SURFACE ONLY (concierge-confirmed 2026-09-21): this exoneration gates the ⚠ report line,
+/// the `drain_stalls` counter/health-log, and the destructive auto-restart escalation — NOT the drain-nudge
+/// ACTION. Nudging a slow idle-with-mail agent is BENEFICIAL (it drains early, which is exactly the wake-miss
+/// stall that `drain-nudge` exists to fix) — so an own-interval gate on the NUDGE would REGRESS that fix and
+/// is deliberately NOT applied here. `None` age (no actionable mail, or mtime unreadable) or a `0`/unknown
+/// interval → NOT exonerated (fail toward REPORTING, never hide a real stall). Pure so it is unit-tested
+/// without fs; the caller supplies the oldest-actionable-message age it reads from the inbox.
+fn drain_stall_report_exonerated(
+    oldest_actionable_age_secs: Option<u64>,
+    own_interval_secs: u64,
+) -> bool {
+    own_interval_secs > 0 && oldest_actionable_age_secs.is_some_and(|age| age < own_interval_secs)
 }
 
 /// Is the agent's actionable inbox DRAINING across sweeps? A strict drop from the prior sweep's depth is
@@ -25214,6 +25257,26 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // A non-interactive role with actionable mail + idle IS flagged even if it's pr-sync (it should
         // be draining merge-requests; idle-with-queued-MRs is worth surfacing).
         assert!(is_probable_drain_stall("pr-sync", 4, true));
+    }
+
+    #[test]
+    fn drain_stall_report_exonerated_only_below_the_agents_own_interval() {
+        let six_h = 6 * 3600; // a 6h vertical's interval
+        // Mail YOUNGER than one interval → the agent hasn't had a scheduled tick since it arrived → not a
+        // stall → REPORT-exonerated (the v-core-opt false-positive: 10min-old actionable on a 6h agent).
+        assert!(drain_stall_report_exonerated(Some(600), six_h));
+        assert!(drain_stall_report_exonerated(Some(six_h - 1), six_h));
+        // Mail OLDER-OR-EQUAL to one interval → it has missed at least one self-tick → genuine stall →
+        // still REPORTED (strict `<`, so exactly-one-interval is NOT exonerated — a tick boundary passed).
+        assert!(!drain_stall_report_exonerated(Some(six_h), six_h));
+        assert!(!drain_stall_report_exonerated(Some(six_h + 5000), six_h));
+        // Fail toward REPORTING (never hide a real stall): no actionable mail / unreadable mtime (None), or
+        // an unknown/zero interval, is NOT exonerated even with young mail.
+        assert!(!drain_stall_report_exonerated(None, six_h));
+        assert!(!drain_stall_report_exonerated(Some(10), 0));
+        // A short-cadence agent (5m): 4min-old mail is still within its interval → exonerated; 6min → not.
+        assert!(drain_stall_report_exonerated(Some(240), 300));
+        assert!(!drain_stall_report_exonerated(Some(360), 300));
     }
 
     #[test]
