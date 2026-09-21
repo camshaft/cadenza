@@ -2482,14 +2482,23 @@ fn ensure_drain_nudge_cron(fleet: &Fleet) {
     }
 }
 
-/// The desired every-10-min user-crontab line for the autonomous LEAKED-LEASE reaper (v-fleet-tooling
+/// The desired every-3-min user-crontab line for the autonomous LEAKED-LEASE reaper (v-fleet-tooling
 /// 2026-09-11, concierge coverage-hole), tagged `# fleet:reap-leases` so [`reconcile_tagged_crons`] can
 /// find/heal it. Runs the HUB copy of `reap-leases.sh` → a worktree's `xtask fleet reap-leases`.
+/// TIGHTENED */10 → */3 (2026-09-21, concierge recurring-toil signal): a leaked check-lease (dead-PID/
+/// TTL-stale, e.g. from a gate-local launcher the harness low-mem killer reaped mid-run — see #79845/#9081)
+/// STALLS the merge gate until reaped, and at */10 a lease leaked just after a fire sat up to ~10min — long
+/// enough that the concierge kept catching + hand-reaping them inside its ~4min maintenance ticks (3 across
+/// recent ticks). reap-leases is idempotent + no-op when clean + touches NO tmux window (its own help text
+/// says it is safe to run frequently/spuriously), so a */3 cadence (matching `# fleet:drain-nudge`) beats the
+/// concierge tick and closes the stall gap WITHOUT any window action — the automated cleanup the reaper was
+/// built for, just on a tighter timer. Especially relevant while the destructive watchdog is banned (nothing
+/// else reaps leases out-of-band).
 fn reap_leases_cron_line(hub_script: &str) -> String {
-    format!("*/10 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:reap-leases")
+    format!("*/3 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:reap-leases")
 }
 
-/// Ensure the `# fleet:reap-leases` per-10-min user-crontab entry exists + points at THIS hub's
+/// Ensure the `# fleet:reap-leases` per-3-min user-crontab entry exists + points at THIS hub's
 /// `reap-leases.sh`. Decouples leaked-check-lease reclaim from the window-touching `watchdog` (which an
 /// operator may disable to stop window-killing, leaving leaked leases with no reaper — concierge flag
 /// 2026-09-11). Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as [`ensure_drain_nudge_cron`],
@@ -22151,12 +22160,14 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
-    fn reap_leases_cron_line_is_every_10min_silent_and_tagged() {
+    fn reap_leases_cron_line_is_every_3min_silent_and_tagged() {
         let line = reap_leases_cron_line("/hub/reap-leases.sh");
-        // Every 10 min, runs the hub script, silent, tagged for reconcile/heal.
+        // Every 3 min (tightened from */10 2026-09-21 to beat the concierge's ~4min tick — a leaked lease
+        // stalls the merge gate and reap-leases is safe to run frequently), runs the hub script, silent,
+        // tagged for reconcile/heal.
         assert!(
-            line.starts_with("*/10 * * * * bash /hub/reap-leases.sh"),
-            "every-10-min, invoking the hub script: {line}"
+            line.starts_with("*/3 * * * * bash /hub/reap-leases.sh"),
+            "every-3-min, invoking the hub script: {line}"
         );
         assert!(
             line.contains(">/dev/null 2>&1"),
@@ -22452,7 +22463,7 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
 
     #[test]
     fn cron_interval_secs_covers_the_fleet_schedule_patterns() {
-        // Every-N-minutes (compact-nudge */5, reap-leases */10, cpu-monitor */2, disk-guard */15).
+        // Every-N-minutes (compact-nudge */5, reap-leases */3, cpu-monitor */2, disk-guard */15).
         assert_eq!(cron_interval_secs("*/5", "*"), Some(300));
         assert_eq!(cron_interval_secs("*/2", "*"), Some(120));
         assert_eq!(cron_interval_secs("*/30", "*"), Some(1800));
