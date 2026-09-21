@@ -8392,7 +8392,7 @@ fn collect_module_used_ops(
         }
         // The CALLER-side owned-temporary-arg drop (`Core::Call` emit, boundary-owned non-looped callee) also
         // emits `drop` — import it iff the body actually has such a call, so the import matches the emit.
-        if select::body_has_caller_drop(db, body, layout) {
+        if select::body_has_caller_drop(db, body, layout, Some(def)) {
             used.insert("drop");
         }
         // §5 self-loop-tail SUM-SPINE reclaim: a member tail-call carrying a self-consuming `Payload` arg
