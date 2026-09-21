@@ -15268,7 +15268,13 @@
       (export main)))
   (call main (: 2 Int64))
   (output (: 705 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety, 15266 self-forward-relax): known-leak->0. The invariant borrow-only List
+  ; param xs of the non-tail self-recursive cf reclaims at the fn-exit epilogue — the flat-scalar-container
+  ; heap-return admit (ty_heap_children_all_scalar: List Int64 has no extractable heap child, so no
+  ; param-child can embed in the Rational result, the tr3 ctor-embed UAF is impossible by type structure)
+  ; plus the AXIS-B self-forward relax (the (cf xs …) identity self-forward is not an escape: the call site
+  ; dups xs and the inner frame reclaims at its own epilogue — balanced, rc-trace LEAK SUMMARY none).
+  (live-objects 0))
 
 (case
   "a binary-search isqrt with an overflow-safe hi bound computes at i64::MAX"

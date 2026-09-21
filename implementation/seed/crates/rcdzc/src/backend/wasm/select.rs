@@ -4173,6 +4173,38 @@ fn count_param_consumes(
     }
 }
 
+/// Count the IDENTITY SELF-FORWARD consumes of param `p` in `id`: a `Core::Call` to `self_callee` (the def
+/// being analyzed) whose arg at EXACTLY `param_index` is a bare ref to `p` — i.e. `(self … p …)` threading the
+/// param straight back into its own slot on the recursive frame. This is the subset of `count_param_consumes`
+/// hits that are SOUND to forgive for the fn-exit reclaim: the recursive call site dups the param (owned
+/// transfer) and the inner frame reclaims it at its own epilogue by the same induction, so dup + inner-drop
+/// balances. It counts ONLY the arg at `param_index` (a self-call also passing `p` at ANOTHER index is a real
+/// escape into that other param and stays counted by `count_param_consumes` — the `total == self_forwards`
+/// equality then fails). Recurses all children so a nested self-call is found. Mirrors the shape of
+/// [`count_param_consumes`]'s `Core::Call` arm.
+fn count_param_self_forward_consumes(
+    db: &mut Db,
+    id: StructId,
+    p: StructId,
+    self_callee: usize,
+    param_index: usize,
+    seen: &mut HashSet<StructId>,
+    count: &mut usize,
+) {
+    if !seen.insert(id) {
+        return;
+    }
+    if let Core::Call { callee, args } = core_of(db, id)
+        && callee == self_callee
+        && matches!(args.get(param_index), Some(&a) if is_ref_to(db, a, p))
+    {
+        *count += 1;
+    }
+    for c in core_child_ids(db, id) {
+        count_param_self_forward_consumes(db, c, p, self_callee, param_index, seen, count);
+    }
+}
+
 /// Whether `arg` contains a WHOLE-binder retain-dup site for `binder` — a bare `LocalRef`/`Param(binder)`
 /// node that `mark_binder_dups` marked in `dups` (the `consuming && live_after` whole-binder dup at
 /// reclaim.rs's `Core::LocalRef` arm, NOT a nested `Proj`/`SumPayload` child-dup). Used by
@@ -8121,6 +8153,31 @@ fn bytes_param_view_escapes(
 /// leak, never a UAF). `aliases` seeds with the param binder; the `Let` arm grows it with each binding
 /// whose value is a bare ref to a current alias (so the materialized `inner` scrutinee counts too).
 fn param_ref_reaches_result(db: &mut Db, id: StructId, aliases: &HashSet<StructId>) -> bool {
+    param_ref_reaches_result_flagged(db, id, aliases, false)
+}
+
+/// [`param_ref_reaches_result`] with the MatchSum tail treated PRECISELY (recurse arm bodies) instead of the
+/// conservative "reaches" default. Used ONLY by the 15266 `heap_flat_scalar_reclaimable` disjunct (v-core-opt
+/// containment ruling — the shared `param_ref_reaches_result` keeps its conservative MatchSum=reaches default
+/// the Bytes carve-out depends on; #9423 shared-classifier lesson). SOUND for the flat-scalar param: an arm's
+/// PAYLOAD binder is a CHILD of the scrutinee (not a param alias), and the flat-scalar precondition already
+/// proved every child scalar, so an arm can only carry the WHOLE param out by a BARE ref — which the
+/// `is_ref_to`/alias tracking still catches. For cf/15266 the Some-arm tail is an `if` of `Rational.of-int`
+/// builds (no bare xs) and `rest` is Call-bound (not a tracked bare alias) → precise = FALSE (reclaim admits).
+fn param_ref_reaches_result_precise(
+    db: &mut Db,
+    id: StructId,
+    aliases: &HashSet<StructId>,
+) -> bool {
+    param_ref_reaches_result_flagged(db, id, aliases, true)
+}
+
+fn param_ref_reaches_result_flagged(
+    db: &mut Db,
+    id: StructId,
+    aliases: &HashSet<StructId>,
+    recurse_matchsum: bool,
+) -> bool {
     if aliases.iter().any(|&a| is_ref_to(db, id, a)) {
         return true;
     }
@@ -8132,21 +8189,51 @@ fn param_ref_reaches_result(db: &mut Db, id: StructId, aliases: &HashSet<StructI
                     ext.insert(*b);
                 }
             }
-            param_ref_reaches_result(db, body, &ext)
+            param_ref_reaches_result_flagged(db, body, &ext, recurse_matchsum)
         }
         Core::If { then_, else_, .. } => {
-            param_ref_reaches_result(db, then_, &aliases.clone())
-                || param_ref_reaches_result(db, else_, aliases)
+            param_ref_reaches_result_flagged(db, then_, &aliases.clone(), recurse_matchsum)
+                || param_ref_reaches_result_flagged(db, else_, aliases, recurse_matchsum)
         }
         Core::Match { arms, .. } => {
             let bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
             bodies
                 .into_iter()
-                .any(|b| param_ref_reaches_result(db, b, aliases))
+                .any(|b| param_ref_reaches_result_flagged(db, b, aliases, recurse_matchsum))
         }
-        Core::Seq { tail, .. } => param_ref_reaches_result(db, tail, aliases),
+        Core::Seq { tail, .. } => {
+            param_ref_reaches_result_flagged(db, tail, aliases, recurse_matchsum)
+        }
+        // PRECISE MatchSum: recurse the decision-tree arm bodies (like `Core::Match` above). An arm payload
+        // binder is a CHILD (not a param alias — flat-scalar proved it scalar), so only a bare param ref in an
+        // arm body reaches. (Conservative default keeps MatchSum=reaches for the shared query.)
+        Core::MatchSum { root, .. } if recurse_matchsum => {
+            sum_cont_param_reaches(db, &root, aliases)
+        }
         Core::MatchSum { .. } | Core::Block { .. } => true,
         _ => false,
+    }
+}
+
+/// Walk a `SumCont` decision tree, asking whether the param (via `aliases`) reaches ANY arm's result —
+/// [`param_ref_reaches_result_precise`]'s MatchSum recursion (mirrors [`sum_cont_refs_scrutinee`]'s shape).
+fn sum_cont_param_reaches(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    aliases: &HashSet<StructId>,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => param_ref_reaches_result_precise(db, *body, aliases),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            param_ref_reaches_result_precise(db, *body, aliases)
+                || sum_cont_param_reaches(db, els, aliases)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_param_reaches(db, then_, aliases) || sum_cont_param_reaches(db, els, aliases)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_param_reaches(db, &a.cont, aliases)),
     }
 }
 
@@ -8201,28 +8288,110 @@ fn def_nonlooped_reclaims_param(
     //     p))`) — a hazard this Bytes-only relaxation deliberately does not touch. Closes the heap-
     //     accumulator recursive-drain leak (drain-append / escape-str / encode-elems / encode-members — the
     //     JSON codec encoder, v-json-codec I7).
+    // Whether the admit was granted through the 15266 FLAT-SCALAR-CONTAINER heap-return carve-out (below) —
+    // the ONLY path that RELIES on the AXIS-B self-forward relax. Scalar-returning self-recursive walks
+    // (sum-at/go/lf1) skip the heap-return gate and must keep AXIS B STRICT (self-forwards NOT forgiven):
+    // they are already reclaimed by the per-path conditional threaded-param drop (sum-at/go) or correctly
+    // leak (lf1, whose xs is captured by the enclosing effect continuation which co-reclaims it — a
+    // borrowed-at-the-call-site the epilogue must NOT drop). Forgiving their self-forward here re-admitted
+    // an UNCONDITIONAL epilogue drop → a double-free (the go two-sibling + lf1 effect-continuation traps the
+    // full-coarse UAF net caught). So the self-forward relax is gated to this flag = heap-return only.
+    let mut heap_flat_scalar_admitted = false;
     if is_heap_type(&type_of(db, body)) {
         let bytes_reclaimable = matches!(param_ty.strip_nominal(), Ty::Bytes)
             && !bytes_param_view_escapes(db, body, param_binder, &mut HashSet::new())
             && !param_ref_reaches_result(db, body, &HashSet::from([param_binder]));
-        if !bytes_reclaimable {
+        // 15266 FLAT-SCALAR-CONTAINER heap-return admit (v-core-opt-spec'd, the CALLEE-side reclaim locus —
+        // sum-at already uses this epilogue; cf/15266 was blocked ONLY here). A heap param with NO extractable
+        // heap child (`ty_heap_children_all_scalar`) cannot embed a param-child in a heap result — the tr3
+        // ctor-embed UAF the Bytes-only gate guards against is impossible BY TYPE STRUCTURE. The only heap
+        // value that could reach the result is the WHOLE param, excluded by the MatchSum-precise bare-return
+        // check (`param_ref_reaches_result_precise`) here + `count_param_consumes==0` (no whole-embed/consume)
+        // below. So `xs : List Int64` whose Rational result is built from `Int64.of` scalars reclaims at
+        // fn-exit like the scalar-returning sum-at. Leak-over-UAF: a param with any heap child (List(List)/
+        // Sum-with-heap = tr3) → `ty_heap_children_all_scalar` false → still declined.
+        let heap_flat_scalar_reclaimable = ty_heap_children_all_scalar(db, &param_ty)
+            && !param_ref_reaches_result_precise(db, body, &HashSet::from([param_binder]));
+        if !(bytes_reclaimable || heap_flat_scalar_reclaimable) {
             return false;
         }
+        heap_flat_scalar_admitted = heap_flat_scalar_reclaimable;
     }
     // AXIS B: borrow-only — the param is never consumed / returned / escaped as the whole value.
     let mut seen = HashSet::new();
     let mut total = 0usize;
     count_param_consumes(db, body, param_binder, &mut seen, &mut total, true);
-    if total != 0 {
+    // SELF-FORWARD RELAX: an IDENTITY self-recursive forward — a `Call` to THIS callee whose arg at exactly
+    // `param_index` is a bare ref to the param binder (`(cf xs …)` → cf's param 0) — is counted as a "consume"
+    // by `count_param_consumes` (it sees a bare param ref as a Call arg = ownership transfer). But it is NOT an
+    // escape: admitting the reclaim makes the recursive call site DUP the param (owned transfer) and the inner
+    // frame reclaim it at ITS OWN fn-exit epilogue — dup + inner-drop is balanced, and the inner frame reclaims
+    // on its base arm by the same induction (the def is callee-owned for this param; the EXTERNAL sites, checked
+    // by AXIS A below, establish the ground ownership). This mirrors `nonlooped_param_callee_owned_core`'s
+    // self-back-edge skip and `looped_invariant_param_caller_owned`'s. It is admitted ONLY when EVERY consume is
+    // such an identity self-forward (`total == self_forwards`); any other consume (a whole-param embed/consume,
+    // a forward at a DIFFERENT index, or a forward to a DIFFERENT callee) escapes and still declines. Wrong
+    // admit ⇒ leak (never a UAF): if the call site does NOT actually dup, the inner reclaim just leaves the
+    // outer ref undropped. Closes 15266's cf (self-recursive flat-scalar-container accumulator).
+    // The self-forward relax is SCOPED to the heap-return flat-scalar admit (`heap_flat_scalar_admitted`) —
+    // see that flag's comment. For every other shape (scalar return, Bytes carve-out) AXIS B stays STRICT
+    // (`total == 0`), preserving the pre-change behavior exactly (those cases reclaim via the conditional
+    // threaded-param drop or correctly leak; forgiving their self-forward double-freed — go/lf1).
+    let allowed_consumes = if heap_flat_scalar_admitted {
+        let mut sf_seen = HashSet::new();
+        let mut self_forwards = 0usize;
+        count_param_self_forward_consumes(
+            db,
+            body,
+            param_binder,
+            callee,
+            param_index,
+            &mut sf_seen,
+            &mut self_forwards,
+        );
+        self_forwards
+    } else {
+        0
+    };
+    if total != allowed_consumes {
+        return false;
+    }
+    let self_forwards = allowed_consumes;
+    // SELF-FORWARD MUTUAL-EXCLUSION (the go/two-sibling UAF net, 09-functions): when the admit RELIES on
+    // forgiving self-forward consumes (`self_forwards > 0`), decline if the PER-PATH CONDITIONAL threaded-param
+    // drop (`def_nonlooped_callee_reclaims_threaded_param` — `plan_ifjoin_nested` D-arm drop) ALREADY reclaims
+    // this param. That path engages for a MULTI-sibling owned self-recursion (`(+ (go xs …) (go xs …))`: the
+    // scalar_group consume-spare + the coupled base-arm drop already balance it), so ADDING this UNCONDITIONAL
+    // fn-exit epilogue drop would DOUBLE-free (a wasm-unreachable trap). cf's linear single self-forward does
+    // NOT trigger the consume-spare, so the conditional path is absent (false) and the epilogue is the SOLE
+    // reclaim. This is semantic mutual exclusion, not a count cutoff — leave the already-reclaimed case to its
+    // existing correct drop (declining here just forgoes a redundant drop, never a leak for those cases).
+    if self_forwards > 0 && def_nonlooped_callee_reclaims_threaded_param(db, callee, param_index) {
         return false;
     }
     // AXIS A: every DIRECT call site passes an OWNED arg for this param (unknown/borrowed/missing at ANY
     // site → not all-owned → decline). A callee with NO known call site cannot prove ownership → decline.
-    let sites = crate::infer::callee_call_site_args(db, callee);
-    if sites.is_empty() {
+    // A SELF-recursive site forwarding the same param (the identity self-forward relaxed in AXIS B above) is
+    // NOT a fresh external ownership source — it threads the same ref by induction — so it is EXCLUDED here;
+    // the EXTERNAL sites (a caller body != this callee's body) establish ground ownership.
+    let self_body = body;
+    let sites = crate::infer::callee_call_site_args_with_caller(db, callee);
+    let external: Vec<&Vec<StructId>> = sites
+        .iter()
+        .filter_map(|(caller, args)| {
+            if *caller == self_body
+                && matches!(args.get(param_index), Some(&a) if is_ref_to(db, a, param_binder))
+            {
+                None
+            } else {
+                Some(args)
+            }
+        })
+        .collect();
+    if external.is_empty() {
         return false;
     }
-    for args in &sites {
+    for args in &external {
         match args.get(param_index) {
             Some(&arg) if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned)) => {
             }
