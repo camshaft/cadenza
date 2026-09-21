@@ -4253,7 +4253,7 @@ c")))
       (def (main) (eval-expr (quote (* (+ 1 2) 4))))
       (export main)))
   (output (: 12 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a variadic Ast form is folded via a tail-splice rest-binder over its operands"
