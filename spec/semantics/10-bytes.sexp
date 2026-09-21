@@ -3033,7 +3033,15 @@
            rebound value — the exact shape that emits an invalid module for String (scalar-len on the
            rebound rope), clean here because Bytes.len is a stored length. Greedy walk from [1,2,3,4,5]
            drops indices 0,1,2 then exits (len 2, the bytes [2,4]). Pins the working side of the seam
-           so the String fix can be verified against an unchanged Bytes baseline.")
+           so the String fix can be verified against an unchanged Bytes baseline.
+           RECLAIMED (live-objects 0): the varying-threaded owned-Bytes-param back-edge leak (the
+           select.rs:1336 documented decline). `walk` rebinds its Bytes param to a fresh slice-concat of
+           ITSELF each iteration; the new rope RETAINS the old param via INDEPENDENT refcounted slice refs
+           (op_bytes_slice/op_bytes_concat op_dup the parent — bytes_string.rs), so the old SLOT ref is a
+           dup-preserved SURPLUS. `drop_old_borrowed`'s slice/concat-retention admit now drops that surplus
+           per-back-edge (the DUP-AWARE escape query proves every self-use dup-backed ⟹ the slot ref is a
+           dead owned temporary), releasing only the surplus while the successor's slice-refs keep the buffer
+           live — no UAF (v-core-opt greenlit via the refcounted-retention runtime invariant).")
   (input
     (do
       (def
@@ -3046,7 +3054,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- Byte-wise reversal over a seamed rope. ---
 (case

@@ -55,6 +55,34 @@ pub(super) fn binding_escapes(
     binding_escapes_dup_aware(db, id, EscapeTarget::Binder(binder), tail_borrowed, None)
 }
 
+/// DUP-AWARE `binding_escapes` with a FRESH per-subtree dup-site collection (v-core-opt-signed-off 3049
+/// fence): collects `binder`'s Perceus retain (dup) sites WITHIN `id` itself, then asks the dup-aware escape
+/// query. `true` = `binder` escapes `id` via a consuming occurrence that was NOT a dup (an un-dup'd move /
+/// whole-operand carry — e.g. `Bytes.concat(b, more)`, or the empty-concat fast-path returning a b-retaining
+/// operand whole); `false` = EVERY consuming occurrence of `binder` in `id` dup'd a FRESH reference, so
+/// `binder`'s OWN slot reference is a dead owned surplus the loop must reclaim AND the produced value holds
+/// only independent dup'd refs (dropping the slot ref frees only the surplus — no UAF). This is PROVABLY the
+/// surplus-slot-ref condition and is SELF-GATING (any non-dup-backed carry ⇒ `true` ⇒ the back-edge drop
+/// declines, leaks, never double-frees). Same `dup_sites` polarity as [`record_cell_param_droppable`] / the
+/// let-epilogue drop (reclaim.rs:83-95, 108-112). The FRESH per-`id` collection (NOT a whole-body snapshot) is
+/// deliberate: the query must see exactly the dups emitted for THIS rebind arg's uses of `binder`.
+pub(super) fn binding_escapes_fresh_dup_aware(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    tail_borrowed: bool,
+) -> bool {
+    let mut dup_sites: HashSet<StructId> = HashSet::new();
+    collect_dup_sites(db, id, &[binder], &mut dup_sites);
+    binding_escapes_dup_aware(
+        db,
+        id,
+        EscapeTarget::Binder(binder),
+        tail_borrowed,
+        Some(&dup_sites),
+    )
+}
+
 /// Whether closure CAPTURE #`capture_index` ESCAPES the closure `body` via its return/a consuming use (vs is
 /// only BORROWED) — the hcz capture-escape DISCRIMINATOR. Reuses [`binding_escapes_dup_aware`]'s exact
 /// borrow-vs-escape walk, keyed on `Core::Captured { index }` occurrences ([`EscapeTarget::Capture`]) rather
@@ -1405,6 +1433,21 @@ pub(super) fn rebind_produces_fresh(db: &mut Db, arg: StructId) -> bool {
         // `(List.push c …)` carries `c` WHOLE (consumed) → escapes → blocked (a DISTINCT multi-use read-
         // borrow-dup leak, v-runtime-classified Fix-A-adjacent, deferred).
         Core::ListConcat { .. } => true,
+        // `Bytes.concat`/`Bytes.slice` mint a FRESH rope/slice NODE (`op_bytes_concat` builds a new rope cell
+        // [left,right]+len retaining its two children refcounted; `op_bytes_slice` is O(1) no-copy but still
+        // allocates a NEW slice cell [parent]+[off,len] holding the parent handle LIVE via `op_dup` —
+        // v-core-opt's bytes_string.rs:279-348 read). The result outer cell is ALWAYS distinct from any source
+        // operand (no in-place FBIP reuse; `op_bytes_compact` is the sole materializer, 363-366), and every
+        // retention is REFCOUNTED (spec invariant 315-316: the storage a value retains MUST be storage its
+        // representation holds live — NO raw aliases). So a loop-carried Bytes param rebound to a fresh
+        // slice/concat of ITSELF (3049 `walk b i = walk (concat(slice b, slice b)) (i+1)`) gets a distinct new
+        // cell; the OLD slot ref is a dup-preserved SURPLUS. SOUNDNESS of this arm, like the ctor arms, rests on
+        // the caller's escape guard: the DUP-UNAWARE `!binding_escapes` (borrow_not_consumed) still blocks when
+        // the source escapes at all, so this arm only *enables* the slice/concat-retention DUP-AWARE third admit
+        // (`drop_old_borrowed`, select.rs), which requires b's every escape into the arg be dup-backed (the slot
+        // ref then provably surplus). A whole-carry `concat(b, more)` consumes b un-dup'd → dup-aware escape
+        // true → that admit declines (leak, never a double-free).
+        Core::BytesConcat { .. } | Core::BytesSlice { .. } => true,
         // A fresh SUM ctor — `sum-new` `arr-alloc`s a brand-new sum cell, a distinct allocation that is never
         // the old accumulator's own cell (the sum analog of the product-ctor arm above). The fn-doc deferred
         // `SumNew` "to a separately-verified follow-up … the sum-state leak wants its own before/after pin";
