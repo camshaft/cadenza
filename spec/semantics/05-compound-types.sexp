@@ -5841,6 +5841,41 @@
   (live-objects 0))
 
 (case
+  "a consumed-reused invariant base read TWICE after the loop is caller-reclaimed exactly once across both post-loop borrows"
+  (doc
+    "The MULTI-POST-LOOP-USE tripwire for the #9452 F4 caller-drop admit (`call_arg_caller_drops`), a
+           strengthening of the sibling above (which reads `base` ONCE after the loop). Here `base` is a
+           genuine multi-use caller surplus read TWICE post-loop — `(+ (List.len base) (List.len (List.push
+           base 7)))` — on top of the invariant loop borrow. The caller-drop must RETAIN `base` across BOTH
+           post-loop borrows and drop it EXACTLY ONCE at its true last use: value `4m+7` (m=0→7, 1→11, 2→15,
+           4→23), census 0. A regression that dropped `base` after the FIRST post-loop borrow (a
+           retain-count-of-1 caller-drop) would free it before the second `(List.push base 7)` read → UAF /
+           debug-runtime trap; one that never dropped it would leak. The loop still does NOT epilogue-drop it
+           (`looped_owned_param_drops` empty). `mb` builds `base` as a runtime list. Value + census verified on
+           the debug-counters runtime, O0==O3.")
+  (input
+    (do
+      (def (mb (: i Int64) (: n Int64) (: acc (List Int64)))
+        (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
+      (def (loop (: j Int64) (: m Int64) (: base (List Int64)) (: tot Int64))
+        (if (< j m) (loop (+ j 1) m base (+ tot (List.len (List.push base 99)))) tot))
+      (def (main (: m Int64))
+        (let ((base (mb 0 3 #list())))
+          (+ (loop 0 m base 0)
+             (+ (List.len base)
+                (List.len (List.push base 7))))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 7 Int64))
+  (call main (: 1 Int64))
+  (output (: 11 Int64))
+  (call main (: 2 Int64))
+  (output (: 15 Int64))
+  (call main (: 4 Int64))
+  (output (: 23 Int64))
+  (live-objects 0))
+
+(case
   "a loop-invariant heap projection consumed in the loop body is not LICM-hoisted"
   (doc
     "The LOOP-INVARIANT-CODE-MOTION face of the still-live-binding family: LICM hoists a loop-invariant
