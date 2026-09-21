@@ -15245,7 +15245,7 @@
         (ev (Core.KCall #tuple(9 #list((Core.KConst 10) (Core.KConst 20) (Core.KConst 12))))))
       (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "map equality is independent of insertion order"
@@ -19457,7 +19457,7 @@
   (output (: 1236781 Int64))
   (call main (: 0 Int64))
   (output (: 1230781 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates"
@@ -21952,7 +21952,7 @@
       (def (main) (f 1 (build 0 2 #list())))
       (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime map shared across two recursive-call operands is not mutated by an insert in one"
@@ -34741,7 +34741,7 @@
       (export main)))
   (call main)
   (output (: 5 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- List.len reclaims an owned temporary but leaves a borrowed list to its owner (migrated from rcdzc
 ; list_len_over_an_owned_temporary_reclaims_it_but_a_borrowed_list_is_left_to_its_owner): vec-len BORROWS
@@ -35163,7 +35163,7 @@
       (export main)))
   (call main)
   (output (: 7 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "pjr2 a doubly-nested projected list consumed then re-read is retained (projection-depth face)"
@@ -37079,7 +37079,7 @@
   (output (: 21 BigInt))
   (call main (: -3 Int64))
   (output (: -9 BigInt))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ---- destructure-let materialize-once + reclaim (v-compiler-primitives #6000; v-memory-safety ruling A) ----
 ; A tuple/record destructure-`let` lowers AS a single irrefutable-arm `match` over the init, so it inherits the
