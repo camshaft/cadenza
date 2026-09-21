@@ -19704,7 +19704,7 @@
   (output (: 44071111 Int64))
   (call main (: 0 Int64))
   (output (: 33069109 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?"
@@ -19960,7 +19960,7 @@
   (output (: 40077107 Int64))
   (call main (: 0 Int64))
   (output (: 30066106 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "ssm2 the SEISMOGRAPH at three readings — deviation over four logs an event (peak by inline max, baseline nudged up), quiet drifts one signed step, and the seeds disagree on whether the THIRD reading is an aftershock event or a quiet drift so even the event counts split"
@@ -26503,7 +26503,7 @@
       (export main)))
   (call main (: 10 Int64))
   (output (: 60 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cx5c LET-BOUND effectful closure invoked directly (no HOF)"
