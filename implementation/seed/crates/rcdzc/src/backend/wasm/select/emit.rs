@@ -5630,6 +5630,31 @@ pub(super) fn emit(
                 // A scalar capture boxes; a compound is stored as-is; a UNIT capture holds the inline-unit
                 // sentinel in its cell slot (the value pushed nothing).
                 let boxed = box_op(db, cap)?;
+                // PERCEUS CAPTURE-RETAIN (v-memory-safety, 09-functions:3485): a HEAP capture (`box_op`
+                // None — stored as the handle itself) whose binder is consumed-INTO-this-env AND still LIVE
+                // afterward is marked by `mark_binder_dups`/`collect_dup_sites` (→ `dup_sites`, keyed on the
+                // capture occurrence node). Without a retain the handle is stored into the closure cell by
+                // MOVE, so the env and the binder's OWN slot share ONE ref; the env is reclaimed
+                // independently (a SITE-A `CallClosure` env-cell drop, or an owning caller's loop-exit drop)
+                // and cascade-frees the shared child while a LATER use of the binder (a recursive back-edge
+                // `(rec g …)`) still reads it → use-after-free (the shared closure capture `g` in
+                // `(fn (b) (g b))` built each recursion level). `dup` the handle (rc++) so the env owns its
+                // own ref; the OWN-slot ref survives for the later use, and each owner's drop reclaims one.
+                // A SCALAR capture boxes a FRESH cell (`box_op` Some) — no shared ref, so no dup. Node-keyed
+                // on `dup_sites`, so it fires ONLY where a live-after consume was proven (leak-over-UAF: an
+                // over-mark = a surplus dup the env-drop reclaims = at worst a leak, never an under-retain).
+                // `OP_DUP` pops its arg and returns nothing, so tee to a scratch slot, re-get, dup the copy,
+                // leaving the original handle on the stack for the store. Float the slot ABOVE `*high` (the
+                // `emit(cap)` above may have spent scratch at/above `base`), mirroring the `Core::Proj`
+                // child-dup site.
+                if boxed.is_none() && out.dup_sites.contains(&cap) {
+                    let cap_slot = *high;
+                    *high = (*high).max(cap_slot + 1);
+                    scratch_ty.insert(cap_slot, ValType::I32);
+                    out.push(Lir::LocalTee(cap_slot)); // [handle], cap_slot = handle
+                    out.push(Lir::LocalGet(cap_slot)); // [handle, handle]
+                    out.push(Lir::CallImport(OP_DUP)); // pops the 2nd copy, rc++ → [handle]
+                }
                 emit_heap_store_tail(db, cap, boxed, out);
                 out.push(Lir::CallImport(OP_ARR_SET)); // → [cell]
             }

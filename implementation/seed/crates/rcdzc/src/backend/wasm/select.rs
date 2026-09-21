@@ -1486,7 +1486,13 @@ pub fn closure_env_invariant_borrow_clean_binders(
         // which borrows the env cell). This is the SAME predicate whose truth put this invariant param into
         // `looped_owned_param_drops` (the loop-exit drop that already reclaims the entry-owned ref once), so a
         // per-application SITE-A drop of the SPURIOUS dup is the only missing half.
+        // Borrow-clean over the whole body AND not threaded through a NON-TAIL self-recursive call. The latter
+        // fence (v-memory-safety, 09-functions:8750 `filt`) excludes a closure param handed to a fresh recursive
+        // frame whose result is CONSUMED here (`(Iter.Cons h (filt rest p))`): that frame reclaims the param in
+        // its own lifetime, so the SITE-A per-application env-drop would DOUBLE-reclaim it → over-free. A purely
+        // tail-recursive loop (771 `times`) threads its closure param only in the tail back-edge → not flagged.
         if param_only_borrowed_or_backedge(db, body, *binder, &loop_members, &param_slots, &slot_of)
+            && !param_threaded_through_nontail_selfcall(db, body, *binder, &loop_members, true)
         {
             out.insert(*binder);
         }
