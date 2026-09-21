@@ -650,7 +650,7 @@
   (host-responses (respond hs.h (: 99 Int64)))
   (host-calls (call hs.h))
   (output (: 99 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; -- a host-op RESULT flowing into a Bytes-resource escape (migration from rcdzc a_scalar_host_op_result_
 ; escaping_as_a_bytes_resource_runs_e2e, 2026-08-27): the host response value reaches the escaped Bytes
