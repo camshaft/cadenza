@@ -482,15 +482,15 @@
 ;     CHAMP borrow-op sibling batch #9487 did for MapRemove/SetContains/SetRemove keys/elems) then re-baseline
 ;     each to 0 with breaker's fresh-cdz census-verify. All three census 1, no trap, on the post-#9499 compiler. ---
 (case
-  "a 465-escaping nested-MatchSum view husk queried into Set.contains is found by its flat twin but leaks (known-leak, next-op-gap sibling of 465)"
+  "a 465-escaping nested-MatchSum view husk queried into Set.contains is found by its flat twin and RECLAIMS to 0 (reclaimed by #9504, next-op sibling of 465)"
   (doc
     "The Set.contains borrow-op face of the 465 escaping-view husk. `inner` is the doubly-sliced seam-crossing
            view (escapes its inner Bytes.slice Some arm, produced two match levels deep, exactly as 465) — here
            it is the QUERY elem of a Set.contains (a borrow-op). The view hashes to its flat twin's CHAMP slot →
            member of {[30,40,50],[1]} → true (value 1). But #9499 added matchsum_view_operand_escaping_reclaim_ok
-           to value-eq + Map.lookup ONLY, so the escaping husk's rc1 dup is not dropped at Set.contains → leaks 1
-           (no trap, opt-independent). Pinned known-leak (honest UAF-class guard; an over-drop of the still-refd
-           source would re-trap → fail). v-core-opt to add Set.contains to the disjunct, then re-baseline to 0.")
+           to value-eq + Map.lookup; #9504 extended it to Set.contains, so the escaping husk's rc1 dup is now dropped
+           consumer-side → RECLAIMS to 0 (value 1 unchanged, no trap, opt-independent). Re-baselined from known-leak;
+           still a guard (an over-drop of the still-refd source would re-trap → fail).")
   (input
     (do
       (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
@@ -503,15 +503,15 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
-  "a 465-escaping nested-MatchSum view husk removed via Set.remove drops the flat twin but leaks (known-leak, next-op-gap sibling of 465)"
+  "a 465-escaping nested-MatchSum view husk removed via Set.remove drops the flat twin and RECLAIMS to 0 (reclaimed by #9504, next-op sibling of 465)"
   (doc
     "The Set.remove borrow-op face of the 465 escaping-view husk: `inner` (the same doubly-sliced escaping view)
            is the elem passed to Set.remove over {[30,40,50],[1]} → removes the flat-twin elem, leaving len 1
-           (value 1). #9499's recognizer does not cover Set.remove, so the escaping husk leaks 1 (no trap).
-           Pinned known-leak; v-core-opt to add Set.remove to the disjunct then re-baseline to 0.")
+           (value 1). #9504 extended matchsum_view_operand_escaping_reclaim_ok to Set.remove → the escaping husk now
+           reclaims to 0 (no trap). Re-baselined from known-leak; still a guard (an over-drop would re-trap → fail).")
   (input
     (do
       (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
@@ -524,15 +524,15 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
-  "a 465-escaping nested-MatchSum view husk keying Map.remove drops the flat twin but leaks (known-leak, next-op-gap sibling of 465)"
+  "a 465-escaping nested-MatchSum view husk keying Map.remove drops the flat twin and RECLAIMS to 0 (reclaimed by #9504, next-op sibling of 465)"
   (doc
     "The Map.remove borrow-op face of the 465 escaping-view husk: `inner` (the same doubly-sliced escaping view)
            is the KEY passed to Map.remove over {[30,40,50]→7,[1]→9} → removes the flat-twin entry, leaving len 1
-           (value 1). #9499's recognizer does not cover Map.remove, so the escaping husk leaks 1 (no trap).
-           Pinned known-leak; v-core-opt to add Map.remove to the disjunct then re-baseline to 0.")
+           (value 1). #9504 extended matchsum_view_operand_escaping_reclaim_ok to Map.remove → the escaping husk now
+           reclaims to 0 (no trap). Re-baselined from known-leak; still a guard (an over-drop would re-trap → fail).")
   (input
     (do
       (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
@@ -545,7 +545,7 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Bytes.concat of two runtime SLICES splices window content in order"
