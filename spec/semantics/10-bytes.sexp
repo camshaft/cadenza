@@ -474,6 +474,79 @@
   ; frees independently). Was known-leak.
   (live-objects 0))
 
+; --- Next-op-gap siblings of 465: the SAME escaping nested-MatchSum view husk keyed into borrow-ops that
+;     #9499 did NOT add to matchsum_view_operand_escaping_reclaim_ok (it covered value-eq + Map.lookup only).
+;     Each is value-correct (the view hashes/compares canonically, hits the flat twin) but LEAKS 1 (the
+;     escaping husk is dup'd rc1 by the 465(b) path and the borrow-op has no consumer-drop). Pinned known-leak
+;     = honest immediate UAF-class guards; v-core-opt to extend the recognizer disjunct to these ops (as the
+;     CHAMP borrow-op sibling batch #9487 did for MapRemove/SetContains/SetRemove keys/elems) then re-baseline
+;     each to 0 with breaker's fresh-cdz census-verify. All three census 1, no trap, on the post-#9499 compiler. ---
+(case
+  "a 465-escaping nested-MatchSum view husk queried into Set.contains is found by its flat twin but leaks (known-leak, next-op-gap sibling of 465)"
+  (doc
+    "The Set.contains borrow-op face of the 465 escaping-view husk. `inner` is the doubly-sliced seam-crossing
+           view (escapes its inner Bytes.slice Some arm, produced two match levels deep, exactly as 465) — here
+           it is the QUERY elem of a Set.contains (a borrow-op). The view hashes to its flat twin's CHAMP slot →
+           member of {[30,40,50],[1]} → true (value 1). But #9499 added matchsum_view_operand_escaping_reclaim_ok
+           to value-eq + Map.lookup ONLY, so the escaping husk's rc1 dup is not dropped at Set.contains → leaks 1
+           (no trap, opt-independent). Pinned known-leak (honest UAF-class guard; an over-drop of the still-refd
+           source would re-trap → fail). v-core-opt to add Set.contains to the disjunct, then re-baseline to 0.")
+  (input
+    (do
+      (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
+      (def
+        (main (: s Int64))
+        (do
+          (def rope (Bytes.concat (pick s (Bytes.of #list(10 20 30)) (Bytes.of #list(99))) (pick s (Bytes.of #list(40 50 60 70)) (Bytes.of #list(99)))))
+          (def inner (match (Bytes.slice rope 1 5) ((Some outer) (match (Bytes.slice outer 1 3) ((Some i) i) ((None _u) (Bytes.of #list())))) ((None _u) (Bytes.of #list()))))
+          (if (Set.contains (Set.insert (Set.insert #set() (Bytes.of #list(30 40 50))) (Bytes.of #list(1))) inner) 1 0)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64))
+  (live-objects known-leak))
+
+(case
+  "a 465-escaping nested-MatchSum view husk removed via Set.remove drops the flat twin but leaks (known-leak, next-op-gap sibling of 465)"
+  (doc
+    "The Set.remove borrow-op face of the 465 escaping-view husk: `inner` (the same doubly-sliced escaping view)
+           is the elem passed to Set.remove over {[30,40,50],[1]} → removes the flat-twin elem, leaving len 1
+           (value 1). #9499's recognizer does not cover Set.remove, so the escaping husk leaks 1 (no trap).
+           Pinned known-leak; v-core-opt to add Set.remove to the disjunct then re-baseline to 0.")
+  (input
+    (do
+      (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
+      (def
+        (main (: s Int64))
+        (do
+          (def rope (Bytes.concat (pick s (Bytes.of #list(10 20 30)) (Bytes.of #list(99))) (pick s (Bytes.of #list(40 50 60 70)) (Bytes.of #list(99)))))
+          (def inner (match (Bytes.slice rope 1 5) ((Some outer) (match (Bytes.slice outer 1 3) ((Some i) i) ((None _u) (Bytes.of #list())))) ((None _u) (Bytes.of #list()))))
+          (Set.len (Set.remove (Set.insert (Set.insert #set() (Bytes.of #list(30 40 50))) (Bytes.of #list(1))) inner))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64))
+  (live-objects known-leak))
+
+(case
+  "a 465-escaping nested-MatchSum view husk keying Map.remove drops the flat twin but leaks (known-leak, next-op-gap sibling of 465)"
+  (doc
+    "The Map.remove borrow-op face of the 465 escaping-view husk: `inner` (the same doubly-sliced escaping view)
+           is the KEY passed to Map.remove over {[30,40,50]→7,[1]→9} → removes the flat-twin entry, leaving len 1
+           (value 1). #9499's recognizer does not cover Map.remove, so the escaping husk leaks 1 (no trap).
+           Pinned known-leak; v-core-opt to add Map.remove to the disjunct then re-baseline to 0.")
+  (input
+    (do
+      (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
+      (def
+        (main (: s Int64))
+        (do
+          (def rope (Bytes.concat (pick s (Bytes.of #list(10 20 30)) (Bytes.of #list(99))) (pick s (Bytes.of #list(40 50 60 70)) (Bytes.of #list(99)))))
+          (def inner (match (Bytes.slice rope 1 5) ((Some outer) (match (Bytes.slice outer 1 3) ((Some i) i) ((None _u) (Bytes.of #list())))) ((None _u) (Bytes.of #list()))))
+          (Map.len (Map.remove (Map.insert (Map.insert Map.empty (Bytes.of #list(30 40 50)) 7) (Bytes.of #list(1)) 9) inner))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64))
+  (live-objects known-leak))
+
 (case
   "Bytes.concat of two runtime SLICES splices window content in order"
   (doc
