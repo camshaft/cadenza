@@ -820,7 +820,7 @@
   (output (: 6 Int64))
   (call main (: 4 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a closure param passed to TWO SIBLING self-calls reclaims its captured env — the closure twin of the sibling consume-spare (#9155 × #9175)"
@@ -1376,7 +1376,7 @@
   ; map-store consumes a DUP so the slot original survives dead-after; list/sum-payload siblings MOVE so
   ; balance). LEAK-side (value correct, no trap; seq-278). Real fix = the dup_sites-3690-3694
   ; surviving-slot-drop (v-mem co-design, in flight) → tightens to 0. Was (0, unpinned).
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a capturing closure stored in a tuple and also called directly folds through its capture"
@@ -2773,7 +2773,7 @@
       (def (main) (match (top #list(42 7)) ((AInt n) n) (_ -1)))
       (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a recursive fold with an unannotated two-argument callback parameter"
@@ -2793,7 +2793,7 @@
         (fold (fn ((: a Int64) (: b Int64)) (+ a b)) 0 (L.Cons 1 (L.Cons 2 (L.Cons 3 L.Nil)))))
       (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a recursive HOF infers a callback whose RESULT is a sum matched in the body"
@@ -2819,7 +2819,7 @@
           ((C.B) 0)))
       (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a branching recursive tree fold infers its unannotated callback across both arms"
@@ -3649,7 +3649,7 @@
   (output (: 6 Int64))
   (call main (: 2 Int64))
   (output (: 123 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a list of closure-carrying variants interprets as a command pipeline over an accumulator"
@@ -3818,7 +3818,7 @@
   (output (: 32 Int64))
   (call main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a closure built OVER another closure applies both capture layers"
@@ -3863,7 +3863,7 @@
   (output (: 5 Int64))
   (call main (: 1 Int64) (: 4 Int64))
   (output (: 81 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; NESTED CAPTURING CLOSURES — a closure captures another closure that ITSELF captures. `g = (fn (x) (f
 ; (+ x 1)))` captures `f`, and `f = (fn (y) (+ y k))` captures `k`. Inside `g`'s lifted body, `f` is a
@@ -4125,7 +4125,7 @@
       (export main)))
   (call main (: 2 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A closure that captures a BOOLEAN. The captured value's TYPE decides the runtime op that unboxes it
 ; from the env cell — an integer capture reads `get-int`, a boolean reads `get-bool`. That op is emitted
@@ -4291,7 +4291,7 @@
   (output (: 45 Int64))
   (call main (: 100 Int64))
   (output (: 145 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The MULTI-PARAMETER twin: the idiomatic two-argument left fold. The closure `(fn (x a) (+ a x))` and the
 ; recursive HOF's `f` are BOTH unannotated. `fold-list` is generic in `f`, so the call MONOMORPHIZES — the
@@ -4322,7 +4322,7 @@
   (output (: 42 Int64))
   (call main (: 100 Int64))
   (output (: 142 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The same monomorphized fold, but the two closure parameters have DISTINCT types — the accumulator is
 ; `Int64` and the element is `String`. The closure `(fn (acc s) (+ acc (String.byte-len s)))` must solve
@@ -4351,7 +4351,7 @@
   (output (: 7 Int64))
   (call main (: 100 Int64))
   (output (: 107 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A single-argument unannotated closure whose RESULT is Bool — a predicate threaded through a recursive
 ; HOF that counts how many elements satisfy it. `(fn (x) (< x 10))` solves `x : Int64` from `(< x 10)` and
@@ -4377,7 +4377,7 @@
   (output (: 2 Int64))
   (call main (: 100 Int64))
   (output (: 102 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; The cases above each instantiate a closure-taking recursive HOF at a SINGLE closure type. This one
 ; instantiates the SAME generic recursive HOF `fold-list` at TWO distinct closure types in one program:
@@ -4643,7 +4643,7 @@
       (export main)))
   (call main (: 14 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a user-written FILTER combinator keeps elements passing a captured predicate"
@@ -4664,7 +4664,7 @@
   (output (: 3 Int64))
   (call main (: 30 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "map THEN filter compose — one combinator's output list is the next's input"
@@ -4693,7 +4693,7 @@
   (output (: 2 Int64))
   (call main (: 2 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a middle curry STAGE is reused — one s1 residual yields an s2 applied twice"
@@ -6652,7 +6652,7 @@
       (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 #list()) 0) "at")))
       (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; A further residual of the SAME i32/i64 slot family, on the `if`-BRANCH axis: a self-recursive function
 ; CARRYING a heap collection whose BASE arm materializes a fallible-read Option HANDLE. The two `if`
@@ -9522,7 +9522,7 @@
       (def (main) (fold-list (fn ((: x Int64) (: a Int64)) (+ a x)) 0 #list(5 7 30)))
       (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a higher-order left fold over a built-in list with an annotated fn parameter"
@@ -9540,7 +9540,7 @@
       (def (main) (fold-list (fn (x a) (+ a x)) 0 #list(5 7 30)))
       (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a higher-order left fold applies its combiner, not a fixed operator"
@@ -9557,7 +9557,7 @@
       (def (main) (fold-list (fn ((: x Int64) (: a Int64)) (if (> x a) x a)) 0 #list(5 30 7)))
       (export main)))
   (output (: 30 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; INLINE POLICY — the `@inline-never` / `@inline-always` ANNOTATIONS (`DESIGN-…-monomorphization`
 ; Addendum 4). `@name form` is the general-purpose annotation sigil (canonical `(@ name form)`); these are
@@ -10463,7 +10463,7 @@
   (output (: 1212 Int64))
   (call main (: 0 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "compose builds closures capturing TWO function values in one env, both orders"
@@ -11079,7 +11079,7 @@
       (export main)))
   (call main (: 10 Int64))
   (output (: 36 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "cpp2 a partial built from a RUNTIME operand, stored in a record, projected, applied"
