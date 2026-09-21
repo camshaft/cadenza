@@ -517,7 +517,7 @@
       (export main)))
   (call main (: 40 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- The NONZERO recursive-BigInt-literal-probe row (breaker FINDING #22), now closed ---------------
 ; The peephole cases above use only literal-0 patterns; the doc at "OVERLAPPING quote patterns" notes the
