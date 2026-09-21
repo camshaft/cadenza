@@ -3056,6 +3056,37 @@
   (output (: 2 Int64))
   (live-objects 0))
 
+; --- Strengthening of the 3049 varying-Bytes-param back-edge reclaim: THREE dup sites per arg. ---
+(case
+  "the varying-threaded owned-Bytes-param back-edge reclaims with THREE dup sites per rebind (nested-concat strengthening of 3049)"
+  (doc
+    "Strengthens the #9479 dup-aware per-back-edge reclaim (10-bytes:3049) from a TWO-slice rebind to a
+           THREE-slice NESTED concat: `d2` rebinds the self-tail-recursive `walk`'s owned Bytes param `b` via
+           `slice[0,i) ++ slice[i+1,1) ++ slice[i+2, len-i-2)` — i.e. `b` appears in THREE independent
+           refcounted slice ops per iteration (three op_dup sites on the parent, wrapped in a nested
+           Bytes.concat), dropping exactly index i. Every self-use of `b` is thus dup-backed, so its OLD slot
+           ref is a dead surplus and #9476's dup-aware escape query (`collect_dup_sites` →
+           `binding_escapes_fresh_dup_aware`) must still prove it reclaimable and drop it per-back-edge — now
+           across THREE dup sites and a nested rope, not two. Greedy drop from [1,2,3,4,5,6] removes indices
+           0,1 then exits at (i+2 >= len) with len 4. Value 4, live-objects 0 (census-verified post-#9479):
+           a regression that loses the multi-dup-site reclaim (or over-drops the retained buffer) re-leaks or
+           re-traps → fails this grade. Complements the base 3049 two-slice case above.")
+  (input
+    (do
+      (def
+        (d2 (: b Bytes) (: i Int64))
+        (Bytes.concat
+          (Bytes.concat
+            (Option.expect (Bytes.slice b 0 i) "lo")
+            (Option.expect (Bytes.slice b (+ i 1) 1) "mid"))
+          (Option.expect (Bytes.slice b (+ i 2) (- (Bytes.len b) (+ i 2))) "hi")))
+      (def (walk (: b Bytes) (: i Int64)) (if (>= (+ i 2) (Bytes.len b)) b (walk (d2 b i) (+ i 1))))
+      (def (main (: mode Int64)) (Bytes.len (walk (Bytes.of #list(1 2 3 4 5 6)) 0)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 4 Int64))
+  (live-objects 0))
+
 ; --- Byte-wise reversal over a seamed rope. ---
 (case
   "a byte-wise reversal over a seamed rope is an involution and lands bytes at mirrored offsets"
