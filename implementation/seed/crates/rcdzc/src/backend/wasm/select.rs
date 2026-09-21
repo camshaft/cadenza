@@ -1675,6 +1675,64 @@ fn arm_contains_self_call(db: &mut Db, node: StructId, self_def: usize) -> bool 
     go(db, node, self_def, &mut seen)
 }
 
+/// Whether EVERY direct self-call to `self_def` reachable in `node` passes `binder` VERBATIM (a bare
+/// `Core::Param`/`Core::LocalRef` to `binder`) at argument position `param_index` — the TRUE-INVARIANCE
+/// gate the F7 non-tail-selfrec borrow-param drop needs. 14966 `mpow(base, e/2, md)` passes `base`/`md`
+/// UNCHANGED (invariant) → admit; giter-takedrop `take(rest, n-1)` passes `rest` for its matched param
+/// `it` (VARYING — a projection of the param, not the param) → decline. A per-arm last-use drop is sound
+/// ONLY for a truly-invariant param: a varying param's recursive frame gets a DIFFERENT value (a child
+/// projected out of it), so dropping the incoming ref frees a child the fresh frame still holds → UAF
+/// (the #9466 regression that trapped cad-test-iterators giter-takedrop). `def_consumes_param`'s
+/// invariance gate is TCO-slot-based and MISSES this — a NON-TAIL self-call is a fresh frame, not a
+/// slot-replacing back-edge, so a matched-then-projected param is wrongly seen as invariant-borrow — so the
+/// F7 admit must check recursive invariance DIRECTLY here. Returns false (leak-over-UAF DECLINE) on any
+/// non-verbatim arg, arity mismatch, or if no self-call is present.
+fn nontail_selfcall_passes_param_invariant(
+    db: &mut Db,
+    node: StructId,
+    self_def: usize,
+    param_index: usize,
+    binder: StructId,
+) -> bool {
+    fn go(
+        db: &mut Db,
+        id: StructId,
+        self_def: usize,
+        param_index: usize,
+        binder: StructId,
+        seen: &mut HashSet<StructId>,
+        saw: &mut bool,
+    ) -> bool {
+        if !seen.insert(id) {
+            return true;
+        }
+        let self_call_args = match core_of(db, id) {
+            Core::Call { callee, args, .. } if callee == self_def => Some(args),
+            _ => None,
+        };
+        if let Some(args) = self_call_args {
+            *saw = true;
+            let Some(&arg) = args.get(param_index) else {
+                return false; // arity mismatch → decline (leak-over-UAF)
+            };
+            let verbatim = matches!(
+                core_of(db, arg),
+                Core::Param { binder: b } | Core::LocalRef { binder: b } if b == binder
+            );
+            if !verbatim {
+                return false; // the recursive frame gets a DIFFERENT value → not invariant → decline
+            }
+        }
+        core_child_ids(db, id)
+            .into_iter()
+            .all(|c| go(db, c, self_def, param_index, binder, seen, saw))
+    }
+    let mut seen = HashSet::new();
+    let mut saw = false;
+    let all_ok = go(db, node, self_def, param_index, binder, &mut seen, &mut saw);
+    all_ok && saw
+}
+
 /// 14966 (06-numeric): the LAST-USE-PER-ARM drop plan for a NON-TAIL self-recursive fn's INVARIANT
 /// borrow-used-after heap params — the BORROW-classified sibling of F6(ii). `mpow(base,e,md)` is NON-TAIL
 /// self-recursive (`hh = mpow(base, e/2, md)`, result squared); `base`/`md` are invariant heap params the
@@ -1774,10 +1832,19 @@ fn plan_nontail_selfrec_borrow_param_arm_drops(
         ) {
             continue; // escapes verbatim → a drop here would double-free.
         }
-        if then_rec {
+        // TRUE-INVARIANCE gate (#9466 regression fix — cad-test-iterators giter-takedrop UAF): only drop the
+        // incoming ref in an arm whose self-call passes THIS param VERBATIM (invariant, like mpow's `base`).
+        // A VARYING param (the recursive frame gets a projected/different value, like `take(rest, n-1)`'s
+        // `it`->`rest`) must NOT be dropped here — the fresh frame holds a child of it, so the drop UAFs.
+        // `def_consumes_param`'s invariance gate is TCO-slot-based and misses non-tail-recursion variance.
+        if then_rec
+            && nontail_selfcall_passes_param_invariant(db, then_, self_d, param_index, *binder)
+        {
             out.push((body, slot, true));
         }
-        if else_rec {
+        if else_rec
+            && nontail_selfcall_passes_param_invariant(db, else_, self_d, param_index, *binder)
+        {
             out.push((body, slot, false));
         }
     }
