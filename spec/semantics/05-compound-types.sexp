@@ -34850,6 +34850,43 @@
   (output (: 12 Int64))
   (live-objects 0))
 
+(case
+  "spr2b a threaded sum's payload extracted TWICE per iteration is retained (multi-borrow strengthening of spr2)"
+  (doc
+    "The multi-borrow strengthening of spr2 above (#9469 flipped the single-extraction SumPayload-base
+           leak to 0). Here the SAME threaded sum `bx = (B (List Int64))` has its payload extracted TWICE per
+           iteration — `(+ (List.len (List.push (match bx ((B xs) xs)) 99)) (List.len (match bx ((B xs) xs))))`
+           — while `bx` is still threaded UNCHANGED to the self-call. Each `(match bx ((B xs) xs))` is a BORROW
+           of the payload (read, not consume); TWO borrows per frame must each retain-child-dup without
+           mutating the threaded scrutinee, so per iteration = len(push xs 99)=3 + len(xs)=2 = 5, and `bx` stays
+           [0,1] every frame (no drift). Value 5m (m=1→5, 2→10, 4→20, 8→40). A borrowed-payload FBIP-mutated at
+           rc==1 by EITHER extraction would grow the threaded scrutinee and drift the value; a missed retain
+           leaks the dup'd child per frame (O(m) residue); an over-drop double-frees the payload the second
+           extraction still reads. Census 0 witnesses the SumPayload retain-child dup holds under multiple
+           per-frame borrows of the same threaded base. O0==O3.")
+  (input
+    (do
+      (type Box (B (List Int64)))
+      (def (mb (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
+      (def
+        (loop (: j Int64) (: m Int64) (: bx Box) (: tot Int64))
+        (if
+          (< j m)
+          (loop (+ j 1) m bx
+            (+ tot (+ (List.len (List.push (match bx ((B xs) xs)) 99)) (List.len (match bx ((B xs) xs))))))
+          tot))
+      (def (main (: m Int64)) (loop 0 m (B (mb 0 2 #list())) 0))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 5 Int64))
+  (call main (: 2 Int64))
+  (output (: 10 Int64))
+  (call main (: 4 Int64))
+  (output (: 20 Int64))
+  (call main (: 8 Int64))
+  (output (: 40 Int64))
+  (live-objects 0))
+
 ; -- Option.expect (SumExpect) payload retain, the twin of spr1/spr2: `Option.expect s` reads sum-payload (a
 ; BORROW), so consuming it (List.push) while `s` is threaded UNCHANGED to the self-call must RETAIN — else the
 ; borrowed payload FBIP-mutates at rc==1 and the threaded Option drifts (per-iter 3,4,5,6 → 18 not 12). The
