@@ -14889,7 +14889,11 @@
            FOUND by the key-2 retrieval (42). Sharing doesn't fork identity: however many owners a heap
            value has and whichever path retrieves it, it is one canonical value for the key hash. The
            closure of the shared-value family (isolation under update above; identity under retrieval
-           here).")
+           here).
+           RECLAIMS to 0 (campaign-reclaimed): the shared inner map's borrow-op key husks (retrieved as
+           k1/k2, keyed into a Map.insert + Map.lookup) are now balanced. Opt-independent (0 at O0..O3,
+           n=1/2/5/40), value 42 correct — the lookup FINDS k1's entry via k2, so both shared
+           retrievals are live and equal at lookup time (no early free of the shared inner map).")
   (input
     (do
       (def
@@ -14906,7 +14910,7 @@
       (export main)))
   (call main (: 40 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a trie of 40 TUPLE keys resolves compound-key descent at depth"
