@@ -231,9 +231,26 @@ is read from the NIX debug-counters runtime — native `--report-live-objects` i
     857 3→0, value 3/12/24, O0==O3, 799/tail-loop unaffected, guarded-all GREEN). condition v-core-opt,
     placement v-mem.
 
-- **QUEUED:** 14966 (non-tail borrowing-param — invariant borrow-only heap param dup'd per non-tail arg,
-  never dropped on unwind); interior-view-chain 1811/1860/2500 (source-transfer: re-root the view's ref
-  outer→rope) + F1's StrAt residual + F2's deep-nested residual; 5890 (SumPayload-base variant).
+- **F7 — non-tail self-recursive invariant BORROW-param (06-numeric 14966 `mpow`). LANDED.** The borrow-
+  param sibling of F6(ii): a repeated-squaring modpow `mpow(base,e,md) = if e==0 then 1%md else (let
+  hh=mpow(base,e/2,md); sq=hh*hh%md; if e%2==1 then sq*base%md else sq)` — NON-TAIL self-recursion, `base`/
+  `md` INVARIANT heap params. `def_consumes_param(mpow,base)==FALSE` (BigInt arith BORROWS its operands, the
+  non-tail invariant back-edge is recognized), so `base` is borrow-only. BUT the EMIT over-dups the live-
+  after recursive-call arg once per frame (it does not honor the borrow verdict), so each frame owns a per-
+  frame ref that is never dropped → leak 2 (base+md; constant object-count via aliasing, refs scale with
+  depth). FIX (v-core-opt condition, v-mem placement): a per-ARM LAST-USE drop of the incoming owned ref on
+  the RECURSIVE arm of the tail `Core::If` (`plan_nontail_selfrec_borrow_param_arm_drops` → the existing
+  `ifjoin_arm_drops` per-arm emit). Gated (1) `looped_invariant_param_caller_owned` (guest-owned, LOAD-
+  BEARING); (2) `def_consumes_param==false`; (3) dup-backed; (4) `binding_escapes_dup_aware` non-escape; (5)
+  DISJOINT from F6(ii)'s `nontail_selfrec_owned_closure_param_drops` (the G′-twin — caught a real 857 double-
+  free in dev). Per-ARM last-use (NOT a frame-exit epilogue, which over-frees at the base case) SELF-YIELDS
+  to the base-case dead-param drop. **LESSON: anchor a reclaim PLACEMENT on the EMIT's actual dup/drop (rc-
+  trace), not the classifier verdict** — the verdict said "borrow/net-zero", the emit over-dups; two probes
+  (main-side insufficient@depth>1, frame-exit over-frees@e=0) pinned the per-arm last-use. LANDED #9466
+  (census 2→0 every e incl e=0/e=100, value correct, O0==O3, coarse-06/09/21 + gate-local GREEN).
+
+- **QUEUED:** interior-view-chain 1811/1860/2500 (source-transfer: re-root the view's ref outer→rope) +
+  F1's StrAt residual + F2's deep-nested residual; 5890 (SumPayload-base variant).
 
 **Ownership note (2026-09-21):** the operator granted v-memory-safety blanket authorization to cross into
 the EMIT lane to close this pile out ("zero memory safety issues"); v-core-opt owns the escape/consume
