@@ -605,6 +605,33 @@
   (output (: 225 Int64)))
 
 (case
+  "cc12 a closure capturing a HEAP effect draw escapes the handle and is applied after — the captured heap draw reclaims"
+  (doc
+    "The HEAP-draw reclaim face of the cc-series. cc9 captures a PURE Int64 draw (value-only, no census);
+           cc12 captures a HEAP draw. The op `fresh` RETURNS a heap tree `(T.B (T.L st) (T.L st))` built per
+           perform; `(let ((cap (St.fresh))) (fn (x) (+ x (s cap))))` captures that heap tree `cap` in the
+           closure, which ESCAPES the handle and is applied to 10 OUTSIDE it: `s cap` = 50 + 50 = 100, so
+           `(+ 10 100)` = 110. Pins that a HEAP value drawn from a perform and carried out in an escaping
+           closure's environment reclaims exactly once when the closure is applied after the handle exits —
+           census 0 (no leak of the captured draw, no double-free against the handler's own teardown). The
+           scalar state advances 50→51 and reclaims trivially. Value 110, O0==O3==rust.")
+  (input
+    (do
+      (effect St (op fresh (-> T)))
+      (type T (L Int64) (B T T))
+      (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b)))))
+      (def (main)
+        ((handle St 50
+           ((fresh () st (resume (T.B (T.L st) (T.L st)) (+ st 1))))
+           (let ((cap (St.fresh)))
+             (fn ((: x Int64)) (+ x (s cap)))))
+         10))
+      (export main)))
+  (call main)
+  (output (: 110 Int64))
+  (live-objects 0))
+
+(case
   "dd1b consecutive do-DEF draws — both binders hold their reads, the tail draw sees the doubled-twice state"
   (input
     (do
