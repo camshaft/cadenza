@@ -889,6 +889,37 @@
   (live-objects 0))
 
 (case
+  "a closure param passed to THREE SIBLING self-calls reclaims its captured env — the k=3 closure-sibling strengthening (two dups + spare per frame)"
+  (doc
+    "The k=3 closure-sibling strengthening of the two-sibling case above (#9462 flipped that k=2 shape to
+           0). Here `go` passes its owned closure `f` to THREE sibling self-calls in the recursive arm —
+           `(+ (go f (- d 1)) (+ (go f (- d 1)) (go f (- d 1))))` — and applies it on the base arm `(f 0)`.
+           Three sibling consumes force TWO dups of `f` per frame (the last-sibling consume-spare + two
+           dup-backs), versus one dup at k=2; the two dups + spare + the loop-exit drop of the owned closure +
+           its captured 3-cell env must all balance. An over-drop double-frees the shared closure a sibling
+           still holds; a missed drop leaks the env; a mis-counted dup (spare applied to the wrong sibling)
+           corrupts the tree value. The closure returns `List.len xs` = 3 and the recursive tree has 3^d
+           leaves each applying `f`, so value = 3·3^d (d=0→3, d=1→9, d=2→27) — no residue if balanced. The
+           CLOSURE analogue of the three-sibling LIST-PARAM generalization; census 0 witnesses the per-frame
+           dup-count generalizes past two for the closure-env reclaim. O0==O3.")
+  (input
+    (do
+      (def
+        (go (: f (-> Int64 Int64)) (: d Int64))
+        (if (< d 1) (f 0) (+ (go f (- d 1)) (+ (go f (- d 1)) (go f (- d 1))))))
+      (def
+        (main (: n Int64))
+        (let ((xs #list(1 2 (+ n 1)))) (go (fn (_d) (List.len xs)) n)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (call main (: 1 Int64))
+  (output (: 9 Int64))
+  (call main (: 2 Int64))
+  (output (: 27 Int64))
+  (live-objects 0))
+
+(case
   "a tail loop that BORROWS its owned heap accumulator while THREADING it leaks PER-ITERATION (O(n) residue)"
   (doc
     "The per-iteration (scaling) face of the owned-param dup/drop miss — distinct from the constant
