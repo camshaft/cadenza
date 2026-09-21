@@ -162,22 +162,41 @@ is read from the NIX debug-counters runtime — native `--report-live-objects` i
   first attempt SUPPRESSING the dup at the `mark_binder_dups` `Core::Call` site (instead of adding a caller-
   drop) RED'd guarded-all — it fired on the callee's OWN non-tail self-call args (a recursive fold's
   `(f … arg …)`), where the retain-dup is load-bearing per frame → UAF (06-numeric BigInt `unreachable`,
-  guide-0406 OOB); the mark site lacks the caller context to exclude self-calls. IN-FLIGHT (v-mem prototyping
-  the caller-drop off `vms/5786-verify` per the corrected 4-conjunct admit; v-core-opt owns the condition +
-  verifies; flip #9434 known-leak 2→0 on guarded-all GREEN).
+  guide-0406 OOB); the mark site lacks the caller context to exclude self-calls. TWO MORE conjuncts were
+  needed after guarded-all caught two further double-frees (the 4-conjunct admit was insufficient — (A) is
+  the GENERAL borrow verdict, not the 5786 specificity, and full `dup_sites` conflates categories): (B′)
+  key (B) on `caller_surplus_dup_sites` = the retain-only `dup_sites` MINUS `collect_shell_reclaim_child_dups`
+  (05:2199 `fst-sum (P a _b)=(sum a)` double-freed `a`, a shell-reclaim child already balanced by the shell
+  drop) + (E) `heap_operand_ownership(arg)==Borrowed` (genuine live-after surplus, excludes last-use moves);
+  and (G) yield to the callee loop epilogue — admit only if the callee's `looped_owned_param_drops` does NOT
+  contain the param slot (05:3709 `sum-at`, a recursive `List.at` consumer that epilogue-drops `xs`, so the
+  caller-drop was a second drop; (G) is the caller-drop ⊕ callee-self-reclaim complementarity, twin of gates
+  (6)/(6b)). IN-FLIGHT (v-mem's caller-drop on `vms/5786-callerdrop`, rebased onto the #9449 fence; all three
+  repros — fst-sum, sum-at, #9434 — census 0 no trap; v-core-opt owns + verifies the condition; flip #9434
+  known-leak 2→0 on guarded-all GREEN).
 
 - **F5 — SITE-A closure-env-cell reclaim (09-functions 771 family, ~11 cases).** An INVARIANT borrow-clean
   closure loop-PARAM applied per iteration: its per-application caller dup is spurious → drop it per apply
   (`closure_env_invariant_borrow_clean_binders` → the `CallClosure` SITE-A env-drop, gated per-SITE on
   `dup_sites` — only the dup'd application site drops; the entry ref rides the loop-exit `looped_owned_param_
-  drops`). TWO fences added after guarded-all caught two over-frees: (a) **non-tail-selfcall** — exclude a
+  drops`). THREE fences added after guarded-all caught over-frees: (a) **non-tail-selfcall** — exclude a
   param threaded into a NON-TAIL loop-member self-call (require a PURE self-tail-loop; the `filt` shell-drop
   cascade otherwise overlaps a child frame's reclaim → UAF); (b) **shared-heap-capture dup** at the
   `Core::Closure` build — a SHARED (multi-used) heap capture must be dup'd into the env (json-`encode`-style
-  `3485`: an un-dup'd borrowed fn capture is over-freed by the env-drop cascade). LANDED #9440 (SITE-A +
-  both fences + the capture-retain (Y); DBG-runtime census main 5→32 live-objects 0, coarse-11 + cad-test-
-  json + local-gate GREEN). Only the CLEAN `1383` case flipped; `3485`/`filt`/`714 771/798` stay known-leak
-  (leak-over-UAF) — the fences + (Y) are load-bearing UAF guards.
+  `3485`: an un-dup'd borrowed fn capture is over-freed by the env-drop cascade); (c) **caller-ownership**
+  — gate the b‴ Param-admit on `looped_invariant_param_caller_owned`, the SAME AXIS-A all-call-sites-Owned
+  fence the loop-exit `looped_owned_param_drops` ALREADY uses (a latent asymmetry omitted it from the
+  per-application drop). The b‴ relaxation of the "never Param" rule is unsound for a BOUNDARY-CONSUMED
+  closure — an EXPORT/host-resource param threaded in (21-host-closures `iter`'s `g` via the `apply-n`
+  export) is a host resource the guest must NOT reclaim; the per-application drop freed it → the next
+  iteration read freed env → `unreachable` (a SHIPPED UAF regression from #9440, caught by v-cadenza-ci).
+  The recognizer cannot tell a fresh guest closure from a boundary resource on the looped body alone;
+  `looped_invariant_param_caller_owned` can — it declines `iter` while admitting `times2`'s fresh Owned
+  `(mk-adder k)`. LANDED #9440 (SITE-A + fences (a)/(b) + capture-retain (Y); census main 5→32 live-objects
+  0). Fence (c) LANDED #9449 (guarded-all GREEN, CI-reconfirmed: coarse-21 fixed, coarse-11 `1383` preserved
+  at 0; the boundary-consumed cases #9440 over-flipped revert to their known-leak baselines). Only the CLEAN
+  `1383` case is a flipped win; `3485`/`filt`/`714`/`771`/`798` stay known-leak (leak-over-UAF) — the fences
+  + (Y) are load-bearing UAF guards.
 
 - **F6 (queued) — multi-borrow / multi-sibling closure-env residual (09-functions 771, 798).** The SITE-A
   (F5) env-drop flips the SINGLE-application invariant borrow-clean closure loop (09:713 → 0); two harder
