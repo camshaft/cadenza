@@ -15328,6 +15328,40 @@
   (live-objects known-leak))
 
 (case
+  "a flat-scalar List param RETURNED via a MatchList base arm of a heap-returning selfrec stays DECLINED (known-leak — the #9497→#9502 P0 UAF that the corpus net missed)"
+  (doc
+    "The corpus fence for the #9497 P0 UAF that shipped to main invisibly (it trapped ONLY @test-suites-only —
+           cad-test-iterators giter-takedrop — the exact surface gap that also missed #9466; #9502 fixed it).
+           `f xs ys = match xs (#list() ys) (#list(h ..t) (List.concat #list(h) (f t ys)))` — a HEAP-returning
+           (List) non-tail selfrec whose flat-scalar `ys : List Int64` param is (a) all-scalar
+           (ty_heap_children_all_scalar), (b) VERBATIM self-forwarded at its index (AXIS-B total==self-forwards),
+           AND (c) RETURNED in the Core::MatchList `#list()` base arm. Pre-#9502, param_ref_reaches_result did
+           NOT recurse MatchList arms, so it reported the base-arm ys-escape as FALSE → the flat-scalar
+           heap-return admit fired → the fn-exit epilogue DROPPED the returned ys → double-free / freed-backing
+           read: the debug runtime TRAPPED `unreachable` (VERIFIED by reverse-applying #9502's Core::MatchList
+           arm to a pre-fix compiler — this exact shape, with BOTH lists RUNTIME-built via `build` so ys is not
+           const-folded, traps pre-#9502). #9502 recurses MatchList arms → prrp(ys)=true → the heap-return gate
+           DECLINES → ys now LEAKS (known-leak): value-correct (n+2), NO trap. Pinned known-leak — a regression
+           that re-drops the MatchList-returned param re-introduces the double-free → re-traps → fails this grade,
+           locking the #9497/#9502 P0 UAF class into the coarse gate (which the @test-suites-only trap had
+           bypassed). Const-fold defeated by `build` (both lists runtime; a #list literal ys does NOT fire the
+           admit and would not guard). Completes the flat-scalar heap-return family: ADMIT (Set, above) / DECLINE
+           heap-child (above) / DECLINE MatchList-return (this, the P0 edge).")
+  (input
+    (do
+      (def (build (: i Int64) (: n Int64)) (if (< i n) (List.push (build (+ i 1) n) i) #list()))
+      (def
+        (f (: xs (List Int64)) (: ys (List Int64)))
+        (match xs (#list() ys) (#list(h (.. t)) (List.concat #list(h) (f t ys)))))
+      (def (main (: n Int64)) (List.len (f (build 0 n) (build 0 2))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 2 Int64))
+  (call main (: 3 Int64))
+  (output (: 5 Int64))
+  (live-objects known-leak))
+
+(case
   "a binary-search isqrt with an overflow-safe hi bound computes at i64::MAX"
   (doc
     "The Newton isqrt probes small operands; this runs at the CHECKED-ARITH ceiling: n=i64::MAX with hi capped at isqrt(MAX)=3037000499 keeps mid*mid exactly inside checked range, so the search completes WITHOUT the overflow trap — a hi one larger would trap at a later midpoint square once mid climbs past isqrt(MAX).")
