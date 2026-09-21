@@ -246,7 +246,7 @@
           (q-front q2)))
       (export main)))
   (output (: "B" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "same-Instant queue entries resume in FIFO insertion order (§3.4 tie-break)"
@@ -283,7 +283,7 @@
           (q-front q2)))
       (export main)))
   (output (: "B" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "draining the event queue yields entries in time-order with FIFO same-time ties"
@@ -1150,7 +1150,7 @@
           (String.concat front (String.concat "|" (q-front-label q4)))))
       (export main)))
   (output (: "B|C" String))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
 ; Increment 4 (partial) — the PRIMARY/SECONDARY termination decision (§7.4, §7.5; operator-required).

@@ -1760,7 +1760,7 @@
   (output (: 50 Int64))
   (call main (: false Bool))
   (output (: 51 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 ; --- In-domain shrinking: the shrink search stays within a refinement's window (Refinements × Shrinking). ---
 (case
