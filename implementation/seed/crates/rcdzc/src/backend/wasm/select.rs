@@ -1542,7 +1542,36 @@ pub(super) fn def_consumes_param(db: &mut Db, callee: usize, param_index: usize)
     }
     // BORROW-only (⇒ NOT consumed) iff every use is a borrow or a member identity back-edge; any non-borrow
     // use / unmodeled node ⟹ false ⟹ report CONSUMES (default-deny, leak-beats-UAF).
-    !param_only_borrowed_or_backedge(db, body, binder, &members, &param_slots, &slot_of)
+    //
+    // 5786 flip-to-0 (v-core-opt owns; v-mem co-designed): additionally reclassify a DUP-BACKED base-consume of
+    // this INVARIANT param (List.push/prepend/insert/concat base — the `List.push base` reused-invariant idiom)
+    // as a BORROW, so the CALLER RETAINS the base and drops it at its last use (main's post-loop read → the
+    // consumed-reused-invariant-base leak clears to 0). SAFE only when DUP-BACKED: gate on the callee's own
+    // `dup_sites` (the emit-dup set) so the base is a borrow ⟺ the op path-copies (rc>1) not FBIP-reuses (rc1) —
+    // a rc1 reuse consumes the base, so a caller-drop would double-free. CONTAINED to THIS consumes-decision via
+    // `allow_base_consume_reduced=true` + `Some(dup_sites)` on the `_rec` worker; the shared
+    // `param_only_borrowed_or_backedge` entry (gating looped_owned_param_drops / closure reclaim / the 5786(a)
+    // exit-drop) is UNTOUCHED — the #9423 global-classifier blast-radius lesson. The invariance gate above
+    // already excludes a varying param; the loop's 5786(a) exit-drop keeps DECLINING when the caller reclaims
+    // (caller_owned complementarity), and breaker's #9434 caller-BORROWED tripwire stays known-leak (main does
+    // not own a borrowed base there → this stays conservative). guarded-all mandatory (a wrong reclassify into
+    // some other List.push consumer surfaces cross-chapter).
+    let mut cands: Vec<StructId> = Vec::new();
+    collect_retain_candidate_binders(db, body, &mut cands);
+    let mut dup_sites: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    collect_dup_sites(db, body, &cands, &mut dup_sites);
+    !param_only_borrowed_or_backedge_rec(
+        db,
+        body,
+        binder,
+        &members,
+        &param_slots,
+        &slot_of,
+        false,
+        false,
+        true,
+        Some(&dup_sites),
+    )
 }
 
 /// The EMIT side of [`def_nonlooped_reclaims_param`] (blx1): the param SLOTS a NON-looped def reclaims via

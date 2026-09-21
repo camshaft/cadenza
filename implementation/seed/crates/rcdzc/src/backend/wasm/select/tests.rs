@@ -999,6 +999,68 @@ fn site_a_record_cell_not_droppable_when_moved_out() {
 }
 
 #[test]
+fn def_consumes_param_5786_dupbacked_base_reclassified_borrow() {
+    // 5786 flip-to-0 (caller-retains): an INVARIANT `base` consumed via `List.push base` AND reused (identity-
+    // threaded) is DUP-BACKED (path-copy, rc>1), so def_consumes_param reports it a BORROW → the caller (main)
+    // RETAINS + drops it at its last use → the consumed-reused-invariant-base leak (node#1 spine + node#2
+    // wrapper) clears. Pins: (a) def_consumes_param=false (borrow); (b) with the callee dup_sites the base is
+    // borrow-only (dup-backed); (c) the LOAD-BEARING gate — with EMPTY dup_sites (base NOT dup-backed = rc1
+    // FBIP-reuse) it must STAY a consume, so a caller-drop can never double-free a reused-in-place base.
+    let ast = crate::testkit::parse(
+        "(module m \
+           (def (loopf (: j Int64) (: m Int64) (: base (List Int64)) (: tot Int64)) \
+             (if (< j m) (loopf (+ j 1) m base (+ tot (List.len (List.push base 99)))) tot)) \
+           (def (main (: m Int64)) (let ((base #list(10 20 30))) (+ (loopf 0 m base 0) (List.len base)))) \
+           (export main))",
+    );
+    let mut db = Db::load(ast);
+    let (fp, body) = function_of(&mut db, "loopf");
+    let (members, param_slots, slots) = reconstruct_loop_ctx(&mut db, &fp, "loopf");
+    let base = fp[2].0;
+    let loopd = db.def_by_name("loopf").unwrap();
+    assert!(
+        !def_consumes_param(&mut db, loopd, 2),
+        "5786: a dup-backed invariant base-consume must be reported a BORROW (caller retains + drops → leak→0)"
+    );
+    let mut cands = Vec::new();
+    collect_retain_candidate_binders(&mut db, body, &mut cands);
+    let mut dup_sites = std::collections::HashSet::new();
+    collect_dup_sites(&mut db, body, &cands, &mut dup_sites);
+    assert!(
+        param_only_borrowed_or_backedge_rec(
+            &mut db,
+            body,
+            base,
+            &members,
+            &param_slots,
+            &slots,
+            false,
+            false,
+            true,
+            Some(&dup_sites),
+        ),
+        "with the callee dup_sites the invariant base is borrow-only (dup-backed path-copy)"
+    );
+    let empty = std::collections::HashSet::new();
+    assert!(
+        !param_only_borrowed_or_backedge_rec(
+            &mut db,
+            body,
+            base,
+            &members,
+            &param_slots,
+            &slots,
+            false,
+            false,
+            true,
+            Some(&empty),
+        ),
+        "NOT dup-backed (empty dup_sites) → the base-consume MUST stay a CONSUME (rc1 FBIP-reuse; caller must \
+         not retain, else double-free) — the load-bearing gate"
+    );
+}
+
+#[test]
 fn site_b_reducer_forward_emits_no_surplus_parent_dups() {
     // SITE-B (node#4 census leak) positive witness for the RE-LANDED joint fix (escape-query Proj-arm
     // borrow-reclassification + v-core-opt's CHILD-DUP-aware mark_binder_dups gate). The payload-forwarding
