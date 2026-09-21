@@ -2129,7 +2129,7 @@
       (def (main) (if (= (f (Map.insert (Map.empty) "y" "z") "y") "z") 1 0))
       (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a mixed-ownership inlined-match operand leaves the source map intact across repeated compares"
@@ -2209,7 +2209,7 @@
           (+ (+ (if (= (f m "y") "z") 1 0) (if (= (f m "y") "z") 1 0)) (Map.len m))))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an all-owned-arms match operand compares correctly through the ownership join"
