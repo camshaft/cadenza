@@ -296,6 +296,36 @@
   (live-objects 0))
 
 (case
+  "ab7 a nested-handle abort — the INNER abort abandons its heap tree state while the OUTER heap tree state SURVIVES the unwind and reads back intact"
+  (doc
+    "The nested-handler face of the abort-reclaim pins (ab5/ab6). Two handlers each carry a HEAP tree
+           STATE. ab4's two abort regions are SEQUENTIAL under one string-state outer; 14b:168's nested
+           handles both EXIT NORMALLY. Here the inner `Inn` region ABORTS: `(Inn.ibail 5)` returns 5 without
+           resume, abandoning the inner tree state `(T.B (T.L 1) (T.L 2))` — which must reclaim on the inner
+           unwind. Crucially the OUTER `Out` handler's tree state `(T.B (T.L 10) (T.L 20))` must SURVIVE that
+           inner unwind untouched and read back intact: after the inner handle yields 5, `(Out.oget)` sums the
+           outer state via `s` = 30, so `(+ 5 30)` = 35. Pins that an inner abort's reclaim is scoped to the
+           inner heap (no early-drop of the enclosing handler's live heap state, no leak of the abandoned
+           inner state) — census 0. Value 35, O0==O3==rust.")
+  (input
+    (do
+      (effect Out (op oget (-> Int64)))
+      (effect Inn (op ibail (-> Int64 Int64)))
+      (type T (L Int64) (B T T))
+      (def (s (: t T)) (match t ((T.L n) n) ((T.B a b) (+ (s a) (s b)))))
+      (def (main)
+        (handle Out (T.B (T.L 10) (T.L 20))
+          ((oget () ost (resume (s ost) ost)))
+          (+ (handle Inn (T.B (T.L 1) (T.L 2))
+               ((ibail (v) ist v))
+               (Inn.ibail 5))
+             (Out.oget))))
+      (export main)))
+  (call main)
+  (output (: 35 Int64))
+  (live-objects 0))
+
+(case
   "cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance"
   (input
     (do
