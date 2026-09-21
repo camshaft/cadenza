@@ -1491,8 +1491,22 @@ pub fn closure_env_invariant_borrow_clean_binders(
         // frame whose result is CONSUMED here (`(Iter.Cons h (filt rest p))`): that frame reclaims the param in
         // its own lifetime, so the SITE-A per-application env-drop would DOUBLE-reclaim it → over-free. A purely
         // tail-recursive loop (771 `times`) threads its closure param only in the tail back-edge → not flagged.
+        // CALLER-OWNERSHIP fence (v-core-opt, #9440 21-host-closures UAF fix): the SITE-A per-application
+        // env-drop of a closure PARAM is sound ONLY when the closure is GUEST-OWNED on every external entry —
+        // exactly the AXIS-A gate the loop-exit `looped_owned_param_drops` already uses. Without it the b‴
+        // Param-admit (which relaxes the "never Param" rule) also fires for a BOUNDARY-CONSUMED closure: the
+        // `iter g n acc = (if (< n 1) acc (iter g (- n 1) (g acc)))` case passes every other check IDENTICALLY
+        // to the fresh-closure `times`/#9443 `times2` (1-member tail-loop, `g` invariant, borrow-clean apply,
+        // tail-threaded), but `iter`'s `g` enters via `apply-n`'s EXPORT param = a HOST RESOURCE the guest must
+        // not reclaim; the per-application drop freed its env → the next iteration read freed env → wasm
+        // `unreachable` (a shipped UAF). The recognizer cannot tell a fresh guest closure from a boundary
+        // resource on `iter`'s body alone; `looped_invariant_param_caller_owned` DOES — it declines `iter`
+        // (`apply-n` passes a Borrowed export param) while admitting `times`/`times2` (`main` passes a fresh
+        // Owned `(mk-adder k)` producer). Leak-over-UAF: a boundary/unknown-owned closure param → decline
+        // (a benign leak, value-correct), never a double-free.
         if param_only_borrowed_or_backedge(db, body, *binder, &loop_members, &param_slots, &slot_of)
             && !param_threaded_through_nontail_selfcall(db, body, *binder, &loop_members, true)
+            && looped_invariant_param_caller_owned(db, self_d, body, *binder)
         {
             out.insert(*binder);
         }
