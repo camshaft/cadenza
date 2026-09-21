@@ -4106,7 +4106,7 @@
   (output (: 1 Int64))
   (call main (: 0 Int64) (: 1 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Map.remove by a slice-view key drops the flat-keyed entry"
