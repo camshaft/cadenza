@@ -1457,6 +1457,48 @@ pub(crate) fn sum_has_only_scalar_payloads(db: &mut Db, sum: &Ty) -> bool {
     })
 }
 
+/// Whether a HEAP param type has NO extractable HEAP child — every value reachable by a destructuring read
+/// (`List.at`/`Set` elem, tuple/record `Proj`, sum `SumPayload`) is a SCALAR. The tr3-EXCLUSION for the
+/// 15266 `def_nonlooped_reclaims_param` heap-return carve-out (v-core-opt-spec'd): the heap-return gate
+/// exists because reclaiming the param at fn-exit cascades a drop into any heap CHILD of the param embedded
+/// in the returned heap value (tr3's `(Term.Abs w (payload p))` embeds a projected heap child → UAF). When
+/// the param has NO heap child, the ONLY heap value that can reach the result is the WHOLE param — which the
+/// bare-return check (`param_ref_reaches_result_precise`) + `count_param_consumes==0` (no SumNew/Record/
+/// List.push/Call whole-embed) already exclude — so NO child-embed UAF is possible by TYPE STRUCTURE, no
+/// dataflow embed-check needed. TRUE for `List Int64`/`Set scalar`, an all-scalar `Tuple`/`Record`/`Sum`
+/// (cf/15266's `xs : List Int64` → the Rational result is built from `Int64.of` scalars via `List.at`, no
+/// list child embeds). FALSE for `List (List _)`/`List Bytes`/a `Map` (two heap children)/any `Sum`/`Record`
+/// with a heap payload/field (tr3's param → correctly still declined), and for `Bytes`/`String` (their own
+/// carve-out / view family). Conservative: an unknown/unhandled shape → false (leak beats UAF).
+pub(crate) fn ty_heap_children_all_scalar(db: &mut Db, ty: &Ty) -> bool {
+    fn is_scalar(t: &Ty) -> bool {
+        matches!(t.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_))
+    }
+    match ty.strip_nominal() {
+        // A List/Set whose ELEMENT is scalar has no extractable heap child (the elem read yields a scalar).
+        Ty::List(elem) | Ty::Set(elem) => {
+            let _ = db;
+            is_scalar(elem)
+        }
+        // A Tuple/Record all of whose components are scalar (a `Proj` yields a scalar).
+        Ty::Tuple(elems) => {
+            let _ = db;
+            !elems.is_empty() && elems.iter().all(is_scalar)
+        }
+        Ty::Record(fields) => {
+            let _ = db;
+            !fields.is_empty() && fields.values().all(is_scalar)
+        }
+        // A Sum all of whose payloads are scalar (a `SumPayload` yields a scalar).
+        Ty::Sum { .. } => sum_has_only_scalar_payloads(db, ty),
+        // Bytes/String (own carve-out), Map (two heap children), nested-heap List/Set, unknown → NOT flat.
+        _ => {
+            let _ = db;
+            false
+        }
+    }
+}
+
 /// The type reached by a `Payload` step whose FULL path (from the root, INCLUDING this `Payload`) is
 /// `prefix`, given the current sub-value type `cur`. Prefer the RECORDED entered-variant payload type in
 /// `recorded` (keyed by the absolute path — written as an enclosing switch descended into a specific
