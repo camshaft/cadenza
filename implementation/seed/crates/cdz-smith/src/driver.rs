@@ -60,7 +60,9 @@ pub enum GenMode {
     /// BigInt params reclaimed per-arm, never a frame-exit e=0 double-free), and the borrowed CHAMP
     /// Map.lookup rope key read twice (#9472: key borrowed not consumed, compacted to its flat twin —
     /// an over-drop between the lookup and the Bytes.len read corrupts the value)) that each return a
-    /// KNOWN value (Int64, or the escaped List). Densifies
+    /// KNOWN value (Int64, or the escaped List), plus the F7 projected/varying-param DECLINE tripwire —
+    /// the #9476 shipped-UAF fence, a giter-takedrop non-tail self-recursion whose projected param must
+    /// DECLINE the per-arm drop or re-trap unreachable). Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
