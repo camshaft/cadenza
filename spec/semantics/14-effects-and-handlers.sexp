@@ -354,7 +354,7 @@
   (host-calls (call io.sink))
   (call main (: 50 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)"
@@ -378,7 +378,7 @@
   (host-calls (call io.sink))
   (call main (: 0 Int64))
   (output (: 57 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no width-clobber)"
@@ -408,7 +408,7 @@
   (host-calls (call io.send))
   (call main (: 0 Int64))
   (output (: 75 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "one host effect with TWO ops interleaves its calls in program order"
@@ -1726,7 +1726,7 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a 100k-iteration pure tail loop under a handler runs in constant stack"
@@ -2655,7 +2655,7 @@
       (export main)))
   (call main)
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a self-call and a sibling perform as direct subtraction operands thread out-state via multi-value return"
@@ -6937,7 +6937,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an empty SET literal in a match-Option fallback grounds through the join"
@@ -6957,7 +6957,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an IF-join with an unsolved-Var arm and an empty-list sibling grounds like a match join"
@@ -6977,7 +6977,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a MAP-OF-LISTS handler state accumulates per dispatch — the upsert idiom end to end"
@@ -7012,7 +7012,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 1123 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "an empty MAP fallback beside an unsolved-Var arm grounds — the Map-of-Maps face"
@@ -7034,7 +7034,7 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a handler state SHRINKS per dispatch — Map.remove down to empty across resume cycles"
