@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(12);
+    let shape = c.variant(13);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -269,8 +269,28 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // #9449 caller-ownership fence is ever relaxed, the per-application drop re-frees the caller's env →
         // double-free / UAF → wrong value or trap, caught by determinism / opt-invariance / differential. The
         // canonical "pin the invariant even when it passes" tripwire on a shipped-UAF fence.
-        _ => format!(
+        11 => format!(
             "(do (def (iter (: g (-> Int64 Int64)) (: n Int64) (: acc Int64)) (if (< n 1) acc (iter g (- n 1) (g acc)))) (def (drive (: g (-> Int64 Int64)) (: n Int64)) (iter g n 0)) (def (main) (let ((k {b})) (drive (fn (y) (+ y k)) {n}))) (export main))"
+        ),
+        // 12 — F7 NON-TAIL SELF-RECURSIVE INVARIANT BORROW-PARAM reclaim (06-numeric 14966 `mpow`, LANDED
+        // #9466). A repeated-squaring modpow is NON-TAIL self-recursive (`hh*hh` squares the recursive
+        // result, so the self-call is non-tail) and carries two INVARIANT heap (BigInt) params `base`/`md`
+        // threaded UNCHANGED across every back-edge. BigInt arithmetic BORROWS its operands, so
+        // `def_consumes_param(mpow, base)==false` — yet the emit over-DUPs them at the recursive self-call
+        // arg + borrow-uses them after but never drops the dup → each non-tail frame's incoming ref leaks.
+        // The #9466 fix adds a LAST-USE-PER-ARM drop on the tail-If's RECURSIVE arm (not a frame-exit
+        // epilogue): a frame-exit drop would DOUBLE-FREE at the e=0 base case (whose dead-param drop already
+        // reclaims base/md); the per-arm placement self-yields there (no self-call → no plan entry → no
+        // double-free). Distinct from every other shape — the SOLE non-tail self-recursion carrying an
+        // INVARIANT HEAP BORROW-param (shapes 9-11 recurse on a child or thread a closure; 3 is a tail loop).
+        // Value-observable complement to the corpus live-objects census (which pins the LEAK side): an
+        // over-drop of `base`/`md` — either the e=0 frame-exit double-free or a relaxed per-arm gate freeing
+        // an invariant a still-live parent non-tail frame borrows — corrupts the modpow result or traps.
+        // Returns the KNOWN `a^(n+1) mod (1e9+7)` as Int64 (e = n+1 ≥ 1 guarantees ≥1 recursive frame; the
+        // prime modulus mirrors the corpus N=3 case and avoids mod-by-zero). Prime OPT-INVARIANCE target:
+        // O2/O3 may unroll/specialize the non-tail recursion, changing the per-frame borrow lifetime.
+        _ => format!(
+            "(do (def (mpow (: base BigInt) (: e Int64) (: md BigInt)) (if (= e 0) (% (BigInt.of 1) md) (do (def hh (mpow base (/ e 2) md)) (def sq (% (* hh hh) md)) (if (= (% e 2) 1) (% (* sq base) md) sq)))) (def (main) (Int64.of (mpow (BigInt.of {a}) (+ {n} 1) (BigInt.of 1000000007)))) (export main))"
         ),
     };
     Program { source }
@@ -4924,9 +4944,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the twelve shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 12];
-        for seed in 0u64..384 {
+        // Distinctive, mutually-exclusive markers for the thirteen shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 13];
+        for seed in 0u64..448 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -4965,13 +4985,15 @@ mod tests {
                 reached[10] = true;
             } else if src.contains("(def (drive (: g (-> Int64 Int64))") {
                 reached[11] = true;
+            } else if src.contains("(def (mpow (: base BigInt)") {
+                reached[12] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twelve reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all thirteen reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
