@@ -14917,7 +14917,12 @@
       (export main)))
   (call main (: 8 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (live-objects 0): the F7 non-tail-selfrec invariant BORROW-param reclaim (14966 #9466 +
+  ; the #9476 TRUE-invariance tightening) now drops `f`'s per-frame invariant BigInt borrow-params
+  ; base/md on the recursive arm — this fn is exactly that shape (base + md identity-threaded, e varying,
+  ; non-tail: the recursive result `hh` feeds `% hh md`). Result is Int64.of (a scalar, no escaping-BigInt
+  ; artifact), so every intermediate limb is reclaimed. rc-trace LEAK SUMMARY none; census 0 at e=8/4/0.
+  (live-objects 0))
 
 ; A recursive sum whose arm sums TWO self-call results — `((T.B a b) (+ (s a) (s b)))` — over a BigInt leaf
 ; must type the `+`-of-two-BigInts arm as BigInt and compute. Each self-call `(s a)` types the recursion
