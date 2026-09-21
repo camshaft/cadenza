@@ -5806,15 +5806,16 @@
            witnesses (which test the admit/decline of `param_consumed_reused_in_loop_body`, NOT the
            caller-owned gate). A regression that wrongly flipped `caller_owned` TRUE for a reused-LocalRef
            base would fire the exit-drop → OVER-DROP `main`'s `base` → the debug-runtime TRAPS (assert_node_
-           live) instead of the current benign leak. KNOWN-LEAK (measured live-objects 2 on the authoritative
-           nix debug-runtime — the base spine node#1 + wrapper node#2, exactly the pre-#9432 residue; NB native
-           --report-live-objects AND a compiler-side prediction both said 0 — the census-flaky trap, do not
-           trust them): a CONSERVATIVE-SUPPRESSION leak, not a fixable-in-place gap — `main` cannot statically
-           know the invariant loop PRESERVED `base` (borrow-then-rebuild), so it treats `base` as moved-into
-           the consuming loop and suppresses its post-`List.len` drop. v-core-opt owns the flip known-leak→0
-           (a callee-preserves-invariant-param ⇒ caller-retains analysis, the caller-side sibling of
-           `looped_invariant_param_caller_owned`; queued follow-on). `mb` builds `base` as a runtime list (no
-           fold). Value verified correct + census 2 verified on the debug-counters runtime (breaker + v-core-opt).")
+           live) instead of the current benign leak. KNOWN-LEAK (measured live-objects 0 on the authoritative nix
+           debug-runtime — was known-leak 2 (base spine node#1 + wrapper node#2), NOW RECLAIMED). FIXED (5786
+           caller-retains): the callee-preserves-invariant-param ⇒ caller-retains analysis landed. `def_consumes_
+           param` reclassifies the dup-backed invariant base-consume (`List.push base`) as a BORROW, and the
+           `Core::Call` caller-drop admit (`call_arg_caller_drops`) retains + drops `main`'s surplus dup of `base`
+           after the loop call — fired ONLY because `base` is a genuine multi-use caller surplus (retain-only,
+           not shell-reclaim), Borrowed (read again via `List.len`), the callee borrows it (does not consume),
+           and the loop does NOT epilogue-drop it (`looped_owned_param_drops` empty — the caller-drop XOR
+           callee-self-reclaim complementarity that keeps sum-at/fst-sum from double-freeing). `mb` builds `base`
+           as a runtime list. Value verified correct + census 0 on the debug-counters runtime.")
   (input
     (do
       (def
@@ -5837,7 +5838,7 @@
   (output (: 11 Int64))
   (call main (: 4 Int64))
   (output (: 19 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a loop-invariant heap projection consumed in the loop body is not LICM-hoisted"

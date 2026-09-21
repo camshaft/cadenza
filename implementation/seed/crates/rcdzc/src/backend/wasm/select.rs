@@ -124,6 +124,14 @@ pub struct Emit {
     /// Computed ONCE at function entry over all heap binders (params + `let`-binders); empty for a body
     /// with no shared-then-consumed heap binding (the common case), so the fast path is untouched.
     dup_sites: HashSet<StructId>,
+    /// 5786 CALLER-SURPLUS dup sites: the RETAIN-ONLY subset of `dup_sites` (just `collect_dup_sites` over the
+    /// retain candidates, MINUS the `collect_shell_reclaim_child_dups` set) — occurrences dup'd because the
+    /// binding has a genuine LATER live use in the CALLER (multi-use surplus), NOT because they are a consumed
+    /// child of a reclaimed shell. The `Core::Call` caller-drop admit ((B), `call_arg_caller_drops`) keys on
+    /// THIS set, not the full `dup_sites`: a shell-reclaim child-dup is already balanced by the shell drop, so
+    /// caller-dropping it double-frees (the fst-sum "reclaims with the pair shell" trap). Computed ONCE in
+    /// `select_function_of` (snapshot after the retain collector, before the shell collector). Empty otherwise.
+    caller_surplus_dup_sites: HashSet<StructId>,
     /// SITE-A owned-binder set (`collect_sitea_owned_binders`): the `Core::Let` binder ids whose initializer
     /// is a genuinely OWNED value (`heap_operand_ownership == Owned`). Read ONLY by the `Core::CallClosure`
     /// SITE-A env-cell reclaim: when a closure operand is a `Core::LocalRef` to such a binder AND its
@@ -296,6 +304,12 @@ pub struct Emit {
     /// body-scoped escape query (`reclaim::restfrom_result_escapes`) for the RestFrom skip-gate's
     /// rest-borrow-only conjunct. `None` outside a `select_function_of` emit.
     pub fn_body: Option<StructId>,
+    /// The def index whose body is being emitted — set by `select_function_of` (the caller `self_def`). Read by
+    /// the `Core::Call` caller-drop admit (`call_arg_caller_drops` 5786 conjunct C) so it can EXCLUDE a caller
+    /// that is itself a member of the callee's `mutual_loop_group` (a self/mutual non-tail self-call reclaims
+    /// per-frame → a caller-drop there double-frees; only an EXTERNAL caller may caller-drop). `None` outside a
+    /// `select_function_of` emit (the import-companion `body_has_caller_drop` passes the def index explicitly).
+    pub self_def: Option<usize>,
 }
 
 /// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
@@ -1575,7 +1589,36 @@ pub(super) fn def_consumes_param(db: &mut Db, callee: usize, param_index: usize)
     }
     // BORROW-only (⇒ NOT consumed) iff every use is a borrow or a member identity back-edge; any non-borrow
     // use / unmodeled node ⟹ false ⟹ report CONSUMES (default-deny, leak-beats-UAF).
-    !param_only_borrowed_or_backedge(db, body, binder, &members, &param_slots, &slot_of)
+    //
+    // 5786 flip-to-0 (v-core-opt owns; v-mem co-designed): additionally reclassify a DUP-BACKED base-consume of
+    // this INVARIANT param (List.push/prepend/insert/concat base — the `List.push base` reused-invariant idiom)
+    // as a BORROW, so the CALLER RETAINS the base and drops it at its last use (main's post-loop read → the
+    // consumed-reused-invariant-base leak clears to 0). SAFE only when DUP-BACKED: gate on the callee's own
+    // `dup_sites` (the emit-dup set) so the base is a borrow ⟺ the op path-copies (rc>1) not FBIP-reuses (rc1) —
+    // a rc1 reuse consumes the base, so a caller-drop would double-free. CONTAINED to THIS consumes-decision via
+    // `allow_base_consume_reduced=true` + `Some(dup_sites)` on the `_rec` worker; the shared
+    // `param_only_borrowed_or_backedge` entry (gating looped_owned_param_drops / closure reclaim / the 5786(a)
+    // exit-drop) is UNTOUCHED — the #9423 global-classifier blast-radius lesson. The invariance gate above
+    // already excludes a varying param; the loop's 5786(a) exit-drop keeps DECLINING when the caller reclaims
+    // (caller_owned complementarity), and breaker's #9434 caller-BORROWED tripwire stays known-leak (main does
+    // not own a borrowed base there → this stays conservative). guarded-all mandatory (a wrong reclassify into
+    // some other List.push consumer surfaces cross-chapter).
+    let mut cands: Vec<StructId> = Vec::new();
+    collect_retain_candidate_binders(db, body, &mut cands);
+    let mut dup_sites: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    collect_dup_sites(db, body, &cands, &mut dup_sites);
+    !param_only_borrowed_or_backedge_rec(
+        db,
+        body,
+        binder,
+        &members,
+        &param_slots,
+        &slot_of,
+        false,
+        false,
+        true,
+        Some(&dup_sites),
+    )
 }
 
 /// The EMIT side of [`def_nonlooped_reclaims_param`] (blx1): the param SLOTS a NON-looped def reclaims via
@@ -1792,6 +1835,9 @@ pub fn select_function_of(
     // skip-gate (emit.rs `Core::SumPayload` RestFrom arm) can read them (v-wasm-opt owns that gate).
     code.body_is_boundary_owned = is_boundary_owned;
     code.fn_body = Some(body);
+    // 5786 caller-drop: expose the emitting def index so the `Core::Call` caller-drop admit can exclude a
+    // caller inside the callee's own mutual-loop group (conjunct C — external-caller-only).
+    code.self_def = self_def;
     // INC1: the non-tail-spine owned-param reclaim SELECTION uses a COMBINATOR-aware boundary guard, NOT the
     // global `is_boundary_owned` (which 05:18721's surplus_skippable_dups + call_arg_caller_drops read as
     // exports||db.lifted). A lifted COMBINATOR (empty captures — hoisted to funcref, called directly,
@@ -1864,6 +1910,16 @@ pub fn select_function_of(
         let mut heap_binders: Vec<StructId> = Vec::new();
         collect_retain_candidate_binders(db, body, &mut heap_binders);
         collect_dup_sites(db, body, &heap_binders, &mut code.dup_sites);
+        // 5786: snapshot the RETAIN-ONLY dup set NOW (only `collect_dup_sites` has run — before the shell/
+        // escape/row collectors union into `code.dup_sites`), MINUS the shell-reclaim child-dups → the
+        // caller-surplus set the `Core::Call` caller-drop admit (B) keys on. A shell-reclaim child-dup is
+        // already balanced by the shell drop, so caller-dropping it double-frees (the fst-sum trap).
+        {
+            let retain_only = code.dup_sites.clone();
+            let mut shell: HashSet<StructId> = HashSet::new();
+            collect_shell_reclaim_child_dups(db, body, &mut shell);
+            code.caller_surplus_dup_sites = retain_only.difference(&shell).copied().collect();
+        }
         // SITE-A owned-binder set: the let-binders whose initializer is a genuinely Owned value, so a dup'd
         // reference to one consumed by a BORROWING closure apply is a surplus owned copy the SITE-A env-cell
         // drop reclaims (a Param/view/wrapper-bound binder is excluded → never drops a borrowed-from-caller cell).
@@ -7351,10 +7407,106 @@ fn call_arg_caller_drops(
     arg: StructId,
     param_index: usize,
     layout: &Layout,
+    self_def: Option<usize>,
+    caller_surplus_dup_sites: &HashSet<StructId>,
 ) -> bool {
     let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
         return false;
     };
+    // 5786 EXTERNAL-CALLER caller-drop (v-core-opt corrected admit; v-mem placement). A dup-backed,
+    // borrow-classified, invariant heap param passed by an EXTERNAL caller is RETAINED by the caller and
+    // dropped at its last use → the consumed-reused-invariant-base leak (#9434) clears. Admitted BEFORE gates
+    // (1)/(5): the callee here is typically a plain local LOOP (excluded by (1) not-export/lifted AND (5)
+    // looped), yet the caller still owns the surplus dup. SOUND iff ALL of:
+    //   (A) `def_consumes_param(callee, i) == false` — the callee BORROWS the param, so it never drops it
+    //       internally → the caller-drop is the ONLY drop (no double-free). This is the classifier's
+    //       dup-backed-invariant-base → borrow reclassify (c861652be2); it is REACHED here (unlike the
+    //       inert def_consumes_param call sites) because the admit queries it at the real caller-drop site.
+    //   (B) `arg ∈ caller_surplus_dup_sites` — the RETAIN-ONLY dup set (multi-use surplus) MINUS the shell-
+    //       reclaim child-dups. A dup minted for a genuine later caller use is the +1 that leaks without a
+    //       drop. Excludes (i) a moved rc1 arg (not dup-backed → double-free) and (ii) a shell-reclaim
+    //       child-dup already balanced by the shell drop (the fst-sum "reclaims with the pair shell" trap).
+    //   (C) `mutual_loop_group(callee)` NON-EMPTY (callee is a self-recursive loop) AND `self_def ∉` it
+    //       (EXTERNAL caller only). A self/mutual caller reclaims per-frame → caller-drop there double-frees
+    //       (the BigInt/guide dup-suppress RED). NB `mutual_loop_group` does NOT distinguish a TCO'd tail loop
+    //       from a non-tail self-recursive consumer (both are singleton self-loops) — (G) does that.
+    //   (G) the callee must NOT drop this param at its LOOP EPILOGUE (`looped_owned_param_drops` ∌ its slot).
+    //       THE load-bearing #9434-vs-sum-at split: sum-at's epilogue drops `xs` (slot 0 ∈ [0]) so a caller-
+    //       drop is a SECOND drop → double-free; #9434's loop DECLINES base's exit-drop ([]) so the caller-drop
+    //       is the only reclaim. Single-source-of-truth complementarity, exactly like gates (6)/(6b).
+    //   (D) non-tail is STRUCTURAL: the tail `Core::Call` path passes `caller_drop_slots = None`, so this fn is
+    //       only consulted from the non-tail emit.
+    //   (E) `heap_operand_ownership(arg) == Borrowed` — the arg is live-after in the CALLER (a non-last-use
+    //       let-binding/param), so its dup is a genuine caller-level SURPLUS. A LAST-USE (Owned) arg's dup is a
+    //       shell-reclaim child-dup already reclaimed by the match/scope → a caller-drop there double-frees
+    //       (the fst-sum "reclaims with the pair shell" trap). (E) is the load-bearing #9434-vs-fst-sum split.
+    // Reuses (2) heap-param + (E) Borrowed-operand (both in the inner `if`/guard); DROPS (4) escape — see the NB
+    // below for why (A) subsumes it. The original gates (1)-(6) below still apply to the NON-5786 export/lifted
+    // caller-drop path this admit precedes.
+    // (E) the operand must be BORROWED (NOT `Owned`) — the genuine "the caller keeps using arg AFTER this
+    // call" signal (a live-after let-binding/param whose occurrence here is non-last-use). This is the
+    // load-bearing distinguisher between #9434 and the fst-sum UAF: #9434's `base` is Borrowed (read again in
+    // `List.len base` post-call) so its dup IS a surplus the caller must drop; fst-sum's `a` is a LAST-USE
+    // destructured child (Owned transfer) whose dup is a SHELL-RECLAIM child-dup already reclaimed WITH the
+    // pair shell — a caller-drop there double-frees. Requiring Borrowed admits the reuse-surplus, excludes the
+    // last-use-move (the shell/scope path owns that reclaim). (The earlier Owned requirement was inverted —
+    // it made the admit inert; dropping it entirely admitted the last-use shell-reclaim case → the trap.)
+    if let Some(sd) = self_def
+        && caller_surplus_dup_sites.contains(&arg)
+        && matches!(
+            heap_operand_ownership(db, arg),
+            Ok(HandleOwnership::Borrowed)
+        )
+        && !def_consumes_param(db, callee, param_index)
+        && {
+            // (C): the callee must be a self-recursive loop (non-empty `mutual_loop_group`) with the caller
+            // EXTERNAL to it — a self/mutual caller reclaims per-frame → caller-drop there double-frees.
+            let g = mutual_loop_group(db, callee);
+            !g.is_empty() && !g.contains(&sd)
+        }
+        && {
+            // (G) YIELD to the callee's LOOP EPILOGUE (single-source-of-truth complementarity, exactly like
+            // gates (6)/(6b)): if the callee ALREADY drops this param at loop exit (`looped_owned_param_drops`),
+            // a caller-drop is a SECOND drop → double-free. This is THE #9434-vs-sum-at split: sum-at
+            // epilogue-drops `xs` (slot ∈ the set) so the caller must NOT; #9434's loop DECLINES base's
+            // exit-drop (empty set) so the caller-drop is the only reclaim. `mutual_loop_group` non-emptiness
+            // does NOT distinguish them (both are singleton self-loops) — the epilogue-drop set does.
+            let params = match layout.export_plan(callee) {
+                Some(e) => e.params.clone(),
+                None => crate::layout::def_params(db, callee),
+            };
+            // Slot = count of non-Unit params before `param_index` (matches `select_function_of`'s assignment).
+            let mut slot = 0u32;
+            let mut target: Option<u32> = None;
+            for (idx, (_b, ty)) in params.iter().enumerate() {
+                if matches!(ty.strip_nominal(), Ty::Unit) {
+                    continue;
+                }
+                if idx == param_index {
+                    target = Some(slot);
+                    break;
+                }
+                slot += 1;
+            }
+            let epilogue = looped_owned_param_drops(db, body, &params, Some(callee));
+            target.is_some_and(|s| !epilogue.contains(&s))
+        }
+    {
+        let params = match layout.export_plan(callee) {
+            Some(e) => e.params.clone(),
+            None => crate::layout::def_params(db, callee),
+        };
+        // NB: NOT gated on `!param_escapes_body` — that analysis is DUP-UNAWARE, so it flags a dup-backed
+        // `List.push base` as a reuse-escape (false positive). Conjunct (A) `def_consumes_param == false` IS
+        // the dup-aware borrow verdict (the classifier c861652be2 reclassifies the dup-backed invariant
+        // base-consume → borrow) and already guarantees the callee neither consumes base nor returns it — so
+        // base cannot escape via the callee result → the caller-drop is UAF-safe.
+        if let Some((_param_binder, param_ty)) = params.get(param_index).cloned()
+            && is_heap_type(&param_ty)
+        {
+            return true;
+        }
+    }
     if !(layout.exports.iter().any(|e| e.body == body) || db.lifted.iter().any(|l| l.body == body))
     {
         return false; // (1)
@@ -7897,23 +8049,61 @@ pub(crate) fn def_looped_callee_reclaims_threaded_param(
 /// Whether `body` contains a `Core::Call` whose arg triggers a caller-drop ([`call_arg_caller_drops`]) — the
 /// import-side companion of the `Core::Call` emit, so `collect_module_used_ops` imports `drop` iff the emit
 /// actually emits a caller-drop (precise import/emit agreement, like `def_drops_owned_param`). Cycle-guarded.
-pub fn body_has_caller_drop(db: &mut Db, body: StructId, layout: &Layout) -> bool {
-    fn walk(db: &mut Db, id: StructId, layout: &Layout, seen: &mut HashSet<StructId>) -> bool {
+pub fn body_has_caller_drop(
+    db: &mut Db,
+    body: StructId,
+    layout: &Layout,
+    self_def: Option<usize>,
+) -> bool {
+    // Reconstruct THIS body's caller-surplus dup set EXACTLY as `select_function_of` does (retain-only
+    // `collect_dup_sites` MINUS the shell-reclaim child-dups), so the 5786 caller-drop admit's (B) check
+    // matches the emit → the `drop` import agrees with what the emit actually emits (no under-import).
+    let mut heap_binders: Vec<StructId> = Vec::new();
+    collect_retain_candidate_binders(db, body, &mut heap_binders);
+    let mut retain_only: HashSet<StructId> = HashSet::new();
+    collect_dup_sites(db, body, &heap_binders, &mut retain_only);
+    let mut shell: HashSet<StructId> = HashSet::new();
+    collect_shell_reclaim_child_dups(db, body, &mut shell);
+    let caller_surplus_dup_sites: HashSet<StructId> =
+        retain_only.difference(&shell).copied().collect();
+    fn walk(
+        db: &mut Db,
+        id: StructId,
+        layout: &Layout,
+        self_def: Option<usize>,
+        caller_surplus_dup_sites: &HashSet<StructId>,
+        seen: &mut HashSet<StructId>,
+    ) -> bool {
         if !seen.insert(id) {
             return false;
         }
         if let Core::Call { callee, args } = core_of(db, id) {
             for (i, &a) in args.iter().enumerate() {
-                if call_arg_caller_drops(db, callee, a, i, layout) {
+                if call_arg_caller_drops(
+                    db,
+                    callee,
+                    a,
+                    i,
+                    layout,
+                    self_def,
+                    caller_surplus_dup_sites,
+                ) {
                     return true;
                 }
             }
         }
         crate::backend::wasm::select::reclaim::core_child_ids(db, id)
             .into_iter()
-            .any(|c| walk(db, c, layout, seen))
+            .any(|c| walk(db, c, layout, self_def, caller_surplus_dup_sites, seen))
     }
-    walk(db, body, layout, &mut HashSet::new())
+    walk(
+        db,
+        body,
+        layout,
+        self_def,
+        &caller_surplus_dup_sites,
+        &mut HashSet::new(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7930,8 +8120,12 @@ fn emit_call_args(
     caller_drop_slots: Option<&mut Vec<u32>>,
 ) -> Result<(), Reject> {
     let drops: Vec<bool> = if caller_drop_slots.is_some() {
+        // 5786 admit reads the emitting def (`out.self_def`) + this body's caller-surplus dup set; both are
+        // set by `select_function_of` before the emit. Snapshot before the per-arg `out` mutation below.
+        let sd = out.self_def;
+        let ds = out.caller_surplus_dup_sites.clone();
         (0..args.len())
-            .map(|i| call_arg_caller_drops(db, callee, args[i], i, layout))
+            .map(|i| call_arg_caller_drops(db, callee, args[i], i, layout, sd, &ds))
             .collect()
     } else {
         Vec::new()
