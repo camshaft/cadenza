@@ -122,3 +122,63 @@ element-vs-view discriminator as (b), reused.
   existing husk-drop path? [v-mem placement lane]
 - Can the O1 loop-exit invariant-param drop reuse the O2 pipeline's drop-insertion, or a separate
   layout-preserving O1-emit pass (like B2)?
+
+## 6. Reclaim-family map + implementation status (updated 2026-09-21)
+
+The reclaim work resolved into DISTINCT families, each closed by a SPECIFIC discriminator/fence (never a
+blanket admit). One unifying discipline (§3): **leak-over-UAF** — when a discriminator can't be proven,
+DECLINE the reclaim (a leak, never a double-free); **dup ⟺ drop lockstep** on ONE shared predicate; and
+**guarded-all is MANDATORY** before landing any reclaim change (a reclaim UAF surfaces in a DIFFERENT
+chapter — the #9413 chor-driver / #9435 tripwire locus; `coarse-<chapter>` alone is insufficient). Census
+is read from the NIX debug-counters runtime — native `--report-live-objects` is UNFAITHFUL (census-flaky).
+
+- **F1 — interior-view shell-husk (10-bytes 465b/727).** `matchsum_view_shell_reclaim_ok`'s
+  `owned_compound_boxed` disjunct (`compound_boxed && heap_operand_ownership==Owned`) admits a single-consume
+  escaping-view husk drop; a StrAt fence blocks the non-Owned view (StrAt aliases its source). LANDED #9430,
+  tripwire #9431. Residual: a StrAt-escaping view stays known-leak (needs a StrAt-escaping child-dup).
+
+- **F2 — escaped-child-dup (06-numeric 14929/14941).** A non-tail spine PARAM whose arm BARE-returns a heap
+  payload child: escape-dup the child + reclaim the shell. **DOUBLE-FENCED** — (depth) admit only a DIRECT
+  single-level `SumPayload{scrutinee}` (`payload_in_result_bare_escape_ok`, excludes json `encode`'s nested
+  `r.raw`); (ownership) `body_is_self_recursive` at BOTH coupling sites (collector + G4 relax) — a mutually-
+  recursive body on borrowed elements does not own its param. LANDED #9435 + over-drop tripwire #9436.
+  Residual: a DEEP-nested escaped child stays known-leak (the interior-view source-transfer follow-on).
+
+- **F3 — loop-exit invariant-param reclaim (05-compound 5786(a)).** A consumed-AND-reused invariant param
+  whose per-iter `List.push base` result is scalar-reduced: the loop-EXIT deep-drop reclaims the final
+  un-consumed value. `param_consumed_reused_in_loop_body` (walk with `allow_base_consume_reduced`) gated on
+  `looped_invariant_param_caller_owned` (the AXIS-A/CAESAR caller-ownership fence). LANDED #9432.
+
+- **F4 — caller-retains invariant-base (05-compound 5786-postloop).** Same base consumed-reused invariant,
+  but ALSO read AFTER the loop → the loop-exit drop must DECLINE (caller_owned=FALSE); the CALLER reclaims
+  instead. `def_consumes_param` reclassifies a DUP-BACKED base-consume as a BORROW (base occurrence ∈ the
+  callee's `dup_sites` ⟺ the op path-copies rc>1, NOT a rc1 FBIP-reuse) → the caller retains + drops at its
+  last use. CONTAINED to `def_consumes_param` (no global `param_only_borrowed_or_backedge` edit — the #9423
+  blast-radius lesson). IN-FLIGHT (v-core-opt built; v-mem verify → flip #9434 known-leak 2→0).
+
+- **F5 — SITE-A closure-env-cell reclaim (09-functions 771 family, ~11 cases).** An INVARIANT borrow-clean
+  closure loop-PARAM applied per iteration: its per-application caller dup is spurious → drop it per apply
+  (`closure_env_invariant_borrow_clean_binders` → the `CallClosure` SITE-A env-drop, gated per-SITE on
+  `dup_sites` — only the dup'd application site drops; the entry ref rides the loop-exit `looped_owned_param_
+  drops`). TWO fences added after guarded-all caught two over-frees: (a) **non-tail-selfcall** — exclude a
+  param threaded into a NON-TAIL loop-member self-call (require a PURE self-tail-loop; the `filt` shell-drop
+  cascade otherwise overlaps a child frame's reclaim → UAF); (b) **shared-heap-capture dup** at the
+  `Core::Closure` build — a SHARED (multi-used) heap capture must be dup'd into the env (json-`encode`-style
+  `3485`: an un-dup'd borrowed fn capture is over-freed by the env-drop cascade). IN-FLIGHT (v-mem lands
+  SITE-A + both fences as one PR; `3485` + `filt` stay known-leak, only the cases measuring 0 flip).
+
+- **QUEUED:** 14966 (non-tail borrowing-param — invariant borrow-only heap param dup'd per non-tail arg,
+  never dropped on unwind); interior-view-chain 1811/1860/2500 (source-transfer: re-root the view's ref
+  outer→rope) + F1's StrAt residual + F2's deep-nested residual; 5890 (SumPayload-base variant).
+
+**Ownership note (2026-09-21):** the operator granted v-memory-safety blanket authorization to cross into
+the EMIT lane to close this pile out ("zero memory safety issues"); v-core-opt owns the escape/consume
+CLASSIFICATION + the admit conditions and serves as the SITE-A/reclaim adversarial-diagnosis expert, v-mem
+owns reclaim PLACEMENT + census + guarded-all + pin flips. Coordinate per-family to avoid double-landing.
+
+### Open questions — resolved by the implementation
+- (a)/(b) ARE two distinct proofs (confirmed): F3 whole-spine caller-ownership drop vs F1 shell-husk-only
+  drop. F4 later split from F3 (post-loop-read → caller-retains, not loop-exit).
+- The husk-only / caller-retain drops reused EXISTING emit paths (the loop-exit `op_drop`, the caller
+  scope-drop) — no new free-cell-without-cascade Lir op was needed; the fences are all in the ADMIT
+  classifiers, keeping the emit layout-preserving.
