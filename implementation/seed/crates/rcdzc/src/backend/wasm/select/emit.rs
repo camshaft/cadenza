@@ -2024,7 +2024,11 @@ pub(super) fn emit(
             // tree-walker looking up a node's OWN key AND its child's key (both live sum-payload String
             // projections) had the second borrowed key freed, flipping its comparison (a silent wrong
             // count). See `key_handle_is_owned_temporary`.
-            let key_owned = key_handle_is_owned_temporary(db, key, &key_ty)?;
+            // ALSO drop an escaping nested-MatchSum VIEW key operand (465, symmetric with the value-eq operand
+            // drop): the 465(b) escaping-view dup left the extracted view at rc1 flowing in as this BORROWED
+            // key; `map-lookup` borrows it, so with no consumer-drop it leaks (node#15). drop ⟺ that dup.
+            let key_owned = key_handle_is_owned_temporary(db, key, &key_ty)?
+                || matchsum_view_operand_escaping_reclaim_ok(db, key);
             out.push(Lir::LocalTee(key_slot)); // [map, key], key_slot = key (for the later drop)
             out.push(Lir::CallImport(OP_MAP_LOOKUP)); // [value-or-null] (borrows map + key)
             out.push(Lir::LocalSet(val_slot)); // val_slot = value-or-null, stack empty
@@ -4976,10 +4980,16 @@ pub(super) fn emit(
             // `(= (Option.expect (String.at s i)) "a")` in a scalar-scan leaks the compacted char leaf per
             // iteration (13-strings `cnt` — 6-leak). Drop-iff-dup'd: shell-set membership is EXACTLY when the
             // SumExpect emit dup'd the view, so drop == dup (no double-free).
-            let drop_l =
-                matches!(lo, HandleOwnership::Owned) || out.sumexpect_shell_reclaim.contains(&lhs);
-            let drop_r =
-                matches!(ro, HandleOwnership::Owned) || out.sumexpect_shell_reclaim.contains(&rhs);
+            // ALSO drop an escaping nested-MatchSum VIEW operand (465): its 465(b) escaping-view path dup'd the
+            // extracted view (rc1) which then escapes as the match result into this BORROWING compare — with no
+            // consumer-drop it leaks (node#10/#15). `matchsum_view_operand_escaping_reclaim_ok` = drop ⟺ that
+            // preserving dup (v-core-opt-spec'd, symmetric with the Map.lookup key drop). drop-iff-dup'd.
+            let drop_l = matches!(lo, HandleOwnership::Owned)
+                || out.sumexpect_shell_reclaim.contains(&lhs)
+                || matchsum_view_operand_escaping_reclaim_ok(db, lhs);
+            let drop_r = matches!(ro, HandleOwnership::Owned)
+                || out.sumexpect_shell_reclaim.contains(&rhs)
+                || matchsum_view_operand_escaping_reclaim_ok(db, rhs);
             if drop_l {
                 out.push(Lir::LocalGet(slot_l));
                 out.push(Lir::CallImport(OP_DROP));

@@ -812,6 +812,114 @@ pub(crate) fn matchsum_view_shell_reclaim_ok(
         )
 }
 
+/// CONSUMER-side recognizer (v-memory-safety 465 operand-drop; v-core-opt-spec'd condition) for the escaping
+/// nested-`MatchSum` VIEW OPERAND leak (10-bytes:465 node#10/#15). When a `Core::MatchSum` operand takes
+/// [`matchsum_view_shell_reclaim_ok`]'s 465(b) ESCAPING-VIEW path (the arm returns the extracted owned view),
+/// a preserving child-`dup` leaves that view at rc1 flowing OUT as the match RESULT — but a BORROWING consumer
+/// (value-eq operand / `Map.lookup` key) reads it without dropping → the view husk leaks (measured: value-eq
+/// leaks 1, Map.lookup leaks 1, symmetric). The consumer drops the operand iff this returns true — drop ⟺ that
+/// preserving dup (the SAME final conditions as the 465(b) disjunct above), so no double-free.
+///
+/// DEAD-AFTER is guaranteed by CONSTRUCTION: the operand is the INLINED `MatchSum` NODE itself, re-emitted (and
+/// re-evaluated → a fresh runtime husk) at THIS borrow-op, so this op is that husk's sole use. A SHARED (kept)
+/// binding is a `LocalRef`, not a `MatchSum`, so it never matches here → stays a leak (leak-over-UAF; a shared
+/// view dropped after one of several borrows would UAF the others). A view flowing on to a CONSUMING op is not
+/// a value-eq/Map.lookup operand → this is never consulted there (that consumer already drops the moved ref).
+/// SOURCE-ALIASING: the escaped view holds its own rc on the source chain; the 465 rc-trace showed the source
+/// (rope/outer-slice) frees INDEPENDENTLY — dropping the view husk decrements only the view node, not double-
+/// dropping the source (full-coarse guarded-all is the net for any residual source double-drop).
+pub(crate) fn matchsum_view_operand_escaping_reclaim_ok(db: &mut Db, operand: StructId) -> bool {
+    let Core::MatchSum { scrutinee, root } = core_of(db, operand) else {
+        return false;
+    };
+    // DIRECT case: this `MatchSum`'s OWN arm returns the extracted owned view (the 465(b) escaping shape) —
+    // the operand result IS the dup'd view husk.
+    if matchsum_own_escaping_view(db, scrutinee, &root) {
+        return true;
+    }
+    // NESTED case (10-bytes:465's OUTER match): the escaping view husk is produced by a NESTED match in an
+    // arm result and flows OUT through this match as the operand result (`view_escapes_as_arm_result` sees
+    // only the outer scrutinee's OWN payload, so it reports false on the outer). Admit ONLY when EVERY arm
+    // result is an owned-droppable value (a nested escaping-view husk OR a fresh Owned producer) AND at
+    // least one is an escaping-view husk — so dropping the match RESULT is sound on EVERY execution path
+    // (a BORROWED arm result → not owned-droppable → decline, leak-over-UAF), and it fires ONLY for the
+    // view-leak shape (not every all-owned match).
+    let (all_owned, any_escaping) = sum_cont_result_owned_escaping(db, &root);
+    all_owned && any_escaping
+}
+
+/// The DIRECT 465(b) escaping-view conditions for a `MatchSum` (scrutinee + root) — the arm returns the
+/// extracted owned view, so a preserving child-dup left it at rc1 as the match result. Mirrors the final
+/// disjunct of [`matchsum_view_shell_reclaim_ok`]'s 465(b) path exactly (owned single-view producer,
+/// compound_boxed, Owned, view escapes, single consuming site, shared floor).
+fn matchsum_own_escaping_view(
+    db: &mut Db,
+    scrutinee: StructId,
+    root: &crate::core::SumCont,
+) -> bool {
+    let scrut_ty = type_of(db, scrutinee);
+    if !is_owned_single_view_producer(db, scrutinee)
+        || !is_heap_type(&scrut_ty)
+        || ty_is_enum_disc(db, &scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+    {
+        return false;
+    }
+    let compound_boxed = !sum_has_only_scalar_payloads(db, &scrut_ty);
+    let mut consuming = HashSet::new();
+    collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
+    consuming.len() == 1
+        && view_escapes_as_arm_result(db, scrutinee, root)
+        && compound_boxed
+        && matches!(
+            heap_operand_ownership(db, scrutinee),
+            Ok(HandleOwnership::Owned)
+        )
+}
+
+/// Walk a `SumCont`'s arm RESULT bodies for [`matchsum_view_operand_escaping_reclaim_ok`]'s NESTED case,
+/// returning `(all_owned_droppable, any_escaping)`. A result body is OWNED-DROPPABLE iff it is a nested
+/// escaping-view operand ([`matchsum_view_operand_escaping_reclaim_ok`]) OR a fresh `Owned` producer
+/// (`heap_operand_ownership == Owned`) — dropping such a result is balanced. A BORROWED result body (a
+/// bare scrutinee-payload pass-through) makes `all_owned` FALSE → the operand-drop is declined (leak-over-
+/// UAF: dropping a borrowed result would double-free the owner's ref). `any_escaping` is true iff at least
+/// one result body is a (possibly nested) escaping-view husk. Mirrors [`sum_cont_result_escapes_view`]'s
+/// arm-walk shape.
+fn sum_cont_result_owned_escaping(db: &mut Db, cont: &crate::core::SumCont) -> (bool, bool) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => result_body_owned_escaping(db, *body),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            let (bo, be) = result_body_owned_escaping(db, *body);
+            let (eo, ee) = sum_cont_result_owned_escaping(db, els);
+            (bo && eo, be || ee)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            let (to, te) = sum_cont_result_owned_escaping(db, then_);
+            let (eo, ee) = sum_cont_result_owned_escaping(db, els);
+            (to && eo, te || ee)
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            let mut all_owned = true;
+            let mut any_escaping = false;
+            for a in arms.iter() {
+                let (o, e) = sum_cont_result_owned_escaping(db, &a.cont);
+                all_owned &= o;
+                any_escaping |= e;
+            }
+            (all_owned, any_escaping)
+        }
+    }
+}
+
+/// A single arm-result body's `(owned_droppable, escaping)` for [`sum_cont_result_owned_escaping`].
+fn result_body_owned_escaping(db: &mut Db, body: StructId) -> (bool, bool) {
+    if matchsum_view_operand_escaping_reclaim_ok(db, body) {
+        return (true, true); // a nested escaping-view husk (owned via its preserving dup)
+    }
+    let owned = matches!(heap_operand_ownership(db, body), Ok(HandleOwnership::Owned));
+    (owned, false)
+}
+
 /// The PROJECTION-of-a-fresh-owned-aggregate twin of [`matchsum_view_shell_reclaim_ok`]: a `MatchSum`
 /// scrutinee `(. <fresh-owned-aggregate> i)` (`Core::Proj`) extracting a HEAP-SUM field out of a fresh
 /// OWNED product (a `#tuple`/`#record`/recursive-`Call` result — `heap_operand_ownership(operand) ==

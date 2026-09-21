@@ -462,7 +462,17 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 17 Int64))
-  (live-objects known-leak))
+  ; FIXED (v-memory-safety + v-core-opt 465 operand-drop co-design): the NESTED slice-of-slice view `inner`
+  ; escapes its inner (Bytes.slice outer 1 3) Some arm as the result (view_escapes_as_arm_result), so the
+  ; 465(b) escaping-view path dups it (rc1) — but it then flows into a BORROWING value-eq operand AND a
+  ; Map.lookup key with no consumer-drop → the two husks leaked (node#10 value-eq, node#15 Map.lookup,
+  ; symmetric). Now the two borrow-ops drop the operand via matchsum_view_operand_escaping_reclaim_ok (drop ⟺
+  ; the preserving dup): it recurses the OUTER match's arm results (the escaping husk is produced two levels
+  ; deep) and admits ONLY when EVERY arm result is owned-droppable (nested escaping-view OR fresh Owned) — so
+  ; the drop is sound on every path (leak-over-UAF: a borrowed arm result declines). census 0 (node#10 +
+  ; node#15), rc-trace LEAK SUMMARY none (no source double-drop — the escaped view holds its own rc, source
+  ; frees independently). Was known-leak.
+  (live-objects 0))
 
 (case
   "Bytes.concat of two runtime SLICES splices window content in order"
