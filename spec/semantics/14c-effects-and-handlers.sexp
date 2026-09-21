@@ -246,6 +246,31 @@
   (output (: 750 Int64)))
 
 (case
+  "ab5 an abort abandons a RUNTIME-REBUILT heap (nested-sum tree) handler STATE — the abandoned state reclaims on the unwind"
+  (doc
+    "The abort companion to the ab-series above, at a DISTINCT reclaim locus: the abandoned thing is the
+           handler's threaded STATE slot, and it is HEAP (a nested-sum tree). The ab1d/ab1e/ab2 aborts abandon
+           a SCALAR/MAP Bail state while the heap (string/map) state is the SURVIVING outer; 14:933's abort
+           discards the suspended BODY's heap (rope+map). Here `St`'s state is a `T` tree seeded `(T.L 1N)`;
+           the first perform `(St.step 5)` RESUMES, growing the state to a runtime-built `(T.B (T.L 1N) (T.L
+           5N))`; the second `(St.step -1)` hits the `(< v 0)` guard and ABORTS — the arm returns 77 WITHOUT
+           resume, so the grown heap tree state `st` is in scope but never consumed. It must be dropped
+           exactly once on the unwind: census 0 witnesses no leak (the abandoned rebuilt tree freed) and no
+           double-free (a regression dropping it on both the arm exit and the state-slot teardown would UAF).")
+  (input
+    (do
+      (effect St (op step (-> Int64 Int64)))
+      (type T (L BigInt) (B T T))
+      (def (main)
+        (handle St (T.L 1N)
+          ((step (v) st (if (< v 0) 77 (resume v (T.B st (T.L (BigInt.of v)))))))
+          (do (St.step 5) (St.step -1))))
+      (export main)))
+  (call main)
+  (output (: 77 Int64))
+  (live-objects 0))
+
+(case
   "cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance"
   (input
     (do
