@@ -4364,7 +4364,20 @@ fn emit_loop_iteration(
             // escape guard + fresh-cell gate together are the SOUND sufficient condition — see
             // `rebind_produces_fresh`. Extended from numeric-only to fresh product ctors to close the RECURSIVE
             // tuple/record/list-STATE handler per-perform leak (v-effects wasm-dump-confirmed on rectuple_tail).
-            let borrow_not_consumed = !args.iter().any(|&a| binding_escapes(db, a, binder, false))
+            // DUP-AWARE escape fence (v-core-opt-signed-off, extends this from a plain borrow-only check to
+            // the surplus-slot-ref condition): the param is DEAD-after-rebind iff no rebind arg CONSUMES its
+            // slot ref un-dup'd. `binding_escapes_fresh_dup_aware` is FALSE iff every consuming occurrence of
+            // `binder` dup'd a fresh reference — so `binder`'s OWN slot ref is a dead owned surplus AND the new
+            // value holds only independent dup'd refs, hence dropping the slot ref frees only the surplus (no
+            // UAF). This subsumes the old plain `!binding_escapes` (a whole-operand consume that MOVES the slot
+            // ref stays escaping ⇒ declines) AND admits the slice/concat-RETENTION shape (10-bytes:3049: a
+            // Bytes param rebound to a fresh `Bytes.concat(Bytes.slice b ..)` of ITSELF — the slices `op_dup`
+            // the parent, so every self-use is dup-backed ⇒ dup-aware escape false ⇒ the surplus slot ref is
+            // reclaimed per-back-edge; the successor's slice-refs keep the buffer live). Self-gating: the
+            // empty-concat fast-path (returns a b-retaining operand WHOLE, un-dup'd) ⇒ escapes ⇒ declines.
+            let borrow_not_consumed = !args
+                .iter()
+                .any(|&a| reclaim::binding_escapes_fresh_dup_aware(db, a, binder, false))
                 && (rebind_produces_fresh(db, args[i])
                     || reclaim::rebind_is_cross_param_move(
                         db,
