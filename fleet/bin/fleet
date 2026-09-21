@@ -47,14 +47,31 @@ if [ -z "${WORKTREES:-}" ] || [ ! -d "$WORKTREES" ]; then
   exit 127
 fi
 
-# Pick the worktree with the FRESHEST HEAD that is a Cargo project (has xtask/Cargo.toml), so `cargo xtask`
-# rebuilds+runs the newest landed source there. Mirrors compact-nudge.sh/watchdog.sh.
-best="" best_ct=-1
+# Pick the worktree to BUILD xtask from. We want the newest LANDED fleet code — so prefer the FRESHEST-HEAD
+# worktree whose HEAD is on the main line (== or ancestor-of origin/main), NOT merely the freshest by commit
+# time: a peer's diverged FEATURE branch (e.g. a design/vms branch) can have the most recent commit yet an
+# xtask/ that is BEHIND origin/main, and building from it would run STALE fleet logic for every `fleet`
+# caller (the stale-binary trap that has repeatedly made tooling look buggy). Fall back to the overall
+# freshest only if NONE are on the main line (e.g. all forked/ahead). Mirrors stage-oracle-lean.sh's
+# freshest-at/behind-origin-main selection. (Object store is shared, so origin/main resolves the same
+# everywhere; read it from the first Cargo worktree.)
+main_sha=""
 for wt in "$WORKTREES"/*/; do
   [ -f "${wt}xtask/Cargo.toml" ] || continue
-  ct="$(git -C "$wt" show -s --format=%ct HEAD 2>/dev/null || echo 0)"
-  if [ "$ct" -gt "$best_ct" ]; then best_ct="$ct"; best="$wt"; fi
+  main_sha="$(git -C "$wt" rev-parse --verify -q origin/main 2>/dev/null || true)"
+  [ -n "$main_sha" ] && break
 done
+best="" best_ct=-1 fallback="" fallback_ct=-1
+for wt in "$WORKTREES"/*/; do
+  [ -f "${wt}xtask/Cargo.toml" ] || continue
+  head="$(git -C "$wt" rev-parse --verify -q HEAD 2>/dev/null || true)"; [ -n "$head" ] || continue
+  ct="$(git -C "$wt" show -s --format=%ct HEAD 2>/dev/null || echo 0)"
+  [ "$ct" -gt "$fallback_ct" ] && { fallback_ct="$ct"; fallback="$wt"; }
+  if [ -n "$main_sha" ] && { [ "$head" = "$main_sha" ] || git -C "$wt" merge-base --is-ancestor "$head" "$main_sha" 2>/dev/null; }; then
+    [ "$ct" -gt "$best_ct" ] && { best_ct="$ct"; best="$wt"; }
+  fi
+done
+best="${best:-$fallback}"
 
 if [ -z "$best" ]; then
   echo "fleet: no worktree with an xtask Cargo project under $WORKTREES (a 'fleet up' provides one)." >&2
