@@ -325,6 +325,131 @@ pub(super) fn param_only_borrowed_or_reclaimed_backedge(
     )
 }
 
+/// Whether `binder` flows into a member SELF-recursive call that sits in a NON-TAIL position — the recursive
+/// call's result is CONSUMED by an enclosing constructor / operator (e.g. `(Iter.Cons h (filt rest p))`) rather
+/// than tail-returned. SITE-A's per-application env-drop
+/// ([`closure_env_invariant_borrow_clean_binders`]) assumes the tail-LOOP model: `binder` flows ONLY through the
+/// TAIL back-edge and is reclaimed exactly once by the loop-exit `looped_owned_param_drops`. A NON-TAIL self-call
+/// hands `binder` to a FRESH recursive frame that reclaims it in ITS OWN lifetime AND whose result is used here,
+/// so the current frame's SITE-A drop is a SECOND reclaim of that ref → over-free (09-functions:8750 `filt`: the
+/// predicate closure `p` threaded through the non-tail `(filt rest p)` in the KEEP arm `(Iter.Cons h (filt rest
+/// p))` → freed-funcref `call_indirect` trap; the DROP arm's tail `(filt rest p)` is clean). A purely
+/// tail-recursive loop (771 `times f n x = (if (< n 1) x (times f (- n 1) (f x)))`) threads its closure param
+/// ONLY in the tail back-edge → returns FALSE → keeps its SITE-A drop. SAFE-BIASED (leak-over-UAF): any doubt
+/// resolves toward NON-TAIL (a false positive only demotes a param to LEAKING, never an over-free), so only the
+/// clearly tail-preserving result positions (`If` arms, `match` arm bodies, `Let` body, `Seq` tail,
+/// `Block`/`Break`/`HandleAbort` value) keep `in_tail`; every other context (a constructor operand, an arith/
+/// borrow operand, a call arg, a scrutinee/cond, a `Let` initializer, a `Seq` statement) is NON-TAIL.
+pub(super) fn param_threaded_through_nontail_selfcall(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    members: &[usize],
+    in_tail: bool,
+) -> bool {
+    if !occurs_in(db, id, binder) {
+        return false;
+    }
+    // A member self-call carrying `binder` in a NON-TAIL position is the over-free shape.
+    if let Core::Call { callee, args } = core_of(db, id)
+        && members.contains(&callee)
+        && !in_tail
+        && args.iter().any(|&a| occurs_in(db, a, binder))
+    {
+        return true;
+    }
+    match core_of(db, id) {
+        // TAIL-preserving result positions: the branch/arm values are in the SAME tail context as the whole.
+        Core::If { cond, then_, else_ } => {
+            param_threaded_through_nontail_selfcall(db, cond, binder, members, false)
+                || param_threaded_through_nontail_selfcall(db, then_, binder, members, in_tail)
+                || param_threaded_through_nontail_selfcall(db, else_, binder, members, in_tail)
+        }
+        Core::And { lhs, rhs, .. } => {
+            // `and`/`or` desugars to an `if` with a const short-circuit branch; the non-const operand is the
+            // tail-ish result. Both operands treated: lhs non-tail (it is a condition), rhs tail-preserving.
+            param_threaded_through_nontail_selfcall(db, lhs, binder, members, false)
+                || param_threaded_through_nontail_selfcall(db, rhs, binder, members, in_tail)
+        }
+        Core::Match { scrutinee, arms } => {
+            param_threaded_through_nontail_selfcall(db, scrutinee, binder, members, false)
+                || arms.iter().any(|a| {
+                    a.guard.is_some_and(|g| {
+                        param_threaded_through_nontail_selfcall(db, g, binder, members, false)
+                    }) || param_threaded_through_nontail_selfcall(
+                        db, a.body, binder, members, in_tail,
+                    )
+                })
+        }
+        Core::MatchList { scrutinee, arms } => {
+            param_threaded_through_nontail_selfcall(db, scrutinee, binder, members, false)
+                || arms.iter().any(|a| {
+                    a.guard.is_some_and(|g| {
+                        param_threaded_through_nontail_selfcall(db, g, binder, members, false)
+                    }) || param_threaded_through_nontail_selfcall(
+                        db, a.body, binder, members, in_tail,
+                    )
+                })
+        }
+        Core::MatchSum { scrutinee, root } => {
+            param_threaded_through_nontail_selfcall(db, scrutinee, binder, members, false)
+                || cont_threaded_through_nontail_selfcall(db, &root, binder, members, in_tail)
+        }
+        Core::Let { bindings, body } => {
+            bindings.iter().any(|&(_, v)| {
+                param_threaded_through_nontail_selfcall(db, v, binder, members, false)
+            }) || param_threaded_through_nontail_selfcall(db, body, binder, members, in_tail)
+        }
+        Core::Seq { stmts, tail } => {
+            stmts
+                .iter()
+                .any(|&s| param_threaded_through_nontail_selfcall(db, s, binder, members, false))
+                || param_threaded_through_nontail_selfcall(db, tail, binder, members, in_tail)
+        }
+        Core::Block { body, .. } => {
+            param_threaded_through_nontail_selfcall(db, body, binder, members, in_tail)
+        }
+        Core::Break { value } => {
+            param_threaded_through_nontail_selfcall(db, value, binder, members, in_tail)
+        }
+        Core::HandleAbort { value, .. } => {
+            param_threaded_through_nontail_selfcall(db, value, binder, members, in_tail)
+        }
+        // Every other node is a NON-TAIL context for its children — recurse each child non-tail (safe-biased).
+        _ => crate::backend::wasm::select::reclaim::core_child_ids(db, id)
+            .into_iter()
+            .any(|c| param_threaded_through_nontail_selfcall(db, c, binder, members, false)),
+    }
+}
+
+/// [`param_threaded_through_nontail_selfcall`] over a sum-match continuation: the leaf/guarded/switch bodies are
+/// TAIL result positions (carry `in_tail`); a `LitTest`/`Guarded` cond and the path steps are non-tail.
+pub(super) fn cont_threaded_through_nontail_selfcall(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    binder: StructId,
+    members: &[usize],
+    in_tail: bool,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => {
+            param_threaded_through_nontail_selfcall(db, *body, binder, members, in_tail)
+        }
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            param_threaded_through_nontail_selfcall(db, *cond, binder, members, false)
+                || param_threaded_through_nontail_selfcall(db, *body, binder, members, in_tail)
+                || cont_threaded_through_nontail_selfcall(db, els, binder, members, in_tail)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            cont_threaded_through_nontail_selfcall(db, then_, binder, members, in_tail)
+                || cont_threaded_through_nontail_selfcall(db, els, binder, members, in_tail)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| cont_threaded_through_nontail_selfcall(db, &a.cont, binder, members, in_tail)),
+    }
+}
+
 /// lgx1 (v-memory-safety co-design): whether a member back-edge ARG reboxes `binder` by CONSUMING it as the
 /// BASE COLLECTION of a persistent-extend op (`List.push`/`List.prepend`/`Map.insert`/`Set.insert` base, or a
 /// `List.concat`/`Bytes.concat` operand) — the varying-accumulator idiom `worker (List.push acc x)`. Such a
