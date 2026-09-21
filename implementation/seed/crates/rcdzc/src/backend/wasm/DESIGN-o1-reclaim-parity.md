@@ -208,19 +208,28 @@ is read from the NIX debug-counters runtime — native `--report-live-objects` i
   `1383` case is a flipped win; `3485`/`filt`/`714`/`771`/`798` stay known-leak (leak-over-UAF) — the fences
   + (Y) are load-bearing UAF guards.
 
-- **F6 (queued) — multi-borrow / multi-sibling closure-env residual (09-functions 771, 798).** The SITE-A
-  (F5) env-drop flips the SINGLE-application invariant borrow-clean closure loop (09:713 → 0); two harder
-  shapes stay known-leak. (i) **multi-apply base (771):** the owned closure `f` is applied k>1 times on the
-  base arm (`(+ (f 0) (f 1))`) — k `CallClosure` BORROWS precede the ONE loop-exit env-drop; the captured
-  heap env (`xs`) leaks because the reclaim declines when >1 borrow precedes the drop. ADMIT SKETCH (v-core-
-  opt): the exit-drop is safe when EVERY base-arm use of `f` is a `CallClosure` BORROW sequenced BEFORE the
-  loop-exit drop (all k borrows release before the single drop → no race) — relax the SITE-A single-borrow
-  gate to k-borrow-all-borrows. (ii) **two-sibling self-call (798):** `f` passed to two sibling self-calls
-  (`(+ (go f …) (go f …))`) forces a dup-per-frame (last-sibling consume-spare) + a base-arm borrow; the dup
-  + spare + loop-exit env-drop must BALANCE (an over-drop double-frees the shared closure a sibling still
-  holds). HARDER — the sibling consume-spare interacts with the env-dtor; needs an emitted rc-trace to ground
-  the balance. Condition = v-core-opt; PLACEMENT = v-mem (blanket auth). ADJACENT to F5 — coordinate, do not
-  double-drive.
+- **F6 — heap-capture-closure residual (09-functions 799 + 857). LANDED.** The leaks a closure loop-param's
+  captured HEAP env (`xs`) suffers beyond the single-application F5 SITE-A flip. v-mem's rc-trace split it in
+  two (correcting an earlier k-borrow sketch that was wrong — the multi-apply mechanism reclaims fine):
+  - **(i) multi-apply base + invariant back-edge (799,** e.g. `(+ (f 0) (f 1))` with tail `(go f (- d 1))`**):
+    ALREADY RECLAIMS to 0** — the F5 SITE-A env-drop (once #9449 admits the fresh guest closure) fires and the
+    env-cell DTOR cascades to the captured `xs`. The cascade hypothesis was correct; no admit to design — a
+    stale pin, flipped. (Strengthened by the k=3 tripwire #9460.)
+  - **(ii) two-sibling NON-TAIL self-call (857,** `(+ (go f (- d 1)) (go f (- d 1)))`**):** `go` is a non-tail
+    self-recursive SCC member (real recursion, NOT TCO'd), so `f` falls through BOTH the F5 SITE-A per-
+    application drop (the non-tail-selfcall fence EXCLUDES it) AND the TCO loop-exit `looped_owned_param_drops`
+    — the per-sibling env dups (the consume-spare) are never reclaimed (rc→7, zero drops, leak 3). FIX: a NEW
+    per-FRAME `nontail_selfrec_owned_closure_param_drops` at the owned-param epilogue (runs once per real
+    recursion frame), gated (1) `looped_invariant_param_caller_owned` (GUEST-OWNED — the load-bearing #9449
+    fence; a boundary/host-resource closure would UAF exactly like 21-host `iter`); (2) `f` dup-backed
+    (owned-per-frame, the sibling consume-spare); (3) `binding_escapes_dup_aware` non-escape (verbatim-move-
+    only escape declines — the tr3 ctor-embed/return hazard); (4) `param_threaded_through_nontail_selfcall`
+    == TRUE — the SAME predicate the F5 SITE-A fence uses to EXCLUDE, giving SITE-A-drop ⊕ frame-exit-drop
+    complementarity; (G′) DISJOINT from `looped_owned_param_drops` ∪ `nonlooped_owned_param_drops` (the gate-
+    (G) analog — that predicate is safe-biased toward TRUE, which is the leak direction for F5's exclude but
+    the OVER-FREE direction for this admit, so yield-to-existing keeps it leak-over-UAF). LANDED #9462 (census
+    857 3→0, value 3/12/24, O0==O3, 799/tail-loop unaffected, guarded-all GREEN). condition v-core-opt,
+    placement v-mem.
 
 - **QUEUED:** 14966 (non-tail borrowing-param — invariant borrow-only heap param dup'd per non-tail arg,
   never dropped on unwind); interior-view-chain 1811/1860/2500 (source-transfer: re-root the view's ref
