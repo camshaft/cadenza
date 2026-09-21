@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(14);
+    let shape = c.variant(15);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -307,8 +307,26 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // survives for `Bytes.len` = 2). The VALUE is stable at trunk (4202-style, per #9474); this pins the
         // value side (leak census is v-memory-safety's lane and invisible to a value oracle), and the shared
         // borrow makes any future borrowed-key over-drop a wrong-value / trap caught by the value sweeps.
-        _ => format!(
+        13 => format!(
             "(do (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of #list(120))) (- n 1)))) (def (main) (let ((k (rep (Bytes.of #list(104)) 1))) (+ (* 100 (Option.expect (Map.lookup (Map.insert Map.empty (Bytes.of #list(104 120)) {a}) k) \"found\")) (Bytes.len k)))) (export main))"
+        ),
+        // 14 — F7 PROJECTED/VARYING-PARAM DECLINE tripwire (the #9476 shipped-UAF fence). The DECLINE-branch
+        // complement of shape 12's verbatim-invariant ADMIT: a giter-takedrop-style non-tail self-recursion
+        // `take` MATCHES its heap `Lst` param `it` and recurses on the PROJECTED tail `rest`
+        // (`(Cons h (take rest (- n 1)))`) — so the recursive self-call passes a CHILD of `it`, NOT `it`
+        // verbatim. #9466's F7 per-arm drop WRONGLY fired here (its invariance gate was TCO-slot-based, but a
+        // non-tail self-call is a FRESH FRAME): it freed the incoming frame ref while a later frame still read
+        // the projected child → wasm-unreachable UAF (cad-test-iterators giter-takedrop, GHA-confirmed).
+        // #9476 fences the F7 drop to fire ONLY when the self-call passes the param VERBATIM (bare Param/
+        // LocalRef, same binder + arg index): `mpow(base,e/2,md)` stays admitted (shape 12); `take rest …`
+        // is DECLINED (no drop → no UAF). Leak-over-UAF: at the fenced tip it runs CLEAN to the KNOWN
+        // `min(3, n)` (n=0→0, 2→2, ≥3→3) with NO TRAP (the projected param merely leaks — a sound
+        // varying-param reclaim is separate future work); it goes RED only on a REGRESSION — if the F7
+        // verbatim-invariance gate is ever relaxed, the per-arm drop re-frees the projected child → re-trap
+        // `unreachable` / wrong count, caught by determinism / opt-invariance / differential. Together with
+        // shape 12 this brackets BOTH branches of the #9476 F7 fence, as shapes 10/11 bracket the F5 fence.
+        _ => format!(
+            "(do (type Lst (Nil) (Cons Int64 Lst)) (def (mk (: i Int64) (: n Int64)) (if (< i n) (Cons i (mk (+ i 1) n)) (Nil))) (def (take (: it Lst) (: n Int64)) (if (< n 1) (Nil) (match it ((Nil) (Nil)) ((Cons h rest) (Cons h (take rest (- n 1))))))) (def (count (: it Lst)) (match it ((Nil) 0) ((Cons h rest) (+ 1 (count rest))))) (def (main) (count (take (mk 0 {n}) 3))) (export main))"
         ),
     };
     Program { source }
@@ -4962,9 +4980,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the fourteen shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 14];
-        for seed in 0u64..512 {
+        // Distinctive, mutually-exclusive markers for the fifteen shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 15];
+        for seed in 0u64..576 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5007,13 +5025,15 @@ mod tests {
                 reached[12] = true;
             } else if src.contains("(def (rep (: b Bytes)") {
                 reached[13] = true;
+            } else if src.contains("(def (take (: it Lst)") {
+                reached[14] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all fourteen reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all fifteen reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
