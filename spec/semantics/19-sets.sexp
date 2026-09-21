@@ -4050,7 +4050,7 @@
   (output (: 1 Int64))
   (call main (: 0 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Set.union dedups a slice-view element against a flat twin ACROSS the operand boundary"
@@ -4074,7 +4074,7 @@
   (output (: 2 Int64))
   (call main (: 0 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Set.intersection and Set.difference match a view against a flat element across operands"
