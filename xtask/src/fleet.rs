@@ -20837,6 +20837,41 @@ mod tests {
             MATERIALIZED_FLEET_FILES.contains(&"setup-nix-builder-peer.sh"),
             "the peer-setup runbook referenced by the fleet-status hint must be materialized to the hub"
         );
+        // Regression guard (2026-09-21): every SELF-CRON / self-heal driver builds its script path as
+        // `fleet.root.join("<name>.sh")` (the HUB copy) and its `ensure_*_cron` EARLY-RETURNS when that path
+        // is absent (`if !script.exists() { return; }`). So if a cron script silently drops out of
+        // MATERIALIZED_FLEET_FILES, `fleet up` stops materializing it → the hub path never exists → the cron
+        // is NEVER installed, with NO other failure (the deploy set still materializes fine, the ensure just
+        // no-ops). The whole-const loop above proves "everything IN the const materializes"; this pins the
+        // other direction — the scripts the cron drivers DEPEND ON are actually in the const. A rename or
+        // accidental removal of any of these now fails HERE instead of shipping a silently-dead cron. When a
+        // new `ensure_*_cron` driver lands, add its script here too. (Kept in sync with the
+        // `fleet.root.join("<name>.sh")` references in the ensure_*_cron / self-heal functions.)
+        for cron_script in [
+            "watchdog.sh",
+            "rearm-stale.sh",
+            "drain-nudge.sh",
+            "compact-nudge.sh",
+            "reap-leases.sh",
+            "reap-wedged-nix-clients.sh",
+            "stage-oracle-lean.sh",
+            "baseline-drift-monitor.sh",
+            "warm-keep.sh",
+            "cpu-monitor.sh",
+            "aea-refresh.sh",
+            "disk-guard.sh",
+            "slack-bridge-guard.sh",
+            "prune-stale-targets.sh",
+            "prune-tmp-inodes.sh",
+            "refresh-tools.sh",
+        ] {
+            assert!(
+                MATERIALIZED_FLEET_FILES.contains(&cron_script),
+                "{cron_script} is referenced by an ensure_*_cron/self-heal driver (fleet.root.join) and MUST \
+                 be in MATERIALIZED_FLEET_FILES — else `fleet up` never materializes it and the cron silently \
+                 no-ops (its ensure_*_cron early-returns on the missing hub path)"
+            );
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 
