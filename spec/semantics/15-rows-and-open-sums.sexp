@@ -1932,6 +1932,35 @@
   (live-objects 0))
 
 (case
+  "a CLOSURE projected from a SLOTTED conditional-tuple reclaims via deep-drop — the counter-face to the inlined-merge env-cell leak"
+  (doc
+    "The SLOTTED boundary marker for the SITE-A `operand_proj_owned` 5th route above (v-core-opt
+           coverage probe): the closure rides a `(if k<0 (tuple (fn..k) 7) (tuple (fn..2k) 9))`
+           let-bound to `t`, then `((. t 0) 3)` projects + applies it and `(. t 1)` reads the scalar
+           sibling. Because `t` is a CONDITIONAL tuple it forces a materialized heap aggregate (SROA
+           cannot fold the join), so it is SLOTTED (not inlined): `Proj(t, 0)` reads a BORROW of the
+           slot, and `t`'s single deep-drop at end-of-scope cascades into the env cell — no U14
+           dup-of-an-inlined-producer, so nothing orphans. Census 0, no SITE-A route needed. This is
+           exactly why the `Record.merge` case above leaked ONLY when `m` was INLINED-non-SROA'd
+           (re-emitted per use, firing the U14 dup with no matching drop until the 5th route): a
+           slotted/SROA'd producer never hits `operand_proj_owned`. k=5 → 10·(3+2·5)+9 = 139;
+           k=-1 → 10·(3+-1)+7 = 27. A regression breaking the slotted deep-drop cascade would leak
+           the env cell here.")
+  (input
+    (do
+      (def (main (: k Int64))
+        (let ((t (if (< k 0)
+                     (tuple (fn ((: y Int64)) (+ y k)) 7)
+                     (tuple (fn ((: y Int64)) (+ y (* 2 k))) 9))))
+          (+ (* 10 ((. t 0) 3)) (. t 1))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 139 Int64))
+  (call main (: -1 Int64))
+  (output (: 27 Int64))
+  (live-objects 0))
+
+(case
   "Record.pop hands back a CLOSURE field as the popped value and it applies"
   (doc
     "The fn-field face of the value-yielding removal: `(Record.pop r f)` returns
