@@ -4415,6 +4415,13 @@ fn emit_loop_iteration(
     // sibling co-borrow (the O(n) borrow-thread accumulator drop below) without holding an `out` borrow across
     // the `db`-mut closure (mirrors the `dup_sites.clone()` at the post-body loop's arm-drop reconstruction).
     let dup_snapshot = out.dup_sites.clone();
+    // THREADED-PREV drop (v-core-opt-ruled, inc 03:522 leak-2): the single member's own body, the escape-query
+    // root for the dead-after check below (a loop-carried param that is only compare-borrowed then REPLACED).
+    let self_body: Option<StructId> = if single_member {
+        db.defs.get(tl.members[0]).and_then(|d| d.body)
+    } else {
+        None
+    };
     let drop_old_borrowed: Vec<bool> = (0..args.len())
         .map(|i| {
             if !single_member
@@ -4495,7 +4502,41 @@ fn emit_loop_iteration(
                     && (0..args.len())
                         .all(|j| j == i || !binding_escapes(db, args[j], binder, false))
                     && (0..args.len()).any(|j| j != i && occurs_in(db, args[j], binder));
-            borrow_not_consumed || dup_forced_old_survives
+            // THREADED-PREV reassigned-loop-param drop (v-core-opt-ruled, inc 03:522 leak-2; the #9522 AXIS-B
+            // owner-drop family adapted). A loop param whose OLD value is DEAD-AFTER (only compare-borrowed
+            // this iteration, then REPLACED by the back-edge store) leaks its old value each iteration when the
+            // new value is an EXTRACTION rather than a fresh ctor (inc's `prev`, overwritten by the next key
+            // `k` = arr-get, dup'd — so borrow_not_consumed declines since rebind_produces_fresh(k)=false). Two
+            // load-bearing conditions, BOTH on the OLD value (v-core-opt's ruling):
+            //   (1) DEAD-AFTER: binding_escapes_dup_aware(Binder, tail_borrowed=false, Some) == false. The
+            //       reassign-store into the param's own slot is NOT an escape (the param is not re-passed as a
+            //       tail-call arg — it is REPLACED), so a compare-only param returns false; a threaded /
+            //       returned / CAPTURED param (ratwalk's threaded key, lf1's continuation capture) returns
+            //       true -> DECLINE (leak-over-UAF). This is the primary UAF safety + the GATE-2 capture guard.
+            //   (2) NEW VALUE is a proper OWNED handoff: a fresh producer (rebind_produces_fresh) OR a
+            //       dup-backed transfer (the arg node in dup_sites). Then the reassignment leaves the slot
+            //       owned, and the dup>=drop lockstep means dropping the old surplus ref frees ONLY it — even
+            //       if old and new alias an interned cell, the new dup keeps rc>=1 (no alias check needed).
+            // Distinct from borrow_not_consumed (needs a fresh ctor); this admits the dup-backed EXTRACTION.
+            // guarded-all + the go/lf1/threaded/non-owned negative controls are the UAF net (double-free area).
+            // GATE-1 (v-core-opt #9522, resolved): the concern was a SEPARATE reclaim of this param + this drop
+            // = double-drop. The only pre-existing reclaim of a reassigned loop param is the fn-exit epilogue
+            // (`looped_owned_param_drops`), which drops the FINAL (never-overwritten) value; this drop reclaims
+            // each INTERMEDIATE (overwritten) value on the back-edge — the two PARTITION the values (final vs
+            // intermediates), never the same cell, so they are complementary, NOT a double-drop (rc-trace: inc
+            // LEAK SUMMARY none, zero double-free). So `def_looped_callee_reclaims_threaded_param` is NOT the
+            // right guard here (it is true for inc precisely because of the complementary epilogue drop). The
+            // UAF net for any genuinely-conflicting shape is guarded-all corpus-wide (a real double-drop traps).
+            let drop_old_threaded_prev = self_body.is_some_and(|sb| {
+                !binding_escapes_dup_aware(
+                    db,
+                    sb,
+                    EscapeTarget::Binder(binder),
+                    false,
+                    Some(&dup_snapshot),
+                ) && (rebind_produces_fresh(db, args[i]) || dup_snapshot.contains(&args[i]))
+            });
+            borrow_not_consumed || dup_forced_old_survives || drop_old_threaded_prev
         })
         .collect();
     let mut eval_order: Vec<usize> = (0..args.len())
