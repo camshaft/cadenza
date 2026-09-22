@@ -1923,7 +1923,13 @@
   (output (: 87 Int64))
   (call main (: 0 Int64))
   (output (: 37 Int64))
-  (live-objects known-leak))
+  ; v-core-opt: the merged `m` is INLINED, so `Record.merge` re-emits per use; `m.f` = Proj(merged-record, f)
+  ; whose Proj reclaim (U14) dups the extracted closure into an independent owned rc1 + drops the parent, but
+  ; the borrowing CallClosure apply left that owned env cell un-reclaimed (SITE-A had no route for a Proj-of-
+  ; owned-producer closure operand) → the env cell leaked. The SITE-A 5th route `operand_proj_owned` (emit.rs)
+  ; drops the cell after the apply — sound by dup⊇drop lockstep (parent already dropped; the U14 dup is the sole
+  ; ref). Two-signal: v-mem rc-trace node#1 1→2→1→0, ZERO double-free + guarded-all GREEN.
+  (live-objects 0))
 
 (case
   "Record.pop hands back a CLOSURE field as the popped value and it applies"
