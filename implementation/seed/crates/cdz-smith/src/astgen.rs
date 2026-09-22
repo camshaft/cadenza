@@ -383,15 +383,18 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
 pub fn generate_effect(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
     let mut body = String::new();
-    match c.variant(4) {
+    match c.variant(5) {
         // Single-handler perform/resume/abort (continuation drop vs resume).
         0 => gen_effect_body(&mut c, &mut body),
         // Two effects, the inner handle NESTED in the outer — multi-frame handler-stack resolution.
         1 => gen_effect_nested_body(&mut c, &mut body),
         // A handler whose op result feeds a heap collection — effect + collection lowering.
         2 => gen_effect_collection_body(&mut c, &mut body),
-        // A handler performing MULTIPLE ops, folding state across them.
-        _ => gen_effect_multiop_body(&mut c, &mut body),
+        // A handler performing MULTIPLE ops, folding state across them (scalar Int64 state).
+        3 => gen_effect_multiop_body(&mut c, &mut body),
+        // A handler threading a HEAP (Map) state through resume — the handler-state-threading reclaim
+        // family (#9522 rope / #9525 Map immortal-base-arm admission). See gen_effect_mapstate_body.
+        _ => gen_effect_mapstate_body(&mut c, &mut body),
     }
     Program {
         source: format!("(do (def (main) {body}) (export main))"),
@@ -3076,6 +3079,38 @@ fn gen_effect_multiop_body<C: Choice>(c: &mut C, out: &mut String) {
     .ok();
 }
 
+/// A HEAP-STATE handler-threading body — the value-observable guard on the HANDLER-STATE-THREADING reclaim
+/// family (14b: #9522 rope-state AXIS-B owner-drop, #9525 Map immortal-base-arm admission — "FIRST
+/// handler-state-threading leak reclaimed"). Unlike every other effect form (whose handler state is a scalar
+/// Int64), this seeds the handler with the IMMORTAL `Map.empty` singleton and THREADS a growing Map state
+/// through `resume`: each `bump` looks the key up in the state `s`, and resumes with an incremented count +
+/// a FRESH-Owned `(Map.insert s key ..)`. The op body's `(if (< key 0) (resume -1 s) …)` guard arm resumes
+/// the UNCHANGED seed `s` (dead at runtime since key ≥ 0, but present so the arm-ownership JOIN pairs a
+/// fresh-Owned insert sibling with an immortal-`Map.empty` unchanged-seed arm — exactly the #9525
+/// join_arm_ownership immortal-base-arm admission). VALUE-OBSERVABLE: the two bumps thread state (bump1 sees
+/// None→count 1; bump2 sees the threaded {key:1}→count 2), so the result is `1 + 10*2 = 21` ONLY if the Map
+/// state survives correctly between bumps — a reclaim regression that frees the threaded state / the fresh
+/// inserts (a relaxed immortal-base-arm join or handler-completion drop → double-free) makes bump2 miss
+/// (→ 11) or traps, caught by determinism / opt-invariance / differential --effect. The FIRST generator
+/// shape threading a HEAP handler-state (the S556-flagged gap); mirrors the mkx1 14b:13946 corpus shape.
+fn gen_effect_mapstate_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Bounded key so `(< key 0)` is always false (the immortal-unchanged-seed arm stays compile-present but
+    // runtime-dead) and both bumps hit the same key (so the threaded count reaches 2 → value 21).
+    let k = c.int_bounded(0, 20);
+    write!(
+        out,
+        "(do (effect T (op bump (-> Int64 Int64))) \
+         (handle T Map.empty \
+           ((bump (key) s \
+             (if (< key 0) (resume -1 s) \
+               (match (Map.lookup s key) \
+                 ((Some v) (resume (+ v 1) (Map.insert s key (+ v 1)))) \
+                 ((None) (resume 1 (Map.insert s key 1))))))) \
+           (+ (T.bump {k}) (* 10 (T.bump {k})))))"
+    )
+    .ok();
+}
+
 /// A `Map.lookup` body: `(match (Map.lookup <2-entry-const-map> <key>) ((Some v) v) (None <dflt>))` —
 /// the keyed map read yielding `Option V`, consumed to an Int64 by matching Some/None. Half the time
 /// the key is PRESENT (→ `Some` → the stored value), half DEFINITELY-ABSENT (→ `None` → the default),
@@ -5088,9 +5123,10 @@ mod tests {
     #[test]
     fn generate_effect_reaches_all_forms_and_compiles() {
         // Distinctive, mutually-exclusive markers (see `generate_effect`): nested = two effects E1/E2;
-        // multiop = one effect E with two ops o1/o2; collection = a `List`; single = the plain one-op form.
-        let mut reached = [false; 4];
-        for seed in 0u64..200 {
+        // multiop = one effect E with two ops o1/o2; collection = a `List`; mapstate = effect T / op bump
+        // threading a Map handler-state; single = the plain one-op form.
+        let mut reached = [false; 5];
+        for seed in 0u64..280 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(97);
             let mut bytes = Vec::new();
             for _ in 0..24 {
@@ -5107,6 +5143,8 @@ mod tests {
                 reached[1] = true; // nested-handler
             } else if src.contains("(effect E (op o1 ") {
                 reached[3] = true; // multi-op
+            } else if src.contains("(effect T (op bump ") {
+                reached[4] = true; // mapstate (heap handler-state threading)
             } else if src.contains("List") {
                 reached[2] = true; // effect + collection
             } else if src.contains("(effect E (op o ") {
@@ -5115,7 +5153,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all four effect forms must be reachable across seeds: reached={reached:?}"
+            "all five effect forms must be reachable across seeds: reached={reached:?}"
         );
     }
 
@@ -5935,6 +5973,39 @@ mod tests {
         }
         assert!(saw_two_ops, "should declare two ops (o1 + o2)");
         assert!(saw_both_performs, "should perform both ops (E.o1 + E.o2)");
+    }
+
+    /// `gen_effect_mapstate_body` emits a well-formed HEAP-STATE handler-threading program (a `bump` op
+    /// threading a `Map` handler-state through `resume`, seeded with the immortal `Map.empty`, with an
+    /// immortal-unchanged-seed guard arm) and every body COMPILES — the handler-state-threading reclaim
+    /// family (#9522/#9525) that the scalar-Int64-state effect forms never reach. Asserts the Map-state
+    /// structure is present, and confirms the KNOWN value 21 (state threaded correctly across two bumps).
+    #[test]
+    fn gen_effect_mapstate_body_is_well_formed_and_compiles() {
+        let mut saw_mapstate = false;
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(2609);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_effect_mapstate_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_mapstate |= body.contains("(handle T Map.empty")
+                && body.contains("(Map.insert s key")
+                && body.contains("(resume -1 s)");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "map-state effect body must COMPILE: {src}"
+            );
+        }
+        assert!(
+            saw_mapstate,
+            "should thread a Map handler-state (handle Map.empty + Map.insert + immortal-seed guard arm)"
+        );
     }
 
     /// `gen_effect_collection_body` emits a well-formed EFFECT × COLLECTION program (the handled body
