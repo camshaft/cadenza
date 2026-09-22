@@ -27024,6 +27024,120 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
+    fn gate_coarse_detached_wrapper_writes_the_verdict_file_and_is_valid_bash() {
+        // The coarse wrapper mirrors the gate-local one (re-key lease to $$, trap-release, run nix as a child
+        // with output to the log) BUT writes a stem-keyed VERDICT FILE (DRV + RC) instead of a lone
+        // RC-sentinel — that verdict file is what makes a killed poll recoverable (#9512). A broken wrapper
+        // would silently break EVERY gate-coarse verdict recovery.
+        let w = GATE_COARSE_DETACHED_WRAPPER;
+        assert!(w.contains("mv -f"), "re-keys the lease via an atomic mv");
+        assert!(
+            w.contains("$$-${lease##*-}"),
+            "re-keys to the wrapper pid $$, preserving the class suffix"
+        );
+        assert!(
+            w.contains(r#"trap 'test -n "$lease" && rm -f "$lease"' EXIT"#),
+            "removes the (re-keyed) lease on build exit"
+        );
+        assert!(
+            w.contains(r#""$@" >"$log" 2>&1"#),
+            "runs nix as a CHILD (no exec, so the EXIT trap survives) with output to the log file"
+        );
+        assert!(
+            w.contains(r#"printf 'DRV=%s\nRC=%s\n' "$fp" "$_rc" > "$verdict""#),
+            "stamps DRV (fingerprint) + RC (nix's exact exit code) to the verdict file"
+        );
+        assert!(
+            w.find(r#""$@" >"$log" 2>&1"#) < w.find("> \"$verdict\""),
+            "the verdict is written AFTER the nix build runs, not before"
+        );
+        // Valid bash — `bash -n` parses without executing.
+        let dir = std::env::temp_dir().join(format!("ft-coarsewrap-syntax-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("wrapper.sh");
+        if std::fs::write(&f, w).is_err() {
+            return;
+        }
+        if let Ok(o) = Command::new("bash").arg("-n").arg(&f).output() {
+            assert!(
+                o.status.success(),
+                "GATE_COARSE_DETACHED_WRAPPER has a bash syntax error:\n{}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gate_coarse_wrapper_verdict_round_trips_through_parse_coarse_verdict() {
+        // END-TO-END COUPLING PIN (mirrors the gate-local sentinel round-trip): the wrapper's emitted verdict
+        // file MUST be exactly what `parse_coarse_verdict` reads — they are joined only by the DRV=/RC= format
+        // convention. A future edit to EITHER that breaks their agreement would silently make every
+        // gate-coarse verdict unreadable → the poll always times out → NO-VERDICT on every coarse gate
+        // (killing the per-MR safety net #9495/#9512 restored). Runs the REAL wrapper under sh and reads it
+        // back with the REAL parser, so a divergence fails the build.
+        let run = |idx: usize, fp: &str, inner: &str| -> Option<(String, i32)> {
+            let verdict = std::env::temp_dir().join(format!(
+                "ft-coarsewrap-e2e-{}-{}.verdict",
+                std::process::id(),
+                idx
+            ));
+            let log = std::env::temp_dir().join(format!(
+                "ft-coarsewrap-e2e-{}-{}.log",
+                std::process::id(),
+                idx
+            ));
+            let _ = std::fs::remove_file(&verdict);
+            // Positional args mirror gate_coarse: $0=sh, $1=lease (empty → re-key/trap no-op), $2=verdict,
+            // $3=log, $4=fp, $5..=the "build". Here the "build" is `sh -c <inner>` so we control its exit code.
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg(GATE_COARSE_DETACHED_WRAPPER)
+                .arg("sh")
+                .arg("")
+                .arg(&verdict)
+                .arg(&log)
+                .arg(fp)
+                .arg("sh")
+                .arg("-c")
+                .arg(inner)
+                .status();
+            if status.is_err() {
+                return None; // sh unavailable → skip (guarded below)
+            }
+            let out = std::fs::read_to_string(&verdict)
+                .ok()
+                .and_then(|s| parse_coarse_verdict(&s));
+            let _ = std::fs::remove_file(&verdict);
+            let _ = std::fs::remove_file(&log);
+            out
+        };
+        if Command::new("sh").arg("-c").arg("exit 0").status().is_err() {
+            return; // sh unavailable → skip cleanly
+        }
+        // GREEN + RED with a real fingerprint round-trip to (drv, rc).
+        assert_eq!(
+            run(0, "/nix/store/abc.drv", "exit 0"),
+            Some(("/nix/store/abc.drv".to_string(), 0)),
+            "green exit + fingerprint round-trips"
+        );
+        assert_eq!(
+            run(1, "/nix/store/abc.drv", "exit 1"),
+            Some(("/nix/store/abc.drv".to_string(), 1)),
+            "red exit round-trips"
+        );
+        // EMPTY fingerprint (a bogus-stem / eval-hiccup build): the wrapper must STILL write a parseable
+        // verdict (DRV= empty + RC) so the poll terminates and the caller fast-fails via the attr-missing log
+        // signature — the poll-hang bug fixed in #9512's live smoke. Also proves no-trailing-newline build
+        // output in the LOG can't corrupt the separately-written verdict file.
+        assert_eq!(
+            run(2, "", "printf no-newline; exit 7"),
+            Some((String::new(), 7)),
+            "empty-fingerprint build still writes a parseable verdict (bogus stem cannot hang the poll)"
+        );
+    }
+
+    #[test]
     fn trunk_fmt_verdict_only_alarms_on_a_confirmed_red_never_on_a_tooling_failure() {
         use TrunkFmtVerdict::*;
         // `cargo fmt --all --check` exited 0 → base is formatted → Clean (proceed with the drain).
