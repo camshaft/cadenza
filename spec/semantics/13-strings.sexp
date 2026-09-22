@@ -1370,7 +1370,8 @@
   (output (: 500 Int64))
   (call main (: 3 Int64))
   (output (: 34 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 (case
   "string REVERSE walks scalars back-to-front and anti-commutes with concatenation"

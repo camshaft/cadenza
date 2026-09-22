@@ -3407,6 +3407,31 @@ pub(super) fn emit(
             // slices the tail with `vec-split`. Track the sub-value type as the walk descends.
             let walk_from;
             let mut cur;
+            // OWNED-PRODUCER SCRUTINEE RECLAIM (recwalk/owned-fold tuple-projection leak, v-memory-safety):
+            // a `SumPayload` whose scrutinee is a FRESH OWNED producer (a call/ctor — `(f h)` returning a
+            // `#tuple(h2 k2)`, projected by `Elem(_)`) is the exact twin of the `Core::Proj` U13/U14 reclaim
+            // above: `arr-get`/`sum-payload` only BORROW the producer to read the leaf, so nothing releases
+            // it → the whole intermediate tuple LEAKS (the recwalk class: a recursive owned-list fold whose
+            // per-element callee returns a tuple, matched to project a heap sub-element + a scalar; the
+            // irrefutable tuple destructure lowers to bare `SumPayload` projections over the shared producer
+            // node with NO `Core::Match` to materialize+drop it, and the emit re-descends the producer per
+            // projection → each freshly-built tuple leaks). So STASH the producer and DROP it after the leaf
+            // read — EXACTLY mirroring the `Core::Proj` reclaim (drop-iff-safe below). Gated to the
+            // non-prefix, non-slotted, proven-Owned scrutinee, and EXCLUDING any `RestFrom` path (a rest read
+            // re-emits/consumes the scrutinee itself — `vec-drop` owns it; dropping here would double-free).
+            let path_has_restfrom = path.iter().any(|s| {
+                matches!(
+                    s,
+                    crate::core::PathStep::RestFrom(_) | crate::core::PathStep::TupleRestFrom(_)
+                )
+            });
+            let reclaim_scrut_eligible = !path_has_restfrom
+                && !slots.contains_key(&scrutinee)
+                && matches!(
+                    heap_operand_ownership(db, scrutinee),
+                    Ok(HandleOwnership::Owned)
+                );
+            let mut scrut_drop_slot: Option<u32> = None;
             // The absolute path PREFIX walked so far — used to consult `sum_path_types` (the enclosing
             // switch's recorded entered-variant payload types) so a `Payload` step resolves to the ACTUAL
             // entered variant, not variant 0. When starting from a shared-prefix slot, seed the prefix with
@@ -3425,6 +3450,17 @@ pub(super) fn emit(
                     .unwrap_or(Ty::Any);
             } else {
                 emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
+                if reclaim_scrut_eligible {
+                    // Stash the owned producer in a slot ABOVE `*high` (a fresh, never-typed i32 slot; the
+                    // scrutinee emit above may have spent scratch of a different width at/around `base`) so it
+                    // survives the borrowing leaf read for the post-read drop. The handle stays on the stack
+                    // (tee) for the path walk to consume.
+                    let s = *high;
+                    *high = (*high).max(s + 1);
+                    scratch_ty.insert(s, ValType::I32);
+                    out.push(Lir::LocalTee(s)); // [handle], s = the owned producer
+                    scrut_drop_slot = Some(s);
+                }
                 walk_from = 0;
                 walked_prefix = Vec::new();
                 cur = type_of(db, scrutinee);
@@ -3573,9 +3609,42 @@ pub(super) fn emit(
                 out.push(Lir::LocalTee(child_slot)); // [child], child_slot = child
                 out.push(Lir::LocalGet(child_slot)); // [child, child]
                 out.push(Lir::CallImport(OP_DUP)); // pops the 2nd copy, rc++ → [child]
+                // OWNED-PRODUCER RECLAIM: the extracted compound child was just dup'd (rc++), so it survives
+                // the producer's drop — release the owned tuple/sum producer now (frees its shell + every
+                // OTHER, un-dup'd element). Stack unchanged ([child]).
+                if let Some(s) = scrut_drop_slot {
+                    out.push(Lir::LocalGet(s));
+                    out.push(Lir::CallImport(OP_DROP)); // [child] (producer reclaimed)
+                }
                 return Ok(());
             }
             emit_heap_read_tail(db, id, unboxed, out); // → [scalar | handle | nothing]
+            // OWNED-PRODUCER RECLAIM (tail path): release the owned producer after the leaf read.
+            //   • SCALAR leaf (`get-*` COPIED the value out) or UNIT leaf (no machine value): the leaf does
+            //     not alias the producer — drop it directly.
+            //   • COMPOUND handle leaf (reached the tail because it was NOT a marked dup site — the dup
+            //     analysis assumed the producer would STAY LIVE to own it, an assumption this reclaim breaks):
+            //     the `arr-get`/`sum-payload` leaf is a BORROW into the producer, so `dup` it (rc++) FIRST so
+            //     it survives, THEN drop the producer (frees the shell + every other element; the cascade
+            //     decrements the leaf back to its pre-dup count). Net-neutral on the leaf: if it escapes
+            //     (consumed downstream) it is now correctly owned; if only borrowed downstream it leaks by one
+            //     — NEVER a use-after-free or double-free (leak-over-UAF). Only fires for a proven-Owned,
+            //     non-slotted, non-RestFrom producer scrutinee (`reclaim_scrut_eligible`).
+            if let Some(s) = scrut_drop_slot {
+                if unboxed.is_some() || unit_leaf {
+                    out.push(Lir::LocalGet(s));
+                    out.push(Lir::CallImport(OP_DROP));
+                } else {
+                    let child_slot = *high;
+                    *high = (*high).max(child_slot + 1);
+                    scratch_ty.insert(child_slot, ValType::I32);
+                    out.push(Lir::LocalTee(child_slot)); // [child], child_slot = child
+                    out.push(Lir::LocalGet(child_slot)); // [child, child]
+                    out.push(Lir::CallImport(OP_DUP)); // pops the 2nd copy, rc++ → [child]
+                    out.push(Lir::LocalGet(s));
+                    out.push(Lir::CallImport(OP_DROP)); // drop producer; the dup'd child survives → [child]
+                }
+            }
             Ok(())
         }
         // `Option.expect` / `Result.expect` on a RUNTIME sum — probe the discriminant; on the PRESENT
