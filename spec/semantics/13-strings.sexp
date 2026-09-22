@@ -2535,7 +2535,11 @@
       (export main)))
   (call main (: 0 Int64))
   (output (: 17 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): the landed slice-view-shell reclaim (#9524) + immortal-base-arm
+  ; admission (#9525, `Map.empty` is an immortal shared singleton) now reclaim this doubly-sliced
+  ; multibyte view keyed into a `Map.empty`-based map — raw debug-runtime census is live-objects 0
+  ; and --rc-trace reports every ALLOC reached a freed DROP. Flip the stale known-leak pin -> 0.
+  (live-objects 0))
 
 (case
   "a String.slice view returned from a helper OUTLIVES the helper's local parent"
