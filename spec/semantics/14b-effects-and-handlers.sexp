@@ -13916,8 +13916,16 @@
 ; final-map husk COUNT; the const-key mvx1 below has an immortal key so the same husk isn't counted → looked
 ; like 0 — a visibility artifact, not a key-vs-value reclaim difference). v-mem's #8105 compound-shell closed
 ; the match-scrutinee + drain-to-empty (md2/md3) shapes; this GROW-and-hold final-state shape rides the
-; handler-completion reclaim (co-designed with v-effects reduce_handle). Gate counts it accurately (nix-real:
-; flipping to (live-objects 0) reds nix corpus-14b, got 1). Pinned known-leak + filed to v-memory-safety.
+; handler-completion reclaim (co-designed with v-effects reduce_handle).
+; RECLAIMED (v-memory-safety, immortal-base-arm admission in select/ownership.rs join_arm_ownership): the
+; state-threading match `(match b ((bin..) (Map.insert s ..)) (_ s))` has a FRESH-Owned bin arm and a base
+; arm that resumes with the UNCHANGED seed s = Map.empty. Map.empty is the runtime's IMMORTAL shared
+; singleton (dup/drop a guaranteed no-op, census-excluded; champ.rs:1195, v-effects-verified), so the join
+; now admits the immortal base arm as drop-compatible and yields Owned -> the borrow-op operand drop on the
+; NEXT bump's `(Map.lookup <this match> key)` fires, reclaiming the re-inlined fresh Map.insert (node#6) and
+; a no-op on the immortal-seed path (NO double-free). Census 1 -> 0 (value 21). A NON-immortal grown seed
+; stays Borrowed -> still leaks (leak-over-UAF; measured on a synthetic twin). FIRST handler-state-threading
+; leak reclaimed.
 (case
   "a bin-extracted Map key in a lookup-insert handler-state cycle counts correctly (leaks pending handler-final-state reclaim)"
   (input
@@ -13946,7 +13954,11 @@
       (export main)))
   (call main (: 5 Int64))
   (output (: 21 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED -> exact 0 (v-memory-safety immortal-base-arm admission, see the block above): the
+  ; state-threading match's base arm resumes the immortal Map.empty seed (dup/drop no-op), so the join
+  ; yields Owned and the next-bump lookup's map-operand drop reclaims the re-inlined fresh Map.insert.
+  ; Measures 0 on the debug-counters runtime; a grown (non-immortal) seed twin stays leaking. Was known-leak.
+  (live-objects 0))
 
 ; skx1: the SET counterpart of mkx1 — a bin-match-extracted value used as a SET ELEMENT in a
 ; contains+insert handler-state cycle reads 0 husks in-gate (where mkx1's Map version leaks 1).
