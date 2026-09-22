@@ -383,7 +383,7 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
 pub fn generate_effect(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
     let mut body = String::new();
-    match c.variant(5) {
+    match c.variant(6) {
         // Single-handler perform/resume/abort (continuation drop vs resume).
         0 => gen_effect_body(&mut c, &mut body),
         // Two effects, the inner handle NESTED in the outer — multi-frame handler-stack resolution.
@@ -394,7 +394,10 @@ pub fn generate_effect(entropy: &[u8]) -> Program {
         3 => gen_effect_multiop_body(&mut c, &mut body),
         // A handler threading a HEAP (Map) state through resume — the handler-state-threading reclaim
         // family (#9522 rope / #9525 Map immortal-base-arm admission). See gen_effect_mapstate_body.
-        _ => gen_effect_mapstate_body(&mut c, &mut body),
+        4 => gen_effect_mapstate_body(&mut c, &mut body),
+        // A handler whose resume NEW-STATE is a CONTROL-FLOW-JOIN (If) producing a nested tuple — the
+        // #9532→#9533 SumPayload-reclaim-off-a-join-scrutinee invalid-wasm miscompile. See gen_effect_cfjoin_body.
+        _ => gen_effect_cfjoin_body(&mut c, &mut body),
     }
     Program {
         source: format!("(do (def (main) {body}) (export main))"),
@@ -3111,6 +3114,41 @@ fn gen_effect_mapstate_body<C: Choice>(c: &mut C, out: &mut String) {
     .ok();
 }
 
+/// A CONTROL-FLOW-JOIN handler-state body — the value-observable guard on the #9532→#9533 SumPayload
+/// owned-producer reclaim fenced OFF control-flow-join scrutinees (14c tt5). #9532 added a per-projection
+/// re-emit+drop of an Owned SumPayload scrutinee; sound for a DIRECT producer (call/ctor/closure) but a
+/// CONTROL-FLOW JOIN (If/Match/Let) is also classified Owned, and re-emitting it DUPLICATES its whole arm
+/// — inside an effect-handler arm whose branches feed `resume`, the second emit re-references the resume
+/// CONTINUATION (a one-shot placeholder fn index) → lands u32::MAX → an INVALID component (CDZ0910
+/// "unknown function 4294967295"). #9533 fences the reclaim off If/Match/MatchList/MatchSum/Let scrutinees.
+/// This mirrors the tt5 (14c:2183) nested-tuple state machine: `tick`'s resume NEW-STATE is an
+/// `(if (= (% c 2) 0) #tuple(#tuple(y x) ..) #tuple(#tuple(x y) ..))` — a control-flow-JOIN producing a
+/// nested tuple, exactly the scrutinee kind #9532 mis-re-emitted. NOTABLE: cdz-smith's S559 re-audit ran
+/// CLEAN on the trunk that shipped this miscompile — no prior shape fed a control-flow-join result to a
+/// projection inside a handler, a coverage gap this closes. Value-observable: at the fenced tip it compiles
+/// and runs to a KNOWN value (four `tick`s fold the swapped nested-tuple state); a regression that relaxes
+/// the join-scrutinee fence re-introduces the invalid-wasm re-emit → the program fails to instantiate
+/// (CDZ0910 / a crash in the sweep) or diverges — caught by opt-invariance / differential / determinism.
+fn gen_effect_cfjoin_body<C: Choice>(c: &mut C, out: &mut String) {
+    // Bounded initial slot so the folded value stays in range; the state machine + 4 ticks are fixed
+    // (they are what exercises the control-flow-join new-state re-emit path).
+    let n = c.int_bounded(0, 50);
+    write!(
+        out,
+        "(do (effect E (op tick (-> Int64))) \
+         (handle E #tuple(#tuple({n} 100) 0) \
+           ((tick () s \
+             (match s \
+               (#tuple(pr c) \
+                 (match pr \
+                   (#tuple(x y) \
+                     (resume (+ x c) \
+                       (if (= (% c 2) 0) #tuple(#tuple(y x) (+ c 1)) #tuple(#tuple(x y) (+ c 1)))))))))) \
+           (+ (E.tick) (+ (* 10 (E.tick)) (+ (* 100 (E.tick)) (* 1000 (E.tick)))))))"
+    )
+    .ok();
+}
+
 /// A `Map.lookup` body: `(match (Map.lookup <2-entry-const-map> <key>) ((Some v) v) (None <dflt>))` —
 /// the keyed map read yielding `Option V`, consumed to an Int64 by matching Some/None. Half the time
 /// the key is PRESENT (→ `Some` → the stored value), half DEFINITELY-ABSENT (→ `None` → the default),
@@ -5124,9 +5162,10 @@ mod tests {
     fn generate_effect_reaches_all_forms_and_compiles() {
         // Distinctive, mutually-exclusive markers (see `generate_effect`): nested = two effects E1/E2;
         // multiop = one effect E with two ops o1/o2; collection = a `List`; mapstate = effect T / op bump
-        // threading a Map handler-state; single = the plain one-op form.
-        let mut reached = [false; 5];
-        for seed in 0u64..280 {
+        // threading a Map handler-state; cfjoin = op tick (control-flow-join nested-tuple new-state);
+        // single = the plain one-op form.
+        let mut reached = [false; 6];
+        for seed in 0u64..336 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(97);
             let mut bytes = Vec::new();
             for _ in 0..24 {
@@ -5145,6 +5184,8 @@ mod tests {
                 reached[3] = true; // multi-op
             } else if src.contains("(effect T (op bump ") {
                 reached[4] = true; // mapstate (heap handler-state threading)
+            } else if src.contains("(op tick ") {
+                reached[5] = true; // cfjoin (control-flow-join nested-tuple new-state)
             } else if src.contains("List") {
                 reached[2] = true; // effect + collection
             } else if src.contains("(effect E (op o ") {
@@ -5153,7 +5194,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all five effect forms must be reachable across seeds: reached={reached:?}"
+            "all six effect forms must be reachable across seeds: reached={reached:?}"
         );
     }
 
@@ -6005,6 +6046,39 @@ mod tests {
         assert!(
             saw_mapstate,
             "should thread a Map handler-state (handle Map.empty + Map.insert + immortal-seed guard arm)"
+        );
+    }
+
+    /// `gen_effect_cfjoin_body` emits a well-formed CONTROL-FLOW-JOIN handler-state program (a `tick` op
+    /// whose resume NEW-STATE is an `(if …)` producing a nested tuple — the #9532→#9533 SumPayload-reclaim-
+    /// off-a-join-scrutinee shape) and every body COMPILES to a VALID component (a regression relaxing the
+    /// join-scrutinee reclaim fence re-emits the resume continuation → u32::MAX → CDZ0910 invalid-wasm, which
+    /// a bare compile-check would FAIL here). Asserts the nested-tuple state + the control-flow-join new-state.
+    #[test]
+    fn gen_effect_cfjoin_body_is_well_formed_and_compiles() {
+        let mut saw_cfjoin = false;
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3313);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_effect_cfjoin_body(&mut ByteCursorChoice::new(&bytes), &mut body);
+            saw_cfjoin |= body.contains("(op tick ")
+                && body.contains("#tuple(#tuple(")
+                && body.contains("(if (= (% c 2) 0)");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "control-flow-join effect body must COMPILE to a valid component: {src}"
+            );
+        }
+        assert!(
+            saw_cfjoin,
+            "should build a nested-tuple state machine with a control-flow-join (if) resume new-state"
         );
     }
 
