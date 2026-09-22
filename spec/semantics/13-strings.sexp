@@ -2542,6 +2542,37 @@
   (live-objects 0))
 
 (case
+  "a doubly-sliced multibyte view STORED as a Map key canonicalizes and frees the view shells"
+  (doc
+    "The store-side twin of the view-into-Map lookup case above (as the single-slice ASCII store case
+           `a runtime String.slice STORED as a map key` is the store-side twin of its probe-side row):
+           here the DOUBLY-sliced multibyte view `\"∀b\"` (a `String.slice` of a `String.slice` of a
+           `String.concat` rope) goes INTO the map AS the key, so its canonical content bytes must be
+           retained by the map while BOTH view-layer shells are freed. A flat literal-twin `Map.lookup`
+           then recovers 7 — residue from either slice layer's offset into the multibyte rope would hash
+           differently and miss (-1). Completes the {lookup,store} x {single-slice,doubly-sliced-multibyte}
+           matrix and guards the escaping-view reclaim (#9524 slice-view-shell + #9525 immortal base) on
+           the insert-site canonicalization path, not just the borrow-only lookup path.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (do
+          (def rope (String.concat "aé∀" "bçd"))
+          (def
+            inner
+            (match
+              (String.slice rope 1 5)
+              ((Some outer) (match (String.slice outer 1 3) ((Some i) i) ((None _u) "")))
+              ((None _u) "")))
+          (def m (Map.insert Map.empty inner 7))
+          (match (Map.lookup m "∀b") ((Some v) v) ((None _u) -1))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 7 Int64))
+  (live-objects 0))
+
+(case
   "a String.slice view returned from a helper OUTLIVES the helper's local parent"
   (doc
     "The String twin of the Bytes slice-escape liveness pin (10-bytes): `mk` builds its rope
