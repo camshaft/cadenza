@@ -519,7 +519,8 @@
       (export main)))
   (call main (: 40 Int64))
   (output (: 40 Int64))
-  (live-objects known-leak))
+  ; threaded-prev reassigned-loop-param drop (v-core-opt-ruled, v-memory-safety): #9540's ordering-admit reclaimed inc's SPINE (284->120); this closes the residual. `prev` is only compare-borrowed (< prev k) then REPLACED by the next key on the back-edge, so its old value is dead-after and is dropped before the overwrite (emit_loop_iteration's drop_old_borrowed 3rd admit: dead-after via binding_escapes_dup_aware(Binder,Some)==false + the new value a dup-backed owned handoff). dup>=drop lockstep -> frees only prev's surplus ref, no double-free even if keys intern-alias. A THREADED/returned/captured prev escapes -> declines (leak-over-UAF). rc-trace: LEAK SUMMARY none.
+  (live-objects 0))
 
 (case
   "a Rational-keyed trie churned with DIFFERENTLY-normalized spellings equals the direct build"
