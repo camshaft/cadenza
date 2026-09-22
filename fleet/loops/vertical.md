@@ -133,8 +133,9 @@ returning to the tick-top check):
    checks; pr-sync is the sole full-gater + the authoritative backstop:
    - **`cargo xtask dev-gate`** (your primary self-check every iteration — auto-detects touched crates
      from `git diff`, runs only their test+clippy+fmt, warm ≈ 4s; `cargo xtask dev-gate rcdzc` to scope).
-   - a **scoped corpus spot-check** when your slice changes behavior: `nix build
-     .#checks.<sys>.corpus-gate-coarse-<your-file-stem>` (YOUR corpus file, wasm, fail-on-regression vs
+   - a **scoped corpus spot-check** when your slice changes behavior: `cargo xtask fleet gate-coarse
+     <your-file-stem>` (the guardian-proof wrapper — see the LAND BAR below; or the raw `nix build
+     .#checks.<sys>.corpus-gate-coarse-<your-file-stem>`). YOUR corpus file, wasm, fail-on-regression vs
      `.gate-baseline`; add the `corpus-rust-gate-coarse-<stem>` twin only if your slice touches
      backend-specific emit — the nightly full-rust gate + pr-sync cover the rest). The in-process
      `cargo xtask gate --files` was deleted #8318; per-file coarse gates (#8321) cover every corpus stem.
@@ -147,15 +148,27 @@ returning to the tick-top check):
    frozen `REQUIRED_RUNTIME_HASH` → `cargo xtask build` + `codegen --check` locally, since pr-sync can't
    recover a hash mismatch for you.)
    ⚠ **LAND BAR WHILE pr-sync IS DOWN (2026-09-19):** under the direct-to-main model there is NO pr-sync
-   full re-gate backstop, so YOUR land bar is **per-chapter coarse + BLAST-RADIUS**: run
-   `nix build .#checks.<sys>.corpus-gate-coarse-<stem>` for ONLY the chapters your change can reach (reason
-   about which chapters a change can affect, gate those, and argue byte-identical elsewhere), and verify each
-   by EXIT CODE / `nix path-info` on the out — a piped `grep -c` tail returns 1 on 0 matches and MASKS the
-   real build exit. The full aggregate (`nix build .#checks.<sys>.corpus-gate-coarse`) is AVAILABLE for
-   whole-corpus assurance when a change's blast-radius is wide/uncertain — its ~88min compile-hang WEDGE was
-   fixed (#9357: `mkCorpusGateFileCoarse` per-case compile is now `timeout`-capped at 180s, so a compile-hang
-   fails-fast RED naming the chapter+case instead of hanging). It is still the ~37-chapter cost, so prefer
-   blast-radius for a scoped change.
+   full re-gate backstop, so YOUR land bar is **per-chapter coarse + BLAST-RADIUS**: gate ONLY the chapters
+   your change can reach (reason about which chapters a change can affect, gate those, and argue byte-identical
+   elsewhere).
+   - **RECOMMENDED per-chapter gate: `cargo xtask fleet gate-coarse <stem>`** (guardian-proof; #9495/#9512).
+     It builds `.#checks.<sys>.corpus-gate-coarse-<stem>` DETACHED (reparented to init) so the harness
+     low-mem guardian (#79845 — keys on MemFree<1GB, not MemAvailable, so it false-fires on a nix box whose
+     page cache pins MemFree low even with the box half-free) CANNOT reap the build mid-run — a RAW `nix build`
+     is a tracked task the guardian kills, which repeatedly killed the per-MR safety net across verticals. It
+     also gives a CLEAN EXIT CODE (0=GREEN, 1=RED corpus regression, 2=NO-VERDICT: poll timeout / launch fail /
+     wrong stem), so gate on exit 0 — no piped-`grep -c` tail that returns 1 on 0 matches and MASKS the real
+     build exit. If its poll is killed on a long cold build the build keeps going + stamps a stable verdict
+     file; just re-run the same command to COLLECT the verdict (recovers instantly when the current source's
+     drvPath matches; never a stale GREEN). `--fresh` forces a rebuild.
+   - RAW fallback (still valid, but guardian-KILLABLE — prefer the wrapper): `nix build
+     .#checks.<sys>.corpus-gate-coarse-<stem>`, verified by EXIT CODE / `nix path-info` on the out (a piped
+     `grep -c` tail returns 1 on 0 matches and MASKS the real build exit).
+   The full aggregate (`nix build .#checks.<sys>.corpus-gate-coarse`) is AVAILABLE for whole-corpus assurance
+   when a change's blast-radius is wide/uncertain — its ~88min compile-hang WEDGE was fixed (#9357:
+   `mkCorpusGateFileCoarse` per-case compile is now `timeout`-capped at 180s, so a compile-hang fails-fast RED
+   naming the chapter+case instead of hanging). It is still the ~37-chapter cost, so prefer blast-radius for a
+   scoped change.
    **Then apply discipline (b): even a dev-gate + build cycle is a real context ingest — CHECK your context
    after it and `/compact` if past ~70% BEFORE the next unit** (committing, the next slice, resending after
    a reject). Never carry a near-full window into another build.
