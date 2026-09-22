@@ -5663,7 +5663,8 @@
   (output (: 3041 Int64))
   (call main (: 5 Int64))
   (output (: 13121 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 (case
   "KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle"

@@ -13377,7 +13377,8 @@
       (export main)))
   (call main)
   (output (: 15 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 (case
   "a three-payload constructor partially applied in a runtime tuple completes via eta-closure"
@@ -13394,7 +13395,8 @@
       (export main)))
   (call main)
   (output (: 6 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 ; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
@@ -19011,7 +19013,8 @@
   (output (: 213 Int64))
   (call main (: 5 Int64))
   (output (: 318 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 (case
   "a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged"
@@ -19206,7 +19209,8 @@
   (output (: 80 Int64))
   (call main (: 4 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 (case
   "take-while and drop-while split a leading run and reassemble to the original"
@@ -19415,7 +19419,8 @@
   (output (: 47 Int64))
   (call main (: 1 Int64))
   (output (: 37 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 (case
   "an UNZIP walk splits a list of pairs into two parallel lists that re-zip to the original"

@@ -4243,7 +4243,8 @@
       (export main)))
   (call main)
   (output (: 15 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 ; A PREDICATE closure — a runtime closure whose RESULT TYPE is Bool. `(fn (x) (= x k))` is a `(-> Int64
 ; Bool)` value threaded through the recursive `anyp` ("does any i in n…1 satisfy the predicate?"), which
@@ -12982,7 +12983,8 @@
       (export main)))
   (call main)
   (output (: 15 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 (case
   "a SITE-A eta-closure stored in a SUM is applied and its owned env cell reclaims (residual = shell gap)"
@@ -12999,7 +13001,8 @@
       (export main)))
   (call main)
   (output (: 15 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 (case
   "a SITE-A two-arg-payload eta-closure is applied and its owned env cell reclaims (wider capture)"
@@ -13015,7 +13018,8 @@
       (export main)))
   (call main)
   (output (: 35 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
+  (live-objects 0))
 
 ; -- breaker batch 488 (2026-08-27): BYTES entry params — the list<u8> boundary shape. A
 ; borrow-only lift exists: Bytes.len over the param works and reclaims (byp1; the harness arg
