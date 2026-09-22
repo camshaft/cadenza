@@ -4618,8 +4618,8 @@
         last-use while the consume-last reorder released the record (and its heap sibling) before the
         concat consumed it → OOB/UAF from the SECOND iteration. #5090 gates the skip on head-element
         liveness. Every guard is REQUIRED to reproduce the original bug: two heap fields, ≥2 elements, and
-        the concat CONSUMING the projection. `known-leak 9` = the narrow fix's accepted residual
-        (leak-beats-UAF).")
+        the concat CONSUMING the projection. Now (live-objects 0): the ordering-admit fix reclaims the
+        spine + records + sibling strings (see the live-objects note).")
   (input
     (do
       (def turn #list(#record((= kind "k") (= val "a")) #record((= kind "k2") (= val "b"))))
@@ -4630,15 +4630,16 @@
       (export main)))
   (call main)
   (output (: "ab" String))
-  (live-objects known-leak))
+  ; ordering-admit fix (v-core-opt-ruled #4139 relaxation, v-memory-safety): the self-tail-loop back-edge sequences the concat head-consume of `e.val` BEFORE the RestFrom vec-drop (emit_loop_iteration PART-2), and rcdzc has no post-emit scheduler, so the spine preservation dup is surplus — skipping it lets vec-drop reclaim the spine + records + sibling strings each iteration (DBG census 11 -> 1). The sole residual is the RETURNED "ab" String, which the harness host-drops before census (as ksd3/ksd4) -> (live-objects 0). A NON-tail variant (recursive call not in tail position) stays leaking (emit_call_args is left-to-right, never reaches the reorder) — the gate is self-tail-loop-only.
+  (live-objects 0))
 
 (case
   "ksd2 the SCALAR-sibling control — an Int64 co-field never took the broken path and must stay green"
   (doc
     "ksd1's must-hold twin: with the record's other field a SCALAR (Int64), the fold was ALWAYS sound
         (single-heap-field records take a different reclaim path) — this control proves the #5090 gate
-        stays narrow and the sound path never regresses. `known-leak 7` = the same accepted residual class
-        minus the sibling string cells.")
+        stays narrow and the sound path never regresses. Now (live-objects 0) via the same ordering-admit
+        fix as ksd1 (see the live-objects note).")
   (input
     (do
       (def turn #list(#record((= kind 1) (= val "a")) #record((= kind 2) (= val "b"))))
@@ -4649,7 +4650,8 @@
       (export main)))
   (call main)
   (output (: "ab" String))
-  (live-objects known-leak))
+  ; ordering-admit fix (v-core-opt-ruled #4139 relaxation, v-memory-safety): same mechanism as ksd1 — the self-tail-loop back-edge sequences the concat head-consume BEFORE the RestFrom vec-drop, so the surplus spine preservation dup is skipped and the spine + records + val strings reclaim (DBG census 9 -> 1). The residual is the RETURNED "ab" String, host-dropped before census -> (live-objects 0).
+  (live-objects 0))
 
 (case
   "ksd3 the PATTERN-BINDER form of the ksd1 grandchild consume is CLEAN — bind-early destructure takes the tight path"
@@ -4699,10 +4701,10 @@
 (case
   "ksd5 a DEPTH-3 projection chain still fires the grandchild fence — no UAF at any chain depth"
   (doc
-    "ksd1's depth twin: the consumed string sits TWO projections deep — `(. (. e inner) val)` — so the
-        #5142 grandchild gate (which matches any PROPER projection chain of the loop-param, not just
-        depth-2) must still keep the preservation dup. Same accepted residual class as ksd1
-        (leak-beats-UAF); if a future narrowing keys on exact depth-2 shape this case traps instead.")
+    "ksd1's depth twin: the consumed string sits TWO projections deep — `(. (. e inner) val)` — the
+        #5142 grandchild gate matches any PROPER projection chain of the loop-param, not just depth-2.
+        Now (live-objects 0): the ordering-admit fix reclaims the spine at ANY chain depth (the dead-after
+        check is depth-agnostic), see the live-objects note.")
   (input
     (do
       (def
@@ -4715,7 +4717,8 @@
       (export main)))
   (call main)
   (output (: "ab" String))
-  (live-objects known-leak))
+  ; ordering-admit fix (v-core-opt-ruled #4139 relaxation, v-memory-safety): same mechanism as ksd1 at chain depth 3 — the depth-agnostic dead-after check (binding_escapes_dup_aware Node under dup_sites=Some) excuses the dup-backed `e.inner.val` concat head-consume (sequenced before the RestFrom vec-drop by PART-2), so the surplus spine preservation dup is skipped and the spine + nested records + val strings reclaim (DBG census 11 -> 1). The residual is the RETURNED "ab" String, host-dropped before census -> (live-objects 0).
+  (live-objects 0))
 
 (case
   "npd1 a nested TUPLE destructure inside a Some arm survives the cadenza hop byte-idempotently"
