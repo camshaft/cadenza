@@ -4396,6 +4396,39 @@ fn mem_free_guardian_warning(meminfo: &str) -> Option<String> {
     }
 }
 
+/// `/tmp` inode-use% thresholds for the `fleet status` INODE line — mirrors the disk-guard BYTES scheme
+/// (`parse_df_capacity`, warn 85 / high 92). A tmpfs wedges on INODES independently of bytes: the
+/// 2026-09-22 fleet-wide ENOSPC wedge was 100% inodes at ~15% bytes, invisible to the bytes-only `disk:`
+/// line. WARN sits BELOW the gc-hook 90% sweep ([`TMP_INODE_SWEEP_PCT`]) so it's an early heads-up, not a
+/// post-mortem.
+const TMP_INODE_WARN_PCT: u64 = 85;
+const TMP_INODE_HIGH_PCT: u64 = 92;
+
+/// The `fleet status` /tmp INODE-pressure line. PURE over the parsed `df -i /tmp` use-% (via
+/// [`parse_df_inode_pct`]) so it's unit-testable without a filesystem. `None` only when df didn't parse
+/// (never a false signal). Flags ⚠WARN at [`TMP_INODE_WARN_PCT`], ⚠HIGH at [`TMP_INODE_HIGH_PCT`]; at HIGH
+/// it points at the likely cause — a NEW un-allowlisted scratch shape the (lsof-guarded, allowlisted)
+/// `prune-tmp-inodes` reaper doesn't yet match (the recurring wedge class), so the operator/owner extends
+/// its Class C rather than chasing a blanket sweep.
+fn tmp_inode_pressure_line(pct: Option<u64>) -> Option<String> {
+    let pct = pct?;
+    let (flag, hint) = if pct >= TMP_INODE_HIGH_PCT {
+        (
+            " ⚠HIGH",
+            " — near the ENOSPC wedge (a tmpfs wedges on INODES at low BYTES); the */15 prune-tmp-inodes \
+             reaper is lsof-guarded + allowlisted, so a climb it can't clear means a NEW un-allowlisted \
+             scratch shape — check the top /tmp inode consumers and extend prune-tmp-inodes Class C",
+        )
+    } else if pct >= TMP_INODE_WARN_PCT {
+        (" ⚠WARN", "")
+    } else {
+        ("", "")
+    };
+    Some(format!(
+        "  /tmp inodes: {pct}% used (inode-guard warn={TMP_INODE_WARN_PCT}% high={TMP_INODE_HIGH_PCT}%){flag}{hint}"
+    ))
+}
+
 fn status(fleet: &Fleet) {
     let reg = fleet.load();
     let session = if in_tmux() {
@@ -4540,6 +4573,18 @@ fn status(fleet: &Fleet) {
         println!(
             "  disk: {pct}% used, {free_g:.0}G free on / (disk-guard warn=85% high=92%){flag}"
         );
+    }
+
+    // /tmp INODE pressure — the complement to the disk: BYTES line above. A tmpfs wedges on INODES
+    // independently of bytes (the 2026-09-22 fleet-wide ENOSPC wedge was 100% inodes at ~15% bytes), which
+    // the bytes-only disk-guard line MISSES. Surface it continuously with the same warn/high scheme so a
+    // climb the (lsof-guarded, allowlisted) prune-tmp-inodes reaper can't clear — a new un-allowlisted
+    // scratch shape — is visible BEFORE ENOSPC. Silent only if df -i is unavailable/unparseable.
+    if let Ok(out) = Command::new("df").args(["-i", "/tmp"]).output()
+        && let Some(line) =
+            tmp_inode_pressure_line(parse_df_inode_pct(&String::from_utf8_lossy(&out.stdout)))
+    {
+        println!("{line}");
     }
 
     // HARNESS bg-low-mem GUARDIAN risk — surface when MemFree is low enough to trip Claude Code's guardian
@@ -22640,6 +22685,39 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             mem_free_guardian_warning("MemFree:  500000 kB\n").is_none(),
             "no MemAvailable → None"
         );
+    }
+
+    #[test]
+    fn tmp_inode_pressure_line_flags_warn_and_high_and_is_silent_on_unknown() {
+        // Healthy (the post-fix 71% state): line still prints (continuous board signal) but NO flag.
+        let healthy = tmp_inode_pressure_line(Some(71)).expect("parseable → a line");
+        assert!(
+            healthy.contains("71%") && !healthy.contains("⚠"),
+            "healthy → no flag: {healthy}"
+        );
+        // WARN band (>=85, below the 90% gc-hook sweep) → ⚠WARN, early heads-up, no HIGH hint yet.
+        let warn = tmp_inode_pressure_line(Some(85)).expect("line");
+        assert!(
+            warn.contains("⚠WARN") && !warn.contains("ENOSPC"),
+            "got: {warn}"
+        );
+        // HIGH band (>=92, near the wedge) → ⚠HIGH + the new-un-allowlisted-shape hint pointing at Class C.
+        let high = tmp_inode_pressure_line(Some(100)).expect("line");
+        assert!(
+            high.contains("⚠HIGH")
+                && high.contains("ENOSPC")
+                && high.contains("prune-tmp-inodes Class C"),
+            "HIGH names the wedge + the extend-allowlist action: {high}"
+        );
+        // Just below WARN → no flag (89 is below the WARN 85? no — 84 is). 84 → no flag.
+        assert!(
+            !tmp_inode_pressure_line(Some(84))
+                .expect("line")
+                .contains("⚠"),
+            "84% is below WARN 85 → no flag"
+        );
+        // df unparseable → None (fail-safe, never a false reading — matches the disk: line discipline).
+        assert!(tmp_inode_pressure_line(None).is_none(), "unknown → no line");
     }
 
     #[test]
