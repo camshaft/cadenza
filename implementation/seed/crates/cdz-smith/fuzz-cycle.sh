@@ -255,17 +255,24 @@ if [ "$DET_COUNT" -gt 0 ]; then
 fi
 
 # ── reclaim-shapes mini-pass (VALUE-OBSERVABLE guard on the reclaim-PRECISION churn) ─────────────
-# The `--reclaim` grammar is a NARROW family of owned-aggregate programs (matchsum-len · loop-accumulator
-# rebind · scalar-project-drop-heap-sibling · nested sum-in-sum · in-arm push) that each return a KNOWN
-# Int64. A LEAK is invisible to a value oracle, but an OVER-aggressive reclaim that frees a still-live cell
-# corrupts the returned VALUE (or traps) — which these oracles catch. This runs a small dedicated slice
-# each cycle so the standing cron CONTINUOUSLY guards the reclaim-precision work the fleet is grinding (the
-# value-oracle counterpart to the corpus `(live-objects N)` leak pins, which the value oracles structurally
-# cannot observe). The family is narrow, so a modest count saturates it — counts + caps are deliberately
-# SMALL so this fits inside the tick's slack. `determinism --reclaim` is compile-only (always runs, fast);
-# the `opt-differential --reclaim` value+validity pass runs only when the store resolves. Findings file into
-# the SAME fleet queue (`determinism-*` / `opt-invariance-*`, tagged `reclaim-shapes` in the sweep log).
-RECLAIM_COUNT="${CDZ_SMITH_RECLAIM_COUNT:-100}"
+# The `--reclaim` grammar (astgen::generate_reclaim_shapes, `variant(17)` = 17 shapes) is a family of
+# owned-aggregate / self-recursive / closure-env / borrowed-CHAMP-key / flat-scalar-container programs that
+# each return a KNOWN value. Each pins a landed reclaim-UAF fence family — the F5 SITE-A closure-env
+# admit+decline, the F7 non-tail invariant-borrow-param admit+decline, the #9497 flat-scalar-container
+# heap-return admit + its #9502 MatchList-return DECLINE edge, the borrowed-Map-key shared borrow, … A LEAK
+# is invisible to a value oracle, but an OVER-aggressive reclaim that frees a still-live cell corrupts the
+# returned VALUE (or traps) — which these oracles catch. This runs a dedicated slice each cycle so the
+# standing cron CONTINUOUSLY guards the reclaim-precision work the fleet is grinding (the value-oracle
+# counterpart to the corpus `(live-objects N)` leak pins, which the value oracles structurally cannot
+# observe). The count must SCALE with the shape count so every shape is reliably drawn EACH cycle (a
+# UAF-regression tripwire is only a guard if its shape is exercised): the default is ~20 draws/shape across
+# the 17 shapes. `determinism --reclaim` is compile-only (always runs, fast, saturates the full count); the
+# `opt-differential --reclaim` value+validity pass runs only when the store resolves and is cap-bounded (it
+# sweeps seeds in order until the cap, so a higher count reaches more shapes before the backstop). Findings
+# file into the SAME fleet queue (`determinism-*` / `opt-invariance-*`, tagged `reclaim-shapes`).
+# NOTE: bump this in step with generate_reclaim_shapes's `variant(N)` whenever a new shape lands (was 100
+# for the original 5-shape family; 340 ≈ 20×17 as of the 17-shape generator).
+RECLAIM_COUNT="${CDZ_SMITH_RECLAIM_COUNT:-340}"
 if [ "$RECLAIM_COUNT" -gt 0 ]; then
   RC_BIN="$CRATE_DIR/target/release/cdz-smith"
   if [ -x "$RC_BIN" ] || ( cd "$CRATE_DIR" && cargo build -q --release --features differential 2>/dev/null ); then
