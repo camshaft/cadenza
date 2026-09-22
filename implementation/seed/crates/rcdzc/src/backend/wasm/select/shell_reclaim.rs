@@ -676,10 +676,19 @@ pub(crate) fn sum_shell_reclaim_ok(
             // scrutinee — it is NOT a handler-threaded state, so it cannot resume-escape a payload (dead-after-
             // destructure holds like a plain Call). The Ok arm returns the payload BARE (escape-dup'd by the
             // dup pass), so the shell deep-drop nets 1:1. Without it the run.run result Sum shell + payload leaked.
+            // `Core::ValueDecode` (R2 `Value.decode`, runtime `value-decode`) JOINS identically — the exact
+            // sibling of `AstDecode`: a PURE prim (never a handler) that wraps the runtime op's success handle
+            // into a FRESH owned `(Option a)` shell inlined once (core.rs:620 doc), whose decoded payload is owned
+            // exclusively by that shell → cannot resume-escape, dead-after-destructure holds like a plain Call.
+            // Without it the decoded `Option<Collection>` shell + compound payload leaked for the LIST/MAP/SET
+            // codec round-trips (22-property:1872/2055/2084 + the empty-collection edges 2333/2355), while the
+            // `AstDecode`-scrutinee'd Ast round-trip (22-property:2612/2634) already reclaimed to 0 — the sole
+            // difference was `Value.decode` lowering to a DISTINCT `Core::ValueDecode` op missing from this set.
             || (matches!(
                 core_of(db, scrutinee),
                 Core::Call { .. }
                     | Core::AstDecode { .. }
+                    | Core::ValueDecode { .. }
                     | Core::StrFromBytes { .. }
                     | Core::HostCall { .. }
             )

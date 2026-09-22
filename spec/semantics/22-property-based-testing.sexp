@@ -2104,7 +2104,13 @@
   (output (: 3007 Int64))
   (call main (: 2 Int64))
   (output (: 3002 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety): the `Core::ValueDecode` fresh-producer reclaim — the decoded `(Option (Set
+  ; Int64))` shell + Set payload drop. The arm reads `s` only via `Set.contains`/`Set.len` (BORROWS, NOT
+  ; fallible-extraction interior views), so `sum_cont_arm_interior_view_on_scrutinee` does not fire and
+  ; `nontail_param_compound_extra_ok` admits. rc-trace: LEAK SUMMARY none, values 3007/3002. (The MAP/LIST
+  ; siblings still leak — their `Map.lookup`/`List.at` arms take a dup-backed interior view the sread fence
+  ; still declines, pending the fresh-producer fence relax.)
+  (live-objects 0))
 
 (case
   "a Value.encode/Value.decode round-trip preserves a FLOAT element of a compound"
@@ -2157,7 +2163,11 @@
   (output (: 9999999999 Int64))
   (call main (: 7 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety): `Value.decode` lowers to `Core::ValueDecode`, the exact fresh-owned-sum
+  ; producer sibling of `Core::AstDecode` — added to `sum_shell_reclaim_ok`'s fresh-producer set so the
+  ; decoded `(Option BigInt)` shell + BigInt leaf reclaim. The arm reads `b` via a value-eq borrow (no
+  ; interior-view extraction), so `nontail_param_compound_extra_ok` admits. rc-trace: LEAK SUMMARY none.
+  (live-objects 0))
 
 (case
   "a Value.encode/Value.decode round-trip preserves a Rational (normalized num/den name leaf)"
@@ -2183,7 +2193,10 @@
   (output (: 6 Int64))
   (call main (: 5 Int64))
   (output (: 5 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety): the `Core::ValueDecode` fresh-producer reclaim (BigInt sibling above) — the
+  ; decoded `(Option Rational)` shell + Rational leaf drop; the arm reads `r` via a value-eq borrow (no
+  ; interior-view), so `nontail_param_compound_extra_ok` admits. rc-trace: LEAK SUMMARY none.
+  (live-objects 0))
 
 ; --- High-coverage value-codec gaps (operator-directed): the scalar leaves + edges the round-trips above
 ; do not yet pin — BOOL, a NESTED compound (a tuple inside a record field, exercising the codec recursion
@@ -2306,7 +2319,10 @@
   (output (: 4 Int64))
   (call main (: 6 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety): the `Core::ValueDecode` fresh-producer reclaim — the decoded `(Option (Tuple
+  ; Int64 Bytes))` shell + Bytes leaf drop; the nested `#tuple(k v)` arm reads `v` via a value-eq borrow (no
+  ; interior-view), so `nontail_param_compound_extra_ok` admits. rc-trace: LEAK SUMMARY none.
+  (live-objects 0))
 
 (case
   "a Value.encode/Value.decode round-trip preserves a SYMBOL element of a compound"
@@ -2350,7 +2366,11 @@
       (export main)))
   (call main)
   (output (: 0 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety): the `Core::ValueDecode` fresh-producer reclaim — the decoded `(Option (Map
+  ; …))` shell + empty-Map payload drop; the arm reads `m` only via `Map.len` (a BORROW, not a fallible-
+  ; extraction interior view), so the fence does not fire and `nontail_param_compound_extra_ok` admits.
+  ; rc-trace: LEAK SUMMARY none.
+  (live-objects 0))
 
 (case
   "a Value.encode/Value.decode round-trip preserves the EMPTY set (zero-element collection edge)"
@@ -2369,7 +2389,11 @@
       (export main)))
   (call main)
   (output (: 0 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety): the `Core::ValueDecode` fresh-producer reclaim — the decoded `(Option (Set
+  ; …))` shell + empty-Set payload drop; the arm reads `s` only via `Set.len` (a BORROW, not a fallible-
+  ; extraction interior view), so the fence does not fire and `nontail_param_compound_extra_ok` admits.
+  ; rc-trace: LEAK SUMMARY none.
+  (live-objects 0))
 
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 (case
