@@ -5509,7 +5509,36 @@ pub(super) fn nontail_param_compound_extra_ok(
         // G4 bare-payload-in-result fence: enforced UNLESS the scrutinee is a fresh-owned producer (see the
         // `bare_payload_result_ok` doc). The sread interior-view ALIAS-OUT shape is caught separately below.
         && (bare_payload_result_ok || !sum_cont_payload_in_result(db, root, scrutinee))
-        && !sum_cont_arm_interior_view_on_scrutinee(db, root, scrutinee)
+        // Interior-view (2026-07-19 sread-UAF) fence: a BLANKET "any `scrutinee_is_fallible_extraction` over a
+        // shell child (Map.lookup/List.at/…) → decline", guarding a view that aliases INTO the payload and
+        // outlives the shell deep-drop. PART-2 EXTRACT-SHARE RELAX (v-core-opt gate-owner-blessed, the
+        // reclaim.rs:5524/5550 dead-code tag's intended increment): that fence is OVER-CONSERVATIVE for a
+        // FRESH-OWNED producer whose payload is only BORROWED. Two conjuncts, BOTH load-bearing:
+        //   (1) FRESH-PRODUCER SET (`Core::Call | AstDecode | ValueDecode | StrFromBytes | HostCall`) — the
+        //       payload is owned EXCLUSIVELY (no external/caller ref), so the shell deep-drop nets 1:1. This
+        //       EXCLUDES the self-recursive PARAM path (reclaim.rs:5441 also reaches here with
+        //       bare_payload_result_ok=true, but its param may alias a spine the CALLER still holds — the chor
+        //       render Ast.List UAF — which the intra-arm consuming-set test below CANNOT see).
+        //   (2) EMPTY CONSUMING SET — `collect_consuming_payload_sites_cont(...).is_empty()`, the SAME
+        //       single-source classifier the dup pass uses (so empty ⟺ no payload child was dup'd-and-moved ⟺
+        //       the deep-drop is a COMPLETE balanced reclaim, dup ⊇ drop, the #9540/#9544 invariant). Complete
+        //       over ALL payload uses: a dup-backed Map.lookup/List.at BORROW is NOT consuming (→ admit), but a
+        //       thread-into-recursion (term-eq `(Comb x y)`) OR an escaping Bytes.slice view IS consuming
+        //       (#4917) → non-empty → declines (leak beats UAF). Closes the LIST/MAP codec round-trips
+        //       (22-property:1872/2055) that Part-1's ValueDecode-in-set left leaking behind this fence.
+        && (!sum_cont_arm_interior_view_on_scrutinee(db, root, scrutinee)
+            || (matches!(
+                core_of(db, scrutinee),
+                Core::Call { .. }
+                    | Core::AstDecode { .. }
+                    | Core::ValueDecode { .. }
+                    | Core::StrFromBytes { .. }
+                    | Core::HostCall { .. }
+            ) && {
+                let mut consuming = HashSet::new();
+                collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
+                consuming.is_empty()
+            }))
         // 05:9972: exclude a persistent-structure fold whose dedup arm returns the SCRUTINEE unchanged (`… t`)
         // — the shell-drop would free a returned node (the 13589→589 UAF). Leak beats UAF.
         && !sum_cont_arm_returns_scrutinee(db, root, scrutinee)
