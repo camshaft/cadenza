@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(17);
+    let shape = c.variant(18);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -364,8 +364,27 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // and would NOT fire the admit → a hollow guard). Distinct emit path from shape 15 (which returns a
         // FRESH List and never returns its param); completes the flat-scalar heap-return family (ADMIT Set 15 /
         // DECLINE MatchList-return 16). This exact class was @test-suites-only-caught twice (#9466, #9497→#9502).
-        _ => format!(
+        16 => format!(
             "(do (def (build (: i Int64) (: n Int64)) (if (< i n) (List.push (build (+ i 1) n) i) #list())) (def (f (: xs (List Int64)) (: ys (List Int64))) (match xs (#list() ys) (#list(h (.. t)) (List.concat #list(h) (f t ys))))) (def (main) (List.len (f (build 0 {n}) (build 0 2)))) (export main))"
+        ),
+        // 17 — F5 SITE-A 5th route: a closure PROJECTED from an owned non-slotted producer (15-rows:1926,
+        // #9541). A k-capturing closure `(fn (y) (+ y k))` is stored in a RECORD FIELD `f`, `Record.merge`d
+        // with a scalar record, then the field is PROJECTED (`m.f`, a `Core::Proj` of the owned merged record)
+        // and APPLIED. `m` inlines so `Record.merge` re-emits per use; the `m.f` Proj-reclaim (U14) dups the
+        // extracted closure into an independent owned rc1 and drops the parent producer — but the borrowing
+        // CallClosure apply then leaves that dup'd env cell a dead owned temp, and SITE-A had NO route for a
+        // `Core::Proj` closure operand (heap_operand_ownership(Proj)=Borrowed) → the env cell LEAKED. #9541's
+        // 5th route `operand_proj_owned` drops the cell iff the operand is `Core::Proj{agg}` with
+        // `!slots.contains(agg) && heap_operand_ownership(agg)==Owned` (EXACTLY the Proj-reclaim condition, so
+        // the U14 dup provably happened → dup≥drop lockstep, never a double-free). DISTINCT SITE-A route from
+        // shapes 10/11 (which pass a closure as a Core::Param loop-param — the b‴ Param disjunct); this is the
+        // Proj-of-owned-record-field operand path, in the F5 SITE-A family that already SHIPPED a UAF (#9449).
+        // Value-observable: the 5th-route drop is tied to the exact Proj-reclaim condition — a condition
+        // misalignment (drop fires without the U14 dup) double-frees the env cell → the captured `k` reads
+        // freed → wrong value / trap. Returns the KNOWN `10*(3 + a) + 7` (the closure applied to 3 + `m.b`=7);
+        // a regression corrupts the captured-k read, caught by determinism / opt-invariance / differential.
+        _ => format!(
+            "(do (def (main) (do (def m (Record.merge #record((= f (fn ((: y Int64)) (+ y {a})))) #record((= b 7)))) (+ (* 10 (m.f 3)) m.b))) (export main))"
         ),
     };
     Program { source }
@@ -5093,8 +5112,8 @@ mod tests {
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
         // Distinctive, mutually-exclusive markers for the seventeen shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 17];
-        for seed in 0u64..704 {
+        let mut reached = [false; 18];
+        for seed in 0u64..768 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5143,13 +5162,15 @@ mod tests {
                 reached[15] = true;
             } else if src.contains("(def (f (: xs (List Int64)) (: ys (List Int64)))") {
                 reached[16] = true;
+            } else if src.contains("(def m (Record.merge ") {
+                reached[17] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all seventeen reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all eighteen reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
