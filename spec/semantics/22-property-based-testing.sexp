@@ -1661,7 +1661,11 @@
   (output (: 1 Int64))
   (call main (: -7 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): owned-fold surplus-skip — the sortedness fold's head `h` (a nullary-sum
+  ; `Level`) is read borrow-only via `(di h)` (a disc-extracting match yielding a SCALAR), so the head is
+  ; dead-after and its head-preservation scrutinee dup is surplus; the RestFrom vec-drop reclaims each head.
+  ; Was leak 6; census live-objects 0 + guarded-all clean.
+  (live-objects 0))
 
 (case
   "a scalar-aware string shrinker converges to the 1-minimal failing string"
