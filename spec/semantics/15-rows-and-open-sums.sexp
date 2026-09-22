@@ -2022,7 +2022,11 @@
       (export main)))
   (call main (: 3 Int64))
   (output (: 907 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety census re-sweep): now census 0 — the k-capturing `add` closure env cell +
+  ; the grown 3-field vtable record reclaim via the #9541 SITE-A operand_proj_owned route (a closure
+  ; projected from an owned non-slotted producer — the Record.extend result here) landing catching up. Each
+  ; fn handle drops paired with its env cell, no orphaned dup. rc-trace: LEAK SUMMARY none (907 at k=3).
+  (live-objects 0))
 
 ; --- Open sums through program structure: a three-module concrete chain and a generic tuple
 ; slot; Record.extend widening a map-extracted record into a new map. ---
