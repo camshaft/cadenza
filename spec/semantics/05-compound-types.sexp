@@ -13398,6 +13398,42 @@
   ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
   (live-objects 0))
 
+(case
+  "a match over a Proj-of-If distributes into a SumPayload whose scrutinee is the control-flow join"
+  (doc
+    "The CONTROL-FLOW-JOIN-SCRUTINEE member of the owned-fresh-producer SumPayload family above, and a
+           NON-EFFECTS regression witness for the #9533 fence (the effects twin is 14c tt5). `mk x` returns a
+           runtime `#tuple(#tuple(x (+ x 1)) 7)`; `(. (if (= (% n 2) 0) (mk n) (mk (+ n 1))) 0)` projects field
+           0 of an `if`-join of two ctor results. `Core::Proj` DISTRIBUTES over the `if` at lowering
+           (`(. (if c A B) 0)` → `(if c (. A 0) (. B 0))`), so each branch's Proj operand is a direct ctor
+           (re-emit-safe, reclaimed); but the ENCLOSING `match` then SumPayload-projects the resulting `if`
+           itself — a control-flow JOIN scrutinee. #9532's owned-producer reclaim RE-EMITTED that join scrutinee
+           per projection, which for a join DUPLICATES the whole arm — and reaching it via any resume-feeding
+           path re-references a one-shot continuation → `u32::MAX` → INVALID wasm (CDZ0910). #9533 fenced the
+           SumPayload reclaim off `If`/`Match`/`MatchList`/`MatchSum`/`Let` scrutinees, so this compiles valid;
+           the join producer left un-dropped is a documented SAFE known-leak (leak-over-UAF, guarded 2 live, no
+           trap/UAF), pending v-mem's narrower materialize-join-scrutinee-once follow-up that reclaims it to 0.
+           A regression reverting the #9533 fence re-introduces the CDZ0910 miscompile → compile-status ≠ 0 →
+           this guard fails. Reaches the fence from a pure match/Proj/If angle 14c tt5 (handler/resume) does not.
+           Values: even n → 2n+1, odd n → 2n+3.")
+  (input
+    (do
+      (def (mk (: x Int64)) #tuple(#tuple(x (+ x 1)) 7))
+      (def (main (: n Int64))
+        (match (. (if (= (% n 2) 0) (mk n) (mk (+ n 1))) 0) (#tuple(a b) (+ a b))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 5 Int64))
+  (call main (: 0 Int64))
+  (output (: 1 Int64))
+  (call main (: 4 Int64))
+  (output (: 9 Int64))
+  (call main (: 3 Int64))
+  (output (: 9 Int64))
+  (call main (: 5 Int64))
+  (output (: 13 Int64))
+  (live-objects known-leak))
+
 ; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
 ; above project fields, index lists, and re-match variants inside the arm). But when the payload
@@ -19209,8 +19245,15 @@
   (output (: 80 Int64))
   (call main (: 4 Int64))
   (output (: 3 Int64))
-  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
-  (live-objects 0))
+  ; RE-BASELINE (breaker, red-gate fix): #9532 flipped this to 0, but #9533's fence excludes MatchList/Match
+  ; scrutinees from the SumPayload owned-producer reclaim — and this recwalk (`(match (profit xs) (#tuple(b m) …))`
+  ; over `profit`/`go` returning their tuple through a `match xs` MatchList) hits exactly that fenced scrutinee,
+  ; so the intermediate tuple is left un-dropped again. Two-signal confirmed leaking 2 (nix coarse-05 RED on main
+  ; @ffe0641553 + independent fresh-cdz census): value-correct (62/71/80/3), NO trap — a documented SAFE known-leak
+  ; (leak-over-UAF), the 05 sibling of the 06-numeric fraction-add pin #9533 already reverted. #9533's "05
+  ; unaffected" claim missed this recwalk pin. Restores to 0 when v-mem lands the narrower
+  ; materialize-join-scrutinee-once follow-up (reclaim without the invalid re-emit).
+  (live-objects known-leak))
 
 (case
   "take-while and drop-while split a leading run and reassemble to the original"
