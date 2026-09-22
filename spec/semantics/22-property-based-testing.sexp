@@ -1891,7 +1891,12 @@
   (output (: 3007 Int64))
   (call main (: 2 Int64))
   (output (: 3002 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety Part-2, extract-share fence relax): the decoded `(Option (List Int64))` shell
+  ; + List payload drop. The arm reads `l` only via `List.len` (borrow) + `List.at l 0` (a dup-backed BORROW,
+  ; independent result) — no CONSUMING payload site, so `collect_consuming_payload_sites_cont` is empty and,
+  ; the scrutinee being a fresh-owned `Core::ValueDecode`, `nontail_param_compound_extra_ok` relaxes the
+  ; sread-UAF interior-view fence and admits. rc-trace: LEAK SUMMARY none (3007/3002). v-core-opt-blessed.
+  (live-objects 0))
 
 (case
   "a Value.encode/Value.decode round-trip preserves a RECORD's fields"
@@ -2079,7 +2084,12 @@
   (output (: 70099 Int64))
   (call main (: 3 Int64))
   (output (: 30099 Int64))
-  (live-objects known-leak))
+  ; RECLAIMED (v-memory-safety Part-2, extract-share fence relax): the decoded `(Option (Map …))` shell + Map
+  ; payload drop. The arm reads `m` only via `Map.lookup m …` (dup-backed BORROWS, independent results) — no
+  ; CONSUMING payload site, so `collect_consuming_payload_sites_cont` is empty and, the scrutinee being a
+  ; fresh-owned `Core::ValueDecode`, `nontail_param_compound_extra_ok` relaxes the sread-UAF interior-view
+  ; fence and admits. rc-trace: LEAK SUMMARY none (70099/30099). v-core-opt-blessed.
+  (live-objects 0))
 
 (case
   "a Value.encode/Value.decode round-trip preserves a SET's elements"
