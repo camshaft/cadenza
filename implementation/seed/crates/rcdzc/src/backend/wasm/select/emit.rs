@@ -3425,7 +3425,31 @@ pub(super) fn emit(
                     crate::core::PathStep::RestFrom(_) | crate::core::PathStep::TupleRestFrom(_)
                 )
             });
-            let reclaim_scrut_eligible = !path_has_restfrom
+            // The reclaim RE-EMITS the scrutinee (`emit(db, scrutinee, …)` below) once PER projection node and
+            // drops it after the leaf read. That is only sound when the scrutinee is a DIRECT single-node
+            // allocating producer (a call/ctor — `Core::Call`/`Closure`/`Tuple`/`SumNew`/…): re-emitting it
+            // rebuilds a fresh, independently-owned handle each time, so a per-projection drop balances. A
+            // CONTROL-FLOW JOIN node — `If`/`Match`/`MatchList`/`MatchSum`/`Let` — is classified `Owned` by
+            // `heap_operand_ownership` via `join_arm_ownership`/arm-recursion (ownership.rs:618-626, "both arms
+            // produce an owned value"), but re-emitting it DUPLICATES its whole arm structure, re-evaluates its
+            // condition, and — inside an effect-handler arm whose branches feed a `resume` (the tt5 nested-tuple
+            // state machine) — re-emits a reference to the resume CONTINUATION, whose function index is a
+            // one-shot placeholder → the second emit lands `u32::MAX` → an INVALID component (`unknown function
+            // 4294967295`, CDZ0910). So EXCLUDE a control-flow-join scrutinee from this reclaim: re-emitting it
+            // is not a fresh rebuild. (A join node that leaks is left un-dropped — leak-over-UAF; a miscompile
+            // is never acceptable. 10 of #9532's 11 pins are direct call/ctor/closure producers, unaffected; the
+            // one join-producer pin — 06-numeric "fraction add over tuples", branching on the gcd sign — reverts
+            // to a documented safe known-leak here, pending v-mem's narrower materialize-join-once follow-up.)
+            let scrut_reemit_safe = !matches!(
+                core_of(db, scrutinee),
+                Core::If { .. }
+                    | Core::Match { .. }
+                    | Core::MatchList { .. }
+                    | Core::MatchSum { .. }
+                    | Core::Let { .. }
+            );
+            let reclaim_scrut_eligible = scrut_reemit_safe
+                && !path_has_restfrom
                 && !slots.contains_key(&scrutinee)
                 && matches!(
                     heap_operand_ownership(db, scrutinee),
