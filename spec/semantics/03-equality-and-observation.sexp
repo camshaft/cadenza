@@ -856,7 +856,13 @@
   (output (: 111 Int64))
   (call main (: 0 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 — the Bytes.slice `Some(view)` shell + extracted view are now
+  ; reclaimed by the `consumed_by_builder` view-shell path (`matchsum_view_shell_reclaim_ok`, 19-sets 0200-0204
+  ; generalization): the view s is CONSUMED into the fresh `#tuple(1 s)`/`(Some s)`/`#list(s)` value-eq operands
+  ; (an owned-single-view producer, compound-boxed, ALL-SCALAR arm result → non-escaping), so the Some-shell
+  ; deep-drop completes the child-dup lockstep. rc-trace: node#9 view + node#10 shell freed 1:1, immortal
+  ; constant source untouched. Measures 0 on BOTH trials (a=1/a=0) on the debug-counters runtime. Was known-leak.
+  (live-objects 0))
 
 (case
   "a TUPLE-wrapped runtime slice as a Map key hits by content through the compound descent"
@@ -879,7 +885,12 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak->0 — the outer `Bytes.slice` `Some(view)` shell + the inner
+  ; `Map.lookup` `Some` shell both reclaim: the view s is consumed into the fresh `#tuple(1 s)` lookup KEY
+  ; (owned-single-view producer, compound-boxed, scalar arm result), so `matchsum_view_shell_reclaim_ok`'s
+  ; `consumed_by_builder` path drops the shell in child-dup lockstep. Measures 0 on the debug-counters
+  ; runtime; immortal constant slice-source untouched. Was known-leak.
+  (live-objects 0))
 
 ; --- Runtime compound ORDERING: `<`/`<=`/`>`/`>=` over a runtime compound COMPUTES (blessed lexicographic) --
 ; The cases above pin runtime structural EQUALITY over a compound (the `value-eq`/`champ_eq` heap walk).
