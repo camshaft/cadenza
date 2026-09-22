@@ -5664,14 +5664,16 @@
   (call main (: 5 Int64))
   (output (: 13121 Int64))
   ; #9532 (v-memory-safety) reclaimed the owned fresh-producer scrutinee in the Core::SumPayload emit → this
-  ; flipped to live-objects 0. But that reclaim RE-EMITS the scrutinee per projection, which is INVALID for a
-  ; CONTROL-FLOW-JOIN producer (this case's fraction-add branches on the gcd sign): re-emitting a join inside a
-  ; handler arm re-references the resume continuation (one-shot fn index) → invalid wasm (the tt5 14c CDZ0910
-  ; miscompile). The fence (v-core-opt, emit.rs) excludes If/Match/Let join scrutinees from that reclaim →
-  ; correctly fixes the tt5 miscompile, at the cost of leaving this join producer un-dropped (a SAFE leak of 4,
-  ; NOT a UAF — leak-over-UAF). Re-pinned known-leak pending v-mem's narrower materialize-join-scrutinee-once
-  ; follow-up (reclaim without re-emit), which reclaims this to 0 again without the invalid re-emit.
-  (live-objects known-leak))
+  ; flipped to live-objects 0. #9533's reclaim fence (which re-emits the scrutinee per projection is INVALID for
+  ; a control-flow-JOIN producer inside a handler arm — the tt5 14c CDZ0910 miscompile) excluded EVERY Core::Let
+  ; scrutinee and re-baselined this to known-leak. But this producer is a `let`-wrapped CALL (`r = (fadd …)`) —
+  ; a STRAIGHT-LINE producer, not a join: re-emitting it rebuilds a fresh handle, so the per-projection drop is
+  ; balanced (it never re-references a resume continuation). The peel-Let refinement (v-memory-safety, emit.rs
+  ; `scrut_reemit_safe`) peels the Let and tests the value produced, so a Let-of-Call stays reclaimed while a
+  ; Let-of-If is still excluded — reclaiming this back to 0. Two-signal: fresh-cdz census live-objects 0 (5121/
+  ; 3041/13121) + gate-coarse-06 GREEN. (The remaining join-producer pins — 05 MAX PROFIT's MatchList, the pr6
+  ; If-join — await the narrower materialize-join-scrutinee-once follow-up, which reclaims without any re-emit.)
+  (live-objects 0))
 
 (case
   "KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle"
