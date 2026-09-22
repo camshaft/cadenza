@@ -64,8 +64,10 @@ mod boxget;
 use boxget::*;
 pub use boxget::{LocalVar, SelectedFunc};
 mod emit;
+mod grandchild;
 mod surplus;
 use emit::*;
+use grandchild::arm_consumes_binder_grandchild;
 use surplus::collect_surplus_skippable_dups;
 mod ownership;
 mod tailcall;
@@ -4544,10 +4546,23 @@ fn emit_loop_iteration(
             // (+10 spurious leak, v-mem measured). `arm_consumes_binder_grandchild` fires ONLY for the
             // grandchild shape (operand of the consumed projection is a PROPER projection-chain of `binder`,
             // not `binder`/the direct element itself), so ksd1/ksd2's K1 UAF fence holds while FLATTEN reclaims.
-            let element_heapchild_consumed = args
-                .iter()
-                .enumerate()
-                .any(|(j, &a)| j != i && arm_consumes_binder_grandchild(db, a, binder));
+            // ORDERING-ADMIT excuse (v-core-opt-ruled #4139 relaxation; ksd 0262 spine-over-dup): on this
+            // self-tail-loop `is_restfrom_consume[i]` back-edge, PART-2 above orders the vec-drop LAST, so every
+            // sibling head-consume is emitted (== runs, no post-emit scheduler) BEFORE the spine vec-drop. So a
+            // grandchild head-consume DEAD-AFTER under `dup_sites=Some` (dup-backed / borrow-only) can't dangle
+            // when the preservation dup is skipped. Excuse ONLY those; a move / non-dup-backed thread still fires
+            // the K1 fence (leak-over-UAF). Single-member only (as `drop_old_borrowed`); scope = the member body.
+            let ordering_excuse: Option<(StructId, &HashSet<StructId>)> = if tl.members.len() == 1 {
+                db.defs
+                    .get(tl.members[0])
+                    .and_then(|d| d.body)
+                    .map(|b| (b, &dup_snapshot))
+            } else {
+                None
+            };
+            let element_heapchild_consumed = args.iter().enumerate().any(|(j, &a)| {
+                j != i && arm_consumes_binder_grandchild(db, a, binder, ordering_excuse)
+            });
             if total == 1 && !element_heapchild_consumed {
                 out.loop_reassign_no_dup.insert(sl);
             }
@@ -6581,138 +6596,6 @@ fn arm_borrows_heap_subvalue_seen(
         _ => core_child_ids(db, id)
             .into_iter()
             .any(|c| arm_borrows_heap_subvalue_seen(db, c, false, seen)),
-    }
-}
-
-/// Whether `id` CONSUMES a heap GRANDCHILD of the loop-param `binder` — a projection `(. e field)`
-/// (`Proj`/`SumExpect`, or a non-`RestFrom` `SumPayload`, heap-typed) in a CONSUME position whose OPERAND is
-/// a PROPER projection-chain of `binder` (an element `e` extracted from the loop-param list, `e != binder`,
-/// so consuming only `e`'s field leaves `e` itself OWNED BY the list). This is the K1/#4139 loop-skip
-/// over-free precondition: FBIP-reusing `binder` (a `RestFrom`) frees the old spine — and with it the still-
-/// owned element `e` and its live grandchild — → use-after-free, so the preservation dup must NOT be skipped.
-///
-/// The DISTINGUISHER vs [`arm_borrows_heap_subvalue`] (which was depth-blind and over-retained clean
-/// accumulators, v-mem #5090 report): a DIRECT element consumed — `(List.concat acc h)` where `h =
-/// SumPayload{scrutinee: binder, path:[Elem]}`, operand IS `binder` — is MOVED OUT (ownership transfers), so
-/// freeing the spine is safe and no dup is needed (FLATTEN, 05-compound). Only a consumed GRANDCHILD (operand
-/// a PROPER chain of `binder`, not `binder` itself) fires. Confirmed empirically: FLATTEN's rhs is a direct
-/// `SumPayload{scrutinee: binder}` (excluded → reclaims); ksd1's is `Proj{operand: SumPayload{scrutinee:
-/// binder}}` (a grandchild → fires → K1 UAF fence holds).
-///
-/// UAF-SAFE-BY-CONSTRUCTION (biased toward FIRING = keep the dup): only a match SCRUTINEE / borrowing-
-/// projection OPERAND — genuine reads — relax to `borrowed` (skipped, since a borrowed grandchild does not
-/// over-free); EVERY other position recurses CONSUMING, so a genuine grandchild-consume is never MISSED (a
-/// miss = the UAF). An over-fire (a grandchild in a key/probe borrow this simplified walk does not relax, vs
-/// the full [`arm_borrows_heap_subvalue`]) only KEEPS a dup → a leak, never a double-free.
-fn arm_consumes_binder_grandchild(db: &mut Db, id: StructId, binder: StructId) -> bool {
-    let mut seen = HashSet::new();
-    arm_consumes_binder_grandchild_seen(db, id, binder, false, &mut seen)
-}
-
-fn arm_consumes_binder_grandchild_seen(
-    db: &mut Db,
-    id: StructId,
-    binder: StructId,
-    borrowed: bool,
-    seen: &mut HashSet<(StructId, bool)>,
-) -> bool {
-    if !seen.insert((id, borrowed)) {
-        return false;
-    }
-    // A CONSUMED heap grandchild of `binder`: a projection whose OPERAND is a PROPER projection-chain of
-    // `binder` (operand roots at `binder` but is NOT `binder` itself — the intermediate element stays owned).
-    if !borrowed {
-        // GRANDCHILD = the projection's OPERAND itself roots at `binder` through a projection (an element of
-        // `binder`), NOT a DIRECT `Param`/`LocalRef` to `binder`. A direct-element projection
-        // `SumPayload{scrutinee: <ref to binder>}` (FLATTEN's `h`) has its operand a bare binder reference —
-        // that element is MOVED OUT when consumed, so it is NOT a grandchild. `is_direct_binder_ref` peels the
-        // binder-ID-vs-reference-node distinction (the `Param{binder}` node id differs from the binder id).
-        let is_direct_binder_ref = |db: &mut Db, n: StructId| matches!(core_of(db, n), Core::Param { binder: b } | Core::LocalRef { binder: b } if b == binder);
-        let is_grandchild_consume = match core_of(db, id) {
-            Core::Proj { operand, .. }
-            | Core::SumExpect {
-                scrutinee: operand, ..
-            } => {
-                is_heap_type(&type_of(db, id))
-                    && !is_direct_binder_ref(db, operand)
-                    && payload_or_proj_chain_roots_at_binder(db, operand, binder)
-            }
-            Core::SumPayload {
-                scrutinee,
-                ref path,
-            } => {
-                !matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
-                    && is_heap_type(&type_of(db, id))
-                    && !is_direct_binder_ref(db, scrutinee)
-                    && payload_or_proj_chain_roots_at_binder(db, scrutinee, binder)
-            }
-            _ => false,
-        };
-        if is_grandchild_consume {
-            return true;
-        }
-    }
-    // Position walk (mirrors [`arm_borrows_heap_subvalue_seen`]'s genuine-borrow relaxations; every other
-    // position stays CONSUMING so a grandchild-consume is never missed).
-    match core_of(db, id) {
-        Core::Match { scrutinee, .. }
-        | Core::MatchSum { scrutinee, .. }
-        | Core::MatchList { scrutinee, .. } => {
-            arm_consumes_binder_grandchild_seen(db, scrutinee, binder, true, seen)
-                || core_child_ids(db, id).into_iter().any(|c| {
-                    c != scrutinee
-                        && arm_consumes_binder_grandchild_seen(db, c, binder, false, seen)
-                })
-        }
-        Core::Proj { operand, .. }
-        | Core::SumExpect {
-            scrutinee: operand, ..
-        }
-        | Core::ListLen { operand }
-        | Core::BytesLen { operand }
-        | Core::StrScalarLen { operand } => {
-            arm_consumes_binder_grandchild_seen(db, operand, binder, true, seen)
-        }
-        Core::SumPayload { scrutinee, .. } => {
-            arm_consumes_binder_grandchild_seen(db, scrutinee, binder, true, seen)
-        }
-        // The SAME borrow relaxations as [`arm_borrows_heap_subvalue_seen`] — REQUIRED so a grandchild read
-        // ONLY as a borrowed key/probe/compare/scalar-extract is not mistaken for a consume (omitting them
-        // over-fired Map.to-list's `Bytes.at k 0` borrowed key → a spurious dup/leak, 19-sets:1878). `Bytes.at`
-        // scalar-extracts (bytes borrowed); `Bytes.compact` passes the borrow status through; the key-ops
-        // borrow their key/probe/compare operands (and consume the collection).
-        Core::BytesAt { bytes, index, .. } => {
-            arm_consumes_binder_grandchild_seen(db, bytes, binder, true, seen)
-                || arm_consumes_binder_grandchild_seen(db, index, binder, false, seen)
-        }
-        Core::BytesCompact { operand } => {
-            arm_consumes_binder_grandchild_seen(db, operand, binder, borrowed, seen)
-        }
-        Core::MapLookup { map, key, .. } => {
-            arm_consumes_binder_grandchild_seen(db, key, binder, true, seen)
-                || arm_consumes_binder_grandchild_seen(db, map, binder, false, seen)
-        }
-        Core::SetContains { set, elem, .. } => {
-            arm_consumes_binder_grandchild_seen(db, elem, binder, true, seen)
-                || arm_consumes_binder_grandchild_seen(db, set, binder, false, seen)
-        }
-        Core::MapRemove { map, key, .. } => {
-            arm_consumes_binder_grandchild_seen(db, key, binder, true, seen)
-                || arm_consumes_binder_grandchild_seen(db, map, binder, false, seen)
-        }
-        Core::SetRemove { set, elem, .. } => {
-            arm_consumes_binder_grandchild_seen(db, elem, binder, true, seen)
-                || arm_consumes_binder_grandchild_seen(db, set, binder, false, seen)
-        }
-        Core::ValueEq { lhs, rhs }
-        | Core::ValueEqShaped { lhs, rhs, .. }
-        | Core::ValueCmp { lhs, rhs, .. } => {
-            arm_consumes_binder_grandchild_seen(db, lhs, binder, true, seen)
-                || arm_consumes_binder_grandchild_seen(db, rhs, binder, true, seen)
-        }
-        _ => core_child_ids(db, id)
-            .into_iter()
-            .any(|c| arm_consumes_binder_grandchild_seen(db, c, binder, false, seen)),
     }
 }
 
