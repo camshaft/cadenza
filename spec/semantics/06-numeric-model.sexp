@@ -13351,7 +13351,8 @@
       (export main)))
   (call main (: 40 Int64))
   (output (: 40 Int64))
-  (live-objects known-leak))
+  ; census sweep (v-memory-safety, post-#9544): the BigInt-key analog of 03:522 inc — the same self-tail-loop threaded-prev fold (< prev k, prev replaced by the next key). #9540's ordering-admit reclaims the spine + #9544's reassigned-loop-param drop reclaims the intermediate prevs -> DBG census 0, value 40, rc-trace LEAK SUMMARY none (zero double-free). Was known-leak; TIGHTENED.
+  (live-objects 0))
 
 (case
   "a multi-limb BigInt-keyed trie churned back equals the direct build with the seed resolving"

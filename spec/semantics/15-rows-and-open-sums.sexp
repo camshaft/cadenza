@@ -1950,8 +1950,8 @@
     (do
       (def (main (: k Int64))
         (let ((t (if (< k 0)
-                     (tuple (fn ((: y Int64)) (+ y k)) 7)
-                     (tuple (fn ((: y Int64)) (+ y (* 2 k))) 9))))
+                     #tuple((fn ((: y Int64)) (+ y k)) 7)
+                     #tuple((fn ((: y Int64)) (+ y (* 2 k))) 9))))
           (+ (* 10 ((. t 0) 3)) (. t 1))))
       (export main)))
   (call main (: 5 Int64))
