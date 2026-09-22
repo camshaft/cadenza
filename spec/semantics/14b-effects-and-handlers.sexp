@@ -140,10 +140,13 @@
            result is a scalar), and there is NO double-free (the debug-counters runtime does not
            underflow — the second consume's dup is present), yet the census reads 2 LIVE OBJECTS: the
            double-heap-consume-per-resume path leaves two ropes unreclaimed at handle exit where the
-           bare-string-rope sibling above (borrow-read + single consume) now reclaims to 0. A distinct
-           reclaim gap for the two-full-consume resume shape (breaker, filed to v-memory-safety). Ideal
-           is (live-objects 0); flip this marker when the double-consume state reclaim lands. Value holds
-           on both backends across O0..O2. (Adversarial pin from a breaker probe.)")
+           bare-string-rope sibling above (borrow-read + single consume) now reclaims to 0. RECLAIMED to
+           0 by the PER-PATH AXIS B owner-drop (v-memory-safety, v-core-opt-blessed): the handler lowers
+           to a non-looped callee-owned fold whose base arm MOVES the state `s` while the recursive arm
+           net-BORROWS it (both `concat` consumes dup-backed); the fence now places `s`'s owner-drop on
+           the net-borrow recursive arm (leaving the base-move arm undropped), balancing the two
+           over-retained ropes. Value holds on both backends across O0..O2. (Adversarial pin from a
+           breaker probe; reclaim landed.)")
   (input
     (do
       (effect E (op get (-> Int64 String)))
@@ -162,7 +165,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 24 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "two NESTED handles each threading a growing string-rope state both reclaim at their exits"

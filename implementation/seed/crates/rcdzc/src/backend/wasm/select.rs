@@ -897,7 +897,11 @@ pub fn def_emits_ifjoin_param_drop(
         // plan's non-emptiness — not the slot — is what we test), so pass a dummy 0.
         if is_heap_type(ty) && nonlooped_param_callee_owned(db, self_d, param_index, layout) {
             let aliases = HashSet::from([*binder]);
-            plan_ifjoin_nested(db, body, &aliases, 0, &dup, &mut plan);
+            // MIRROR the emit's per-path AXIS B net-borrow admit + GATE-1 EXACTLY (select_function_of half-2),
+            // so `drop` is imported iff a net-borrow (or dead) D-arm drop is actually emitted — no missing/over
+            // import.
+            let net_borrow = !def_nonlooped_callee_reclaims_threaded_param(db, self_d, param_index);
+            plan_ifjoin_nested(db, body, &aliases, 0, &dup, net_borrow, &mut plan);
         }
     }
     !plan.is_empty()
@@ -2363,7 +2367,26 @@ pub fn select_function_of(
                 && nonlooped_param_callee_owned(db, self_d, param_index, layout)
             {
                 let aliases = std::collections::HashSet::from([*binder]);
-                plan_ifjoin_nested(db, body, &aliases, slot, &dup, &mut code.ifjoin_arm_drops);
+                // PER-PATH AXIS B net-borrow admit (v-core-opt-blessed, #9074/#9077 handler-state class): also
+                // reclaim this callee-owned param on a NET-BORROW arm (every consume dup-backed → the incoming
+                // ref is surplus/dead-after), not just a fully-DEAD arm. GATE-1 (closes the go two-sibling
+                // double-free): decline the net-borrow admit when the callee ALREADY reclaims this param via the
+                // conditional threaded-param drop — a second drop on that arm would double-free. This site is the
+                // sole net-borrow-enabled caller (the other `plan_ifjoin_nested` callers pass `net_borrow=false`;
+                // GATE-1's own predicate uses an empty dup set so it stays inert). Base-MOVE arms and lf1's
+                // capture-escape are declined by the dup-aware `ifjoin_arm_dead` escape check + the mandatory
+                // go/lf1 census negative controls (leak-over-UAF, REVERT on any red).
+                let net_borrow =
+                    !def_nonlooped_callee_reclaims_threaded_param(db, self_d, param_index);
+                plan_ifjoin_nested(
+                    db,
+                    body,
+                    &aliases,
+                    slot,
+                    &dup,
+                    net_borrow,
+                    &mut code.ifjoin_arm_drops,
+                );
             }
         }
     }
@@ -8544,10 +8567,13 @@ pub(crate) fn def_nonlooped_callee_reclaims_threaded_param(
         return false;
     }
     // Empty-dup under-approximation (see the doc — avoids re-entering the dup pass).
+    // `net_borrow=false`: this predicate models ONLY the dead-arm drop (it IS GATE-1 for the net-borrow admit,
+    // so enabling net-borrow here would recurse into itself; and with an empty dup set every consume reads as an
+    // escape so the net-borrow admit is inert regardless).
     let dup: HashSet<StructId> = HashSet::new();
     let aliases = HashSet::from([binder]);
     let mut plan: HashMap<StructId, Vec<(u32, bool)>> = HashMap::new();
-    plan_ifjoin_nested(db, body, &aliases, 0, &dup, &mut plan);
+    plan_ifjoin_nested(db, body, &aliases, 0, &dup, false, &mut plan);
     !plan.is_empty()
 }
 
