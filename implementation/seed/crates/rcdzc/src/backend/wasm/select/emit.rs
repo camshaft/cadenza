@@ -3320,6 +3320,7 @@ pub(super) fn emit(
                     Ok(HandleOwnership::Owned)
                 ) || owned_proj_child_dupd(db, operand, slots, &out.sumexpect_shell_reclaim)
                     || out.sumexpect_shell_reclaim.contains(&operand));
+
             if reclaim {
                 let agg_slot = base;
                 *high = (*high).max(agg_slot + 1);
@@ -5990,10 +5991,27 @@ pub(super) fn emit(
                 } else {
                     false
                 };
+            // SITE-A (b''''): a closure PROJECTED from an OWNED, NON-SLOTTED aggregate producer (15-rows:1926
+            // `m.f` where `m` is an inlined `Record.merge` re-emitted per use). The `Core::Proj` reclaim
+            // (emit.rs:3294) fires here — `!slots.contains_key(agg) && heap_operand_ownership(agg)==Owned` — so
+            // its U14 nested-compound-child path DUP'd the extracted closure into an INDEPENDENT owned rc1 and
+            // dropped the parent producer. The borrowing apply then leaves that dup'd cell a dead owned temp
+            // nothing reclaims → the env cell LEAKS (node#1). Drop it. Gated to EXACTLY the Proj-reclaim
+            // condition (Owned + non-slotted agg), so the dup provably happened; dropping reclaims the sole
+            // owned ref (the parent is already gone) — no double-free. leak-over-UAF: any weaker agg leaves it
+            // un-dropped. (Instrument-pinned: m.f = Proj(Record,1) reclaim=true, closure U14-dup'd, SITE-A missed.)
+            let operand_proj_owned = if let Core::Proj { operand: agg, .. } = core_of(db, closure) {
+                !slots.contains_key(&agg)
+                    && matches!(heap_operand_ownership(db, agg), Ok(HandleOwnership::Owned))
+            } else {
+                false
+            };
+
             if (operand_owned
                 || operand_dup_owned
                 || operand_sumexpect_owned
-                || operand_invariant_borrow_clean)
+                || operand_invariant_borrow_clean
+                || operand_proj_owned)
                 && !result_is_fn
             {
                 out.push(Lir::LocalGet(cell_slot)); // [result, cell]
