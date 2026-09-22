@@ -21,6 +21,7 @@ fn ifjoin_arm_dead(
     arm: StructId,
     aliases: &HashSet<StructId>,
     dup: &HashSet<StructId>,
+    net_borrow: bool,
 ) -> bool {
     for &a in aliases {
         if binding_escapes_dup_aware(db, arm, EscapeTarget::Binder(a), false, Some(dup)) {
@@ -29,7 +30,22 @@ fn ifjoin_arm_dead(
         let mut seen = HashSet::new();
         let mut n = 0usize;
         count_param_consumes(db, arm, a, &mut seen, &mut n, false);
-        if n != 0 {
+        // DEAD arm: neither escapes (checked above) NOR consumes (`n == 0`).
+        //
+        // NET-BORROW arm (PER-PATH AXIS B, v-core-opt-blessed): `n > 0` but the binder's OWN ref is
+        // nonetheless surplus/dead-after this arm, so dropping it once reclaims it. This is sound BECAUSE
+        // `binding_escapes_dup_aware(…, Some(dup))` above already returned false: a consume that is NOT
+        // dup-backed (a genuine last-use MOVE) reads as an ESCAPE under the dup-aware oracle → it would have
+        // returned `true` and we'd have bailed. So `escape == false && n > 0` ⟺ EVERY consume on this arm is
+        // DUP-BACKED (net-borrow) — the emitted dups service the consumes and leave the incoming ref undropped
+        // (the effect-handler state-accumulator leak: rope2 14b:127 + net-borrow recursive-fold siblings). The
+        // base-MOVE arm (an un-dup'd consume) is an escape → declined above → gets NO drop (dropping it would
+        // double-free). Admitted ONLY under `net_borrow`, which the caller sets iff GATE-1 holds
+        // (`!def_nonlooped_callee_reclaims_threaded_param` — an arm that already reclaims via the conditional
+        // threaded-param drop must not get a second drop; closes the go two-sibling double-free). GATE-2 (lf1's
+        // handle-continuation capture-escape) is caught by the dup-aware oracle when the capture-construction
+        // consumes the binder, and empirically backstopped by the mandatory lf1 census negative control.
+        if n != 0 && !net_borrow {
             return false;
         }
     }
@@ -53,29 +69,30 @@ pub(super) fn plan_ifjoin_nested(
     aliases: &HashSet<StructId>,
     slot: u32,
     dup: &HashSet<StructId>,
+    net_borrow: bool,
     plan: &mut HashMap<StructId, Vec<(u32, bool)>>,
 ) {
     let Core::If { then_, else_, .. } = core_of(db, node) else {
         return;
     };
-    let then_dead = ifjoin_arm_dead(db, then_, aliases, dup);
-    let else_dead = ifjoin_arm_dead(db, else_, aliases, dup);
+    let then_dead = ifjoin_arm_dead(db, then_, aliases, dup, net_borrow);
+    let else_dead = ifjoin_arm_dead(db, else_, aliases, dup, net_borrow);
     match (then_dead, else_dead) {
         (false, false) => {
-            plan_ifjoin_nested(db, then_, aliases, slot, dup, plan);
-            plan_ifjoin_nested(db, else_, aliases, slot, dup, plan);
+            plan_ifjoin_nested(db, then_, aliases, slot, dup, net_borrow, plan);
+            plan_ifjoin_nested(db, else_, aliases, slot, dup, net_borrow, plan);
         }
         (true, false) => {
             plan.entry(node)
                 .or_default()
                 .push((slot, /* d_is_then = */ true));
-            plan_ifjoin_nested(db, else_, aliases, slot, dup, plan);
+            plan_ifjoin_nested(db, else_, aliases, slot, dup, net_borrow, plan);
         }
         (false, true) => {
             plan.entry(node)
                 .or_default()
                 .push((slot, /* d_is_then = */ false));
-            plan_ifjoin_nested(db, then_, aliases, slot, dup, plan);
+            plan_ifjoin_nested(db, then_, aliases, slot, dup, net_borrow, plan);
         }
         (true, true) => {}
     }
@@ -4600,6 +4617,9 @@ pub(super) fn emit(
                                 &aliases,
                                 slot,
                                 &dup_sites,
+                                // never_consumed gate above (n==0) = the borrow-only DRAIN path; net-borrow
+                                // (n>0) is excluded here, so the net-borrow admit stays off.
+                                false,
                                 &mut out.ifjoin_arm_drops,
                             );
                         }
@@ -4610,6 +4630,7 @@ pub(super) fn emit(
                                 &aliases,
                                 slot,
                                 &dup_sites,
+                                false,
                                 &mut out.ifjoin_arm_drops,
                             );
                         }
