@@ -37118,13 +37118,13 @@
       (def (main) (let ((#tuple(k ys) (grow 5 #list()))) (List.len ys)))
       (export main)))
   (output (: 10 Int64))
-  ; v-memory-safety post-merge grade (fresh matching-hash debug store, deterministic x2): #6000's desugar
-  ; fixed the re-eval HANG + the heap OOB/UAF (value-correct 10, no trap), but the RECURSIVE destructure-let
-  ; still over-retains the intermediate `grow` tuples/lists across the non-tail recursion → known-leak 23 (NOT
-  ; 0 as first pinned). A LEAK (safe side, value correct), same class as the general non-tail-spine reclaim
-  ; residual — tracked to drive to 0 (v-memory-safety). Repinned so the gate reflects reality; the borrowed-
-  ; alongside sibling below is CLEAN (live-objects 0), so the double-free-risk case is confirmed balanced.
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): known-leak 23 -> 0. #6000's desugar fixed the re-eval HANG + heap OOB/UAF; the
+  ; RECURSIVE destructure-let's non-tail over-retention of the intermediate `grow` tuples/lists (the general
+  ; non-tail-spine reclaim residual) has since been RECLAIMED by a landed non-tail-spine fix. Re-measured on the
+  ; debug-counters runtime: value 10, live-objects 0, rc-trace fully balanced ("every ALLOC reached a freed
+  ; DROP" — no leak, no underflow, no double-free). Flipped to exact 0; the borrowed-alongside sibling below
+  ; stays CLEAN (0), so the double-free-risk case remains confirmed balanced. Was known-leak.
+  (live-objects 0))
 
 (case
   "a destructure-let whose heap init is ALSO borrowed whole in the body reclaims the init ONCE (no double-free)"
