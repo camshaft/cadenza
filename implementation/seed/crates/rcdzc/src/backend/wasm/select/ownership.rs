@@ -660,21 +660,57 @@ pub(crate) fn collect_sitea_owned_binders(db: &mut Db, id: StructId, out: &mut H
 }
 
 /// The JOIN of several result positions' ownership for a borrowing-op operand (see
-/// [`heap_operand_ownership`]): [`HandleOwnership::Owned`] iff EVERY body is provably `Owned`, otherwise
-/// [`HandleOwnership::Borrowed`]. A body whose ownership cannot be proven counts as `Borrowed` — the
-/// leak-safe join value, so an unhandled arm shape never declines the whole match (it just leaves the
-/// operand un-dropped, a leak, never a double-free). Empty (a match with no arms cannot reach a value)
-/// is `Borrowed` — the safe default.
+/// [`heap_operand_ownership`]): [`HandleOwnership::Owned`] iff EVERY body is provably `Owned` OR a
+/// provably-IMMORTAL singleton ([`returns_immortal_singleton`]), otherwise [`HandleOwnership::Borrowed`].
+/// A body whose ownership cannot be proven counts as `Borrowed` — the leak-safe join value, so an
+/// unhandled arm shape never declines the whole match (it just leaves the operand un-dropped, a leak,
+/// never a double-free). Empty (a match with no arms cannot reach a value) is `Borrowed` — the safe default.
+///
+/// THE IMMORTAL-ARM ADMISSION (v-effects-verified, mkx1 14b:13946 + the handler-state-threading family):
+/// a match/if that threads a handler's Map/Set state has one arm returning a FRESH-Owned update
+/// (`Map.insert …` — Owned) and a base arm returning the UNCHANGED seed. When the seed is `Map.empty` /
+/// `Set.empty` — the runtime's IMMORTAL shared singleton (dup/drop a guaranteed no-op, census-excluded;
+/// cdz-runtime champ.rs:1195) — dropping it is a no-op, so the join safely yields `Owned` and the borrow-op
+/// operand drop fires: it reclaims the fresh arm's update and is inert on the immortal arm (NO double-free).
+/// A base arm returning a NON-immortal grown state stays `Borrowed` → operand un-dropped (leak-over-UAF).
 pub(crate) fn join_arm_ownership(
     db: &mut Db,
     bodies: impl IntoIterator<Item = StructId>,
 ) -> HandleOwnership {
     for body in bodies {
+        // An arm that returns a provably-IMMORTAL singleton (Map.empty / Set.empty, or a binding bound to
+        // one — census-excluded, dup/drop a guaranteed NO-OP; v-effects champ.rs:1195) is drop-COMPATIBLE:
+        // the join with a fresh-Owned sibling arm yields Owned, so the borrow-op operand drop fires — it
+        // reclaims the fresh arm and is a no-op on the immortal arm (no double-free). A NON-immortal
+        // borrowed arm (a grown state) still forces Borrowed (leak-over-UAF preserved).
+        if returns_immortal_singleton(db, body) {
+            continue;
+        }
         if !matches!(heap_operand_ownership(db, body), Ok(HandleOwnership::Owned)) {
             return HandleOwnership::Borrowed;
         }
     }
     HandleOwnership::Owned
+}
+
+/// Whether the value `id` produces is a provably-IMMORTAL runtime SINGLETON — the shared `Map.empty`
+/// (`map-empty`) / `Set.empty` (`set-empty`) node the runtime mints ONCE, marks immortal (rc =
+/// `u32::MAX` sentinel), and EXCLUDES from the live-objects census (cdz-runtime champ.rs:1195,
+/// EMPTY_MAP/EMPTY_SET thread-locals; op_dup/op_drop are a guaranteed NO-OP on it). Resolves THROUGH the
+/// pure forwarders — a `Let` body and a `LocalRef` (whose `binder` IS the initializer occurrence) — so a
+/// reference to a binding bound to `Map.empty` counts. Used ONLY by [`join_arm_ownership`] to admit an
+/// immortal-returning match/if arm as drop-compatible: dropping the immortal value is a no-op, so the
+/// borrow-op operand drop the fresh-Owned sibling arm needs is sound on every path. NARROW by construction
+/// — an empty `MapNew`/`SetOf` is the singleton; a NON-empty one is a fresh owned map (already `Owned`),
+/// and any other value (a grown state, a param) is NOT immortal → not admitted (leak-over-UAF holds).
+pub(crate) fn returns_immortal_singleton(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::MapNew { entries, .. } => entries.is_empty(),
+        Core::SetOf { elems, .. } => elems.is_empty(),
+        Core::Let { body, .. } => returns_immortal_singleton(db, body),
+        Core::LocalRef { binder } => returns_immortal_singleton(db, binder),
+        _ => false,
+    }
 }
 
 /// Ownership of a sum-match CONTINUATION as a borrowing-op operand — the join over every LEAF body the
