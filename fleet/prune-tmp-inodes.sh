@@ -74,12 +74,14 @@ ORACLE_THRESHOLD_PCT="${ORACLE_THRESHOLD_PCT:-60}" # Class D fires at/above this
 # The grade/shred/roundtrip families below were added after a fleet-wide 100%-inode wedge (breaker issue
 # 083035 + v-cadenza-backend fyi 083033, 2026-09-22): allshred ~56k, vmem-grade ~21k, rd-probe ~19k,
 # wo-lean432 ~15k, vg-*/vgi-shred, th_*/tb_* roundtrip, oshred — cross-agent corpus grade/shred scratch that
-# A/B/D didn't cover and the original allowlist missed, so it accumulated unreaped to the wall. A blanket
+# A/B/D didn't cover and the original allowlist missed, so it accumulated unreaped to the wall. sw_*/rx_*
+# (per-chapter roundtrip families, same shape as th_*/tb_*) added 2026-09-22 after a board scan found sw_*
+# alone at ~32 dirs × ~8.8k ≈ 280K inodes un-reaped. A blanket
 # /tmp/* age-sweep stays REFUSED: breaker found many nix `*-result` dirs whose mtime nix normalizes to ~epoch,
 # so they read as infinitely-old and a mtime age-floor would falsely target them (and they can be live GC
 # roots) — none of these families match `*-result`, and the lsof-idle guard protects any live one regardless.
 SCRATCH_PATTERNS=(mphome shredall 'shred-*' otc 'vrb*' 'latentleak-*' 'cdz-*-smoke*' 'node-compile-cache' \
-                  '*shred*' '*-grade' 'vg-*' 'rd-probe*' 'wo-*' 'th_*' 'th[0-9]*' 'tb_*')
+                  '*shred*' '*-grade' 'vg-*' 'rd-probe*' 'wo-*' 'th_*' 'th[0-9]*' 'tb_*' 'sw_*' 'rx_*')
 # Class D allowlist — ONLY these oracle differential run-dir SHAPES (v-lean-oracle full-corpus runs).
 ORACLE_PATTERNS=('oracle-all*' 'oall*' 'surv*')
 
