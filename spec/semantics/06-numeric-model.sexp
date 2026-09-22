@@ -5663,8 +5663,15 @@
   (output (: 3041 Int64))
   (call main (: 5 Int64))
   (output (: 13121 Int64))
-  ; tighten (v-memory-safety): owned fresh-producer scrutinee now reclaimed in the Core::SumPayload emit (recwalk tuple/sum-projection); census live-objects 0 + rc-trace balanced.
-  (live-objects 0))
+  ; #9532 (v-memory-safety) reclaimed the owned fresh-producer scrutinee in the Core::SumPayload emit → this
+  ; flipped to live-objects 0. But that reclaim RE-EMITS the scrutinee per projection, which is INVALID for a
+  ; CONTROL-FLOW-JOIN producer (this case's fraction-add branches on the gcd sign): re-emitting a join inside a
+  ; handler arm re-references the resume continuation (one-shot fn index) → invalid wasm (the tt5 14c CDZ0910
+  ; miscompile). The fence (v-core-opt, emit.rs) excludes If/Match/Let join scrutinees from that reclaim →
+  ; correctly fixes the tt5 miscompile, at the cost of leaving this join producer un-dropped (a SAFE leak of 4,
+  ; NOT a UAF — leak-over-UAF). Re-pinned known-leak pending v-mem's narrower materialize-join-scrutinee-once
+  ; follow-up (reclaim without re-emit), which reclaims this to 0 again without the invalid re-emit.
+  (live-objects known-leak))
 
 (case
   "KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle"
