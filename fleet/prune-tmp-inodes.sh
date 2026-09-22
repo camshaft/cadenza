@@ -9,12 +9,15 @@
 #      cleanup — hundreds pile up per hour.
 #   B. CLAUDE TASK TRANSCRIPTS: `*.output`/`*.jsonl` under `/tmp/claude-<pid>/<session>/…` plus the
 #      per-command `/tmp/claude-*-cwd` capture files, across ~20 active agents.
-#   C. AGENT SCRATCH DIRS (concierge trend 2026-08-28, 19%→33%/session): allowlisted agent scratch dirs
-#      (`/tmp/mphome`, `shredall`, `shred-*`, `otc`, `vrb*`, `latentleak-*`, `cdz-*-smoke*`,
-#      `node-compile-cache`) that A/B don't cover. These are IN-USE probe scratch, so Class C is the most
-#      conservative: a SEPARATE higher threshold (dormant in normal operation, fires only near the wedge),
-#      a long age floor, a fail-safe liveness check, an allowlist (never a blanket /tmp/* sweep), and
-#      own-user only. `prune-stale-targets.sh` reclaims worktree `target/` on /local — a distinct class.
+#   C. AGENT SCRATCH DIRS (concierge trend 2026-08-28, 19%→33%/session; broadened after the 2026-09-22
+#      fleet-wide 100%-inode wedge): allowlisted agent scratch dirs (`/tmp/mphome`, `shredall`, `shred-*`,
+#      `otc`, `vrb*`, `latentleak-*`, `cdz-*-smoke*`, `node-compile-cache`, plus the corpus grade/shred/
+#      roundtrip families `*shred*`, `*-grade`, `vg-*`, `rd-probe*`, `wo-*`, `th_*`, `th[0-9]*`, `tb_*`) that
+#      A/B/D don't cover. These are IN-USE probe/grade scratch, so Class C is the most conservative: a
+#      SEPARATE higher threshold (dormant in normal operation, fires only near the wedge), a long age floor,
+#      a fail-safe liveness check, an allowlist (never a blanket /tmp/* sweep — a blanket age-sweep would
+#      falsely target epoch-mtimed nix `*-result` GC roots), and own-user only. `prune-stale-targets.sh`
+#      reclaims worktree `target/` on /local — a distinct class.
 #   D. ORACLE DIFFERENTIAL RUN DIRS (concierge root-cause 2026-08-29, the DOMINANT inode hog behind a
 #      near-ENOSPC wedge): `/tmp/oracle-all*`, `oall*`, `surv*` — v-lean-oracle's full-corpus oracle
 #      differential run dirs, each a whole corpus tree ≈ 47K INODES, leaked (not cleaned after each run) →
@@ -68,7 +71,15 @@ ORACLE_STALE_MIN="${ORACLE_STALE_MIN:-120}"        # Class D: remove oracle-run 
 ORACLE_THRESHOLD_PCT="${ORACLE_THRESHOLD_PCT:-60}" # Class D fires at/above this — LOWER than scratch (70): oracle dirs are the dominant hog + pure-leak + lsof-protected, so reap the hog earlier (well before the 90% wedge)
 
 # Class C allowlist — ONLY these known agent-scratch dir SHAPES are ever candidates (never a blanket sweep).
-SCRATCH_PATTERNS=(mphome shredall 'shred-*' otc 'vrb*' 'latentleak-*' 'cdz-*-smoke*' 'node-compile-cache')
+# The grade/shred/roundtrip families below were added after a fleet-wide 100%-inode wedge (breaker issue
+# 083035 + v-cadenza-backend fyi 083033, 2026-09-22): allshred ~56k, vmem-grade ~21k, rd-probe ~19k,
+# wo-lean432 ~15k, vg-*/vgi-shred, th_*/tb_* roundtrip, oshred — cross-agent corpus grade/shred scratch that
+# A/B/D didn't cover and the original allowlist missed, so it accumulated unreaped to the wall. A blanket
+# /tmp/* age-sweep stays REFUSED: breaker found many nix `*-result` dirs whose mtime nix normalizes to ~epoch,
+# so they read as infinitely-old and a mtime age-floor would falsely target them (and they can be live GC
+# roots) — none of these families match `*-result`, and the lsof-idle guard protects any live one regardless.
+SCRATCH_PATTERNS=(mphome shredall 'shred-*' otc 'vrb*' 'latentleak-*' 'cdz-*-smoke*' 'node-compile-cache' \
+                  '*shred*' '*-grade' 'vg-*' 'rd-probe*' 'wo-*' 'th_*' 'th[0-9]*' 'tb_*')
 # Class D allowlist — ONLY these oracle differential run-dir SHAPES (v-lean-oracle full-corpus runs).
 ORACLE_PATTERNS=('oracle-all*' 'oall*' 'surv*')
 
