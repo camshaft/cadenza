@@ -3503,7 +3503,8 @@
       (export main)))
   (call main)
   (output (: 42 Int64))
-  (live-objects known-leak))
+  ; census sweep (v-memory-safety, post-#9541): the closure `rec.f` projected off the sum-payload record `rec` and applied — the SITE-A operand_proj_owned route (closure projected from an owned producer) now reclaims the record + closure env. DBG census 0, value 42, rc-trace LEAK SUMMARY none (zero double-free). Was known-leak; TIGHTENED.
+  (live-objects 0))
 
 ; The runtime-condition selection above FOLDS because the chosen function is applied AT the selection
 ; site — `((if b f g) 5)` commutes the application into each branch, so no function value survives. But
@@ -9008,7 +9009,8 @@
           (show-with Bool #record((= describe describe-bool)) true)))
       (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak))
+  ; census sweep (v-memory-safety, post-#9541): the ad-hoc-polymorphic dict (a record of functions) has its `describe` closure projected + applied — the SITE-A operand_proj_owned closure-from-owned-record route reclaims each dict record + closure. DBG census 0, value 6, rc-trace LEAK SUMMARY none (zero double-free). Was known-leak; TIGHTENED.
+  (live-objects 0))
 
 ; take-while BEHAVIORAL edges (breaker): the case above pins the inference TIE (bare-Nil stop branch keeps
 ; the result-element tie at ≥2 types); these pin the runtime BEHAVIOR the landed giter.cdz @tests (ints,
