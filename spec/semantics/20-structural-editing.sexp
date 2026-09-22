@@ -182,7 +182,10 @@
       (def (main) (ev (fold (E.Add #tuple((E.Lit 3) (E.Add #tuple((E.Lit 4) (E.Lit 5))))))))
       (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak))
+  ; tighten (v-memory-safety): a landed non-tail-spine reclaim fix now balances this bottom-up
+  ; constant-fold over the recursive `E` sum (the tuple-of-recursive-results constructor match) —
+  ; raw debug-runtime census is live-objects 0 and rc-trace reports every ALLOC reached a freed DROP.
+  (live-objects 0))
 
 ; The tuple-of-recursive-results constructor match (above) is realized for SELF-recursive calls; the
 ; SIBLING shape — the tuple elements are calls to a DIFFERENT function whose argument is a value of the
