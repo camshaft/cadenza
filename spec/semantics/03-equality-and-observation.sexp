@@ -520,7 +520,8 @@
   (call main (: 40 Int64))
   (output (: 40 Int64))
   ; threaded-prev reassigned-loop-param drop (v-core-opt-ruled, v-memory-safety): #9540's ordering-admit reclaimed inc's SPINE (284->120); this closes the residual. `prev` is only compare-borrowed (< prev k) then REPLACED by the next key on the back-edge, so its old value is dead-after and is dropped before the overwrite (emit_loop_iteration's drop_old_borrowed 3rd admit: dead-after via binding_escapes_dup_aware(Binder,Some)==false + the new value a dup-backed owned handoff). dup>=drop lockstep -> frees only prev's surplus ref, no double-free even if keys intern-alias. A THREADED/returned/captured prev escapes -> declines (leak-over-UAF). rc-trace: LEAK SUMMARY none.
-  (live-objects 0))
+  ; RE-LEAK (v-memory-safety, post-#9551): the RATIONAL-key sibling of 06-numeric:13328 — same self-recursive-fold threaded-prev shape whose head-preservation scrutinee dup was reclaimed by #9537's owned-fold surplus-skip (owned_fold extension of collect_surplus_skippable_dups). #9551 reverted that owned_fold (choreography UAF, leak-over-UAF) and re-leaked its 3 explicit 05/22 pins but MISSED this 03 + the 06 collateral (both pinned 0 from the earlier #9540/#9544 tighten). Value stays correct (main(40)=40, in-order — v-core-opt verified, NOT a miscompile) but leaks; restore leak-over-UAF pin. v-core-opt re-flips to (live-objects 0) alongside 06 + 05/22 on the tightened #9537 re-land.
+  (live-objects known-leak))
 
 (case
   "a Rational-keyed trie churned with DIFFERENTLY-normalized spellings equals the direct build"

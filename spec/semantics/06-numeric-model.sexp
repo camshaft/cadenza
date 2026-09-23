@@ -13352,7 +13352,8 @@
   (call main (: 40 Int64))
   (output (: 40 Int64))
   ; census sweep (v-memory-safety, post-#9544): the BigInt-key analog of 03:522 inc — the same self-tail-loop threaded-prev fold (< prev k, prev replaced by the next key). #9540's ordering-admit reclaims the spine + #9544's reassigned-loop-param drop reclaims the intermediate prevs -> DBG census 0, value 40, rc-trace LEAK SUMMARY none (zero double-free). Was known-leak; TIGHTENED.
-  (live-objects 0))
+  ; RE-LEAK (v-memory-safety, post-#9551): #9551 reverted #9537's owned-fold surplus-skip (owned_fold extension of collect_surplus_skippable_dups in select_function_of) for a live choreography UAF; that extension was LOAD-BEARING for this self-recursive-fold head-preservation scrutinee dup (owned_fold=true) — without it this case now leaks 201 (value still 40). #9551 re-leaked its 3 explicit 05/22 pins but MISSED this collateral 06 pin. Restore leak-over-UAF pin now; v-core-opt re-flips to (live-objects 0) on the #9537 re-land (tail-position-aware dead-after gate).
+  (live-objects known-leak))
 
 (case
   "a multi-limb BigInt-keyed trie churned back equals the direct build with the seed resolving"
