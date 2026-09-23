@@ -11114,3 +11114,4 @@ todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
 pass	a handler threading a GROWING String-rope state reads it per perform and discards the final rope
+todo	a plain (non-reducer) guest reads a field of a RECORD host-import result via a pure-IMPORT custom wit-world
