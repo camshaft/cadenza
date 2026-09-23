@@ -1994,30 +1994,19 @@ pub fn assemble_host(
     exports: &[BoundaryExport],
     iface: &str,
     host_fns: &[HostFn],
+    // Compound-host-RESULT defined types (B1) — see `assemble_host_runtime`. Empty/false → the historical
+    // interleaved-(ty,export) scalar shape, byte-identical to before.
+    needs_list: bool,
+    result_defs: &[(Vec<u8>, bool)],
 ) -> Vec<u8> {
     let h = host_fns.len();
     let m = exports.len();
 
-    // sec 7: the effect's instance-type — component type 0. A vec of 2h declarations, INTERLEAVED per op:
-    // a `ty` decl (the op's component functype) then an `export` decl naming the op + referencing that
-    // func type by index. Identical shape to the runtime import instance-type, but the exported ops are
-    // the effect's operations.
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, f) in host_fns.iter().enumerate() {
-            decls.push(0x01); // ty decl
-            decls.extend_from_slice(&f.comp_functype);
-            decls.push(0x04); // export decl — the op's COMPONENT extern name (kebab-normalized).
-            decls.extend_from_slice(&extern_name(
-                &crate::backend::common::export_name::kebab_extern_name(&f.op),
-            ));
-            decls.push(0x01); // sort: component func
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42]; // instance type form
-        it.extend_from_slice(&wasm_vec(2 * h, &decls));
-        it
-    };
+    // sec 7: the effect's instance-type — component type 0. Built by the shared `host_effect_instance_type`,
+    // which prepends the `(list u8)` + any spilled-RESULT defined types (B1) ahead of the interleaved
+    // (ty, export) per-op decls. With `needs_list=false` + no `result_defs` this is byte-identical to the
+    // former inline scalar-only builder.
+    let instance_type = host_effect_instance_type(host_fns, needs_list, result_defs, &[]);
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
     // sec 10: import the effect interface as an instance of component type 0, under the effect's name —
@@ -2669,6 +2658,7 @@ pub fn assemble_extern_runtime(
 /// SCOPE: host-only + value-heap runtime, SINGLE effect, scalar/unit host ops (a string/compound host op
 /// still declines upstream via the representability guard), NO memory (a string host arg composing with
 /// the runtime is a later increment — this fires only for a scalar host op + runtime collection ops).
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_host_runtime(
     core: &[u8],
     exports: &[BoundaryExport],
@@ -2676,6 +2666,11 @@ pub fn assemble_host_runtime(
     host_fns: &[HostFn],
     imports: &[&RtOp],
     import_name: &str,
+    // The compound-host-RESULT defined types (B1): `needs_list` prepends the shared `(list u8)` at instance-type
+    // index 0; `result_defs` are the spilled-result defined types the op functypes reference. Empty/false for a
+    // scalar/unit host set (byte-identical to before).
+    needs_list: bool,
+    result_defs: &[(Vec<u8>, bool)],
 ) -> Vec<u8> {
     let h = host_fns.len();
     let k = imports.len();
@@ -2686,8 +2681,8 @@ pub fn assemble_host_runtime(
     let type_sec = {
         let host_it = host_effect_instance_type(
             host_fns,
-            host_fns.iter().any(|f| f.has_list_param),
-            &[],
+            needs_list || host_fns.iter().any(|f| f.has_list_param),
+            result_defs,
             &[],
         );
         let rt_it = runtime_op_instance_type(imports);
@@ -2858,7 +2853,9 @@ pub fn assemble_host_runtime(
 /// comp funcs `h+k..h+k+m`; imported effect instance → comp instance 0; imported runtime → comp instance 1.
 /// Core instances: mem `0`, host-ops `1`, heap-ops `2`, program `3`. Core modules: mem `0`, program `1`.
 ///
-/// SCOPE: host + value-heap runtime, SINGLE effect, scalar/unit host RESULT, `string`-or-scalar host params.
+/// SCOPE: host + value-heap runtime, SINGLE effect, scalar/unit OR spilled-compound host RESULT (B1),
+/// `string`-or-scalar host params.
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_host_runtime_mem(
     core: &[u8],
     exports: &[BoundaryExport],
@@ -2866,18 +2863,29 @@ pub fn assemble_host_runtime_mem(
     host_fns: &[HostFn],
     imports: &[&RtOp],
     import_name: &str,
+    // Compound-host-RESULT defined types (B1) — see `assemble_host_runtime`.
+    needs_list: bool,
+    result_defs: &[(Vec<u8>, bool)],
+    // A SPILLED compound host RESULT (B1): the host writes it through a retptr into the SHARED memory via
+    // `cabi_realloc`, which the host-op canon-lower references as a Realloc option at COMPONENT-lower-time
+    // (before the program core) — so it must be the mem module's `cabi_realloc`, aliased as CORE FUNC 0.
+    // `false` (a `string`-param-only set) → byte-identical to before (core defines its own realloc).
+    needs_realloc: bool,
 ) -> Vec<u8> {
     let h = host_fns.len();
     let k = imports.len();
     let m = exports.len();
+    // Core-func shift: in `needs_realloc` mode the mem module's `cabi_realloc` is aliased as CORE FUNC 0
+    // BEFORE the lowered ops, so every lowered-op / boundary-alias core-func index shifts by +1.
+    let rs = needs_realloc as u32;
 
     // sec 7: TWO instance-types — host effect (comp type 0) then runtime (comp type 1) — identical to the
     // memoryless host+runtime shape (the shared memory is a CORE detail, invisible to the component types).
     let type_sec = {
         let host_it = host_effect_instance_type(
             host_fns,
-            host_fns.iter().any(|f| f.has_list_param),
-            &[],
+            needs_list || host_fns.iter().any(|f| f.has_list_param),
+            result_defs,
             &[],
         );
         let rt_it = runtime_op_instance_type(imports);
@@ -2919,23 +2927,40 @@ pub fn assemble_host_runtime_mem(
         section(sec::ALIAS, &wasm_vec(h + k, &items))
     };
 
-    // sec 1 (first): the SHARED-MEMORY core module (module 0).
-    let mem_module_sec = core_module_section(&shared_mem_module());
+    // sec 1 (first): the SHARED-MEMORY core module (module 0) — with a bump `cabi_realloc` when a spilled
+    // compound host RESULT needs the shared allocator (B1).
+    let mem_module_sec = core_module_section(&if needs_realloc {
+        shared_mem_realloc_module()
+    } else {
+        shared_mem_module()
+    });
     // sec 2 (first): instantiate the mem module (no args) → core instance 0.
     let mem_instance_sec = section(
         sec::CORE_INSTANCE,
         &wasm_vec(1, &core_instantiate_item(0, &[])),
     );
-    // sec 6 (memory alias): alias `mem`.`mem` out of core instance 0 → core memory 0.
-    let mem_alias_sec = section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem")));
+    // sec 6 (memory alias): alias `mem`.`mem` out of core instance 0 → core memory 0, AND (realloc mode)
+    // `mem`.`cabi_realloc` → CORE FUNC 0 — both BEFORE the host-op lowers so a spilled-result lower references it.
+    let mem_alias_sec = if needs_realloc {
+        let mut it = memory_alias_item(0, "mem");
+        it.extend_from_slice(&core_alias_item(0, "cabi_realloc")); // → core func 0
+        section(sec::ALIAS, &wasm_vec(2, &it))
+    } else {
+        section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem")))
+    };
 
-    // sec 8 (first): canon-lower each aliased op → core funcs `0..h+k`. The HOST ops carry the MEMORY option
-    // (core memory 0 — their `string` params read from the shared memory); the RUNTIME ops lower memoryless
-    // (scalar `u32` handles, no string args).
+    // sec 8 (first): canon-lower each aliased op → core funcs `rs..rs+h+k`. The HOST ops carry the MEMORY option
+    // (core memory 0 — their `string` params + a spilled result read/write the shared memory), plus a Realloc
+    // option (the shared `cabi_realloc`, core func 0) in realloc mode so a spilled compound RESULT is allocated
+    // into the shared memory; the RUNTIME ops lower memoryless (scalar `u32` handles).
     let lower_sec = {
         let mut items = Vec::new();
         for i in 0..h {
-            items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+            if needs_realloc {
+                items.extend_from_slice(&canon_lower_item_mem_realloc(i as u32, 0, 0));
+            } else {
+                items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+            }
         }
         for i in h..(h + k) {
             items.extend_from_slice(&canon_lower_item(i as u32));
@@ -2951,25 +2976,25 @@ pub fn assemble_host_runtime_mem(
     // 0. (Core instance 0 is the mem instance emitted above.)
     let prog_instance_sec = {
         let mut items = Vec::new();
-        // instance 1: host ops (core funcs `0..h`) under their op names.
+        // instance 1: host ops (core funcs `rs..rs+h`) under their op names.
         let mut host = vec![0x01];
         let mut host_exports = Vec::new();
         for (i, f) in host_fns.iter().enumerate() {
             host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
             host_exports.extend_from_slice(f.op.as_bytes());
             host_exports.push(0x00); // ExportKind::Func
-            uleb128(i as u64, &mut host_exports);
+            uleb128((rs + i as u32) as u64, &mut host_exports);
         }
         host.extend_from_slice(&wasm_vec(h, &host_exports));
         items.extend_from_slice(&host);
-        // instance 2: runtime ops (core funcs `h..h+k`) under their names.
+        // instance 2: runtime ops (core funcs `rs+h..rs+h+k`) under their names.
         let mut heap = vec![0x01];
         let mut heap_exports = Vec::new();
         for (j, op) in imports.iter().enumerate() {
             heap_exports.extend_from_slice(&uleb_bytes(op.name.len() as u64));
             heap_exports.extend_from_slice(op.name.as_bytes());
             heap_exports.push(0x00);
-            uleb128((h + j) as u64, &mut heap_exports);
+            uleb128((rs + (h + j) as u32) as u64, &mut heap_exports);
         }
         heap.extend_from_slice(&wasm_vec(k, &heap_exports));
         items.extend_from_slice(&heap);
@@ -3017,11 +3042,11 @@ pub fn assemble_host_runtime_mem(
         section(sec::COMPONENT_TYPE, &wasm_vec(m, &items))
     };
 
-    // sec 8 (second): lift each boundary core func (`h+k+j`) using its component type (`2+j`).
+    // sec 8 (second): lift each boundary core func (`rs+h+k+j`) using its component type (`2+j`).
     let lift_sec = {
         let mut items = Vec::new();
         for j in 0..m {
-            items.extend_from_slice(&canon_lift_item((h + k + j) as u32, (2 + j) as u32));
+            items.extend_from_slice(&canon_lift_item(rs + (h + k + j) as u32, (2 + j) as u32));
         }
         section(sec::CANON, &wasm_vec(m, &items))
     };
@@ -3361,38 +3386,35 @@ fn shared_mem_realloc_module() -> Vec<u8> {
 /// instance + a memory alias, a Memory canon-option on each op's lower, and the program instance
 /// instantiated with BOTH `"host"` (the lowered ops) and `"mem"` (the shared memory). Follows the
 /// `ComponentBuilder` oracle's section order (verified byte-shape). SCOPE: host-only, single effect,
-/// scalar/unit result, `string` or scalar params.
+/// scalar/unit OR spilled-compound result (B1), `string` or scalar params.
 ///
 /// Index spaces (`m = exports.len()`): core memory `0` (the mem alias); lowered ops → core funcs `0..h`;
 /// boundary core-aliases → core funcs `h..h+m`. Component: effect instance-type → type 0; imported effect
 /// instance → comp instance 0; op aliases → comp funcs `0..h`; boundary functypes → types `1..=m`; lifts →
-/// comp funcs `h..h+m`. Core instances: mem `0`, host-ops `1`, program `2`.
+/// comp funcs `h..h+m`. Core instances: mem `0`, host-ops `1`, program `2`. (Any spilled-RESULT defined
+/// types are laid INSIDE the effect instance-type's own local index space, so the component type space above
+/// is unchanged.)
 pub fn assemble_host_mem(
     core: &[u8],
     exports: &[BoundaryExport],
     iface: &str,
     host_fns: &[HostFn],
+    // Compound-host-RESULT defined types (B1) — see `assemble_host_runtime`. Empty/false → byte-identical
+    // to the former inline scalar-only builder.
+    needs_list: bool,
+    result_defs: &[(Vec<u8>, bool)],
+    // A SPILLED compound host RESULT (B1) needs the shared `cabi_realloc` aliased as CORE FUNC 0 — see
+    // `assemble_host_runtime_mem`. `false` → byte-identical to the string-param-only shape.
+    needs_realloc: bool,
 ) -> Vec<u8> {
     let h = host_fns.len();
     let m = exports.len();
+    // Core-func shift: `cabi_realloc` aliased as core func 0 in realloc mode shifts lowered/boundary funcs +1.
+    let rs = needs_realloc as u32;
 
-    // sec 7: the effect's instance-type — component type 0 (same as the scalar shape).
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, f) in host_fns.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&f.comp_functype);
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(
-                &crate::backend::common::export_name::kebab_extern_name(&f.op),
-            ));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * h, &decls));
-        it
-    };
+    // sec 7: the effect's instance-type — component type 0. Built by the shared `host_effect_instance_type`
+    // (prepends `(list u8)` + spilled-RESULT defined types ahead of the per-op (ty, export) decls; B1).
+    let instance_type = host_effect_instance_type(host_fns, needs_list, result_defs, &[]);
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
     // sec 10: import the effect interface as an instance of component type 0 (kebab-normalized name).
@@ -3418,21 +3440,38 @@ pub fn assemble_host_mem(
         section(sec::ALIAS, &wasm_vec(h, &items))
     };
 
-    // sec 1 (first): the SHARED-MEMORY core module (module 0).
-    let mem_module_sec = core_module_section(&shared_mem_module());
+    // sec 1 (first): the SHARED-MEMORY core module (module 0) — with a bump `cabi_realloc` for a spilled
+    // compound host RESULT (B1).
+    let mem_module_sec = core_module_section(&if needs_realloc {
+        shared_mem_realloc_module()
+    } else {
+        shared_mem_module()
+    });
     // sec 2 (first): instantiate the mem module (no args) → core instance 0.
     let mem_instance_sec = section(
         sec::CORE_INSTANCE,
         &wasm_vec(1, &core_instantiate_item(0, &[])),
     );
-    // sec 6 (memory alias): alias `mem`.`mem` out of core instance 0 → core memory 0.
-    let mem_alias_sec = section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem")));
+    // sec 6 (memory alias): alias `mem`.`mem` → core memory 0, AND (realloc mode) `mem`.`cabi_realloc` →
+    // CORE FUNC 0 — both BEFORE the host-op lowers so a spilled-result lower references it.
+    let mem_alias_sec = if needs_realloc {
+        let mut it = memory_alias_item(0, "mem");
+        it.extend_from_slice(&core_alias_item(0, "cabi_realloc")); // → core func 0
+        section(sec::ALIAS, &wasm_vec(2, &it))
+    } else {
+        section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem")))
+    };
 
-    // sec 8 (first): canon-lower each aliased op with the MEMORY option (core memory 0) → core funcs.
+    // sec 8 (first): canon-lower each aliased op with the MEMORY option (core memory 0) → core funcs `rs..rs+h`;
+    // a spilled-result op also carries the Realloc option (shared `cabi_realloc`, core func 0).
     let lower_sec = {
         let mut items = Vec::new();
         for i in 0..h {
-            items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+            if needs_realloc {
+                items.extend_from_slice(&canon_lower_item_mem_realloc(i as u32, 0, 0));
+            } else {
+                items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+            }
         }
         section(sec::CANON, &wasm_vec(h, &items))
     };
@@ -3444,14 +3483,14 @@ pub fn assemble_host_mem(
     // with `"host" = instance 1` AND `"mem" = instance 0`.
     let prog_instance_sec = {
         let mut items = Vec::new();
-        // instance 1: the lowered ops exported under their names.
+        // instance 1: the lowered ops (core funcs `rs..rs+h`) exported under their names.
         let mut host = vec![0x01];
         let mut host_exports = Vec::new();
         for (i, f) in host_fns.iter().enumerate() {
             host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
             host_exports.extend_from_slice(f.op.as_bytes());
             host_exports.push(0x00);
-            uleb128(i as u64, &mut host_exports);
+            uleb128((rs + i as u32) as u64, &mut host_exports);
         }
         host.extend_from_slice(&wasm_vec(h, &host_exports));
         items.extend_from_slice(&host);
@@ -3492,11 +3531,11 @@ pub fn assemble_host_mem(
         section(sec::COMPONENT_TYPE, &wasm_vec(m, &items))
     };
 
-    // sec 8 (second): lift each boundary core func (`h+j`) using its component type (`1+j`).
+    // sec 8 (second): lift each boundary core func (`rs+h+j`) using its component type (`1+j`).
     let lift_sec = {
         let mut items = Vec::new();
         for j in 0..m {
-            items.extend_from_slice(&canon_lift_item((h + j) as u32, (1 + j) as u32));
+            items.extend_from_slice(&canon_lift_item(rs + (h + j) as u32, (1 + j) as u32));
         }
         section(sec::CANON, &wasm_vec(m, &items))
     };

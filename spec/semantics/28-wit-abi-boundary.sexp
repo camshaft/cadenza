@@ -4603,3 +4603,39 @@ cases
   (call f (: 5 Int64))
   (output (: (Some (Some 5)) (Option (Option Int64))))
   (live-objects 0))
+
+(case
+  "a plain (non-reducer) guest reads a field of a RECORD host-import result via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 83 — a RECORD host-import RESULT (probe.info : () -> record{sec,nsec}) on a PURE-IMPORT custom
+           wit-world with a PLAIN top-level export (no typed record-interface EXPORT, no component-name) — the
+           v-wit-boundary B1 shape. The world declares ONLY an import interface, so the world-driven compound
+           boundary path did NOT engage (the old `allow_option_bytes` gate required a qualifying EXPORT), and
+           the compound RECORD host result declined CDZ0903 on the bare/plain host-delegating envelope. B0
+           broadened the decline gate to any imposed IMPORT interface; B1 wired the plain host-delegating
+           envelope (`assemble_host_runtime_mem`) to DECLARE the result's WIT `record` defined-type in the host
+           import instance-type (via `build_host_result_types`) + a shared-memory `cabi_realloc` so the spilled
+           result the host writes is lifted into a value-heap Record. run() performs probe.info and returns its
+           `.sec` field. Stubbing probe.info -> {sec:42, nsec:7} and asserting 42 makes the compound host result
+           + its field projection load-bearing. WIT-dump verified: `import probe: interface { record host-result-t0
+           {sec: s64, nsec: s64}; info: func() -> host-result-t0 }`. This is the IMPORT-side twin of the reducer
+           SHAPE 11 (which crossed the same shape only because a typed record EXPORT set component-name).")
+  (wit-world
+    (world
+      w
+      (import
+        cadenza:platform/probe
+        (member info (func (result (record (= sec (s64)) (= nsec (s64)))))))))
+  (input
+    (do
+      (effect probe (op info (-> Unit (Record (: sec Int64) (: nsec Int64)))))
+      (def (run) (host (probe) (. (probe.info unit) sec)))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond
+      probe.info
+      (: #record((= sec 42) (= nsec 7)) (Record (: sec Int64) (: nsec Int64)))))
+  (host-calls (call probe.info))
+  (output 42)
+  (live-objects 0))

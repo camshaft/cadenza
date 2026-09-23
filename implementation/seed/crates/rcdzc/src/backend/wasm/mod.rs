@@ -197,10 +197,17 @@ pub fn emit(
     // So a compound host result is representable when the world has a typed record-param export member too.
     // (A guest that has such a member but routes elsewhere is caught by the plain host-delegating path's own
     // compound-result decline, so this broadening never mis-emits.)
-    let allow_option_bytes = db.component_name.is_some()
+    let allow_option_bytes = (db.component_name.is_some()
         && db.wit_world.clone().is_some_and(|wb| {
             world_bytes_crossing_export(layout, &wb).is_some() || world_has_typed_record_export(&wb)
-        });
+        }))
+        // EXPERIMENT (v-wit-boundary): a component with an imposed `(wit-world …)` that declares an
+        // IMPORT interface engages the compound host-boundary path too, so a custom user host-import can
+        // exchange the full WIT type map (string/bytes/option/record/list/tuple), not just scalars — the
+        // lift/marshal machinery (`emit_result_lift`, the arg marshals) is world/structure-driven and does
+        // NOT itself depend on this flag; the flag only opened the decline gate for the reducer/typed-export
+        // families. A pure-import custom world previously fell through to the bare-effect scalar-only gate.
+        || db.wit_world.clone().is_some_and(|wb| world_has_import_interface(&wb));
     for &def in &layout.order {
         let body = def_body(db, def)?;
         if let Some((op, pos, ty)) =
@@ -1507,26 +1514,68 @@ pub fn emit(
                 "delegating more than one host effect is not supported (one interface per envelope)",
             ));
         }
-        // This pure host-delegating path (`assemble_host_runtime`/`assemble_host`) composes only a
-        // scalar/unit host RESULT — a COMPOUND host result (`option<list<u8>>`/`list<tuple<…>>`/bare
-        // `list<u8>`) is lifted only on the bytes-provider path OR the typed interface-instance host path
-        // (both handled earlier in the dispatch). If such a result reaches HERE, decline rather than
-        // mis-emit (the host instance-type would omit the `(list u8)` type its functype references).
-        if host_imports.iter().any(|h| h.spilled_result.is_some()) {
+        // COMPOUND host RESULT support (B1): a spilled compound host result (string/bytes/list/tuple/record/
+        // option/result/variant — anything `result_is_liftable`) crosses on this plain host-delegating path
+        // too, not only the bytes-provider / typed interface-instance paths. `build_host_result_types` derives
+        // the component defined-type(s) for each op's WIT result generally (`emit_result_lift` performs the
+        // matching guest lift at the call site, structurally). The host import instance-type then DECLARES
+        // those defined types (`host_effect_instance_type` via `needs_list`/`result_defs`), and the op's
+        // functype references its result by `result_crefs[i]`. The core module (`core_module_with_host`) already
+        // canon-lowers a spilled result `(args…, retptr) -> ()` + imports `cabi_realloc`.
+        //
+        // DECLINE-DON'T-MISCOMPILE (the arg + enum-result slices are pending): the decline gate opened this
+        // path to any imposed IMPORT world (mod.rs `world_has_import_interface`), which also admits shapes this
+        // envelope does not YET emit — a NOMINAL/compound host ARGUMENT (record/enum/variant/list param) needs
+        // its type declared + a marshal, and an enum-BY-VALUE result needs its nominal `enum` type exported.
+        // Those stay declined HERE (a clean decline, never a mis-emit) until the arg/enum-result slice; a
+        // SPILLED compound result with scalar/string/`list<u8>` args is what this slice emits.
+        if host_imports.iter().any(|h| {
+            h.params.iter().any(|p| {
+                !matches!(
+                    p,
+                    host::HostParam::Scalar(_) | host::HostParam::Str | host::HostParam::Bytes
+                )
+            })
+        }) {
             return Err(Reject::decline(
-                "a compound host RESULT (option<list<u8>>/list<tuple>/list<u8>) is emitted only on the \
-                 bytes-provider or typed interface-instance path, not the plain host-delegating envelope",
+                "the plain host-delegating envelope crosses scalar, string, and `list<u8>` host-op \
+                 arguments and a spilled compound result; a record, enum, variant, or list argument \
+                 has no component boundary form on this path",
             ));
         }
+        if host_imports.iter().any(|h| h.enum_result.is_some()) {
+            return Err(Reject::decline(
+                "the plain host-delegating envelope crosses a spilled compound host-op result; an \
+                 enum result crossing by value as one discriminant has no component boundary form \
+                 on this path",
+            ));
+        }
+        // The spilled-RESULT component defined types, built GENERALLY from each op's WIT result type (the same
+        // mechanism the typed interface-instance / bytes-provider paths use). `needs_list` = the shared
+        // `(list u8)` at instance-type index 0 is required (every spilled result bottoms out at `list<u8>`, or
+        // a `list<u8>` arg); `result_defs` are the defined types laid at indices `1..`; `result_crefs[i]` is
+        // the CRef op `i`'s functype result references. Args are scalar/string/`list<u8>` here (guarded above),
+        // so no nominal-arg or per-list-arg CRef threading is needed on this path yet.
+        let (needs_list, result_defs, result_crefs, _arg_list_crefs) =
+            build_host_result_types(db, &host_imports);
         let host_fns: Vec<envelope::HostFn> = host_imports
             .iter()
-            .map(|h| envelope::HostFn {
+            .enumerate()
+            .map(|(i, h)| envelope::HostFn {
                 op: h.op.clone(),
-                comp_functype: host_op_comp_functype(h, 0, 0, &[], None),
+                // `list_type_idx = 0`: a `list<u8>` (Bytes) arg references the shared `(list u8)` at index 0,
+                // which `needs_list` prepends. `nominal_type_idx = 0`: no nominal args on this path (guarded).
+                comp_functype: host_op_comp_functype(h, 0, 0, &[], result_crefs[i].clone()),
                 has_list_param: h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)),
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
             .collect();
+        // A spilled compound host RESULT is written by the host through a retptr into linear memory, which the
+        // guest lift reads back — so it needs the shared-memory core shape (`cabi_realloc` + memory), exactly
+        // like a `string`/`list<u8>` PARAM. Route a compound-result set to the `_mem` assembler even when every
+        // param is scalar (the typed path computes the same `set_needs_memory || spilled_result`).
+        let host_has_spilled = host_imports.iter().any(|h| h.spilled_result.is_some());
+        let host_needs_memory = host::set_needs_memory(&host_imports) || host_has_spilled;
         // A program that ALSO uses the value-heap runtime (a host op result fed into a runtime collection
         // op — `imports` non-empty) composes BOTH imported interfaces: it imports the effect (as `"host"`)
         // AND the runtime (as its versioned name, `"heap"`), aliases + lowers both op sets, and instantiates
@@ -1536,7 +1585,7 @@ pub fn emit(
         // (`core_module_with_host` above).
         if !imports.is_empty() {
             let import_name = runtime_import_name();
-            return Ok(if host::set_needs_memory(&host_imports) {
+            return Ok(if host_needs_memory {
                 envelope::assemble_host_runtime_mem(
                     &core,
                     &boundary,
@@ -1544,6 +1593,9 @@ pub fn emit(
                     &host_fns,
                     &imports,
                     &import_name,
+                    needs_list,
+                    &result_defs,
+                    host_has_spilled,
                 )
             } else {
                 envelope::assemble_host_runtime(
@@ -1553,16 +1605,34 @@ pub fn emit(
                     &host_fns,
                     &imports,
                     &import_name,
+                    needs_list,
+                    &result_defs,
                 )
             });
         }
-        // A host op with a STRING parameter needs the shared-memory shape (the `(ptr,len)` a `string`
-        // lowers to is read from a memory both the program and the op's canon-lower bind); a scalar-only
-        // host set takes the memoryless shape (byte-identical to E2h-2).
-        return Ok(if host::set_needs_memory(&host_imports) {
-            envelope::assemble_host_mem(&core, &boundary, &iface, &host_fns)
+        // A host op with a STRING parameter (or a spilled compound RESULT) needs the shared-memory shape (the
+        // `(ptr,len)` a `string`/`list<u8>` lowers to, and the retptr a spilled result is written through, are
+        // read from a memory both the program and the op's canon-lower bind); a scalar-only host set with no
+        // spilled result takes the memoryless shape (byte-identical to E2h-2).
+        return Ok(if host_needs_memory {
+            envelope::assemble_host_mem(
+                &core,
+                &boundary,
+                &iface,
+                &host_fns,
+                needs_list,
+                &result_defs,
+                host_has_spilled,
+            )
         } else {
-            envelope::assemble_host(&core, &boundary, &iface, &host_fns)
+            envelope::assemble_host(
+                &core,
+                &boundary,
+                &iface,
+                &host_fns,
+                needs_list,
+                &result_defs,
+            )
         });
     }
 
@@ -6057,6 +6127,21 @@ fn world_has_typed_record_export(world_bytes: &[u8]) -> bool {
                 .any(|(_, t)| matches!(t, crate::wit_world::WitType::Record(_)))
         })
     })
+}
+
+/// Whether the target world declares at least one IMPORT interface — i.e. the component imposes a custom
+/// host boundary the guest performs `(host <iface> in …)` against. Engages the compound host-boundary path
+/// for a general user-declared world, so a custom host op can exchange the full WIT type map both
+/// directions, not only the built-in reducer/platform interfaces. Purely world/WIT-shape-driven — no
+/// interface or member name is hard-coded.
+fn world_has_import_interface(world_bytes: &[u8]) -> bool {
+    let Some(arenas) = crate::codec::decode(world_bytes) else {
+        return false;
+    };
+    let Some(world) = crate::wit_world::parse_target_world(&arenas, arenas.root) else {
+        return false;
+    };
+    !world.imports.is_empty()
 }
 
 fn world_bytes_crossing_export(layout: &Layout, world_bytes: &[u8]) -> Option<usize> {
