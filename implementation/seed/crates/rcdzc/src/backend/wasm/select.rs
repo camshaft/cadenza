@@ -2299,15 +2299,16 @@ pub fn select_function_of(
         // DEDICATED set (not `dup_sites`) — the emit's `Core::Captured` arm gates on it. Empty for a body with
         // no escaping single-read compound capture (every non-closure body, and borrow-only captures).
         collect_captured_escape_dup_sites(db, body, &mut code.captured_escape_dup_sites);
-        // 05:18721 SURPLUS GATE — RE-ENABLED with the sound conjunct-3 (bisect #7255/#7321): mark the
-        // SURPLUS-skippable dup occurrences ONLY in a boundary-owned body, and ONLY a rest-mint-consumed
-        // MatchList scrutinee with (2) no other consume AND (3) no heap-leading-element-read-alongside-a-
-        // rest-read (the emit-ordering dangle the too-broad prior gate hit — see conjunct 3 in the helper).
-        if is_boundary_owned {
+        // SURPLUS GATE (05:18721, bisect #7255/#7321) + OWNED-FOLD extension (03:522/06 family) — full
+        // rationale + the coarse liveness-across-vec-split predicate in surplus.rs. `owned_fold` (self-
+        // recursive) relaxes conjunct 3; guarded-all is the net.
+        let owned_fold = body_is_self_recursive(db, body);
+        if is_boundary_owned || owned_fold {
             collect_surplus_skippable_dups(
                 db,
                 body,
                 &code.dup_sites,
+                owned_fold,
                 &mut code.surplus_skippable_dups,
             );
         }
