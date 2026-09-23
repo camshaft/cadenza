@@ -1526,14 +1526,16 @@ pub fn emit(
         // matching guest lift at the call site, structurally). The host import instance-type then DECLARES
         // those defined types (`host_effect_instance_type` via `needs_list`/`result_defs`), and the op's
         // functype references its result by `result_crefs[i]`. The core module (`core_module_with_host`) already
-        // canon-lowers a spilled result `(args…, retptr) -> ()` + imports `cabi_realloc`.
+        // canon-lowers a spilled result `(args…, retptr) -> ()` + imports `cabi_realloc`. A payloadless ENUM
+        // RESULT crossing BY VALUE (one i32 disc, NOT spilled) rides the SAME `result_crefs[i]` path —
+        // `build_host_result_types` maps `enum_result` to the enum's nominal `enum` DEFINED+EXPORTED type
+        // (`host_import_functype` keeps the core result a bare i32), so it needs no extra wiring here.
         //
-        // DECLINE-DON'T-MISCOMPILE (the arg + enum-result slices are pending): the decline gate opened this
-        // path to any imposed IMPORT world (mod.rs `world_has_import_interface`), which also admits shapes this
-        // envelope does not YET emit — a NOMINAL/compound host ARGUMENT (record/enum/variant/list param) needs
-        // its type declared + a marshal, and an enum-BY-VALUE result needs its nominal `enum` type exported.
-        // Those stay declined HERE (a clean decline, never a mis-emit) until the arg/enum-result slice; a
-        // SPILLED compound result with scalar/string/`list<u8>` args is what this slice emits.
+        // DECLINE-DON'T-MISCOMPILE (the arg slice is pending): the decline gate opened this path to any imposed
+        // IMPORT world (mod.rs `world_has_import_interface`), which also admits a shape this envelope does not
+        // emit — a NOMINAL/compound host ARGUMENT (record/enum/variant/list param) needs its type declared + a
+        // marshal. That stays declined HERE (a clean decline, never a mis-emit) until the arg slice; a spilled
+        // compound OR by-value enum RESULT with scalar/string/`list<u8>` args is what this slice emits.
         if host_imports.iter().any(|h| {
             h.params.iter().any(|p| {
                 !matches!(
@@ -1546,13 +1548,6 @@ pub fn emit(
                 "the plain host-delegating envelope crosses scalar, string, and `list<u8>` host-op \
                  arguments and a spilled compound result; a record, enum, variant, or list argument \
                  has no component boundary form on this path",
-            ));
-        }
-        if host_imports.iter().any(|h| h.enum_result.is_some()) {
-            return Err(Reject::decline(
-                "the plain host-delegating envelope crosses a spilled compound host-op result; an \
-                 enum result crossing by value as one discriminant has no component boundary form \
-                 on this path",
             ));
         }
         // The spilled-RESULT component defined types, built GENERALLY from each op's WIT result type (the same

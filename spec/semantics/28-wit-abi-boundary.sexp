@@ -4787,3 +4787,30 @@ cases
   (host-calls (call cadenza:platform/probe.events))
   (output 2)
   (live-objects 0))
+
+(case
+  "a plain guest matches an ENUM host-import result via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 90 — a payloadless ENUM host-import RESULT (probe.color : () -> enum{red,green,blue}) crossing
+           BY VALUE (one i32 discriminant) on a PURE-IMPORT custom wit-world, plain export, matched IN-GUEST.
+           The plain-path twin of `wen1` (which crossed the same shape only via a typed record-interface EXPORT
+           + component-name). Closes the v-wit-boundary enum-by-value gap: an enum RESULT rides the same
+           `result_crefs[i]` path as a spilled compound (`build_host_result_types` maps `enum_result` to the
+           enum's nominal `enum` DEFINED+EXPORTED type; the core result stays a bare i32), so removing the
+           plain-path enum-result decline guard suffices — no extra emit. WIT-dump verified `enum host-result-t0
+           {red,green,blue}` + `color: func() -> that`. Stub color -> green, assert 1.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member color (func (result (enum red green blue)))))))
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (effect probe (op color (-> Unit Col)))
+      (def
+        (run)
+        (host (probe) (match (probe.color unit) ((Col.Red) 0) ((Col.Green) 1) ((Col.Blue) 2))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.color (: (green unit) color)))
+  (host-calls (call cadenza:platform/probe.color))
+  (output 1)
+  (live-objects 0))

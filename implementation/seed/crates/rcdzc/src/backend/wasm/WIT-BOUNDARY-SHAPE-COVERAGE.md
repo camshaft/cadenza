@@ -93,9 +93,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
 - **[emit, ARG]** a NOMINAL/compound host-op ARGUMENT (record/enum/variant/list param) on the PLAIN
   host-delegating envelope declines cleanly (a decline-don't-miscompile guard in `mod.rs`) — the arg
   marshal + nominal-type instance-type declaration is a later slice (B3). The RESULT side is DONE (B1).
-- **[emit, RESULT]** an ENUM host-op RESULT crossing BY VALUE (one i32 disc) on the plain host-delegating
-  envelope declines (needs its nominal `enum` exported in the host import instance-type); a spilled
-  compound result IS emitted (B1). Later slice.
+- **[emit, RESULT] a payloadless ENUM host-op RESULT crossing BY VALUE on the plain host-delegating
+  envelope — ✅ DONE (SHAPE 90).** Rides the SAME `result_crefs[i]` path as a spilled compound:
+  `build_host_result_types` already maps `enum_result` to the enum's nominal `enum` DEFINED+EXPORTED type
+  (`host_import_functype` keeps the core result a bare i32), so removing the plain-path enum-result decline
+  guard sufficed — no extra emit. WIT-dump verified `enum host-result-t0 {…}`. The plain-path twin of `wen1`
+  (which crossed the same shape only via a typed record-interface export).
 - **[emit, RESOURCE-ESCAPE]** the resource-escape entrypoint form — a host result escaping DIRECTLY as
   the guest export result (`run()->String = host sim in (sim.echo "hi")`, v-hivemind's literal repro) —
   still declines on `assemble_host_runtime_resource*` (scalar/unit host ops only; a String-param or
