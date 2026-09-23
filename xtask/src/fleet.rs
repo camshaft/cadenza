@@ -8150,24 +8150,38 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         // sharing the stamp also means the wall-wedge path never double-acts with this).
         let has_window = live.iter().any(|w| w == &a.name);
         if !has_window {
-            if should_recreate_missing_window(
+            let should_recreate = should_recreate_missing_window(
                 has_window,
                 tmux_ok,
                 wedge_restart_age_secs(fleet, &a.name, now),
                 WEDGE_RESTART_GRACE,
-            ) {
-                eprintln!(
-                    "watchdog: '{}' is active with NO live window → recreating it (self-heal a dead/torn-down window).",
-                    a.name
-                );
-                ensure_window(fleet, &session, a, None);
-                stamp_wedge_restart(fleet, &a.name);
-                wedge_restarts += 1;
-            } else if !tmux_ok {
-                eprintln!(
-                    "watchdog: '{}' not found in a window list we could NOT obtain (tmux errored) — NOT recreating (a failed list is not proof the window is dead; never spawn a fresh session over a possibly-live agent).",
-                    a.name
-                );
+            );
+            match missing_window_action(should_recreate, tmux_ok, dry_run) {
+                MissingWindowAction::Recreate => {
+                    eprintln!(
+                        "watchdog: '{}' is active with NO live window → recreating it (self-heal a dead/torn-down window).",
+                        a.name
+                    );
+                    ensure_window(fleet, &session, a, None);
+                    stamp_wedge_restart(fleet, &a.name);
+                    wedge_restarts += 1;
+                }
+                MissingWindowAction::ReportWouldRecreate => {
+                    // Report-only under --dry-run: mutate NOTHING (no ensure_window, no stamp). Count it so
+                    // the dry-run summary reports what WOULD happen, mirroring the re-arm/reap branches.
+                    println!(
+                        "  DRY-RUN would recreate '{}'s window (active, NO live window — self-heal a dead/torn-down window)",
+                        a.name
+                    );
+                    wedge_restarts += 1;
+                }
+                MissingWindowAction::ReportTmuxError => {
+                    eprintln!(
+                        "watchdog: '{}' not found in a window list we could NOT obtain (tmux errored) — NOT recreating (a failed list is not proof the window is dead; never spawn a fresh session over a possibly-live agent).",
+                        a.name
+                    );
+                }
+                MissingWindowAction::Nothing => {}
             }
             continue; // a just-(re)created window boots its own loop — nothing to nudge THIS sweep
         }
@@ -11687,6 +11701,46 @@ fn should_recreate_missing_window(
     // loadgen-cache-builder). NEVER recreate on an unknown window state: a list we could not obtain is
     // NOT proof the window is dead. Callers pass `tmux_windows_checked(session).is_some()`.
     tmux_list_ok && !has_window && restart_age.is_none_or(|s| s >= grace)
+}
+
+/// What the watchdog's missing-window branch should DO, decoupled from the I/O so the `--dry-run` gate is
+/// unit-testable. The recreate self-heal is a WINDOW MUTATION (a fresh `ensure_window` launch) — the exact
+/// target of the fleet-wide auto-recreate ban — so under `dry_run` it must only REPORT, never launch,
+/// mirroring the re-arm/reap branches. (concierge 2026-09-23: the recreate path had leaked a live
+/// `ensure_window` under `--dry-run`, breaching both the dry-run contract AND the ban, and it fired every
+/// concierge maintenance tick.)
+#[derive(Debug, PartialEq, Eq)]
+enum MissingWindowAction {
+    /// Live self-heal: launch the window + stamp the thrash-guard.
+    Recreate,
+    /// `--dry-run`: print a `would recreate` line, mutate nothing.
+    ReportWouldRecreate,
+    /// The window list could NOT be obtained (tmux errored) — print the caution, never spawn over a
+    /// possibly-live agent.
+    ReportTmuxError,
+    /// Thrash-guarded within the grace (a recent recreate), tmux ok — do nothing this sweep.
+    Nothing,
+}
+
+/// Decide the missing-window branch action. `should_recreate` is [`should_recreate_missing_window`]'s
+/// verdict (already folds in `tmux_ok` + the grace); `tmux_ok` distinguishes the two not-recreate cases.
+/// KEY INVARIANT (pinned by test): `dry_run` NEVER yields [`MissingWindowAction::Recreate`].
+fn missing_window_action(
+    should_recreate: bool,
+    tmux_ok: bool,
+    dry_run: bool,
+) -> MissingWindowAction {
+    if should_recreate {
+        if dry_run {
+            MissingWindowAction::ReportWouldRecreate
+        } else {
+            MissingWindowAction::Recreate
+        }
+    } else if !tmux_ok {
+        MissingWindowAction::ReportTmuxError
+    } else {
+        MissingWindowAction::Nothing
+    }
 }
 
 fn reissue_loop(session: &str, agent: &str, interval: &str, tick_prompt: &str) -> bool {
@@ -21743,6 +21797,32 @@ mod tests {
             Some(grace + 1),
             grace
         ));
+    }
+
+    #[test]
+    fn missing_window_action_never_recreates_under_dry_run() {
+        use MissingWindowAction::*;
+        // LIVE + should-recreate → Recreate (the self-heal launch).
+        assert_eq!(missing_window_action(true, true, false), Recreate);
+        // DRY-RUN + should-recreate → REPORT only, never a live launch. This is the concierge-reported bug
+        // (2026-09-23): the recreate branch had leaked a live ensure_window under --dry-run, breaching the
+        // dry-run contract + the window-mutation ban. Pin it so it can't regress.
+        assert_eq!(missing_window_action(true, true, true), ReportWouldRecreate);
+        // THE INVARIANT: dry_run NEVER yields Recreate, whatever the other inputs.
+        for tmux_ok in [true, false] {
+            for should in [true, false] {
+                assert_ne!(
+                    missing_window_action(should, tmux_ok, true),
+                    Recreate,
+                    "dry_run must never recreate (should={should}, tmux_ok={tmux_ok})"
+                );
+            }
+        }
+        // Not-should-recreate: a tmux-list error → caution report; tmux ok → nothing (both live + dry).
+        assert_eq!(missing_window_action(false, false, false), ReportTmuxError);
+        assert_eq!(missing_window_action(false, false, true), ReportTmuxError);
+        assert_eq!(missing_window_action(false, true, false), Nothing);
+        assert_eq!(missing_window_action(false, true, true), Nothing);
     }
 
     #[test]
