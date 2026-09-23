@@ -11312,3 +11312,6 @@ todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive re
 pass	a plain guest reads the LENGTH of a Bytes host-import result via a pure-IMPORT custom wit-world
 pass	a plain guest matches an option<s64> host-import result via a pure-IMPORT custom wit-world
 pass	a plain guest reads the LENGTH of a list<s64> host-import result via a pure-IMPORT custom wit-world
+pass	a plain guest reads the scalar-length of a String host-import result via a pure-IMPORT custom wit-world
+pass	a plain guest matches an option<record> host-import result via a pure-IMPORT custom wit-world
+pass	a plain guest reads the length of a list<record> host-import result via a pure-IMPORT custom wit-world

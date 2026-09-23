@@ -4706,3 +4706,84 @@ cases
   (host-calls (call cadenza:platform/probe.nums))
   (output 3)
   (live-objects 0))
+
+(case
+  "a plain guest reads the scalar-length of a String host-import result via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 87 — a String host-import RESULT (probe.greet : () -> string) on a PURE-IMPORT custom wit-world,
+           plain export, result CONSUMED IN-GUEST (String.scalar-len). Pins the String leaf arm of the compound
+           host-RESULT lift on the plain host-delegating envelope (v-wit-boundary B1). A conformance-vocabulary
+           candidate (v-hivemind uses String results). Stub greet -> \"hello\", assert scalar-len 5.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member greet (func (result (string)))))))
+  (input
+    (do
+      (effect probe (op greet (-> Unit String)))
+      (def (run) (host (probe) (String.scalar-len (probe.greet unit))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.greet (: "hello" String)))
+  (host-calls (call cadenza:platform/probe.greet))
+  (output 5)
+  (live-objects 0))
+
+(case
+  "a plain guest matches an option<record> host-import result via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 88 — an option<record{lo,hi}> host-import RESULT (probe.maybe-pt) on a PURE-IMPORT custom
+           wit-world, plain export, result CONSUMED IN-GUEST (match Some(r)->r.lo / None->-1). Pins the
+           option-of-COMPOUND arm of the compound host-RESULT lift on the plain host-delegating envelope
+           (v-wit-boundary B1). A conformance-vocabulary candidate (Option<record>). Stub -> Some({lo:7,hi:9}),
+           assert 7.")
+  (wit-world
+    (world
+      w
+      (import
+        cadenza:platform/probe
+        (member maybe-pt (func (result (option (record (= lo (s64)) (= hi (s64))))))))))
+  (input
+    (do
+      (effect probe (op maybe-pt (-> Unit (Option (Record (: lo Int64) (: hi Int64))))))
+      (def
+        (run)
+        (host (probe) (match (probe.maybe-pt unit) ((Option.Some r) (. r lo)) (Option.None -1))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond
+      probe.maybe-pt
+      (:
+        (Some #record((= lo 7) (= hi 9)))
+        (Option (Record (: lo Int64) (: hi Int64))))))
+  (host-calls (call cadenza:platform/probe.maybe-pt))
+  (output 7)
+  (live-objects 0))
+
+(case
+  "a plain guest reads the length of a list<record> host-import result via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 89 — a list<record{lo,hi}> host-import RESULT (probe.events) on a PURE-IMPORT custom wit-world,
+           plain export, result CONSUMED IN-GUEST (List.len). Pins the list-of-COMPOUND arm of the compound
+           host-RESULT lift on the plain host-delegating envelope (v-wit-boundary B1). A conformance-vocabulary
+           candidate (v-hivemind's event stream is a list<record>). Stub -> [{1,2},{3,4}], assert len 2.")
+  (wit-world
+    (world
+      w
+      (import
+        cadenza:platform/probe
+        (member events (func (result (list (record (= lo (s64)) (= hi (s64))))))))))
+  (input
+    (do
+      (effect probe (op events (-> Unit (List (Record (: lo Int64) (: hi Int64))))))
+      (def (run) (host (probe) (List.len (probe.events unit))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond
+      probe.events
+      (:
+        #list(#record((= lo 1) (= hi 2)) #record((= lo 3) (= hi 4)))
+        (List (Record (: lo Int64) (: hi Int64))))))
+  (host-calls (call cadenza:platform/probe.events))
+  (output 2)
+  (live-objects 0))
