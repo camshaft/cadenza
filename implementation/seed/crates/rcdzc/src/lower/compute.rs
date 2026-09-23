@@ -2684,6 +2684,26 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                          render lands with its own runtime op",
                     )),
                 },
+                // `Float64.to-string` / `Float32.to-string` — the canonical shortest-decimal text. A FINITE
+                // constant `Core::ConstFloat(d)` folds to `Decimal::render_decimal_string` (the SAME renderer
+                // the syntax printer uses, so to-string == the value form by construction), always with a
+                // decimal point (`3.0`). `nan`/`inf` fold to "nan"/"inf" — an explicit text request, distinct
+                // from a float VALUE crossing the boundary (which those still decline). A runtime float is a
+                // later increment (declines cleanly).
+                Some(Prim::FloatToString) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstFloat(d) => {
+                        trace!(target: "rcdzc::fold", node = id.0, "Float.to-string folds a constant float to its shortest-decimal String");
+                        Core::ConstStr(d.render_decimal_string().into())
+                    }
+                    Core::ConstFloatNan => Core::ConstStr("nan".into()),
+                    Core::ConstFloatInf => Core::ConstStr("inf".into()),
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Poison(Reject::decline(
+                        "Float.to-string on a runtime float is not available in this increment — only a \
+                         compile-time-constant float folds to its decimal String; the runtime render lands \
+                         with its own runtime op",
+                    )),
+                },
                 // `Rational.truncate r` — the integer part TOWARD ZERO, narrowed to `Int64`. A DERIVATION
                 // (no runtime op): a CONSTANT `Core::ConstRational(n, d)` (normalized, `d > 0`) folds to the
                 // truncating quotient `n / d` (`IntValue::divmod` truncates toward zero, remainder takes the

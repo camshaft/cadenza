@@ -1063,6 +1063,42 @@ impl IntValue {
 /// BYTE-IDENTICAL Float leaves (the 3-codec identity). cdz-runtime's `#[path]` include of this file
 /// calls `from_f64` in its op93 float-encode path, so it must live in the no_std surface.
 impl Decimal {
+    /// This decimal rendered as canonical Cadenza float text — the shortest round-tripping decimal with
+    /// a decimal point ALWAYS present, so a whole value reads as a float (`3` → "3.0") and never lexes as
+    /// an integer. `value = significand * 10^exponent`, sign as a leading `-`. Uses the pure
+    /// [`IntValue::to_decimal_string`] on the significand magnitude (no num-bigint), so it is `no_std`-safe
+    /// and magnitude-size independent. This is the single source the syntax crate's `render_decimal`
+    /// delegates to and the float const-fold (`Float.to-string`) folds to, so both agree by construction.
+    pub fn render_decimal_string(&self) -> String {
+        let sign = if self.negative { "-" } else { "" };
+        // The significand's decimal digits (non-negative magnitude → the pure decimal render).
+        let digits = IntValue {
+            negative: false,
+            magnitude: self.significand.clone(),
+        }
+        .to_decimal_string();
+        // Place the decimal point per the base-10 exponent: value = digits * 10^exponent.
+        let text = if self.exponent == 0 {
+            // integer-valued: force a fractional part so it lexes as a float
+            format!("{digits}.0")
+        } else if self.exponent > 0 {
+            // shift left: append zeros, then `.0`
+            let zeros = "0".repeat(self.exponent as usize);
+            format!("{digits}{zeros}.0")
+        } else {
+            // exponent < 0: place a decimal point `-exponent` digits from the right
+            let frac = (-self.exponent) as usize;
+            if digits.len() > frac {
+                let point = digits.len() - frac;
+                format!("{}.{}", &digits[..point], &digits[point..])
+            } else {
+                let pad = "0".repeat(frac - digits.len());
+                format!("0.{pad}{digits}")
+            }
+        };
+        format!("{sign}{text}")
+    }
+
     /// The EXACT shortest-decimal `Decimal` for an `f64`: a WHOLE value uses its full expansion
     /// (`{f:.0}`), a non-whole its shortest round-tripping `{:e}` text; the (sign, digit string, base-10
     /// exponent) decomposition then folds the fractional digits into the exponent. `None` for a

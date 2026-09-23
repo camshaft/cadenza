@@ -2779,8 +2779,23 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
         let neg_ty = float_neg_type(ast, width);
         list_op_record(ast, "neg", neg_ty)
     };
+    // `to-string : (Float width) → String` — the canonical shortest-decimal text (a decimal point always
+    // present, so `3.0` not `3`; `nan`/`inf` for the non-finite constants). A constant folds via
+    // `Decimal::render_decimal_string` (the syntax printer's renderer — to-string agrees with the value
+    // form by construction); a runtime float is a later increment (declines cleanly).
+    let to_string_op = {
+        let to_string_ty = float_to_string_type(ast, width);
+        list_op_record(ast, "float-to-string", to_string_ty)
+    };
     let fields = vec![
         meta_field(ast, "t", ty_expr),
+        {
+            let k = push_atom(ast, Leaf::Name("to-string".into()));
+            {
+                let eq = push_atom(ast, Leaf::Name("=".into()));
+                push_list(ast, vec![eq, k, to_string_op])
+            }
+        },
         {
             let k = push_atom(ast, Leaf::Name("neg".into()));
             {
@@ -2873,6 +2888,28 @@ fn float_neg_type(ast: &mut Arenas, width: u32) -> StructId {
     let a = float_target(ast);
     let b = float_target(ast);
     let body = arrow_type(ast, a, b);
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> (Float width) String))` for a float module's `to-string` — a ZERO-PARAMETER
+/// type-lambda wrapping the monomorphic arrow `(Float width) → String`. The `fn` wrapper makes
+/// `scheme_of` read a SCHEME; `(meta apply)` = the `float-to-string` intrinsic.
+fn float_to_string_type(ast: &mut Arenas, width: u32) -> StructId {
+    let float = {
+        let ctor = push_atom(ast, Leaf::Name("Float".into()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let string = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, float, string);
     let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
