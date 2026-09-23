@@ -15732,9 +15732,11 @@ const INODE_SWEEP_DIR_PATTERNS: &[&str] = &[
     "libFuzzerTemp*",
 ];
 
-/// Minimum age (minutes) a scratch dir must reach before the inode sweep reaps it — the LIVENESS FLOOR
-/// that guarantees no ACTIVE gate/shell/fuzz run is touched (a live run keeps a fresh mtime; see the
-/// per-prefix rationale in `maybe_run_gc`). Losing this floor would reap a running gate's scratch.
+/// Minimum age (minutes) a scratch dir must reach before the inode sweep reaps it — the first of TWO
+/// liveness guards (the second is the `lsof +D` check in `inode_sweep_command`). The age floor is a cheap
+/// first cut, but it is NOT sufficient alone: a live run keeps a fresh mtime ONLY if it writes at the top
+/// level, and a long gate / idle-open `nix develop` shell writing DEEP in its tree can age past the floor
+/// while alive (the mtime-liveness-proxy trap) — so `lsof +D` backs it. Losing EITHER reaps a running gate.
 const INODE_SWEEP_DIR_MIN_AGE_MIN: u64 = 60;
 
 /// Build the best-effort `/tmp` inode-sweep shell command. PURE (constructs the string, does no I/O) so
@@ -15742,10 +15744,17 @@ const INODE_SWEEP_DIR_MIN_AGE_MIN: u64 = 60;
 ///   (1) delete stale task `.output` logs under `/tmp/claude-*` older than `cutoff_min`;
 ///   (2) `rm -rf` the DEPTH-1 scratch DIRS matching [`INODE_SWEEP_DIR_PATTERNS`] older than
 ///       [`INODE_SWEEP_DIR_MIN_AGE_MIN`], EXCLUDING any `*nix-warm-roots*` path (the load-bearing
-///       warm-store GC roots);
+///       warm-store GC roots), AND passing an `lsof +D` liveness check (fail-safe: ANY lsof output — a
+///       live fd/cwd OR an error/missing-lsof — KEEPS the dir; only a clean empty lsof permits the rm);
 ///   (3) re-print `/tmp` inode use for the log line.
-/// The `-maxdepth 1 -type d` + age floor + warm-roots exclusion are the guards that keep clause (2) from
-/// ever descending into or reaping a live/foreign subtree — pinned by test.
+/// The `-maxdepth 1 -type d` + age floor + warm-roots exclusion + lsof guard are what keep clause (2) from
+/// ever descending into or reaping a live/foreign subtree — pinned by test. The lsof guard (added 2026-09-23)
+/// closes the mtime-liveness hole: the age floor alone assumes a live run keeps a FRESH top-level mtime, but
+/// a long gate (>60min under contention) or an idle-but-open `nix develop` shell writes DEEP in its tree
+/// without touching the top dir mtime, so it could age past the floor while ALIVE — `lsof +D` (any open
+/// fd/cwd anywhere under the dir) catches exactly that, mirroring the prune-tmp-inodes `scratch_dir_is_idle`
+/// discipline. Run under POSIX `sh` (see caller), so the per-dir loop uses `-exec sh -c '…' _ {} +`, not a
+/// bash `read -d ''`. The guard can only ever reap LESS (fail-safe), never more.
 fn inode_sweep_command(cutoff_min: u64) -> String {
     let name_clause = INODE_SWEEP_DIR_PATTERNS
         .iter()
@@ -15755,7 +15764,8 @@ fn inode_sweep_command(cutoff_min: u64) -> String {
     format!(
         "find /tmp/claude-* -name '*.output' -type f -mmin +{cutoff_min} -delete 2>/dev/null; \
          find /tmp -maxdepth 1 -type d \\( {name_clause} \\) \
-           -mmin +{INODE_SWEEP_DIR_MIN_AGE_MIN} -not -path '*nix-warm-roots*' -exec rm -rf {{}} + 2>/dev/null; \
+           -mmin +{INODE_SWEEP_DIR_MIN_AGE_MIN} -not -path '*nix-warm-roots*' \
+           -exec sh -c 'for d; do [ -z \"$(lsof +D \"$d\" 2>&1)\" ] && rm -rf \"$d\" 2>/dev/null; done' _ {{}} + 2>/dev/null; \
          df -i /tmp 2>/dev/null | tail -1 | awk '{{print $5}}'"
     )
 }
@@ -27309,11 +27319,18 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             );
         }
 
-        // The liveness floor + warm-roots exclusion GUARD the rm -rf — losing either reaps a live run or
-        // the load-bearing nix warm-store GC roots.
+        // The liveness floor + warm-roots exclusion + lsof guard GUARD the rm -rf — losing any reaps a live
+        // run or the load-bearing nix warm-store GC roots.
         assert!(cmd.contains(&format!("-mmin +{INODE_SWEEP_DIR_MIN_AGE_MIN}")));
         assert!(cmd.contains("-not -path '*nix-warm-roots*'"));
-        assert!(cmd.contains("-exec rm -rf {} +"));
+        // The rm is now GUARDED per-dir by an lsof +D liveness check (fail-safe: empty lsof output only),
+        // via a POSIX `sh -c` loop (not a bash `read -d ''`) so it runs under the caller's `sh -c`.
+        assert!(cmd.contains("lsof +D \"$d\""));
+        assert!(cmd.contains("[ -z \"$(lsof +D \"$d\" 2>&1)\" ] && rm -rf \"$d\""));
+        assert!(cmd.contains("-exec sh -c 'for d; do"));
+        // The bare unguarded batch form must be GONE — every rm now passes the lsof guard first.
+        assert!(!cmd.contains("-exec rm -rf {} +"));
+        assert!(!cmd.contains("read -r -d")); // no bash-ism under POSIX sh
 
         // SAFETY: the rm path must never carry an unbounded target — no wildcard-all name, no bare /tmp rm.
         assert!(!cmd.contains("-name '*'"));
