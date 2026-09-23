@@ -2303,22 +2303,11 @@ pub fn select_function_of(
         // SURPLUS-skippable dup occurrences ONLY in a boundary-owned body, and ONLY a rest-mint-consumed
         // MatchList scrutinee with (2) no other consume AND (3) no heap-leading-element-read-alongside-a-
         // rest-read (the emit-ordering dangle the too-broad prior gate hit — see conjunct 3 in the helper).
-        // OWNED-FOLD extension (operator-funded surplus.rs gap): a SELF-RECURSIVE fold consumes its list
-        // via the `RestFrom` `vec-drop`; its head-preservation scrutinee dup is SURPLUS when every heap
-        // leading-element extraction is dead-after (borrow-only, consumed before the split). `owned_fold`
-        // (= self-recursive, INDEPENDENT of `is_boundary_owned` — a recwalk fold classifies boundary-owned
-        // yet conjunct 3 still excludes its heap-leading+rest-read scrutinee) relaxes conjunct 3 under the
-        // dead-after gate (`binding_escapes_dup_aware`, v-core-opt's oracle): reclaims the recwalk head each
-        // iteration (ratwalk_noth/03:522 family) while an escaping (threaded) leading extraction keeps
-        // leaking (leak-over-UAF). Guarded-all is the UAF net for this #4139/#5090 fence class. The collector
-        // still runs for a boundary-owned NON-self-recursive body (`owned_fold=false`, conjunct 3 unchanged).
-        let owned_fold = body_is_self_recursive(db, body);
-        if is_boundary_owned || owned_fold {
+        if is_boundary_owned {
             collect_surplus_skippable_dups(
                 db,
                 body,
                 &code.dup_sites,
-                owned_fold,
                 &mut code.surplus_skippable_dups,
             );
         }

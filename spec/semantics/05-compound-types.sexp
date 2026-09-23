@@ -24910,13 +24910,7 @@
       (export main)))
   (call main (: 100 Int64))
   (output (: 100 Int64))
-  ; tighten (v-memory-safety): the owned-fold surplus-skip now reclaims the head-preservation scrutinee dup
-  ; of a self-recursive fold whose heap leading element (the `#tuple(k _v)` head) is dead-after — here the
-  ; keys are Int64 (scalar `k`), so the head tuple is borrow-only (its scalar children escape as copies, no
-  ; heap ref), letting the RestFrom vec-drop reclaim each head. Was leak 403 (the 100 un-reclaimed tuple
-  ; shells + spine); census live-objects 0 + guarded-all clean. (A HEAP-keyed twin — a Rational key threaded
-  ; as the next `prev` — correctly STAYS leaking: the heap child escapes, so the dup is load-bearing.)
-  (live-objects 0))
+  (live-objects known-leak))
 
 (case
   "a trie spanning NEGATIVE and positive keys enumerates in signed numeric order"
@@ -24952,10 +24946,7 @@
       (export main)))
   (call main (: 100 Int64))
   (output (: 1001 Int64))
-  ; tighten (v-memory-safety): owned-fold surplus-skip — signed Int64 trie keys (scalar `k` head child), so
-  ; the self-recursive enumeration fold's head tuple is borrow-only and its head-preservation scrutinee dup
-  ; is surplus; the RestFrom vec-drop reclaims each head. Was leak 403; census live-objects 0 + guarded-all.
-  (live-objects 0))
+  (live-objects known-leak))
 
 (case
   "a negative-key trie churned back keys and enumerates like the direct build"
