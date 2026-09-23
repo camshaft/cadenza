@@ -2568,16 +2568,6 @@
               ./implementation/seed/crates/cdz-platform
               ./implementation/seed/crates/cdz-contract
               ./implementation/seed/crates/cdz-str
-              # The ML text front-end (cadenza-syntax) + its structural closure — added to the `all` tier
-              # so a Cadenza-ML conformance runner can PARSE ML `.cdz` + s-expr test sources. `tier_roots`
-              # discovers cadenza-syntax-{core,json,sexpr,toml} + the optional cadenza-syntax-cedar, so all
-              # six source dirs must be in the sandbox fileset or the tool's copy fails "missing tier crate".
-              ./implementation/seed/crates/cadenza-syntax
-              ./implementation/seed/crates/cadenza-syntax-core
-              ./implementation/seed/crates/cadenza-syntax-json
-              ./implementation/seed/crates/cadenza-syntax-sexpr
-              ./implementation/seed/crates/cadenza-syntax-toml
-              ./implementation/seed/crates/cadenza-syntax-cedar
               ./Cargo.lock
               ./rust-toolchain.toml
             ];
