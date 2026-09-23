@@ -72,7 +72,10 @@ pub enum GenMode {
     /// Some arm takes a borrow-only interior view of the decoded payload — the #9546/#9547 Core::ValueDecode
     /// fresh-producer shell reclaim + the relaxed sread-UAF interior-view fence, and a self-recursive fold
     /// over a HEAP-element list whose head is read AFTER the recursive call — the #9537/#9551 owned-fold
-    /// surplus-skip shipped-UAF discriminator, where an over-dropped still-read head UAFs). Densifies
+    /// surplus-skip shipped-UAF discriminator, where an over-dropped still-read head UAFs; plus its #9558
+    /// re-land ADMIT-arm complement, a self-recursive fold whose preserved head element is dead-after with a
+    /// threaded consumed child (consuming-backed -> ADMIT -> spine head reclaimed) yet also borrow-reads a
+    /// heap sibling after the recurse (the coarse mixed-child residue an over-drop would dangle)). Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
