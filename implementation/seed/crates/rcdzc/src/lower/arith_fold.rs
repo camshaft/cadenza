@@ -4147,6 +4147,9 @@ pub(super) fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::FloatOf
         | Prim::FloatNan
         | Prim::FloatInf
+        // `Float.to-string` folds a constant float to its shortest-decimal `Core::ConstStr` in its own
+        // arm — a float→String render, not an integer binary op.
+        | Prim::FloatToString
         | Prim::MapCtor
         | Prim::MapNew
         | Prim::MapEmpty

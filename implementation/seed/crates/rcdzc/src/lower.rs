@@ -6666,6 +6666,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::IntToString => "int-to-string",
         Prim::IntToStringRadix => "int-to-string-radix",
         Prim::RationalToString => "rational-to-string",
+        Prim::FloatToString => "float-to-string",
         Prim::SumNew => "sum-new",
         Prim::SumCtor => "sum-ctor",
         Prim::TupleNew => "tuple-new",

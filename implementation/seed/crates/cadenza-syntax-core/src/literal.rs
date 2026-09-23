@@ -568,34 +568,10 @@ pub fn render_suffixed(value: &SuffixBody, kind: SuffixKind) -> String {
 /// a `.` or exponent so it re-lexes as a Float, never an Int. `nan`/`inf` are not `Decimal`s (they
 /// are names), so this only ever renders a finite value; `-0.0` prints with its sign.
 pub fn render_decimal(d: &Decimal) -> String {
-    let sign = if d.negative { "-" } else { "" };
-    // The significand is a non-negative byte magnitude; bridge to BigInt for the decimal digits.
-    let digits = IntValue {
-        negative: false,
-        magnitude: d.significand.clone(),
-    }
-    .to_bigint()
-    .to_str_radix(10); // non-negative magnitude
-    // Place the decimal point per the base-10 exponent: value = digits * 10^exponent.
-    let text = if d.exponent == 0 {
-        // integer-valued: force a fractional part so it lexes as a float
-        format!("{digits}.0")
-    } else if d.exponent > 0 {
-        // shift left: append zeros, then `.0`
-        let zeros = "0".repeat(d.exponent as usize);
-        format!("{digits}{zeros}.0")
-    } else {
-        // exponent < 0: place a decimal point `-exponent` digits from the right
-        let frac = (-d.exponent) as usize;
-        if digits.len() > frac {
-            let point = digits.len() - frac;
-            format!("{}.{}", &digits[..point], &digits[point..])
-        } else {
-            let pad = "0".repeat(frac - digits.len());
-            format!("0.{pad}{digits}")
-        }
-    };
-    format!("{sign}{text}")
+    // SINGLE SOURCE: the render lives on `Decimal` itself (`cadenza-ast`), using the pure
+    // `IntValue::to_decimal_string` (no num-bigint), so the syntax printer and the `Float.to-string`
+    // const-fold render identically by construction. This is a thin delegation.
+    d.render_decimal_string()
 }
 
 /// Escape a string's contents for a `"…"` literal (the dual of [`unescape_string`]).

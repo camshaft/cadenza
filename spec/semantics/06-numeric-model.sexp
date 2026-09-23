@@ -21483,3 +21483,72 @@
            collapse to the bare integer text.")
   (input (Rational.to-string (Rational.of-int 5)))
   (output (: "5/1" String)))
+
+; ============================================================================================
+; Rendering a FLOAT — Float64.to-string / Float32.to-string. The canonical shortest-decimal text
+; (the round-tripping decimal the printer emits), with a decimal point ALWAYS present so it reads
+; back as a float (`3` → "3.0", never the integer "3"). A finite constant `Core::ConstFloat(d)`
+; folds via `Decimal::render_decimal_string` — the SAME renderer the syntax printer's `render_decimal`
+; delegates to, so `Float.to-string` agrees with the value form `(: … Float64)` by construction. The
+; non-finite constants render `nan` / `inf` (an explicit text request, distinct from a float VALUE
+; crossing the boundary, which those still decline). A runtime float is a later increment (declines
+; cleanly). One prim serves both widths — the stored Decimal is already width-correct.
+(case
+  "a float renders its shortest decimal"
+  (doc
+    "`(Float64.to-string 3.14)` = \"3.14\": the shortest round-tripping decimal, the text form of the
+           value `(: 3.14 Float64)` — the same renderer the printer uses.")
+  (input (Float64.to-string 3.14))
+  (output (: "3.14" String)))
+
+(case
+  "a whole float keeps its .0 so it reads back as a float"
+  (doc
+    "`(Float64.to-string 3.0)` = \"3.0\": a whole-valued float renders WITH the decimal point, so the
+           text lexes as a float (not the integer \"3\") — matching the value form `(: 3.0 Float64)`.")
+  (input (Float64.to-string 3.0))
+  (output (: "3.0" String)))
+
+(case
+  "a negative fractional float renders with a leading minus"
+  (doc
+    "`(Float64.to-string -0.5)` = \"-0.5\": the sign is a leading `-`, and a magnitude below 1 renders
+           the leading `0` before the point.")
+  (input (Float64.to-string -0.5))
+  (output (: "-0.5" String)))
+
+(case
+  "NaN renders as nan"
+  (doc
+    "`(Float64.to-string Float64.nan)` = \"nan\": the canonical not-a-number renders its text form.
+           `to-string` gives an explicit text even though a bare NaN VALUE has no boundary form yet.")
+  (input (Float64.to-string Float64.nan))
+  (output (: "nan" String)))
+
+(case
+  "positive infinity renders as inf"
+  (doc
+    "`(Float64.to-string Float64.Infinity)` = \"inf\": positive infinity renders its text form,
+           matching the runtime float value form `(: inf Float64)`.")
+  (input (Float64.to-string Float64.Infinity))
+  (output (: "inf" String)))
+
+(case
+  "the render serves Float32 too"
+  (doc
+    "`(Float32.to-string 1.5)` = \"1.5\": the SAME `float-to-string` prim serves Float32 — the stored
+           Decimal is already the width-correct shortest decimal (Float32 via from_f32), so the render
+           reads it directly with no width branch.")
+  (input (Float32.to-string 1.5))
+  (output (: "1.5" String)))
+
+(case
+  "a genuinely-runtime float renders its decimal (runtime path)"
+  (doc
+    "The RUNTIME complement: `(main (: x Float64))` applied by `(call …)` gives a runtime float, so
+           `Float64.to-string` cannot const-fold and must render at run time. `x = 3.14` → \"3.14\". The seed
+           const-fold slice DECLINES a runtime float (scored todo); this locks in the idealistic runtime
+           behavior so it flips to PASS when the runtime render op lands.")
+  (input (do (def (main (: x Float64)) (Float64.to-string x)) (export main)))
+  (call main (: 3.14 Float64))
+  (output (: "3.14" String)))

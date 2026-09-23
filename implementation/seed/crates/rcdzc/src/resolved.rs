@@ -388,6 +388,14 @@ pub enum Prim {
     /// CONSTANT `Core::ConstRational(n, d)` FOLDS to `"<n>/<d>"` via `IntValue::to_decimal_string` on each
     /// component (magnitude-size independent); a runtime Rational is a later increment (declines cleanly).
     RationalToString,
+    /// `Float64.to-string` / `Float32.to-string` — the canonical shortest-decimal text of a float
+    /// (`(Float w) → String`), with a decimal point always present (`3.0`, not `3`) so it reads back as a
+    /// float. A FINITE constant `Core::ConstFloat(d)` FOLDS to `Decimal::render_decimal_string` (the same
+    /// renderer the syntax printer uses, so to-string agrees with the value form by construction);
+    /// `Core::ConstFloatNan` folds to "nan" and `Core::ConstFloatInf` to "inf" (an explicit text request,
+    /// distinct from a float value crossing the boundary). A runtime float is a later increment (declines
+    /// cleanly). ONE prim serves both widths — the stored `Decimal` is already width-correct.
+    FloatToString,
     /// A SUM VARIANT CONSTRUCTOR — the `(meta apply)` of a variant field on a synthesized sum record
     /// (`crate::sums`). Applying it (`(Option.Some 5)`) builds the sum value `sum-new(disc, payload)`:
     /// the DISCRIMINANT is read off the variant record's `(meta variant)` channel at lowering (NOT
@@ -993,6 +1001,7 @@ impl Prim {
             "int-to-string" => Some(Prim::IntToString),
             "int-to-string-radix" => Some(Prim::IntToStringRadix),
             "rational-to-string" => Some(Prim::RationalToString),
+            "float-to-string" => Some(Prim::FloatToString),
             "sum-new" => Some(Prim::SumNew),
             "sum-ctor" => Some(Prim::SumCtor),
             "tuple-new" => Some(Prim::TupleNew),
