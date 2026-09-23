@@ -78,7 +78,10 @@ pub enum GenMode {
     /// heap sibling after the recurse (the coarse mixed-child residue an over-drop would dangle), and the
     /// #9560 REFINE(A) `head_destructured_only_to_scalars` additive-disjunct route, a scalar-keyed owned-fold
     /// whose head is destructured ENTIRELY to scalar fields (copied at the match -> admit is unconditionally
-    /// safe; the exclusion-partner of the heap-field head, which must NOT be scalar-admitted)). Densifies
+    /// safe; the exclusion-partner of the heap-field head, which must NOT be scalar-admitted), and the
+    /// mutual-recursive-SCC caller-ownership UAF guard (the FIRST 2-fn call-graph SCC: a go<->helper mutual
+    /// recursion borrows a caller's list that the caller reuses after the SCC call -> the group-exit drop
+    /// must DECLINE or re-free the caller's reused borrow, the CAESAR-class double-free)). Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
