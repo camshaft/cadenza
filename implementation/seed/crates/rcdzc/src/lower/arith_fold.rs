@@ -4198,6 +4198,9 @@ pub(super) fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::RationalValue
         | Prim::RationalNum
         | Prim::RationalDen
+        // `Rational.to-string` folds a constant rational to its `num/den` `Core::ConstStr` in its own
+        // arm — a Rational→String render, not an integer binary op.
+        | Prim::RationalToString
         | Prim::RationalTruncate
         | Prim::RationalFloor
         | Prim::RationalCeil
