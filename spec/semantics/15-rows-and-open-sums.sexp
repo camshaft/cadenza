@@ -2749,3 +2749,64 @@
   "a single-variant struct-newtype result ERASES to its field tuple (untagged decode path)"
   (input (do (type Pt (Mk Int64 Int64)) (def (main) (Pt.Mk 3 4)) (export main)))
   (output (: #tuple(3 4) Pt)))
+
+(case
+  "Record.with sets an Option-of-a-UInt64-newtype field of a multi-field record, then a let-destructure reads it back"
+  (doc
+    "A should-work program the seed currently MISCOMPILES (CDZ0910 'type mismatch: expected i32, found i64'
+           at component validation), pinned as a TODO per the corpus policy — a should-work is `(output V)`
+           and AUTO-LOCKS to Pass once the fix lands (no future corpus edit). Bisected from v-hivemind's
+           MembrainHivemind conformance `send` (msg.cdz): `Record.with` REPLACING the `on` field — an
+           `Option` over a newtype-over-`UInt64` (`Node`, unboxed to i64) — of a five-field record with a
+           RUNTIME `(Option.Some (Node.Node nid))`, then a single-ctor `(let (((Msg.Msg f) m)) …)`
+           destructure reading `f.on`, mislowers the option field to `box-int(get-int(arr-get(<i64 newtype
+           value>, k)))`: it treats the UNBOXED scalar-newtype (i64) as a boxed aggregate handle (i32). A
+           two-field record, a DIRECTLY-built record (no Record.with), a CONSTANT node payload, OR reading the
+           record back with `match` instead of a `let`-destructure all compile clean — so it is specifically
+           `Record.with` over this multi-field / Option-of-scalar-newtype shape consumed by a let-destructure,
+           a value-form / const-splice record-materialization defect (owner v-compiler-primitives), NOT the
+           WIT host boundary. `(run 7)` should thread 7 through `on = (Option.Some (Node.Node 7))` and read
+           it back.")
+  (input
+    (do
+      (type Sess (Sess Bytes))
+      (type Node (Node UInt64))
+      (type
+        Msg
+        (Msg
+          (Record
+            (: to Sess)
+            (: contract String)
+            (: from (Option Sess))
+            (: payload Bytes)
+            (: on (Option Node)))))
+      (def
+        (message (: to Sess) (: contract String))
+        (:
+          (Msg.Msg
+            #record((= to to)
+              (= contract contract)
+              (= from (Option.None unit))
+              (= payload b"")
+              (= on (Option.None unit))))
+          Msg))
+      (def
+        (on (: m Msg) (: node Node))
+        (: (let (((Msg.Msg f) m)) (Msg.Msg (Record.with f #"on" (Option.Some node)))) Msg))
+      (def
+        (unpack (: m Msg))
+        (:
+          (let
+            (((Msg.Msg f) m))
+            (match f.on ((Option.Some n) (let (((Node.Node v) n)) v)) ((Option.None _) 0)))
+          UInt64))
+      (def
+        (run (: nid UInt64))
+        (:
+          (let
+            ((a (Sess.Sess b"s")))
+            (let ((msg (|> (|> a (message "msg")) (on (Node.Node nid))))) (unpack msg)))
+          UInt64))
+      (export run)))
+  (call run (: 7 UInt64))
+  (output (: 7 UInt64)))
