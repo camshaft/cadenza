@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(19);
+    let shape = c.variant(20);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -402,8 +402,26 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // views correctly, and a fence over-relax / ValueDecode-shell mis-reclaim corrupts the decoded value
         // or traps — caught by determinism / opt-invariance / differential. The SOLE codec (encode/decode)
         // shape; genuinely-new value-observable surface on an actively-relaxed UAF fence.
-        _ => format!(
+        18 => format!(
             "(do (def (main) (match (: (Value.decode (Value.encode #list({a} (+ {a} 5) (+ {a} 10)))) (Option (List Int64))) ((Some l) (+ (* (List.len l) 1000) (Option.expect (List.at l 0) \"first\"))) ((None u) -1))) (export main))"
+        ),
+        // 19 — SELF-RECURSIVE FOLD over a HEAP-element list, HEAD READ AFTER the recursive call — the #9537
+        // owned-fold surplus-skip SHIPPED-UAF discriminator (#9551 reverted #9537 after it trapped
+        // wasm-unreachable ~7h on main: test-shred-choreography chor-run-roundtrip). #9537 over-dropped the
+        // head-preservation scrutinee dup of a self-recursive fold whose head is actually READ on the
+        // recursive step — its `tail_borrowed=true` dead-after gate MASKED the tail-threaded head escape, so
+        // the RestFrom vec-drop freed the leading element while a later frame still read it → UAF. @test-suites-
+        // only-caught (the coarse-gate coverage gap that also missed #9466/#9502/#9532; #9537 re-lands later
+        // with a tail-position-aware gate + the chor test in the gate set). `f` folds a list whose elements are
+        // themselves heap `(List Int64)`; the arm binds `rest = (f t)` (RECURSE FIRST — the spine vec-drop
+        // descends) THEN reads the head `(List.at h 0)` — so the head MUST survive the recursive descent (the
+        // head-read-after-recurse escape #9537 mis-skipped). At the current (reverted) tip this is a known-leak
+        // → value-CORRECT (head preserved); it is a REGRESSION TRIPWIRE for the re-land — if the re-landed
+        // surplus-skip over-drops a still-read head, the `(List.at h 0)` reads freed → wrong sum / trap, caught
+        // by determinism / opt-invariance / differential. First fold over a list of HEAP elements (shape 9 is a
+        // scalar cons-list). Returns the KNOWN `a + b + d` (each head is a single-element list).
+        _ => format!(
+            "(do (type L (Nil) (Cons (List Int64) L)) (def (f (: xs L)) (match xs ((Nil) 0) ((Cons h t) (let ((rest (f t))) (+ rest (Option.expect (List.at h 0) \"h0\")))))) (def (main) (f (Cons (list {a}) (Cons (list {b}) (Cons (list {d}) (Nil)))))) (export main))"
         ),
     };
     Program { source }
@@ -5131,8 +5149,8 @@ mod tests {
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
         // Distinctive, mutually-exclusive markers for the seventeen shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 19];
-        for seed in 0u64..832 {
+        let mut reached = [false; 20];
+        for seed in 0u64..896 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5185,13 +5203,15 @@ mod tests {
                 reached[17] = true;
             } else if src.contains("(Value.decode (Value.encode ") {
                 reached[18] = true;
+            } else if src.contains("(type L (Nil) (Cons (List Int64) L))") {
+                reached[19] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all nineteen reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
