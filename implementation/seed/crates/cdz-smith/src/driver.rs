@@ -68,7 +68,9 @@ pub enum GenMode {
     /// P0-UAF DECLINE edge — a flat-scalar List param RETURNED via a MatchList base arm that the fn-exit
     /// drop must DECLINE or double-free the returned param, and the F5 SITE-A 5th route — a closure
     /// PROJECTED from an owned merged-record field then applied, whose Proj-reclaim env-cell drop must
-    /// stay tied to the U14 dup or double-free the captured env). Densifies
+    /// stay tied to the U14 dup or double-free the captured env, and a Value.decode codec round-trip whose
+    /// Some arm takes a borrow-only interior view of the decoded payload — the #9546/#9547 Core::ValueDecode
+    /// fresh-producer shell reclaim + the relaxed sread-UAF interior-view fence). Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
