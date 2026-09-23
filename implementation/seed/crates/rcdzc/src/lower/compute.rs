@@ -2821,6 +2821,24 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                         "Symbol.to-string needs a Symbol operand (its runtime read recovers the byte leaf)",
                     )),
                 },
+                // `Int64.to-string` / `UInt64.to-string` (every fixed-width integer module) — the DECIMAL
+                // rendering `(Int w)/(UInt w) → String`, base 10. A CONSTANT operand FOLDS to the
+                // `Core::ConstStr` of its `IntValue::to_decimal_string` (which carries the sign: `0 → "0"`,
+                // `-7 → "-7"`, an unsigned value is non-negative so it renders its plain decimal). A runtime
+                // operand DECLINES cleanly: the runtime decimal render is a byte-building div/mod loop that
+                // lands with its own runtime op (a later increment), not in this const-fold slice.
+                Some(Prim::IntToString) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstInt(v) => {
+                        trace!(target: "rcdzc::fold", node = id.0, "Int.to-string folds a constant integer to its decimal String");
+                        Core::ConstStr(v.to_decimal_string().into())
+                    }
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Poison(Reject::decline(
+                        "Int.to-string on a runtime integer is not available in this increment — only a \
+                         compile-time-constant integer folds to its decimal String; the runtime decimal \
+                         render (a byte-building loop) lands with its own runtime op",
+                    )),
+                },
                 // `Bytes.at` — the FALLIBLE indexed read `Bytes → Int64 → (Option Int64)`. Mirrors
                 // `List.at`: FOLD a visible `Bytes.of` indexed by a constant (in-range → `(Some byte)`,
                 // out-of-range/negative → `None`), else emit the runtime `Core::BytesAt`.

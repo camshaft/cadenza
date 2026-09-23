@@ -21231,3 +21231,99 @@
   (output (: 510 Int64))
   (call main (: 5 Int64) (: 9 Int64))
   (output (: 501 Int64)))
+
+; ============================================================================================
+; Rendering an integer to text — Int64.to-string / UInt64.to-string (and every fixed-width
+; integer module). The DECIMAL rendering `(Int w)/(UInt w) → String`, base 10 (numeric-model.md:
+; an integer type is observable as its decimal text — the counterpart of the calculator/printer's
+; own number rendering). ONE prim serves every width and BOTH signednesses: the operand's own
+; value carries its sign and magnitude, so the render reads it uniformly. A non-decimal base is a
+; SEPARATE opt-in `to-string-radix` (a later increment), keeping the common base-10 case clean. A
+; compile-time-constant operand FOLDS to its decimal String constant; a genuinely-runtime operand
+; is a later increment (the runtime decimal render is a byte-building div/mod loop with its own
+; runtime op) — those cases DECLINE for now, which the gate scores as todo, and flip to PASS when
+; the runtime path lands (reject-don't-miscompile; corpus locks in the idealistic behavior).
+(case
+  "a constant integer renders as its decimal string"
+  (doc
+    "`(Int64.to-string 42)` = \"42\": the base-10 rendering of a positive Int64. This is the
+           in-language number->string the prelude previously lacked (only `Symbol.to-string` existed) —
+           it lets a program build text from a count/id (interpolation, debug text, auto-naming). A
+           constant operand folds to the decimal String constant at compile time.")
+  (input (Int64.to-string 42))
+  (output (: "42" String)))
+
+(case
+  "a negative integer renders with a leading minus"
+  (doc
+    "`(Int64.to-string -7)` = \"-7\": a negative signed value renders its magnitude preceded by
+           `-`. The sign lives in the operand's value, so the single render prim handles it — no
+           separate signed/unsigned op.")
+  (input (Int64.to-string -7))
+  (output (: "-7" String)))
+
+(case
+  "zero renders as the single digit 0"
+  (doc
+    "`(Int64.to-string 0)` = \"0\": the zero boundary renders one `0` digit, not the empty string
+           — the repeated-division render special-cases zero so a count of 0 shows as \"0\".")
+  (input (Int64.to-string 0))
+  (output (: "0" String)))
+
+(case
+  "Int64.min renders its full negative-boundary magnitude"
+  (doc
+    "`(Int64.to-string Int64.min)` = \"-9223372036854775808\": the most-negative Int64, whose
+           magnitude is 2^63 (one past Int64.max) — pins that the render reads the true magnitude
+           rather than negating into overflow.")
+  (input (Int64.to-string Int64.min))
+  (output (: "-9223372036854775808" String)))
+
+(case
+  "UInt64.max renders across the full unsigned range"
+  (doc
+    "`(UInt64.to-string UInt64.max)` = \"18446744073709551615\": the largest UInt64, above 2^63, so
+           it renders as an unsigned decimal (the value is non-negative) rather than a signed one — the
+           same render prim, the operand's unsigned value driving it. Exercises a magnitude beyond i64.")
+  (input (UInt64.to-string UInt64.max))
+  (output (: "18446744073709551615" String)))
+
+(case
+  "the render prim is width-agnostic — a narrow signed width renders identically"
+  (doc
+    "`(Int32.to-string -128)` = \"-128\": the SAME `int-to-string` prim serves every fixed width
+           (Int8/16/32/64, UInt8/16/32/64), reading the operand's value rather than the module's width —
+           so a narrow width renders with no per-width op. Pins the one-prim-serves-all-widths shape.")
+  (input (Int32.to-string -128))
+  (output (: "-128" String)))
+
+(case
+  "an unsigned narrow width renders its plain decimal"
+  (doc
+    "`(UInt8.to-string 200)` = \"200\": an unsigned narrow value (above the signed-i8 range) renders
+           as its plain non-negative decimal — the unsigned module's value is never read as negative.")
+  (input (UInt8.to-string 200))
+  (output (: "200" String)))
+
+(case
+  "the render composes with String.concat to name a numbered item"
+  (doc
+    "`(String.concat \"s\" (Int64.to-string 3))` = \"s3\": the motivating use — building a name/label
+           from a prefix and a number (e.g. naming nodes s1..sN). The number renders to text and joins a
+           literal, all at compile time when the count is constant.")
+  (input (String.concat "s" (Int64.to-string 3)))
+  (output (: "s3" String)))
+
+(case
+  "a genuinely-runtime integer renders to its decimal string (runtime path)"
+  (doc
+    "The RUNTIME complement of the const-fold witnesses above: `(main (: x Int64))` applied by
+           `(call …)` gives a genuinely-runtime operand, so `Int64.to-string` cannot const-fold and must
+           render at run time — a decimal byte-building loop producing the String value. `x = 42` → \"42\",
+           `x = -7` → \"-7\". The seed const-fold slice DECLINES a runtime operand (scored todo); this
+           locks in the idealistic runtime behavior so it flips to PASS when the runtime render op lands.")
+  (input (do (def (main (: x Int64)) (Int64.to-string x)) (export main)))
+  (call main (: 42 Int64))
+  (output (: "42" String))
+  (call main (: -7 Int64))
+  (output (: "-7" String)))

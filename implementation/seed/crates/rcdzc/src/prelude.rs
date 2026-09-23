@@ -2943,6 +2943,11 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     //= spec/capabilities/numeric-model.md#a-conversion-between-integer-types-is-explicit
     //# A conversion between two integer types MUST be written explicitly, as either a range-checked conversion that traps on a value outside the target type's range or a truncating conversion that keeps the target type's low bits, never an implicit widening or narrowing.
     fields.push(of_field(ast, signed, width));
+    // `to-string` — the DECIMAL rendering of this width's integer, `THIS → String`, base 10 (a leading `-`
+    // for a negative signed value). The plain, base-10 conversion; a non-decimal base is the separate
+    // opt-in `to-string-radix` (a later increment). A CONSTANT operand folds to its decimal `Core::ConstStr`
+    // via `IntValue::to_decimal_string`; a runtime operand is a later increment (declines cleanly).
+    fields.push(to_string_field(ast, signed, width));
     // `neg` — UNARY negation `T → T` (`(Int64.neg x)` = `0 - x`), the first-class NAMED form of prefix
     // `(- e)`. Offered only on SIGNED widths: negating an unsigned value underflow-traps on every nonzero
     // input, so an unsigned `neg` would be a near-useless always-trapping op. A constant folds (and
@@ -3036,6 +3041,45 @@ fn of_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     // `(of record)`.
     let k = push_atom(ast, Leaf::Name("of".into()));
+    {
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, k, record])
+    }
+}
+
+/// A `(to-string (record ((meta t) TYPE) ((meta apply) (intrinsic int-to-string))))` field — the DECIMAL
+/// rendering of this width's integer. `TYPE` is `(fn () (-> TARGET String))`: the operand is `TARGET` =
+/// `(Int width)`/`(UInt width)`, this module's own concrete type, and the result is the ground `String`.
+/// The zero-param `fn` wrapper makes `scheme_of` read a monomorphic SCHEME (a bare arrow would collapse the
+/// op record to `Ty::Type`, exactly as `symbol_to_string_type` documents). `(meta apply)` = the shared
+/// `int-to-string` intrinsic — ONE prim for every width and both signednesses, the operand's `IntValue`
+/// carrying its own sign/magnitude at the fold.
+fn to_string_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
+    // `(fn () (-> TARGET String))`.
+    let target = {
+        let ctor = push_atom(ast, Leaf::Name(if signed { "Int" } else { "UInt" }.into()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let string = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, target, string);
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let params = push_list(ast, vec![]);
+    let lambda = push_list(ast, vec![fn_head, params, body]);
+    // `(record ((meta t) lambda) ((meta apply) (intrinsic int-to-string)))`.
+    let rec_head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
+    let t_field = meta_field(ast, "t", lambda);
+    let prim = intrinsic_node(ast, "int-to-string");
+    let apply_field = meta_field(ast, "apply", prim);
+    let record = push_list(ast, vec![rec_head, t_field, apply_field]);
+    // `(to-string record)`.
+    let k = push_atom(ast, Leaf::Name("to-string".into()));
     {
         let eq = push_atom(ast, Leaf::Name("=".into()));
         push_list(ast, vec![eq, k, record])

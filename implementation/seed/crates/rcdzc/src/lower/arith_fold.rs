@@ -4178,6 +4178,9 @@ pub(super) fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::SymbolTy
         | Prim::SymbolOf
         | Prim::SymbolToString
+        // `Int64.to-string` folds a constant integer to its decimal `Core::ConstStr` in its own unary arm
+        // (`lower_compute`), never an integer BINARY operation — like `SymbolToString`.
+        | Prim::IntToString
         // `BigIntTy` is a ground type-value builder (bare `BigInt` in type position → `Ty::BigInt`),
         // and `BigIntOf` is the unary widening conversion (folds in its own arm above) — neither is an
         // integer BINARY operation, like `StringTy`/`SymbolTy`/`SymbolOf`. `RationalTy` is likewise a

@@ -6663,6 +6663,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::SymbolTy => "Symbol",
         Prim::SymbolOf => "symbol-of",
         Prim::SymbolToString => "symbol-to-string",
+        Prim::IntToString => "int-to-string",
         Prim::SumNew => "sum-new",
         Prim::SumCtor => "sum-ctor",
         Prim::TupleNew => "tuple-new",
