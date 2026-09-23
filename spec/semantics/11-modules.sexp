@@ -1903,6 +1903,60 @@
   (input (do (import "lib" (helper)) (def (main) (+ (helper) 2)) (export main)))
   (output (: 42 Int64)))
 
+; WILDCARD import `(import path (*))` (the single-element `*` list, positionally distinct from a named
+; list of real names): brings the module's WHOLE exported surface FLAT into scope — one binding per
+; export (local == exported), exactly as if every name had been listed in a braced named import. It is
+; the natural complement to the named `(import path (a b))` and the whole-module alias `(import path a)`:
+; a vocabulary/prelude module (e.g. a conformance-lib re-exporting ~40 domain names) is pulled bare in
+; one line rather than by enumerating every name. `__ast__` (import reflection) is NOT a real export, so
+; the wildcard does not bind it (it stays opt-in via an explicit `{ __ast__ }`).
+(case
+  "a wildcard import brings a sibling module's whole exported surface into scope"
+  (doc
+    "Witnesses modules-and-namespaces.md #Imports Are Explicit (the whole-surface form): `lib` exports
+           two defs `one` (→40) and `two` (→2); the entry `(import \"lib\" (*))` brings BOTH flat into scope
+           with no per-name list, so `(+ (one) (two))` = 42. Pins that a wildcard import binds exactly the
+           module's exports (local == exported) — the same bindings the named `(import \"lib\" (one two))`
+           would make, in one act.")
+  (module "lib"
+    (do (def (one) 40) (def (two) 2) (export one) (export two)))
+  (input (do (import "lib" (*)) (def (main) (+ (one) (two))) (export main)))
+  (output (: 42 Int64)))
+
+(case
+  "a wildcard import brings an exported sum TYPE and its constructors into scope"
+  (doc
+    "The type face of the wildcard import: `lib` wildcard-EXPORTS the sum type `Color` `(export Color.*)`
+           — the handle + every constructor — plus a consumer `to-int`, and the entry `(import \"lib\" (*))`
+           brings the whole surface into scope and CONSTRUCTS `(Color.Green)` locally, so `(to-int
+           (Color.Green))` = 2. The wildcard import binds the same handle + follows the same per-constructor
+           visibility (from the source's `Color.*` export) as the named `(import \"lib\" (Color to-int))`
+           case below — one act instead of an enumerated list.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (to-int (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+      (export Color.*)
+      (export to-int)))
+  (input (do (import "lib" (*)) (def (main) (to-int (Color.Green))) (export main)))
+  (output (: 2 Int64)))
+
+(case
+  "wildcard-importing two modules that export the same name is a colliding import"
+  (doc
+    "The collision rule (modules-and-namespaces.md #Colliding Imported Names Are Rejected) governs a
+           wildcard-introduced name exactly as a named one: `aaa` and `bbb` both export `descriptor`, and
+           `(import \"aaa\" (*))` then `(import \"bbb\" (*))` would bind `descriptor` twice into one scope.
+           That is CDZ0201 — a compile-time error, never an implicit precedence or silent shadow — the same
+           code a flat named import of both would give. The collision-free route is the whole-module alias
+           form (`(import \"aaa\" a) (import \"bbb\" b)`, the case below).")
+  (module "aaa"
+    (do (def (descriptor) 10) (export descriptor)))
+  (module "bbb"
+    (do (def (descriptor) 20) (export descriptor)))
+  (input (do (import "aaa" (*)) (import "bbb" (*)) (def (main) descriptor) (export main)))
+  (error CDZ0201))
+
 ; WHOLE-MODULE ALIAS import `(import path alias)` (bare-name spec, positionally distinct from the named-list
 ; form): binds the whole module under `alias`, reached by qualified projection `(. alias member)`. This is
 ; the collision-free path when two modules export a UNIFORMLY-NAMED member (`descriptor`) that the flat
