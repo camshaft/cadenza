@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(20);
+    let shape = c.variant(21);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -420,8 +420,33 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // surplus-skip over-drops a still-read head, the `(List.at h 0)` reads freed → wrong sum / trap, caught
         // by determinism / opt-invariance / differential. First fold over a list of HEAP elements (shape 9 is a
         // scalar cons-list). Returns the KNOWN `a + b + d` (each head is a single-element list).
-        _ => format!(
+        19 => format!(
             "(do (type L (Nil) (Cons (List Int64) L)) (def (f (: xs L)) (match xs ((Nil) 0) ((Cons h t) (let ((rest (f t))) (+ rest (Option.expect (List.at h 0) \"h0\")))))) (def (main) (f (Cons (list {a}) (Cons (list {b}) (Cons (list {d}) (Nil)))))) (export main))"
+        ),
+        // 20 — the #9558 re-land ADMIT-arm complement of shape 19 (the DECLINE side). Shape 19 pins the
+        // pure-borrow head (consuming_sites==0 -> DECLINE, safe leak kept — the choreography over-drop UAF
+        // #9551 reverted #9537 for); THIS pins the ADMIT arm the re-land re-enables: a self-recursive
+        // OWNED-FOLD (`body_is_self_recursive` -> the surplus.rs owned-fold relax applies) whose PRESERVED
+        // head element `h : Cell` is dead-after (NOT threaded/returned — only `t` is) yet has a CONSUMING
+        // payload site (the extracted child `q` is threaded into the recursive `(f t (+ q prev))` as a
+        // consuming arg) -> `collect_consuming_payload_sites_expr(h)` non-empty -> escapes=false AND
+        // consuming-backed -> ADMIT -> the RestFrom vec-split reclaims the spine head each iteration (the
+        // 06-numeric:13356 / 03:522 threaded-prev `inc` leak-fix path, DBG census 0). The #9537 escapes-only
+        // gate ADMITTED this family on escapes=false ALONE, but escapes=false is NECESSARY NOT SUFFICIENT —
+        // #9551 reverted it because a PURE-BORROW head (shape 19) also has escapes=false and DANGLED. The
+        // consuming-site conjunct is the distinguishing bit; shape 20 (consumed child -> admit) and shape 19
+        // (borrow-only head -> decline) BRACKET both arms of the coarse liveness-across-vec-split predicate.
+        // MIXED-CHILD residue the commit flags as coarse (admit-with-zero-dangle, guarded-all is the net):
+        // the SAME head cell also carries a BORROW-READ heap sibling `p : (List Int64)` read via
+        // `(List.at p 0)` AFTER the recursive descent (`let rest = (f t …)` first). If the re-landed admit
+        // ever over-drops the head cell (the exact #9551 failure mode), that borrow reads freed -> wrong
+        // sum / trap, caught by determinism / opt-invariance / differential — and the read is LOAD-BEARING
+        // (the returned value includes `a+b+d` via the p-reads, not just the threaded scalars). Returns the
+        // KNOWN `a + b + d + 6` (heads a/b/d + the 1+2+3 threaded-prev scalars); verified wasm==rust==30 at
+        // a=7,b=8,d=9. First fold over a list of TUPLE-of-heap-child elements with a mixed consumed+borrowed
+        // head — a surface no other shape covers (19 is a bare heap-element list, pure-borrow only).
+        _ => format!(
+            "(do (type Cell (C (List Int64) Int64)) (type L (Nil) (Cons Cell L)) (def (f (: xs L) (: prev Int64)) (match xs ((Nil) prev) ((Cons h t) (match h ((C p q) (let ((rest (f t (+ q prev)))) (+ rest (Option.expect (List.at p 0) \"p\")))))))) (def (main) (f (Cons (C (list {a}) 1) (Cons (C (list {b}) 2) (Cons (C (list {d}) 3) (Nil)))) 0)) (export main))"
         ),
     };
     Program { source }
@@ -5148,9 +5173,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the seventeen shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 20];
-        for seed in 0u64..896 {
+        // Distinctive, mutually-exclusive markers for the twenty-one shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 21];
+        for seed in 0u64..941 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5203,6 +5228,8 @@ mod tests {
                 reached[17] = true;
             } else if src.contains("(Value.decode (Value.encode ") {
                 reached[18] = true;
+            } else if src.contains("(type Cell (C (List Int64) Int64))") {
+                reached[20] = true;
             } else if src.contains("(type L (Nil) (Cons (List Int64) L))") {
                 reached[19] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
@@ -5211,7 +5238,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-one reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
