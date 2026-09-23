@@ -21,6 +21,59 @@ use super::*;
 /// not model); conjunct 2 EXCLUDES a rest scrutinee ALSO consumed by push/insert/escape/self-call (retain is
 /// the SOLE balancer) — together the UAF classes the broad gate hit. Caller gates on `is_boundary_owned`.
 /// `dup_sites` occurrences are `LocalRef`/`Param` nodes, so an occurrence's binder is read via `core_of`.
+/// REFINE(A) (v-core-opt-committed, restores the scalar-keyed 05/22 owned-fold pins the coarse
+/// `consuming>=1` conjunct false-declines): TRUE iff the heap leading-element extraction `n` is
+/// DESTRUCTURED ENTIRELY TO SCALARS — every use of `n` is as the scrutinee of a `SumPayload` FIELD
+/// projection (`SumPayload{scrutinee: n}`), there is at least one such field, and EVERY field is
+/// SCALAR (`is_heap_type` false). A scalar field is COPIED at the match (value semantics), so it does
+/// not alias `n`'s cell; once every field is copied out, freeing `n`'s cell after the RestFrom vec-split
+/// dangles nothing. If `n` has ANY parent that is NOT such a field projection (a Call/List*/Tuple/… —
+/// i.e. `n` used as a WHOLE HEAP VALUE), or any field is itself heap (a lingering heap child borrow),
+/// this returns FALSE and the head falls to the coarse `consuming>=1` gate (06: heap child consumed) or
+/// declines (choreography: lingering heap borrow). No read-ordering needed: the all-scalar-field copy is
+/// unconditionally safe. Measured: 05/22 heads all-scalar->admit; ALL 333 choreography heads not-all-
+/// scalar->decline (zero false-admit); 06 heap-field->coarse.
+fn head_destructured_only_to_scalars(db: &mut Db, body: StructId, n: StructId) -> bool {
+    fn find_parents(
+        db: &mut Db,
+        id: StructId,
+        target: StructId,
+        out: &mut Vec<StructId>,
+        seen: &mut HashSet<StructId>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        let kids = core_child_ids(db, id);
+        if kids.contains(&target) {
+            out.push(id);
+        }
+        for c in kids {
+            find_parents(db, c, target, out, seen);
+        }
+    }
+    let mut parents = Vec::new();
+    let mut seen = HashSet::new();
+    find_parents(db, body, n, &mut parents, &mut seen);
+    if parents.is_empty() {
+        return false;
+    }
+    let mut has_field = false;
+    for p in parents {
+        match core_of(db, p) {
+            Core::SumPayload { scrutinee, .. } if scrutinee == n => {
+                has_field = true;
+                if is_heap_type(&crate::infer::type_of(db, p)) {
+                    return false; // a heap field lingers as a borrow -> not scalar-only
+                }
+            }
+            // any non-field-projection parent = `n` used as a whole heap value -> not destructure-only
+            _ => return false,
+        }
+    }
+    has_field
+}
+
 pub(super) fn collect_surplus_skippable_dups(
     db: &mut Db,
     body: StructId,
@@ -156,7 +209,17 @@ pub(super) fn collect_surplus_skippable_dups(
                         binding_escapes_dup_aware(db, body, EscapeTarget::Node(n), true, None);
                     let mut cons = HashSet::new();
                     collect_consuming_payload_sites_expr(db, body, n, true, &mut cons);
-                    if escapes || cons.is_empty() {
+                    // REFINE(A) (v-core-opt-committed): the coarse `consuming>=1` conjunct is a PROXY for "no
+                    // heap child of the head dangles across the split" that FALSE-DECLINES a SCALAR-only head
+                    // (05/22 Int64/nullary-sum tries: the head is destructured entirely to SCALAR fields, which
+                    // are COPIED at the match — value semantics, no alias to the head cell — so freeing the
+                    // head after the split dangles nothing; yet consuming_sites==0 because scalars aren't a
+                    // heap-payload consume). ADD the `head_destructured_only_to_scalars` disjunct: admit such a
+                    // head too. Sound because a scalar-only destructure copies out; the choreography lingering-
+                    // heap-borrow head (a heap child/whole-value borrow-read, NOT all-scalar) still DECLINES.
+                    if escapes
+                        || (cons.is_empty() && !head_destructured_only_to_scalars(db, body, n))
+                    {
                         all_dead_after = false;
                         break;
                     }
