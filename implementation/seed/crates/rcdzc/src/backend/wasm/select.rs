@@ -4270,6 +4270,80 @@ fn arg_has_whole_binder_dup(
         .any(|c| arg_has_whole_binder_dup(db, c, binder, dups))
 }
 
+/// (B) PATH-1 same-arg intra-borrow independence (v-core-opt-endorsed avenue-A same-arg relax): `arg` consumes
+/// `binder` as the whole list operand of a `List.push`/`List.prepend` AND co-borrows it inside the pushed
+/// element, where that co-borrow is INDEPENDENT (see `elem_coborrow_independent`). The intra-arg twin of the
+/// sibling co-borrow the #9181 narrowing requires: a dup-independent `List.at` read in the element forces a
+/// whole-binder retain-dup at the consume, so the old spine survives + is dead-after → safe for avenue-A's
+/// post-store drop. The Catalan self-embed `(List.push c (conv c ..))` embeds `c` un-dup'd → declines
+/// (leak-over-UAF). Only `List.push`/`List.prepend` with `binder` as the whole list operand.
+fn same_arg_intra_borrow_independent(db: &mut Db, arg: StructId, binder: StructId) -> bool {
+    let elem = match core_of(db, arg) {
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
+            if !matches!(core_of(db, list), Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder)
+            {
+                return false;
+            }
+            elem
+        }
+        _ => return false,
+    };
+    // An intra-arg co-borrow of `binder` in the element (survivor-forcing read) that is INDEPENDENT.
+    occurs_in(db, elem, binder) && elem_coborrow_independent(db, elem, binder)
+}
+
+/// (B) PATH-1 explicit independence discriminator (v-core-opt classifier-call option #1). ADMIT iff EVERY
+/// occurrence of `binder` in `elem` is EITHER (a) the CONTAINER operand of a dup-independent borrow prim —
+/// `List.at`/`Map.lookup`/`Bytes.at`/`String.at` ONLY (they dup/scalar-copy the element, so `binder`'s spine
+/// is not embedded) — OR (b) an explicit dup site (elem-scoped). A whole-carry, a non-dup-independent
+/// consuming/embedding op (conv-style Catalan self-embed), or the container of `String.slice`/`Bytes.slice`
+/// (ALIASING VIEWS — the load-bearing carve-out: a slice-view of `binder` aliases its cells → dropping the old
+/// spine = UAF) → DECLINE. Conjunctive; STRICTER than `binding_escapes` (which admits slice). Sound iff no live
+/// reference to `binder`'s cells is embedded in the surviving pushed value.
+fn elem_coborrow_independent(db: &mut Db, elem: StructId, binder: StructId) -> bool {
+    let mut dup_sites: HashSet<StructId> = HashSet::new();
+    reclaim::collect_dup_sites(db, elem, &[binder], &mut dup_sites);
+    elem_indep_walk(db, elem, binder, &dup_sites, false)
+}
+
+/// Returns true iff subtree `id` contains NO non-independent occurrence of `binder`. `a_container` = this
+/// position IS the container operand of a dup-independent borrow prim (a bare `binder` here is admitted (a)).
+fn elem_indep_walk(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    dups: &HashSet<StructId>,
+    a_container: bool,
+) -> bool {
+    match core_of(db, id) {
+        Core::LocalRef { binder: b } | Core::Param { binder: b } if b == binder => {
+            a_container || dups.contains(&id) // (a) borrow-prim container OR (b) dup-backed
+        }
+        // set (a): container operand → a_container=true; index/key is a scalar position.
+        Core::ListAt { list, index, .. } => {
+            elem_indep_walk(db, list, binder, dups, true)
+                && elem_indep_walk(db, index, binder, dups, false)
+        }
+        Core::MapLookup { map, key, .. } => {
+            elem_indep_walk(db, map, binder, dups, true)
+                && elem_indep_walk(db, key, binder, dups, false)
+        }
+        Core::BytesAt { bytes, index, .. } => {
+            elem_indep_walk(db, bytes, binder, dups, true)
+                && elem_indep_walk(db, index, binder, dups, false)
+        }
+        Core::StrAt { string, index, .. } => {
+            elem_indep_walk(db, string, binder, dups, true)
+                && elem_indep_walk(db, index, binder, dups, false)
+        }
+        // Everything else (incl. StrSlice/BytesSlice aliasing views, Call, ctors) is NOT an a-container:
+        // a bare `binder` there must be dup-backed (b) else the elem is not independent.
+        _ => core_child_ids(db, id)
+            .into_iter()
+            .all(|c| elem_indep_walk(db, c, binder, dups, false)),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_loop_iteration(
     db: &mut Db,
@@ -4490,7 +4564,12 @@ fn emit_loop_iteration(
                 arg_has_whole_binder_dup(db, args[i], binder, &dup_snapshot)
                     && (0..args.len())
                         .all(|j| j == i || !binding_escapes(db, args[j], binder, false))
-                    && (0..args.len()).any(|j| j != i && occurs_in(db, args[j], binder));
+                    // The whole-binder dup fired for a co-borrow that makes the OLD cell dead-after: EITHER a
+                    // SIBLING arg co-borrows binder (#9181 original), OR the co-borrow is INTRA-arg (same-arg)
+                    // and PROVABLY INDEPENDENT (the #9181-narrowed same-arg case, relaxed for COIN/ROTATE per
+                    // v-core-opt PATH-1 — Catalan's self-embed still escapes → still declines).
+                    && ((0..args.len()).any(|j| j != i && occurs_in(db, args[j], binder))
+                        || same_arg_intra_borrow_independent(db, args[i], binder));
             // THREADED-PREV reassigned-loop-param drop (v-core-opt-ruled, inc 03:522 leak-2; the #9522 AXIS-B
             // owner-drop family adapted). A loop param whose OLD value is DEAD-AFTER (only compare-borrowed
             // this iteration, then REPLACED by the back-edge store) leaks its old value each iteration when the
