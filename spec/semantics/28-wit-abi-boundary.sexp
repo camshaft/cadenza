@@ -4639,3 +4639,70 @@ cases
   (host-calls (call cadenza:platform/probe.info))
   (output 42)
   (live-objects 0))
+
+(case
+  "a plain guest reads the LENGTH of a Bytes host-import result via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 84 — a Bytes (`list<u8>`) host-import RESULT (probe.blob : () -> list<u8>) on a PURE-IMPORT
+           custom wit-world, plain export, result CONSUMED IN-GUEST (Bytes.len). Pins the Bytes leaf arm of
+           the compound host-RESULT lift on the plain host-delegating envelope (v-wit-boundary B1). This is a
+           conformance-vocabulary shape (v-hivemind's host results are always read in-guest). Stub blob ->
+           3 bytes, assert len 3.")
+  (wit-world
+    (world
+      w
+      (import cadenza:platform/probe (member blob (func (result (list (u8))))))))
+  (input
+    (do
+      (effect probe (op blob (-> Unit Bytes)))
+      (def (run) (host (probe) (Bytes.len (probe.blob unit))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.blob (: #list(1 2 3) Bytes)))
+  (host-calls (call cadenza:platform/probe.blob))
+  (output 3)
+  (live-objects 0))
+
+(case
+  "a plain guest matches an option<s64> host-import result via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 85 — an option<s64> host-import RESULT (probe.maybe : () -> option<s64>) on a PURE-IMPORT custom
+           wit-world, plain export, result CONSUMED IN-GUEST (match Some(x)->x / None->-1). Pins the
+           option-shaped-sum arm of the compound host-RESULT lift on the plain host-delegating envelope
+           (v-wit-boundary B1). Stub maybe -> Some(7), assert 7.")
+  (wit-world
+    (world
+      w
+      (import cadenza:platform/probe (member maybe (func (result (option (s64))))))))
+  (input
+    (do
+      (effect probe (op maybe (-> Unit (Option Int64))))
+      (def (run) (host (probe) (match (probe.maybe unit) ((Option.Some x) x) (Option.None -1))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.maybe (: (Some 7) (Option Int64))))
+  (host-calls (call cadenza:platform/probe.maybe))
+  (output 7)
+  (live-objects 0))
+
+(case
+  "a plain guest reads the LENGTH of a list<s64> host-import result via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 86 — a list<s64> host-import RESULT (probe.nums : () -> list<s64>) on a PURE-IMPORT custom
+           wit-world, plain export, result CONSUMED IN-GUEST (List.len). Pins the List arm of the compound
+           host-RESULT lift on the plain host-delegating envelope (v-wit-boundary B1). Stub nums ->
+           [10,20,30], assert len 3.")
+  (wit-world
+    (world
+      w
+      (import cadenza:platform/probe (member nums (func (result (list (s64))))))))
+  (input
+    (do
+      (effect probe (op nums (-> Unit (List Int64))))
+      (def (run) (host (probe) (List.len (probe.nums unit))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.nums (: #list(10 20 30) (List Int64))))
+  (host-calls (call cadenza:platform/probe.nums))
+  (output 3)
+  (live-objects 0))
