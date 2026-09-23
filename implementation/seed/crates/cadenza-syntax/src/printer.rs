@@ -701,7 +701,11 @@ impl<'a> Printer<'a> {
                 "host" if self.is_host_shape(args) => return self.print_host(args, parent_prec),
                 "module" if self.is_module_shape(args) => return self.print_module(args),
                 "export" if self.is_export_shape(args) => return self.print_export(args),
-                "import" if self.is_import_shape(args) || self.is_import_alias_shape(args) => {
+                "import"
+                    if self.is_import_shape(args)
+                        || self.is_import_wildcard_shape(args)
+                        || self.is_import_alias_shape(args) =>
+                {
                     return self.print_import(args);
                 }
                 // The compound-value literals (`list`/`tuple`/`record`/`map`) are STRING-headed now and
@@ -3418,6 +3422,14 @@ impl<'a> Printer<'a> {
     /// `import { name, … } from "path"` — brings a sibling module's public names into scope. `args`
     /// is `["path" (name…)]` (per `is_import_shape`): the path string then the name-list occurrence.
     fn print_import(&mut self, args: &[StructId]) {
+        // Wildcard form: `(import "path" (*))` (the single-element `*` list) -> `import * from "path"`.
+        // Checked BEFORE the named-list branch: a lone `*` is a valid `as_name`, so a plain named-list
+        // render would spell it `import { * } from "path"` — not the canonical wildcard surface.
+        if self.is_import_wildcard_shape(args) {
+            self.doc.word("import * from ");
+            self.expr(args[0], 0); // the path string literal
+            return;
+        }
         // Alias form: `(import "path" alias)` (bare-name third element) -> `import alias from "path"`
         // (a whole-module bind is a bare name where the named form has a `{ … }` list — both use `from`).
         if self.a.as_name(args[1]).is_some() {
@@ -3484,10 +3496,22 @@ impl<'a> Printer<'a> {
     fn is_import_shape(&self, args: &[StructId]) -> bool {
         args.len() == 2
             && self.is_string(args[0])
+            && !self.is_import_wildcard_shape(args)
             && matches!(self.a.get(args[1]), Struct::List(names)
                 if !names.is_empty()
                     && names.iter().all(|&n| self.a.as_name(n).is_some()
                         || self.import_rename_parts(n).is_some()))
+    }
+
+    /// The WILDCARD import `(import "path" (*))` -> `import * from "path"`: a string path then the
+    /// single-element list whose lone member is the `*` marker (the whole-exported-surface form). Distinct
+    /// from the named-list `is_import_shape` (which excludes it) by its element being exactly `*`, and from
+    /// the alias `is_import_alias_shape` by the spec being a LIST rather than a bare name.
+    fn is_import_wildcard_shape(&self, args: &[StructId]) -> bool {
+        args.len() == 2
+            && self.is_string(args[0])
+            && matches!(self.a.get(args[1]), Struct::List(names)
+                if names.len() == 1 && self.a.as_name(names[0]) == Some("*"))
     }
 
     /// A per-name import RENAME element `(as orig alias)` — a 3-list headed by the Name `as` with two

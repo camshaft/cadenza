@@ -25,6 +25,8 @@ A name defined in another module MUST be brought into scope only by an explicit 
 
 An import MUST NOT introduce names into scope beyond those it explicitly names or the module it explicitly binds.
 
+An import MAY bring a module's whole exported surface into scope in a single form that names no individual member, and such a form MUST introduce exactly the names that module makes visible and no others, so that importing an entire vocabulary neither requires enumerating its names one by one nor reaches any name the module does not export.
+
 ## Visibility
 
 ### Visibility Is Explicit

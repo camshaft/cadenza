@@ -652,6 +652,39 @@ fn resolve_import_clause(
         return Err(reject);
     };
 
+    // WILDCARD import `(import "path" (*))` — the single-element `*` list. Bring the module's WHOLE
+    // exported surface into scope FLAT: one binding per export (local == exported), exactly as if each
+    // name had been listed in a braced named import. Each pushed binding runs the SAME collision check
+    // (below, and against later imports), so a wildcard-introduced name that clashes with another import
+    // is CDZ0201 like any other — no implicit precedence. `exports_of[from_file]` is the file's public
+    // surface (value defs + type handles); `__ast__` is not a real export, so it is NOT wildcard-bound
+    // (import reflection stays opt-in via an explicit `{ __ast__ }`).
+    //= spec/capabilities/modules-and-namespaces.md#imports-are-explicit
+    //# An import MAY bring a module's whole exported surface into scope in a single form that names no individual member, and such a form MUST introduce exactly the names that module makes visible and no others, so that importing an entire vocabulary neither requires enumerating its names one by one nor reaches any name the module does not export.
+    if names.len() == 1 && ast.as_name(names[0]) == Some("*") {
+        for exported in &exports_of[from_file] {
+            // COLLIDING IMPORTED NAMES (CDZ0201): a wildcard-introduced name that already names an import
+            // into this file is a compile-time error, never an implicit precedence.
+            //= spec/capabilities/modules-and-namespaces.md#colliding-imported-names-are-rejected
+            //# Importing two definitions under the same name into one scope MUST be a compile-time error rather than resolved by an implicit precedence.
+            if out.iter().any(|i| &i.local == exported) {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    format!("`(import …)`: `{exported}` is imported more than once into this file"),
+                )
+                .at(occ));
+            }
+            out.push(Import {
+                local: exported.clone(),
+                from_file,
+                exported: exported.clone(),
+                module_alias: false,
+                occ,
+            });
+        }
+        return Ok(());
+    }
+
     for &name_id in names {
         // An element is either a BARE Name (plain import: local == exported) or a per-name RENAME
         // `(as orig alias)` — an `as`-headed list binding the module export `orig` under the local name

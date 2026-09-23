@@ -5912,28 +5912,42 @@ impl<'a> Parser<'a> {
         self.list(vec![head, effects_list, body], span)
     }
 
-    /// Two import surfaces, both ending `from "path"`, disambiguated by the SPEC after `import`:
+    /// Three import surfaces, all ending `from "path"`, disambiguated by the SPEC after `import`:
     ///   * `import { name, … } from "path"` -> `(import "path" (name …))` — brings a sibling module's
     ///     named exports FLAT into scope (third arena element a name-LIST);
+    ///   * `import * from "path"` -> `(import "path" (*))` — the WILDCARD: brings the module's WHOLE
+    ///     exported surface flat into scope (third arena element the single-element list `(*)`). It is a
+    ///     LIST like the named form, distinguished by its lone `*` member, so the linker's LIST branch
+    ///     expands it to one binding per export and the collision rule guards it like any named import.
     ///   * `import alias from "path"` -> `(import "path" alias)` — binds the WHOLE module under a local
     ///     `alias` (a record of its exports), reached by projection `alias.member` (third arena element
     ///     a bare NAME). The `alias` avoids a collision when two modules export the same name.
     ///
-    /// The arena is the corpus's path-first shape in both cases (a path string then either a name-list
-    /// or a bare-name alias), so the surfaces agree with the sexpr surface and the linker's discriminant
-    /// (list-third-element = named imports; atom-third-element = module alias). Both reuse the `from`
-    /// keyword — a whole-module bind is just a BARE name where the named form has a `{ … }` list.
+    /// The arena is the corpus's path-first shape in every case (a path string then a name-list, the
+    /// wildcard `(*)` list, or a bare-name alias), so the surfaces agree with the sexpr surface and the
+    /// linker's discriminant (list-third-element = named/wildcard imports; atom-third-element = module
+    /// alias). The named, wildcard, and whole-module binds all reuse the `from` keyword — the opener
+    /// (`{` vs `*` vs a bare name) is the sole discriminant.
     fn import_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let head = self.keyword_head("import", start);
         self.bump(); // `import`
-        // The import SPEC: a brace name-list `{ a, b }` (named imports) OR a bare NAME (whole-module
-        // alias). Both then take `from "path"`; the `{` vs bare-name opener is the sole discriminant.
+        // The import SPEC — three surfaces, disambiguated by the opener:
+        //   * a brace name-list `{ a, b }` -> a name-LIST (named imports, flat);
+        //   * a bare `*` (`import * from "path"`) -> the single-element wildcard list `(*)` (bring the
+        //     module's WHOLE exported surface into scope flat) — a LIST like the named form, marked by the
+        //     lone `*` element, so the linker's LIST branch expands it and the two never collide;
+        //   * a bare NAME -> that name (whole-module alias, reached by projection `alias.member`).
         let spec = if self.at(Kind::LBrace) {
             let names_start = self.cur_span();
             let names = self.brace_name_list();
             let names_span = names_start.merge(self.prev_span());
             self.list(names, names_span)
+        } else if self.at(Kind::Star) {
+            let star_span = self.cur_span();
+            self.bump(); // `*`
+            let star = self.name("*", star_span);
+            self.list(vec![star], star_span)
         } else {
             self.binder()
         };

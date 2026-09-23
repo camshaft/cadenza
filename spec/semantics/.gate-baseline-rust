@@ -5943,6 +5943,8 @@ pass	a widening runtime wrap extends a SIGNED source by its source sign
 pass	a wider narrow-width wrapping-mul constant folds by wrapping to the type width
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wider signed Int16 into a signed i8 segment is a width type error
+pass	a wildcard import brings a sibling module's whole exported surface into scope
+pass	a wildcard import brings an exported sum TYPE and its constructors into scope
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard in the list rest slot is a valid rest binder and matches
 pass	a wildcard used as a function argument names the binding-position misuse
@@ -10712,6 +10714,7 @@ pass	widening a runtime UInt8 to UInt64 zero-extends (total, emits)
 pass	widening a runtime UNSIGNED narrow integer to Int64 zero-extends (total, emits)
 pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
 pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
+pass	wildcard-importing two modules that export the same name is a colliding import
 pass	with the Option operand on the LEFT, the quantity-add clash names the (Option (Qty …)) type
 pass	with three abortive performs on a strict spine the leftmost still wins
 pass	without a default-fraction pragma the same (/ 1 3) is ordinary integer division — 0, not 1/3
