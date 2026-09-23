@@ -8205,7 +8205,19 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 let coldstart_window = stale_after.saturating_mul(2);
                 match coldstart_verdict(firstseen_age_secs(fleet, &a.name, now), coldstart_window) {
                     ColdStartVerdict::MarkAndWait => {
-                        stamp_firstseen(fleet, &a.name);
+                        // Marking first-seen is a STATE MUTATION (it starts the cold-start clock) — under
+                        // --dry-run it must NOT fire, else a report-only sweep skews the NEXT real run's
+                        // cold-start window AND breaches the dry-run contract. Report-only, mirroring every
+                        // other watchdog mutation. (2026-09-23 dry-run-contract audit after the recreate leak
+                        // #9565 — this was the one remaining un-gated mutation in the whole watchdog.)
+                        if dry_run {
+                            println!(
+                                "  DRY-RUN would mark '{}' first-seen (never-heartbeated — begins the cold-start grace)",
+                                a.name
+                            );
+                        } else {
+                            stamp_firstseen(fleet, &a.name);
+                        }
                         continue; // just noticed it booting — give it the cold-start window.
                     }
                     ColdStartVerdict::StillWaiting => continue, // still within cold-start grace.
