@@ -11318,3 +11318,4 @@ todo	two refutable nested-list elements in one arm each refine (currently declin
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
+pass	a plain guest matches a scalar-payload VARIANT host-import result via a pure-IMPORT custom wit-world

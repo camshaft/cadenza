@@ -4814,3 +4814,27 @@ cases
   (host-calls (call cadenza:platform/probe.color))
   (output 1)
   (live-objects 0))
+
+(case
+  "a plain guest matches a scalar-payload VARIANT host-import result via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 91 — a scalar-payload VARIANT host-import RESULT (probe.stat : () -> variant{ok, err(s64)}) on a
+           PURE-IMPORT custom wit-world, plain export, matched IN-GUEST (Ok->0 / Err(e)->e). Pins the general
+           scalar-payload variant arm of the compound host-RESULT lift on the plain host-delegating envelope
+           (v-wit-boundary B1) — the last shape of the consumed-in-guest result vocabulary. Stub stat ->
+           err(42), assert 42.")
+  (wit-world
+    (world
+      w
+      (import cadenza:platform/probe (member stat (func (result (variant (ok) (err (s64)))))))))
+  (input
+    (do
+      (type St (Ok) (Err Int64))
+      (effect probe (op stat (-> Unit St)))
+      (def (run) (host (probe) (match (probe.stat unit) ((St.Ok) 0) ((St.Err e) e))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.stat (: (err 42) stat)))
+  (host-calls (call cadenza:platform/probe.stat))
+  (output 42)
+  (live-objects 0))
