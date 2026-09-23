@@ -25,19 +25,6 @@ pub(super) fn collect_surplus_skippable_dups(
     db: &mut Db,
     body: StructId,
     dup_sites: &HashSet<StructId>,
-    // OWNED-FOLD extension (operator-funded, v-core-opt owns the dead-after GATE): `true` for a
-    // CALLEE-OWNED self-recursive fold (body NOT `is_boundary_owned`, the surplus.rs gap the caller
-    // now also runs for). It RELAXES conjunct 3 (the heap-leading-element + rest-read exclusion, the
-    // #7255 co-element dangle): a self-recursive fold consumes its list via the `RestFrom` `vec-drop`
-    // (which frees leading element 0), and the head's preservation `dup` of the scrutinee is SURPLUS iff
-    // every heap value extracted from the leading element is DEAD-AFTER — read (a borrow) and dropped
-    // BEFORE the split, never kept/threaded/returned. Then skipping the dup lets the `vec-drop` reclaim
-    // the head each iteration (ratwalk_noth 18@n=3 → 0). If ANY heap-leading extraction ESCAPES (threaded
-    // into the recursive call, returned) the dup is load-bearing → keep it (leak-over-UAF; ratwalk's
-    // threaded key stays leaking). Gated per-node by `binding_escapes_dup_aware` (v-core-opt's verified
-    // oracle; `tail_borrowed=true`, `dup_sites=None`); guarded-all is the UAF net. Boundary-owned callers
-    // pass `false` (conjunct 3 unconditional, unchanged).
-    owned_fold: bool,
     out: &mut HashSet<StructId>,
 ) {
     use crate::core::ListArmCond;
@@ -102,7 +89,7 @@ pub(super) fn collect_surplus_skippable_dups(
         db: &mut Db,
         id: StructId,
         b: StructId,
-        heap_leading_nodes: &mut Vec<StructId>,
+        heap_leading: &mut bool,
         rest_read: &mut bool,
         seen: &mut HashSet<StructId>,
     ) {
@@ -116,42 +103,23 @@ pub(super) fn collect_surplus_skippable_dups(
                 Some(crate::core::PathStep::Elem(_))
                     if is_heap_type(&crate::infer::type_of(db, id)) =>
                 {
-                    // Collect the leading-element extraction NODE (not just a bool) so the owned-fold
-                    // relaxation can dead-after-check each one.
-                    heap_leading_nodes.push(id);
+                    *heap_leading = true;
                 }
                 Some(crate::core::PathStep::RestFrom(_)) => *rest_read = true,
                 _ => {}
             }
         }
         for c in core_child_ids(db, id) {
-            scan_scrutinee_reads(db, c, b, heap_leading_nodes, rest_read, seen);
+            scan_scrutinee_reads(db, c, b, heap_leading, rest_read, seen);
         }
     }
     let mut exclude: HashSet<StructId> = HashSet::new();
     for &b in surplus_binders.iter() {
-        let (mut heap_leading_nodes, mut rest_read) = (Vec::new(), false);
+        let (mut heap_leading, mut rest_read) = (false, false);
         let mut s = HashSet::new();
-        scan_scrutinee_reads(db, body, b, &mut heap_leading_nodes, &mut rest_read, &mut s);
-        if !heap_leading_nodes.is_empty() && rest_read {
-            // Conjunct 3: a heap leading-element read ALONGSIDE a rest read normally EXCLUDES `b` (the
-            // vec-split frees the leading cells → a kept leading borrow dangles, #7255). OWNED-FOLD RELAX:
-            // for a callee-owned self-recursive fold, admit `b` anyway iff EVERY leading extraction is
-            // DEAD-AFTER (borrow-only, consumed before the split) — then skipping the surplus dup lets the
-            // vec-drop reclaim the head. Any escaping leading extraction (threaded/returned) keeps the
-            // exclusion (leak-over-UAF). v-core-opt's `binding_escapes_dup_aware` gate; guarded-all is the net.
-            let mut all_dead_after = owned_fold;
-            if owned_fold {
-                for &n in &heap_leading_nodes {
-                    if binding_escapes_dup_aware(db, body, EscapeTarget::Node(n), true, None) {
-                        all_dead_after = false;
-                        break;
-                    }
-                }
-            }
-            if !all_dead_after {
-                exclude.insert(b);
-            }
+        scan_scrutinee_reads(db, body, b, &mut heap_leading, &mut rest_read, &mut s);
+        if heap_leading && rest_read {
+            exclude.insert(b);
         }
     }
     for b in exclude {
