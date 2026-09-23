@@ -3423,6 +3423,29 @@
   (output (: true Bool)))
 
 (case
+  "import { __ast__ as decl } honors the per-name rename and binds the reflected AST under the alias"
+  (doc
+    "The reserved reflection name obeys the ORDINARY per-name rename `(as orig alias)` exactly like a
+           real export: `(import \"lib\" ((as __ast__ decl)))` binds the sibling module's reflected canonical
+           AST under the LOCAL name `decl`, and the literal `__ast__` is NOT introduced. `decl` is a genuine
+           `Ast` value — it matches the `Ast.List` module-body variant and rides `Ast.encode` — identical to
+           the un-aliased `import \"lib\" (__ast__)` above, just under the chosen local name.
+           Regression pin: the linker keyed its reflection-def splice off the import's LOCAL name (`__ast__`),
+           so the renamed form spliced no synth def and `decl` resolved unbound (CDZ0101). The splice now keys
+           off the reflection import's synthesized `exported` def-name, covering the plain and renamed forms
+           uniformly (rcdzc `link.rs`, the `reflect_files` collection).")
+  (module "lib"
+    (do (def (answer) 42) (export answer)))
+  (input
+    (do
+      (import "lib" ((as __ast__ decl)))
+      (def
+        (main)
+        (match decl ((Ast.List _) (= (Ast.encode decl) (Ast.encode decl))) (_ false)))
+      (export main)))
+  (output (: true Bool)))
+
+(case
   "a module reflects itself via Ast.module and exports a compile-time content-address a caller imports"
   (doc
     "SELF-REFLECTION (the P4 contract-id mechanism): module `c` uses the `Ast.module` intrinsic to

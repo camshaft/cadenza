@@ -460,10 +460,15 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
     // <reflected module AST>)` into the merged program. The def's body is the module's `(do …)` root
     // reflected structurally as an `Ast` value; the local `__ast__` an import bound (above) resolves to it
     // through the ordinary import→def binding. Dedup by `from_file` so two importers share one synth def.
+    // Detect a reflection import by its `exported` synth-def name, NOT by `i.local == AST_REFLECT_NAME`:
+    // `resolve_import_clause` points a reflection import's `exported` at `ast_reflect_def_name(from_file)`
+    // for BOTH the plain `{ __ast__ }` (local == `__ast__`) and the per-name rename `{ __ast__ as ALIAS }`
+    // (local == the alias). Keying off `local` here dropped the renamed form — no synth def was spliced, so
+    // the alias resolved to an unbound name (CDZ0101). Keying off `exported` covers both forms uniformly.
     let mut reflect_files: Vec<usize> = scopes
         .iter()
         .flat_map(|s| s.imports.iter())
-        .filter(|i| i.local == AST_REFLECT_NAME)
+        .filter(|i| i.exported == ast_reflect_def_name(i.from_file))
         .map(|i| i.from_file)
         .collect();
     reflect_files.sort_unstable();
