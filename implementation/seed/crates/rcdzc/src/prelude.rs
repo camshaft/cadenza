@@ -2948,6 +2948,11 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     // opt-in `to-string-radix` (a later increment). A CONSTANT operand folds to its decimal `Core::ConstStr`
     // via `IntValue::to_decimal_string`; a runtime operand is a later increment (declines cleanly).
     fields.push(to_string_field(ast, signed, width));
+    // `to-string-radix` — the EXPLICIT-base rendering `THIS → Int64 → String`, the non-decimal companion
+    // of `to-string` (which is always base 10). The base operand is an `Int64` in `2..=36`; a base outside
+    // that range const-traps. TWO constant operands fold to the base-N `Core::ConstStr`; a runtime value or
+    // base is a later increment (declines cleanly).
+    fields.push(to_string_radix_field(ast, signed, width));
     // `neg` — UNARY negation `T → T` (`(Int64.neg x)` = `0 - x`), the first-class NAMED form of prefix
     // `(- e)`. Offered only on SIGNED widths: negating an unsigned value underflow-traps on every nonzero
     // input, so an unsigned `neg` would be a near-useless always-trapping op. A constant folds (and
@@ -3080,6 +3085,46 @@ fn to_string_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     // `(to-string record)`.
     let k = push_atom(ast, Leaf::Name("to-string".into()));
+    {
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, k, record])
+    }
+}
+
+/// A `(to-string-radix (record ((meta t) TYPE) ((meta apply) (intrinsic int-to-string-radix))))` field —
+/// the EXPLICIT-base render of this width's integer. `TYPE` is `(fn () (-> TARGET (-> Int64 String)))`:
+/// the value is `TARGET` = `(Int width)`/`(UInt width)`, this module's own type, then the base is an
+/// `Int64` (a small universal quantity, ergonomic with a bare literal like `16`), yielding the `String`.
+/// The zero-param `fn` wrapper makes `scheme_of` read a monomorphic SCHEME. `(meta apply)` = the shared
+/// `int-to-string-radix` intrinsic — one prim for every width and both signednesses.
+fn to_string_radix_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
+    // `(fn () (-> TARGET (-> Int64 String)))`.
+    let target = {
+        let ctor = push_atom(ast, Leaf::Name(if signed { "Int" } else { "UInt" }.into()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
+    let string = intrinsic_node(ast, "String");
+    let inner = arrow_type(ast, int64, string); // (-> Int64 String)
+    let body = arrow_type(ast, target, inner); // (-> TARGET (-> Int64 String))
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let params = push_list(ast, vec![]);
+    let lambda = push_list(ast, vec![fn_head, params, body]);
+    // `(record ((meta t) lambda) ((meta apply) (intrinsic int-to-string-radix)))`.
+    let rec_head = push_atom(ast, Leaf::Ctor(CompoundCtor::Record));
+    let t_field = meta_field(ast, "t", lambda);
+    let prim = intrinsic_node(ast, "int-to-string-radix");
+    let apply_field = meta_field(ast, "apply", prim);
+    let record = push_list(ast, vec![rec_head, t_field, apply_field]);
+    // `(to-string-radix record)`.
+    let k = push_atom(ast, Leaf::Name("to-string-radix".into()));
     {
         let eq = push_atom(ast, Leaf::Name("=".into()));
         push_list(ast, vec![eq, k, record])

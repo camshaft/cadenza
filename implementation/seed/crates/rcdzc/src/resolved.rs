@@ -373,6 +373,15 @@ pub enum Prim {
     /// increment (declines cleanly) — the runtime decimal render needs a byte-building loop, so it lands
     /// with its own runtime op rather than in the const-fold slice.
     IntToString,
+    /// `Int64.to-string-radix` / `UInt64.to-string-radix` (and the other fixed-width modules) — the
+    /// rendering of an integer in an EXPLICIT base (`(Int w) → Int64 → String` / `(UInt w) → Int64 →
+    /// String`), the non-decimal companion of `to-string` (which is always base 10). The base is a
+    /// separate operand in `2..=36` (the range a single alphanumeric digit `0-9a-z` can name), lowercase
+    /// digits, a leading `-` for a negative value. TWO constant operands (value AND base) FOLD to the
+    /// `Core::ConstStr` of `IntValue::to_radix_string`; a base outside `2..=36` CONST-TRAPS (like a
+    /// constant divide-by-zero). A runtime value OR base is a later increment (declines cleanly) — the
+    /// runtime render is the same byte-building loop `to-string`'s runtime path lands with.
+    IntToStringRadix,
     /// A SUM VARIANT CONSTRUCTOR — the `(meta apply)` of a variant field on a synthesized sum record
     /// (`crate::sums`). Applying it (`(Option.Some 5)`) builds the sum value `sum-new(disc, payload)`:
     /// the DISCRIMINANT is read off the variant record's `(meta variant)` channel at lowering (NOT
@@ -976,6 +985,7 @@ impl Prim {
             "symbol-of" => Some(Prim::SymbolOf),
             "symbol-to-string" => Some(Prim::SymbolToString),
             "int-to-string" => Some(Prim::IntToString),
+            "int-to-string-radix" => Some(Prim::IntToStringRadix),
             "sum-new" => Some(Prim::SumNew),
             "sum-ctor" => Some(Prim::SumCtor),
             "tuple-new" => Some(Prim::TupleNew),

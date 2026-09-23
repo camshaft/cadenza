@@ -21327,3 +21327,87 @@
   (output (: "42" String))
   (call main (: -7 Int64))
   (output (: "-7" String)))
+
+; ============================================================================================
+; Explicit-base rendering — Int64.to-string-radix / UInt64.to-string-radix (every fixed-width
+; module). The non-decimal companion of `to-string`: `THIS → Int64 → String`, the second operand
+; the base in `2..=36` (the range a single alphanumeric digit `0-9a-z` names), lowercase digits, a
+; leading `-` for a negative value. Keeping radix an explicit opt-in leaves the common base-10 case
+; (`to-string`) clean. TWO constant operands (value AND base) FOLD to the base-N String constant; a
+; base outside `2..=36` CONST-TRAPS (like a constant divide-by-zero — the base could be runtime in
+; general, so it is a value trap, not a static reject). A runtime value or base declines (a later
+; increment, the same runtime render op `to-string` lands with).
+(case
+  "a constant integer renders in an explicit base (hex)"
+  (doc
+    "`(Int64.to-string-radix 255 16)` = \"ff\": base 16 renders 255 as the two hex digits, lowercase.
+           The explicit-base companion of `to-string` — the base is a second operand, so a program opts
+           into non-decimal output at the call rather than the common base-10 case carrying a base.")
+  (input (Int64.to-string-radix 255 16))
+  (output (: "ff" String)))
+
+(case
+  "a negative value renders its magnitude in the base with a leading minus"
+  (doc
+    "`(Int64.to-string-radix -255 16)` = \"-ff\": the sign is rendered as a leading `-` before the
+           base-16 magnitude, exactly as decimal `to-string` renders a negative — the base affects only
+           the digit alphabet, not the sign.")
+  (input (Int64.to-string-radix -255 16))
+  (output (: "-ff" String)))
+
+(case
+  "binary (base 2) renders the bit pattern of an unsigned narrow value"
+  (doc
+    "`(UInt8.to-string-radix 200 2)` = \"11001000\": base 2 renders the value's bits. Pins that the
+           SAME render prim serves every base and width — a narrow unsigned value renders its plain
+           binary, no per-width or per-base op.")
+  (input (UInt8.to-string-radix 200 2))
+  (output (: "11001000" String)))
+
+(case
+  "base 36 uses the full 0-9a-z digit alphabet"
+  (doc
+    "`(Int64.to-string-radix 35 36)` = \"z\": the maximum base 36 names 35 with the last alphanumeric
+           digit `z` (lowercase). Pins the upper end of the supported base range and the letter-digit
+           mapping.")
+  (input (Int64.to-string-radix 35 36))
+  (output (: "z" String)))
+
+(case
+  "zero renders as 0 in every base"
+  (doc
+    "`(Int64.to-string-radix 0 2)` = \"0\": zero is a single `0` digit regardless of base — the
+           render special-cases zero, like decimal `to-string`.")
+  (input (Int64.to-string-radix 0 2))
+  (output (: "0" String)))
+
+(case
+  "a base below the supported range const-traps"
+  (doc
+    "`(Int64.to-string-radix 10 1)` traps: a base below 2 has no positional digit alphabet, so a
+           constant call folds to a trap (like a constant divide-by-zero) rather than a compile error —
+           the base could be a runtime value in general, so an out-of-range base is a value trap. A
+           constant provable trap is a build error CDZ0304 (the const-trap code), exactly as a constant
+           `(/ 5 0)` folds to CDZ0304 rather than emitting a trapping module.")
+  (input (do (def (main) (Int64.to-string-radix 10 1)) (export main)))
+  (error CDZ0304))
+
+(case
+  "a base above 36 const-traps"
+  (doc
+    "`(Int64.to-string-radix 10 37)` traps: 36 is the largest base a single `0-9a-z` digit can name,
+           so a base of 37 is out of range and the constant call traps (build error CDZ0304) — the upper
+           mirror of the base<2 case.")
+  (input (do (def (main) (Int64.to-string-radix 10 37)) (export main)))
+  (error CDZ0304))
+
+(case
+  "a genuinely-runtime value renders in an explicit base (runtime path)"
+  (doc
+    "The RUNTIME complement: `(main (: x Int64))` applied by `(call …)` gives a runtime value, so
+           `to-string-radix` cannot const-fold and must render at run time. `x = 255` in base 16 → \"ff\".
+           The seed const-fold slice DECLINES a runtime operand (scored todo); this locks in the
+           idealistic runtime behavior so it flips to PASS when the runtime render op lands.")
+  (input (do (def (main (: x Int64)) (Int64.to-string-radix x 16)) (export main)))
+  (call main (: 255 Int64))
+  (output (: "ff" String)))
