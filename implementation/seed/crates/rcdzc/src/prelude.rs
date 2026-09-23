@@ -1277,7 +1277,52 @@ fn bigint_module(ast: &mut Arenas) -> StructId {
         let eq = push_atom(ast, Leaf::Name("=".into()));
         push_list(ast, vec![eq, neg_key, neg_op])
     });
+    // `to-string : BigInt → String` — the decimal rendering of the unbounded integer, base 10. A BigInt
+    // constant is a `Core::ConstInt` (its `IntValue` is already bignum-backed and unbounded — see `of`),
+    // so it folds via the SAME `int-to-string` prim as the fixed-width modules (`IntValue::to_decimal_string`
+    // is magnitude-size independent). A runtime BigInt is a later increment (declines cleanly).
+    let to_string_ty = bigint_to_string_type(ast);
+    let to_string_op = list_op_record(ast, "int-to-string", to_string_ty);
+    let to_string_key = push_atom(ast, Leaf::Name("to-string".into()));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, to_string_key, to_string_op])
+    });
+    // `to-string-radix : BigInt → Int64 → String` — the explicit-base rendering, base 2..=36 (an
+    // out-of-range base const-traps CDZ0304). Shares the `int-to-string-radix` prim with the fixed-width
+    // modules; a constant BigInt + constant base folds via `IntValue::to_radix_string`.
+    let to_string_radix_ty = bigint_to_string_radix_type(ast);
+    let to_string_radix_op = list_op_record(ast, "int-to-string-radix", to_string_radix_ty);
+    let to_string_radix_key = push_atom(ast, Leaf::Name("to-string-radix".into()));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, to_string_radix_key, to_string_radix_op])
+    });
     push_list(ast, children)
+}
+
+/// The type `(fn () (-> BigInt String))` for `BigInt.to-string` — a zero-param (monomorphic) `fn`
+/// wrapper so `scheme_of` reads a SCHEME; both positions are the `(intrinsic …)` ground type node.
+fn bigint_to_string_type(ast: &mut Arenas) -> StructId {
+    let bigint = intrinsic_node(ast, "BigInt");
+    let string = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, bigint, string);
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> BigInt (-> Int64 String)))` for `BigInt.to-string-radix` — the value then the
+/// base (`Int64`), yielding the `String`. Zero-param `fn` wrapper as above.
+fn bigint_to_string_radix_type(ast: &mut Arenas) -> StructId {
+    let bigint = intrinsic_node(ast, "BigInt");
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
+    let string = intrinsic_node(ast, "String");
+    let inner = arrow_type(ast, int64, string); // (-> Int64 String)
+    let body = arrow_type(ast, bigint, inner); // (-> BigInt (-> Int64 String))
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The `Rational` module record — `(meta t) = (intrinsic "Rational")` (so bare `Rational` in type

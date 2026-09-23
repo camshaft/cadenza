@@ -21411,3 +21411,35 @@
   (input (do (def (main (: x Int64)) (Int64.to-string-radix x 16)) (export main)))
   (call main (: 255 Int64))
   (output (: "ff" String)))
+
+; ============================================================================================
+; Rendering the UNBOUNDED integer — BigInt.to-string / BigInt.to-string-radix. The same decimal /
+; explicit-base render extended to `BigInt` (numeric-model.md: BigInt is the arbitrary-precision
+; integer). A BigInt constant is a `Core::ConstInt` whose `IntValue` is already bignum-backed and
+; unbounded (see `BigInt.of`), so it folds through the SAME `int-to-string` / `int-to-string-radix`
+; prims — `IntValue::to_decimal_string` / `to_radix_string` are magnitude-size independent (no i64
+; cap). A runtime BigInt is a later increment (declines cleanly).
+(case
+  "a BigInt renders its full decimal beyond the fixed-width range"
+  (doc
+    "`(BigInt.to-string 123456789012345678901234567890N)` = its 30-digit decimal: the render reads
+           the unbounded magnitude, not an i64-capped one — the payoff of BigInt over a fixed width. The
+           `N` suffix is the BigInt literal.")
+  (input (BigInt.to-string 123456789012345678901234567890N))
+  (output (: "123456789012345678901234567890" String)))
+
+(case
+  "a negative BigInt renders with a leading minus"
+  (doc
+    "`(BigInt.to-string -42N)` = \"-42\": sign handling is identical to the fixed-width `to-string` —
+           the sign lives in the value, so the shared render prim serves BigInt with no special case.")
+  (input (BigInt.to-string -42N))
+  (output (: "-42" String)))
+
+(case
+  "a BigInt renders in an explicit base"
+  (doc
+    "`(BigInt.to-string-radix 255N 16)` = \"ff\": the explicit-base companion extends to BigInt via
+           the shared `int-to-string-radix` prim, same base range 2..=36 and const-trap semantics.")
+  (input (BigInt.to-string-radix 255N 16))
+  (output (: "ff" String)))
