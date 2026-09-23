@@ -75,7 +75,10 @@ pub enum GenMode {
     /// surplus-skip shipped-UAF discriminator, where an over-dropped still-read head UAFs; plus its #9558
     /// re-land ADMIT-arm complement, a self-recursive fold whose preserved head element is dead-after with a
     /// threaded consumed child (consuming-backed -> ADMIT -> spine head reclaimed) yet also borrow-reads a
-    /// heap sibling after the recurse (the coarse mixed-child residue an over-drop would dangle)). Densifies
+    /// heap sibling after the recurse (the coarse mixed-child residue an over-drop would dangle), and the
+    /// #9560 REFINE(A) `head_destructured_only_to_scalars` additive-disjunct route, a scalar-keyed owned-fold
+    /// whose head is destructured ENTIRELY to scalar fields (copied at the match -> admit is unconditionally
+    /// safe; the exclusion-partner of the heap-field head, which must NOT be scalar-admitted)). Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
