@@ -364,6 +364,15 @@ pub enum Prim {
     /// `Symbol.to-string` — recover a Symbol's underlying content String (`Symbol → String`, the inverse
     /// of `Symbol.of`). A constant symbol FOLDS to its `Core::ConstStr` content (retyped `String`).
     SymbolToString,
+    /// `Int64.to-string` / `UInt64.to-string` (and the other fixed-width integer modules) — the DECIMAL
+    /// rendering of an integer (`(Int w) → String` / `(UInt w) → String`), base 10, with a leading `-`
+    /// for a negative value. ONE prim serves every width AND both signednesses: the operand's own
+    /// `IntValue` already carries its sign and magnitude, so the fold reads it uniformly (`0 → "0"`,
+    /// `-7 → "-7"`, an unsigned value is non-negative so it renders its plain decimal). A CONSTANT operand
+    /// FOLDS to the `Core::ConstStr` of `IntValue::to_decimal_string`; a runtime operand is a later
+    /// increment (declines cleanly) — the runtime decimal render needs a byte-building loop, so it lands
+    /// with its own runtime op rather than in the const-fold slice.
+    IntToString,
     /// A SUM VARIANT CONSTRUCTOR — the `(meta apply)` of a variant field on a synthesized sum record
     /// (`crate::sums`). Applying it (`(Option.Some 5)`) builds the sum value `sum-new(disc, payload)`:
     /// the DISCRIMINANT is read off the variant record's `(meta variant)` channel at lowering (NOT
@@ -966,6 +975,7 @@ impl Prim {
             "bigint-of" => Some(Prim::BigIntOf),
             "symbol-of" => Some(Prim::SymbolOf),
             "symbol-to-string" => Some(Prim::SymbolToString),
+            "int-to-string" => Some(Prim::IntToString),
             "sum-new" => Some(Prim::SumNew),
             "sum-ctor" => Some(Prim::SumCtor),
             "tuple-new" => Some(Prim::TupleNew),
