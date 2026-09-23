@@ -4636,6 +4636,6 @@ cases
     (respond
       probe.info
       (: #record((= sec 42) (= nsec 7)) (Record (: sec Int64) (: nsec Int64)))))
-  (host-calls (call probe.info))
+  (host-calls (call cadenza:platform/probe.info))
   (output 42)
   (live-objects 0))
