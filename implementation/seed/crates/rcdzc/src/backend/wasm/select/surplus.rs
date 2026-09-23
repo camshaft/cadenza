@@ -25,6 +25,19 @@ pub(super) fn collect_surplus_skippable_dups(
     db: &mut Db,
     body: StructId,
     dup_sites: &HashSet<StructId>,
+    // OWNED-FOLD extension (operator-funded, v-core-opt owns the dead-after GATE): `true` for a
+    // CALLEE-OWNED self-recursive fold (body NOT `is_boundary_owned`, the surplus.rs gap the caller
+    // now also runs for). It RELAXES conjunct 3 (the heap-leading-element + rest-read exclusion, the
+    // #7255 co-element dangle): a self-recursive fold consumes its list via the `RestFrom` `vec-drop`
+    // (which frees leading element 0), and the head's preservation `dup` of the scrutinee is SURPLUS iff
+    // every heap value extracted from the leading element is DEAD-AFTER — read (a borrow) and dropped
+    // BEFORE the split, never kept/threaded/returned. Then skipping the dup lets the `vec-drop` reclaim
+    // the head each iteration (ratwalk_noth 18@n=3 → 0). If ANY heap-leading extraction ESCAPES (threaded
+    // into the recursive call, returned) the dup is load-bearing → keep it (leak-over-UAF; ratwalk's
+    // threaded key stays leaking). Gated per-node by `binding_escapes_dup_aware` (v-core-opt's verified
+    // oracle; `tail_borrowed=true`, `dup_sites=None`); guarded-all is the UAF net. Boundary-owned callers
+    // pass `false` (conjunct 3 unconditional, unchanged).
+    owned_fold: bool,
     out: &mut HashSet<StructId>,
 ) {
     use crate::core::ListArmCond;
@@ -89,7 +102,7 @@ pub(super) fn collect_surplus_skippable_dups(
         db: &mut Db,
         id: StructId,
         b: StructId,
-        heap_leading: &mut bool,
+        heap_leading_nodes: &mut Vec<StructId>,
         rest_read: &mut bool,
         seen: &mut HashSet<StructId>,
     ) {
@@ -103,23 +116,55 @@ pub(super) fn collect_surplus_skippable_dups(
                 Some(crate::core::PathStep::Elem(_))
                     if is_heap_type(&crate::infer::type_of(db, id)) =>
                 {
-                    *heap_leading = true;
+                    // Collect the leading-element extraction NODE (not just a bool) so the owned-fold
+                    // relaxation can dead-after-check each one.
+                    heap_leading_nodes.push(id);
                 }
                 Some(crate::core::PathStep::RestFrom(_)) => *rest_read = true,
                 _ => {}
             }
         }
         for c in core_child_ids(db, id) {
-            scan_scrutinee_reads(db, c, b, heap_leading, rest_read, seen);
+            scan_scrutinee_reads(db, c, b, heap_leading_nodes, rest_read, seen);
         }
     }
     let mut exclude: HashSet<StructId> = HashSet::new();
     for &b in surplus_binders.iter() {
-        let (mut heap_leading, mut rest_read) = (false, false);
+        let (mut heap_leading_nodes, mut rest_read) = (Vec::new(), false);
         let mut s = HashSet::new();
-        scan_scrutinee_reads(db, body, b, &mut heap_leading, &mut rest_read, &mut s);
-        if heap_leading && rest_read {
-            exclude.insert(b);
+        scan_scrutinee_reads(db, body, b, &mut heap_leading_nodes, &mut rest_read, &mut s);
+        if !heap_leading_nodes.is_empty() && rest_read {
+            // Conjunct 3: a heap leading-element read ALONGSIDE a rest read normally EXCLUDES `b` (the
+            // vec-split frees the leading cells → a kept leading borrow dangles, #7255). OWNED-FOLD RELAX
+            // (the COARSE liveness-across-vec-split predicate, v-core-opt-committed, replacing #9537's
+            // escapes-only oracle): for a self-recursive fold, admit `b` iff for EVERY heap leading-element
+            // extraction `n`, BOTH (a) `n` does NOT escape (`binding_escapes_dup_aware` — not threaded/
+            // returned) AND (b) `n`'s payload has a CONSUMING site (`collect_consuming_payload_sites_expr`
+            // non-empty = an independent-dup backing that keeps `n`'s live-after children alive across the
+            // vec-split). escapes==false is NECESSARY BUT NOT SUFFICIENT: a pure-BORROW head element
+            // (consuming_sites==0, e.g. the choreography roundtrip's head Ast) dangles when the vec-split
+            // frees the head cell → DECLINE. The consuming conjunct is what distinguishes 06/05/03 (head's
+            // threaded child consumed → admit, leak-fixed) from the choreography over-drop UAF (pure-borrow
+            // head → decline, safe leak). collect_consuming_payload_sites_expr descends the head element's
+            // payload subtree and sees THROUGH the inner-match re-root (06's k found despite Discriminant
+            // re-root). Verified: 0 real traps across all 177 choreography @tests under guarded; 06-inc admits
+            // clean (value 40). guarded-all is the standing net for the theoretical mixed-child residue.
+            let mut all_dead_after = owned_fold;
+            if owned_fold {
+                for &n in &heap_leading_nodes {
+                    let escapes =
+                        binding_escapes_dup_aware(db, body, EscapeTarget::Node(n), true, None);
+                    let mut cons = HashSet::new();
+                    collect_consuming_payload_sites_expr(db, body, n, true, &mut cons);
+                    if escapes || cons.is_empty() {
+                        all_dead_after = false;
+                        break;
+                    }
+                }
+            }
+            if !all_dead_after {
+                exclude.insert(b);
+            }
         }
     }
     for b in exclude {
