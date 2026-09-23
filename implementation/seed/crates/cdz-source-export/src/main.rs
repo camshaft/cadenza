@@ -45,11 +45,19 @@ fn tier_roots(tier: &str) -> Result<&'static [&'static str], String> {
         // paths, which collides at the consumer's lockfile stage (`brazil-build sync`: "package collision
         // ... cadenza-ast v0.1.0 ... only one can be written unambiguously"). Rooting at both tiers' roots
         // + dedup discovery yields the union with cadenza-ast exactly once.
+        // `cadenza-syntax` (the decoupled ML text front-end: read/print the keyword ML surface) and
+        // `cadenza-syntax-sexpr` (the s-expression co-surface / corpus oracle) are ADDED consumer entry
+        // points for a Cadenza-ML conformance-test runner: conformance tests are authored in Cadenza
+        // (ML `.cdz` + s-expr files), so a Rust runner must PARSE them. Both are roots (both are directly
+        // consumed surfaces); discovery brings cadenza-syntax's structural closure (cadenza-syntax-core/
+        // -json/-toml + the OPTIONAL -cedar path-dep) and dedups cadenza-ast to the ONE shared member.
         "all" => Ok(&[
             "cadenza-ast",
             "cadenza-value",
             "cadenza-ast-serde",
             "cdz-platform",
+            "cadenza-syntax",
+            "cadenza-syntax-sexpr",
         ]),
         other => Err(format!(
             "unknown --tier {other:?} (known tiers: codec, reducer, all)"
@@ -824,14 +832,17 @@ source = \"registry+https://x\"
         );
         // The reducer tier roots at cdz-platform; its first-party deps are discovered from the manifest.
         assert_eq!(tier_roots("reducer").unwrap(), &["cdz-platform"]);
-        // The combined `all` tier roots at both tiers' surfaces; discovery dedups cadenza-ast to ONE copy.
+        // The combined `all` tier roots at both tiers' surfaces + the ML/s-expr syntax front-end
+        // (conformance-runner entry points); discovery dedups cadenza-ast to ONE copy.
         assert_eq!(
             tier_roots("all").unwrap(),
             &[
                 "cadenza-ast",
                 "cadenza-value",
                 "cadenza-ast-serde",
-                "cdz-platform"
+                "cdz-platform",
+                "cadenza-syntax",
+                "cadenza-syntax-sexpr"
             ]
         );
         assert!(tier_roots("bogus").is_err());
