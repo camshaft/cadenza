@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(21);
+    let shape = c.variant(22);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -445,8 +445,30 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // KNOWN `a + b + d + 6` (heads a/b/d + the 1+2+3 threaded-prev scalars); verified wasm==rust==30 at
         // a=7,b=8,d=9. First fold over a list of TUPLE-of-heap-child elements with a mixed consumed+borrowed
         // head — a surface no other shape covers (19 is a bare heap-element list, pure-borrow only).
-        _ => format!(
+        20 => format!(
             "(do (type Cell (C (List Int64) Int64)) (type L (Nil) (Cons Cell L)) (def (f (: xs L) (: prev Int64)) (match xs ((Nil) prev) ((Cons h t) (match h ((C p q) (let ((rest (f t (+ q prev)))) (+ rest (Option.expect (List.at p 0) \"p\")))))))) (def (main) (f (Cons (C (list {a}) 1) (Cons (C (list {b}) 2) (Cons (C (list {d}) 3) (Nil)))) 0)) (export main))"
+        ),
+        // 21 — the #9560 REFINE(A) `head_destructured_only_to_scalars` ADDITIVE-DISJUNCT admit route: a
+        // SCALAR-KEYED owned-fold (the 05:24913 sorted / 05:24949 signed-inc scalar-Int64-trie pins the
+        // disjunct restores). Third arm of the owned-fold head-preservation predicate that shapes 19/20
+        // bracket: 19 = pure-borrow head -> DECLINE, 20 = heap-field head consumed -> coarse `consuming>=1`
+        // -> ADMIT, and THIS = head destructured ENTIRELY TO SCALARS -> the #9560 additive disjunct -> ADMIT.
+        // The head element `h : P` is a 2-scalar-field sum; `(match h ((Mk k v) …))` projects BOTH fields
+        // (SumPayload{scrutinee:h}), every field is Int64 (is_heap_type false), and h has NO other use (not
+        // passed as a whole heap value). #9558's coarse `consuming_sites>=1` conjunct FALSE-DECLINED this
+        // (scalars aren't a heap-payload consume -> consuming_sites==0 -> 05 stayed known-leak after the
+        // #9551 revert); #9560 adds the disjunct `escapes==false AND (consuming>=1 OR all-scalar-fields)`,
+        // because the all-scalar fields are COPIED at the match (value semantics, no alias to h's cell) so
+        // freeing the head after the RestFrom vec-split dangles nothing — unconditionally safe, no read-
+        // ordering. So this shape admits SOLELY via the new disjunct (without it, it declines + leaks). It
+        // pins that the admit route is VALUE-CORRECT — a miscompile of the scalar-field-copy reclaim (a
+        // double-free of the head shell / a wrong scalar extraction) corrupts the sum; and it is the
+        // exclusion-partner of shape 20, whose HEAP-field head must NOT be admitted via this disjunct (if a
+        // regression relaxes it to treat a heap field as scalar, shape 20 over-drops its `p` and goes RED).
+        // Returns the KNOWN `a + b + d + 6` (acc threads k+v per element = a+1, b+2, d+3); verified
+        // wasm==rust==30 at a=7,b=8,d=9. First owned-fold over ALL-SCALAR-field compound elements.
+        _ => format!(
+            "(do (type P (Mk Int64 Int64)) (type L (Nil) (Cons P L)) (def (f (: xs L) (: acc Int64)) (match xs ((Nil) acc) ((Cons h t) (match h ((Mk k v) (f t (+ acc (+ k v)))))))) (def (main) (f (Cons (Mk {a} 1) (Cons (Mk {b} 2) (Cons (Mk {d} 3) (Nil)))) 0)) (export main))"
         ),
     };
     Program { source }
@@ -5173,9 +5195,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the twenty-one shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 21];
-        for seed in 0u64..941 {
+        // Distinctive, mutually-exclusive markers for the twenty-two shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 22];
+        for seed in 0u64..986 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5230,6 +5252,8 @@ mod tests {
                 reached[18] = true;
             } else if src.contains("(type Cell (C (List Int64) Int64))") {
                 reached[20] = true;
+            } else if src.contains("(type P (Mk Int64 Int64))") {
+                reached[21] = true;
             } else if src.contains("(type L (Nil) (Cons (List Int64) L))") {
                 reached[19] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
@@ -5238,7 +5262,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-one reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-two reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
