@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(22);
+    let shape = c.variant(23);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -467,8 +467,30 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // regression relaxes it to treat a heap field as scalar, shape 20 over-drops its `p` and goes RED).
         // Returns the KNOWN `a + b + d + 6` (acc threads k+v per element = a+1, b+2, d+3); verified
         // wasm==rust==30 at a=7,b=8,d=9. First owned-fold over ALL-SCALAR-field compound elements.
-        _ => format!(
+        21 => format!(
             "(do (type P (Mk Int64 Int64)) (type L (Nil) (Cons P L)) (def (f (: xs L) (: acc Int64)) (match xs ((Nil) acc) ((Cons h t) (match h ((Mk k v) (f t (+ acc (+ k v)))))))) (def (main) (f (Cons (Mk {a} 1) (Cons (Mk {b} 2) (Cons (Mk {d} 3) (Nil)))) 0)) (export main))"
+        ),
+        // 22 — MUTUAL-RECURSIVE-SCC CALLER-OWNERSHIP UAF guard (#9140 group-wide caller-ownership; the
+        // 09-functions:712 CAESAR-class double-free witness, #9562). The FIRST shape with a genuine 2-fn
+        // MUTUAL recursion (`go`↔`helper` — a call-graph SCC), distinct from every self-recursive shape
+        // (9-21). `go`/`helper` form a reclaiming mutual SCC that BORROWS `xs` (reads an element, never frees
+        // it); `caller` passes `xs` to `(go xs 2)` AND REUSES it after via `(List.at xs 1)` — so the SCC does
+        // NOT own `xs`, the caller holds a LIVE BORROW across the SCC call. The mutual-GROUP-EXIT drop MUST
+        // DECLINE: freeing `xs` at the group exit dangles the caller's reused handle = the CAESAR-class
+        // double-free/UAF (the mutual analog of the single-member AXIS A looped_invariant_param_caller_owned
+        // guard). At tip the guard declines -> `xs` stays leaking (leak-over-UAF, value-CORRECT); this is a
+        // REGRESSION TRIPWIRE — a relaxed group-wide caller-ownership guard that frees the caller's reused
+        // borrow re-frees `xs` -> the caller's `(List.at xs 1)` reads freed -> wrong value / trap, caught by
+        // determinism / opt-invariance / differential. Content-observable (reads xs ELEMENTS via List.at, not
+        // just List.len, so a corrupted reused-borrow shows as a wrong element value, not merely a length).
+        // The DIRECT wasm path (what these value oracles run) carries the guard + the leak; the cadenza
+        // re-emit reclaims to 0 via inlining-dup (sound — a separate cadenza-equiv dimension, v-cadenza-
+        // backend's lane; #9562 marked the exact-count pin known-leak for that dual-path divergence). Returns
+        // the KNOWN `a + b` (go/helper descend the SCC to List.at xs 0 = a; caller reuses List.at xs 1 = b);
+        // verified wasm==rust==15 at a=7,b=8. First mutual-SCC surface — a call-graph shape the self-recursion
+        // shapes structurally cannot reach.
+        _ => format!(
+            "(do (def (go (: xs (List Int64)) (: d Int64)) (if (< d 1) (Option.expect (List.at xs 0) \"g\") (helper xs (- d 1)))) (def (helper (: xs (List Int64)) (: d Int64)) (if (< d 1) (Option.expect (List.at xs 0) \"h\") (go xs (- d 1)))) (def (caller (: xs (List Int64))) (+ (go xs 2) (Option.expect (List.at xs 1) \"c\"))) (def (main) (caller (list {a} {b} {d}))) (export main))"
         ),
     };
     Program { source }
@@ -5195,9 +5217,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the twenty-two shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 22];
-        for seed in 0u64..986 {
+        // Distinctive, mutually-exclusive markers for the twenty-three shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 23];
+        for seed in 0u64..1035 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5254,6 +5276,8 @@ mod tests {
                 reached[20] = true;
             } else if src.contains("(type P (Mk Int64 Int64))") {
                 reached[21] = true;
+            } else if src.contains("(def (go (: xs (List Int64)) (: d Int64))") {
+                reached[22] = true;
             } else if src.contains("(type L (Nil) (Cons (List Int64) L))") {
                 reached[19] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
@@ -5262,7 +5286,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-two reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-three reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
