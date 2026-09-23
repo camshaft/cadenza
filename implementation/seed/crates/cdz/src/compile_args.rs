@@ -25,7 +25,9 @@ use std::path::PathBuf;
 )]
 pub struct CompileArgs {
     /// Input artifacts: `path`, `name=path`, or `kind:name=path` (kind defaults to `ast`). Under
-    /// `cdz compile`, a bare `path` may also be a SOURCE file (parsed in-process) or a DIRECTORY
+    /// `cdz compile`, a SOURCE file (`.cdz`/`.ml`/`.sexp`) is parsed in-process in ANY of these forms —
+    /// a bare `path` (name = file stem), or a `name=path` / `ast:name=path` binding the parsed AST under
+    /// the EXPLICIT name (e.g. `ast:target=suite/smoke.cdz`). A bare `path` may also be a DIRECTORY
     /// (recursed for every `.cdz`/`.ml`/`.sexp` source — a whole package tree; pair with `--entry`).
     #[arg(required = true, value_name = "INPUT")]
     inputs: Vec<String>,

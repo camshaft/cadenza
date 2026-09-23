@@ -2079,15 +2079,47 @@ fn panic_reason(stderr: &str) -> String {
 
 /// A source-file extension `cdz compile` can parse in-process (vs a pre-built binary AST). `.cdz`/`.ml`
 /// read as the ml surface, `.sexp`/`.sexpr` as s-expressions — mirroring `load_program_spanned`.
+fn has_source_extension(path: &str) -> bool {
+    [".cdz", ".ml", ".sexp", ".sexpr"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
+}
+
+/// True for a BARE `path` spec (no `kind:`/`name=`) whose extension is a recognized source surface — the
+/// form directory expansion collects and the closure-follow keys on. An explicit `kind:name=path` is NOT
+/// bare (it names an artifact); whether such a spec is nonetheless a source to auto-parse is
+/// [`source_spec`]'s job — this predicate stays the narrow "is this a plain source path" test.
 fn is_source_file(spec: &str) -> bool {
-    // Only a bare `path` spec (no `kind:`/`name=`) with a source extension is auto-parsed; an explicit
-    // `kind:name=path` (e.g. `ast:m=…`, `spans:m=…`) is passed through as a raw artifact untouched.
+    // Only a bare `path` spec (no `kind:`/`name=`) with a source extension is auto-parsed here; an
+    // explicit `kind:name=path` (e.g. `ast:m=…`, `spans:m=…`) is handled by `source_spec`.
     if spec.contains(':') || spec.contains('=') {
         return false;
     }
-    [".cdz", ".ml", ".sexp", ".sexpr"]
-        .iter()
-        .any(|ext| spec.ends_with(ext))
+    has_source_extension(spec)
+}
+
+/// Resolve a compile input spec to `(name, source_path)` IFF it names a SOURCE file to parse in-process:
+/// a bare `path`, a `name=path`, or an `ast:name=path` (the default artifact kind) whose path has a
+/// recognized source extension. The `name` is the EXPLICIT `name=` when given, else the file stem — so
+/// `ast:target=suite/smoke.cdz` parses `suite/smoke.cdz` and binds its AST under `target`, not the stem
+/// `smoke`. Returns `None` (⇒ a raw `read_artifact_spec` passthrough) for a non-source path (a pre-built
+/// binary AST) or a non-`ast` kind (a `spans:`/sidecar artifact is already encoded, never re-parsed).
+/// The `kind:` split MIRRORS `read_artifact_spec` so the two agree on what a spec means.
+fn source_spec(spec: &str) -> Option<(String, String)> {
+    // Split an optional `kind:` prefix (only when it looks like one — no `/` or `=` in the key).
+    let (kind, rest) = match spec.split_once(':') {
+        Some((k, r)) if !k.contains('/') && !k.contains('=') => (k, r),
+        _ => (cadenza_compile_abi::Artifact::KIND_AST, spec),
+    };
+    // Only an `ast` artifact (the default kind) is parsed from source; a `spans:`/other kind stays raw.
+    if kind != cadenza_compile_abi::Artifact::KIND_AST {
+        return None;
+    }
+    let (name, path) = match rest.split_once('=') {
+        Some((n, p)) => (n.to_string(), p.to_string()),
+        None => (program_name(rest), rest.to_string()),
+    };
+    has_source_extension(&path).then_some((name, path))
 }
 
 /// Expand each input spec, replacing a DIRECTORY with the source files under it (recursively). A spec
@@ -2240,8 +2272,10 @@ fn run_compile(args: compile_args::CompileArgs) -> ExitCode {
     };
     // Fast path: no source-file input → the ordinary artifacts-in compile, byte-for-byte as before.
     // (A directory only ever expands to SOURCE files, so if one was given this branch is not taken;
-    // `specs` here equals the original args, so `run(args)` sees the same inputs.)
-    if !specs.iter().any(|s| is_source_file(s)) {
+    // `specs` here equals the original args, so `run(args)` sees the same inputs.) A `name=path` /
+    // `ast:name=path` pointing at a source file counts as source (see `source_spec`), so it is parsed
+    // in-process below rather than handed to the compiler as a raw (undecodable) binary AST.
+    if !specs.iter().any(|s| source_spec(s).is_some()) {
         return dispatch_compile_args(args);
     }
 
@@ -2282,18 +2316,19 @@ fn run_compile(args: compile_args::CompileArgs) -> ExitCode {
     let targets = args.targets();
     let mut inputs: Vec<cadenza_compile_abi::Artifact> = Vec::new();
     for spec in &specs {
-        if is_source_file(spec) {
+        if let Some((name, path)) = source_spec(spec) {
             // Parse the source in-process, keeping the span table (the whole-program form, as the gate
-            // and the semantic queries use).
-            let (source, arenas, spantable) = load_spanned_or_bail!(spec);
-            let name = program_name(spec);
+            // and the semantic queries use). `path` is the file to read; `name` is the EXPLICIT `name=`
+            // from the spec when given (else the file stem), so `ast:target=smoke.cdz` binds under
+            // `target`. A bare `smoke.cdz` yields `(program_name, smoke.cdz)` — identical to before.
+            let (source, arenas, spantable) = load_spanned_or_bail!(&path);
             inputs.push(cadenza_compile_abi::Artifact::new(
                 cadenza_compile_abi::Artifact::KIND_AST,
                 name.clone(),
                 cadenza_syntax::codec::encode(&arenas),
             ));
             {
-                let span_data = span_data_of(spec, &source, &spantable);
+                let span_data = span_data_of(&path, &source, &spantable);
                 inputs.push(cadenza_compile_abi::Artifact::new(
                     cadenza_compile_abi::spans::KIND_SPANS,
                     name,
@@ -8656,6 +8691,112 @@ mod tests {
         assert!(
             !is_source_file("spans:x.sexp"),
             "a kind:path spec is not auto-parsed source"
+        );
+    }
+
+    #[test]
+    fn source_spec_resolves_bare_named_and_ast_kinded_source_paths_keeping_the_explicit_name() {
+        // A BARE source path → (stem, path), identical to the pre-`name=` behavior.
+        assert_eq!(
+            source_spec("suite/smoke.cdz"),
+            Some(("smoke".to_string(), "suite/smoke.cdz".to_string())),
+            "a bare source path keeps its file-stem name"
+        );
+        // A `name=path` source → the EXPLICIT name is bound, path is what to parse (the file stem is
+        // NOT used). This is the whole point of the fix — `ast:target=…` binds under `target`.
+        assert_eq!(
+            source_spec("target=suite/smoke.cdz"),
+            Some(("target".to_string(), "suite/smoke.cdz".to_string())),
+            "a name=path source binds the explicit name, not the stem"
+        );
+        // An explicit `ast:` (the default kind) is equivalent to the bare `name=path` form.
+        assert_eq!(
+            source_spec("ast:target=suite/smoke.cdz"),
+            Some(("target".to_string(), "suite/smoke.cdz".to_string())),
+            "ast:name=path parses the source under the explicit name"
+        );
+        for ext in [".cdz", ".ml", ".sexp", ".sexpr"] {
+            assert_eq!(
+                source_spec(&format!("m=app{ext}")),
+                Some(("m".to_string(), format!("app{ext}"))),
+                "every source surface is recognized in a name=path spec"
+            );
+        }
+    }
+
+    #[test]
+    fn source_spec_is_none_for_a_non_source_path_or_a_non_ast_kind() {
+        // A pre-built binary AST (no source extension) is NOT parsed — it stays a raw passthrough.
+        assert_eq!(
+            source_spec("m=app.ast"),
+            None,
+            "a .ast path is a raw artifact"
+        );
+        assert_eq!(source_spec("prog.wasm"), None, "a .wasm path is not source");
+        assert_eq!(
+            source_spec("m=blob"),
+            None,
+            "an extensionless path is not source"
+        );
+        // A non-`ast` kind is never re-parsed from source, even at a source extension — a `spans:`
+        // artifact is already encoded; auto-parsing it would be wrong.
+        assert_eq!(
+            source_spec("spans:m=app.cdz"),
+            None,
+            "a spans: artifact is not auto-parsed even at a source extension"
+        );
+        assert_eq!(
+            source_spec("sidecar:d=drive.sexp"),
+            None,
+            "a non-ast kind stays a raw artifact passthrough"
+        );
+        // `stdin` (`-`) is not a source path.
+        assert_eq!(source_spec("-"), None, "stdin is not a source path");
+    }
+
+    /// End-to-end: `cdz compile` accepts a SOURCE file in the `name=path` / `ast:name=path` forms (not
+    /// only a bare path), parsing it in-process under the EXPLICIT name. Before the fix these forms
+    /// `std::fs::read` raw bytes and handed them through undecoded, failing with "binary AST for
+    /// `<name>` failed to decode". Gated to `standalone` (the in-process compiler; the `!standalone`
+    /// build delegates to a separate `cdz-compile` binary not present in a unit-test build).
+    #[cfg(feature = "standalone")]
+    #[test]
+    fn run_compile_accepts_a_name_path_source_binding_the_explicit_name() {
+        let dir = tmp("namepath-compile");
+        let src = dir.join("smoke.sexp");
+        // A self-contained program (no value-heap ⇒ no runtime store needed to compile).
+        std::fs::write(&src, "(do (def (main) 42) (export main))").unwrap();
+        let src = src.to_string_lossy().into_owned();
+
+        // 1. `name=path` naming a source file compiles (pre-fix: "binary AST … failed to decode").
+        let named = dir.join("named.wasm");
+        let args = compile_args::CompileArgs::try_parse_from([
+            "cdz-compile",
+            &format!("target={src}"),
+            "-o",
+            named.to_str().unwrap(),
+        ])
+        .expect("parse compile args");
+        run_compile(args);
+        let bytes = std::fs::read(&named).expect("name=path source produced a wasm component");
+        assert_eq!(&bytes[..4], b"\0asm", "output is a wasm module");
+
+        // 2. `ast:name=path` binds the AST under the EXPLICIT name `target` (not the stem `smoke`):
+        // `--entry target` resolves the package entry. If the stem were used this would fail.
+        let kinded = dir.join("kinded.wasm");
+        let args = compile_args::CompileArgs::try_parse_from([
+            "cdz-compile",
+            &format!("ast:target={src}"),
+            "--entry",
+            "target",
+            "-o",
+            kinded.to_str().unwrap(),
+        ])
+        .expect("parse compile args");
+        run_compile(args);
+        assert!(
+            kinded.exists(),
+            "ast:name=path source resolves under the explicit name `target`"
         );
     }
 
