@@ -2839,6 +2839,34 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                          render (a byte-building loop) lands with its own runtime op",
                     )),
                 },
+                // `Int64.to-string-radix value base` (every fixed-width integer module) — the EXPLICIT-base
+                // render `(Int w)/(UInt w) → Int64 → String`, the non-decimal companion of `to-string`. TWO
+                // constant operands FOLD: the base must be in `2..=36` (the alphanumeric digit range) — a base
+                // outside it has no digit alphabet, so it CONST-TRAPS (like a constant divide-by-zero folds to
+                // a trap rather than a compile error, since the base could be runtime in general). A valid
+                // base renders via `IntValue::to_radix_string` (lowercase, leading `-` for a negative). A
+                // runtime value OR base declines cleanly (a later increment, same runtime op as `to-string`).
+                Some(Prim::IntToStringRadix) if args.len() == 2 => {
+                    match (core_of(db, args[0]), core_of(db, args[1])) {
+                        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+                        (Core::ConstInt(v), Core::ConstInt(base)) => match base.to_i64() {
+                            Some(b) if (2..=36).contains(&b) => {
+                                trace!(target: "rcdzc::fold", node = id.0, base = b, "Int.to-string-radix folds a constant integer to its base-b String");
+                                Core::ConstStr(v.to_radix_string(b as u32).into())
+                            }
+                            _ => Core::Poison(Reject::coded(
+                                Code::ConstTrap,
+                                "Int.to-string-radix base is out of range: a base must be in 2..=36 (the \
+                                 digits 0-9a-z) — pass a base within that range",
+                            )),
+                        },
+                        _ => Core::Poison(Reject::decline(
+                            "Int.to-string-radix on a runtime integer or base is not available in this \
+                             increment — only compile-time-constant value and base fold to a String; the \
+                             runtime render (a byte-building loop) lands with its own runtime op",
+                        )),
+                    }
+                }
                 // `Bytes.at` — the FALLIBLE indexed read `Bytes → Int64 → (Option Int64)`. Mirrors
                 // `List.at`: FOLD a visible `Bytes.of` indexed by a constant (in-range → `(Some byte)`,
                 // out-of-range/negative → `None`), else emit the runtime `Core::BytesAt`.

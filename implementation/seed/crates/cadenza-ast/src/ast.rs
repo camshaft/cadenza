@@ -984,6 +984,37 @@ impl IntValue {
         digits.reverse();
         String::from_utf8(digits).expect("ascii digits")
     }
+
+    /// This value rendered in `radix` (with a leading `-` for a negative), lowercase digits `0-9a-z`.
+    /// Generalizes [`Self::to_decimal_string`] to an arbitrary base by dividing the magnitude by
+    /// `radix` instead of 10 — magnitude-size independent (no bignum crate, no `i128` cap). The caller
+    /// MUST pass a `radix` in `2..=36` (the range a single alphanumeric digit can name); a base outside
+    /// it has no digit alphabet and is a caller error (`Int.to-string-radix` const-traps it before
+    /// calling). `0` renders `"0"` in every base.
+    pub fn to_radix_string(&self, radix: u32) -> String {
+        debug_assert!(
+            (2..=36).contains(&radix),
+            "to_radix_string radix must be 2..=36 (caller validates), got {radix}"
+        );
+        if self.is_zero() {
+            return "0".to_string();
+        }
+        let base = [radix as u8]; // radix ≤ 36 fits one big-endian magnitude byte
+        let mut mag = IntValue::sub_mag(&self.magnitude, &[]); // canonical copy
+        let mut digits = Vec::new();
+        while !mag.is_empty() {
+            let (q, r) = IntValue::divmod_mag(&mag, &base);
+            let d = r.last().copied().unwrap_or(0);
+            // Digit alphabet: `0-9` then `a-z` (base up to 36), lowercase.
+            digits.push(if d < 10 { b'0' + d } else { b'a' + (d - 10) });
+            mag = q;
+        }
+        if self.negative {
+            digits.push(b'-');
+        }
+        digits.reverse();
+        String::from_utf8(digits).expect("ascii digits")
+    }
 }
 
 /// The `IntValue` <-> `num_bigint::BigInt` bridge — a std-only convenience the all-std front-end uses to
