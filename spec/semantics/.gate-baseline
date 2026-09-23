@@ -4320,6 +4320,13 @@ pass	a performing record nested in a TUPLE scrutinee — bound by position, reco
 pass	a performing scrutinee matched by a PERFORMING GUARD is a COMPILE ERROR (breaker finding #9, now CDZ0407)
 pass	a pipeline chain applies its stages left to right
 pass	a pipeline chain threads handler STATE left-to-right through effectful stages
+pass	a plain guest matches an ENUM host-import result via a pure-IMPORT custom wit-world
+pass	a plain guest matches an option<record> host-import result via a pure-IMPORT custom wit-world
+pass	a plain guest matches an option<s64> host-import result via a pure-IMPORT custom wit-world
+pass	a plain guest reads the LENGTH of a Bytes host-import result via a pure-IMPORT custom wit-world
+pass	a plain guest reads the LENGTH of a list<s64> host-import result via a pure-IMPORT custom wit-world
+pass	a plain guest reads the length of a list<record> host-import result via a pure-IMPORT custom wit-world
+pass	a plain guest reads the scalar-length of a String host-import result via a pure-IMPORT custom wit-world
 pass	a plain integer list is unaffected by the sibling-inferred width range check
 pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
 pass	a plain prelude-member typo gets the ordinary unknown-member error, not a rename hint
@@ -6214,6 +6221,7 @@ pass	a widening runtime wrap extends a SIGNED source by its source sign
 pass	a wider narrow-width wrapping-mul constant folds by wrapping to the type width
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wider signed Int16 into a signed i8 segment is a width type error
+pass	a wildcard import binds an abstract type's handle and reaches its exported smart constructor
 pass	a wildcard import brings a sibling module's whole exported surface into scope
 pass	a wildcard import brings an exported sum TYPE and its constructors into scope
 pass	a wildcard in a nested pattern position ignores that element
@@ -6223,6 +6231,7 @@ pass	a wildcard used as an operator operand names the binding-position misuse
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 pass	a wildcard-less Bool match returning Bool negates its scrutinee
 pass	a wildcard-less char match is non-exhaustive (Char is an open type)
+pass	a withheld constructor of a wildcard-imported abstract type is not constructible (CDZ0214)
 pass	a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value
 pass	a wrap from a type that already fits the target is the identity
 pass	a wrap-narrowed MULTI-BYTE segment decodes the truncated value back
@@ -11309,10 +11318,3 @@ todo	two refutable nested-list elements in one arm each refine (currently declin
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
-pass	a plain guest reads the LENGTH of a Bytes host-import result via a pure-IMPORT custom wit-world
-pass	a plain guest matches an option<s64> host-import result via a pure-IMPORT custom wit-world
-pass	a plain guest reads the LENGTH of a list<s64> host-import result via a pure-IMPORT custom wit-world
-pass	a plain guest reads the scalar-length of a String host-import result via a pure-IMPORT custom wit-world
-pass	a plain guest matches an option<record> host-import result via a pure-IMPORT custom wit-world
-pass	a plain guest reads the length of a list<record> host-import result via a pure-IMPORT custom wit-world
-pass	a plain guest matches an ENUM host-import result via a pure-IMPORT custom wit-world

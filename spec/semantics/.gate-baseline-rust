@@ -5943,6 +5943,7 @@ pass	a widening runtime wrap extends a SIGNED source by its source sign
 pass	a wider narrow-width wrapping-mul constant folds by wrapping to the type width
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wider signed Int16 into a signed i8 segment is a width type error
+pass	a wildcard import binds an abstract type's handle and reaches its exported smart constructor
 pass	a wildcard import brings a sibling module's whole exported surface into scope
 pass	a wildcard import brings an exported sum TYPE and its constructors into scope
 pass	a wildcard in a nested pattern position ignores that element
@@ -5952,6 +5953,7 @@ pass	a wildcard used as an operator operand names the binding-position misuse
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 pass	a wildcard-less Bool match returning Bool negates its scrutinee
 pass	a wildcard-less char match is non-exhaustive (Char is an open type)
+pass	a withheld constructor of a wildcard-imported abstract type is not constructible (CDZ0214)
 pass	a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value
 pass	a wrap from a type that already fits the target is the identity
 pass	a wrap-narrowed MULTI-BYTE segment decodes the truncated value back
@@ -10897,6 +10899,13 @@ todo	a peer op type mismatch is rejected at compose time (same arity, different 
 todo	a peer result handle passes straight through to another peer's arg without local inspection
 todo	a peer string result is consumed in-program via equality and byte-len
 todo	a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered
+todo	a plain guest matches an ENUM host-import result via a pure-IMPORT custom wit-world
+todo	a plain guest matches an option<record> host-import result via a pure-IMPORT custom wit-world
+todo	a plain guest matches an option<s64> host-import result via a pure-IMPORT custom wit-world
+todo	a plain guest reads the LENGTH of a Bytes host-import result via a pure-IMPORT custom wit-world
+todo	a plain guest reads the LENGTH of a list<s64> host-import result via a pure-IMPORT custom wit-world
+todo	a plain guest reads the length of a list<record> host-import result via a pure-IMPORT custom wit-world
+todo	a plain guest reads the scalar-length of a String host-import result via a pure-IMPORT custom wit-world
 todo	a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)
 todo	a record param carrying a bytes leaf beside a scalar compiles and runs (via an imposed WIT world)
 todo	a record param field is read by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)
@@ -11117,10 +11126,3 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
-todo	a plain guest reads the LENGTH of a Bytes host-import result via a pure-IMPORT custom wit-world
-todo	a plain guest matches an option<s64> host-import result via a pure-IMPORT custom wit-world
-todo	a plain guest reads the LENGTH of a list<s64> host-import result via a pure-IMPORT custom wit-world
-todo	a plain guest reads the scalar-length of a String host-import result via a pure-IMPORT custom wit-world
-todo	a plain guest matches an option<record> host-import result via a pure-IMPORT custom wit-world
-todo	a plain guest reads the length of a list<record> host-import result via a pure-IMPORT custom wit-world
-todo	a plain guest matches an ENUM host-import result via a pure-IMPORT custom wit-world

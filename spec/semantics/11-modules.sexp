@@ -1957,6 +1957,51 @@
   (input (do (import "aaa" (*)) (import "bbb" (*)) (def (main) descriptor) (export main)))
   (error CDZ0201))
 
+; WILDCARD import PRESERVES ADT OPACITY (the wildcard-import face of the abstract-type cases below). The
+; linker's wildcard branch binds every name in the module's export set INCLUDING a bare type HANDLE, but a
+; type exported handle-only stays ABSTRACT — its constructors are governed by the module's `(export …)`,
+; not by how the importer named the type. So wildcard-importing an abstract type binds the handle (usable
+; to hold values + call the module's exported functions) yet a construction/match through a WITHHELD
+; constructor is still CDZ0214, EXACTLY as the direct named import `(import "lib" (Color mk))` gives.
+; Pins that the wildcard path (which bypasses the per-NAME export-visibility loop and pushes the whole
+; export set) does NOT weaken the per-CONSTRUCTOR no-leak guard — a wildcard is not a back door to a
+; withheld constructor.
+(case
+  "a wildcard import binds an abstract type's handle and reaches its exported smart constructor"
+  (doc
+    "`lib` exports the type HANDLE `Color` bare (ABSTRACT — the constructors stay private) plus a smart
+           constructor `mk` (→ Color.Green) and a consumer `rank`. The entry `(import \"lib\" (*))` brings the
+           whole surface into scope; `(rank (mk))` builds a `Color` through the module's OWN exported
+           constructor and ranks it → 2. Pins that a wildcard import binds an abstract handle usably — a value
+           obtained through the module's exported function flows and dispatches — the positive half of the
+           wildcard×abstract fence (its withheld-constructor companion is the next case).")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (mk) Color.Green)
+      (def (rank (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+      (export Color)
+      (export mk)
+      (export rank)))
+  (input (do (import "lib" (*)) (def (main) (rank (mk))) (export main)))
+  (output (: 2 Int64)))
+
+(case
+  "a withheld constructor of a wildcard-imported abstract type is not constructible (CDZ0214)"
+  (doc
+    "The no-leak companion: the SAME `lib` exporting only the HANDLE `Color` (bare) + `mk`. The entry
+           `(import \"lib\" (*))` wildcard-imports the whole surface and tries to CONSTRUCT `(Color.Green)`
+           directly — reaching a constructor the module kept private. That is CDZ0214 withheld-constructor,
+           EXACTLY as the direct named import `(import \"lib\" (Color mk))` then `(Color.Green)` gives (the
+           abstract-type case below). Pins that a wildcard is NOT a back door to a withheld constructor — the
+           linker's wildcard branch binds the handle but the per-constructor opacity guard (governed by the
+           declaring module's `(export …)`, checked at the construction site) is undiminished. The fix is to
+           call the module's exported `mk`, or for `lib` to `(export Color.*)`.")
+  (module "lib"
+    (do (type Color (Red) (Green) (Blue)) (def (mk) Color.Green) (export Color) (export mk)))
+  (input (do (import "lib" (*)) (def (main) (Color.Green)) (export main)))
+  (error CDZ0214))
+
 ; WHOLE-MODULE ALIAS import `(import path alias)` (bare-name spec, positionally distinct from the named-list
 ; form): binds the whole module under `alias`, reached by qualified projection `(. alias member)`. This is
 ; the collision-free path when two modules export a UNIFORMLY-NAMED member (`descriptor`) that the flat
