@@ -6247,6 +6247,77 @@
   ; interim known-leak: #6022/#6049 borrowed-env closure-application (v-mem adjudicated 2026-08-30); reclaim batch -> 0
   (live-objects 0))
 
+; --- A full coin-change DP-table build is a correct persistent-DS-borrow-and-rebuild KNOWN-LEAK ----
+; The case above is the MODE-3 bare `f` fold (i=1, no table). This is the FULL algorithm: `build` grows a
+; `dp : (List (Option Int64))` table for i=1..t via `List.push dp (try-coins cs dp i …)`, and `try-coins`
+; READS prior entries via `at0 = Option.expect (List.at dp j)` while `dp` is simultaneously CONSUMED by the
+; `List.push` rebuild — the persistent-list borrow-AND-rebuild pattern. min-coins for 30 over {25,10,1} = 3
+; (three 10s). VALUE is asserted (the DP output must stay correct); LIVE-OBJECTS is a KNOWN-LEAK by
+; DELIBERATE leak-over-UAF DECLINE (v-mem + v-core-opt adjudicated 2026-09-23, closing the COIN/(B)
+; workstream): each `List.push` PATH-COPIES the dp backbone (new spine Compounds) while the OLD backbone
+; versions are orphaned (never dropped) and the LEAF Option elements are STRUCTURALLY SHARED across multiple
+; spine versions (rc-trace: a leaked leaf cascade-drops from MULTIPLE distinct spine cells). The elements are
+; therefore NOT dead-after — their residual rc is legitimate shared-structure rc — so dropping them would
+; UNDER-COUNT a shared element = UAF. The only tractable reclaim (drop the orphaned old backbone after the
+; path-copy) needs an UNDECIDABLE not-caller-shared proof for a persistent list threaded through a recursive
+; reader; avenue-A #9555 already reclaimed the subset it CAN prove (call-forced whole-dup spine-survivor,
+; 540->162), and this residual is exactly the part its narrowing conservatively DECLINES for soundness. So
+; the leak STAYS (correct Perceus discipline; leak-over-UAF, correctness-#1).
+; ⚠ CAVEAT (what this pin does and does NOT guard): the `known-leak` census pin + value assertion guard
+; VALUE-correctness and the accepted-leak boundary — they do NOT guard against an over-drop UAF. Census/
+; coarse are BLIND to over-drop (the #9537 lesson: over-drop is exec-only). A FUTURE change that flips this
+; to `(live-objects 0)` could be an UNSOUND over-drop that still yields value 3 in-process. Any future
+; reclaim touching this persistent-DS borrow-and-rebuild surface MUST be guarded-all + shred-exec verified
+; before its census-0 is trusted; do not treat a census-0 here as proof of a sound reclaim.
+(case
+  "a full coin-change DP table build over a persistent list is a correct leak-over-UAF known-leak"
+  (doc
+    "The FULL coin-change DP (companion to the mode-3 bare fold above): `build` grows a dp table
+           1..t via `List.push dp (try-coins cs dp i …)` while `try-coins` reads prior entries via
+           `Option.expect (List.at dp j)` — the persistent-list borrow-AND-rebuild pattern. min-coins for
+           30 over {25,10,1} is 3. The VALUE is asserted correct; LIVE-OBJECTS is a deliberate KNOWN-LEAK
+           (leak-over-UAF DECLINE, v-mem + v-core-opt 2026-09-23, COIN/(B) close): List.push path-copies
+           the dp backbone, orphaning old backbone versions whose STRUCTURALLY-SHARED leaf Options
+           (shared across spine versions) are not dead-after — dropping them = UAF. avenue-A #9555 closed
+           the provable call-forced-dup subset; this residual needs an undecidable not-caller-shared
+           proof, so it is correctly declined and left leaking. NB: census cannot see over-drop — a
+           future census-0 here must be guarded-all + shred-exec verified, not assumed sound.")
+  (input
+    (do
+      (def (at0 (: xs (List (Option Int64))) (: i Int64)) (Option.expect (List.at xs i) "in-bounds"))
+      (def
+        (omin (: a (Option Int64)) (: b (Option Int64)))
+        (match a ((None _u) b) ((Some av) (match b ((None _u) a) ((Some bv) (if (< av bv) a b))))))
+      (def
+        (try-coins (: cs (List Int64)) (: dp (List (Option Int64))) (: i Int64) (: best (Option Int64)))
+        (match
+          cs
+          (#list() best)
+          (#list(c (.. t))
+            (try-coins
+              t
+              dp
+              i
+              (if
+                (<= c i)
+                (omin best (match (at0 dp (- i c)) ((None _u) (None unit)) ((Some v) (Some (+ v 1)))))
+                best)))))
+      (def
+        (build (: cs (List Int64)) (: i Int64) (: t Int64) (: dp (List (Option Int64))))
+        (if (> i t) dp (build cs (+ i 1) t (List.push dp (try-coins cs dp i (None unit))))))
+      (def
+        (coins (: cs (List Int64)) (: t Int64))
+        (do (def dp (build cs 1 t #list((Some 0)))) (match (at0 dp t) ((None _u) -1) ((Some r) r))))
+      (def (main) (coins #list(25 10 1) 30))
+      (export main)))
+  (output (: 3 Int64))
+  ; KNOWN-LEAK by leak-over-UAF DECLINE (v-mem + v-core-opt 2026-09-23, COIN/(B) close): persistent-list
+  ; path-copy orphaned old-backbone + structurally-SHARED leaf elements over-retain; reclaim needs an
+  ; undecidable not-caller-shared proof; avenue-A #9555 closed the tractable call-forced-dup subset.
+  ; ⚠ census is BLIND to over-drop — a future (live-objects 0) here could be an unsound over-drop unless
+  ; guarded-all + shred-exec verified (the #9537 lesson).
+  (live-objects known-leak))
+
 ; --- A TAIL call runs in constant stack ---------------------------------------------------------
 ; A recursive call in TAIL position (the function's result is exactly that call) must reuse the
 ; caller's stack frame rather than pushing a new one — otherwise a tail-recursive loop over a RUNTIME
