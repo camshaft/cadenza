@@ -382,6 +382,12 @@ pub enum Prim {
     /// constant divide-by-zero). A runtime value OR base is a later increment (declines cleanly) — the
     /// runtime render is the same byte-building loop `to-string`'s runtime path lands with.
     IntToStringRadix,
+    /// `Rational.to-string` — the canonical `numerator/denominator` text of a rational (`Rational →
+    /// String`), the normalized pair (lowest terms, denominator > 0, sign on the numerator) with the
+    /// denominator ALWAYS shown, so the whole rational `5/1` renders "5/1" (matching the value form). A
+    /// CONSTANT `Core::ConstRational(n, d)` FOLDS to `"<n>/<d>"` via `IntValue::to_decimal_string` on each
+    /// component (magnitude-size independent); a runtime Rational is a later increment (declines cleanly).
+    RationalToString,
     /// A SUM VARIANT CONSTRUCTOR — the `(meta apply)` of a variant field on a synthesized sum record
     /// (`crate::sums`). Applying it (`(Option.Some 5)`) builds the sum value `sum-new(disc, payload)`:
     /// the DISCRIMINANT is read off the variant record's `(meta variant)` channel at lowering (NOT
@@ -986,6 +992,7 @@ impl Prim {
             "symbol-to-string" => Some(Prim::SymbolToString),
             "int-to-string" => Some(Prim::IntToString),
             "int-to-string-radix" => Some(Prim::IntToStringRadix),
+            "rational-to-string" => Some(Prim::RationalToString),
             "sum-new" => Some(Prim::SumNew),
             "sum-ctor" => Some(Prim::SumCtor),
             "tuple-new" => Some(Prim::TupleNew),

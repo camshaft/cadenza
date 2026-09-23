@@ -1372,6 +1372,18 @@ fn rational_module(ast: &mut Arenas) -> StructId {
         let eq = push_atom(ast, Leaf::Name("=".into()));
         push_list(ast, vec![eq, neg_key, neg_op])
     });
+    // `to-string : Rational → String` — the canonical `numerator/denominator` text of the normalized
+    // rational (lowest terms, denominator > 0, sign on the numerator, denominator ALWAYS shown — so the
+    // whole rational `5/1` renders "5/1", matching the value form). A CONSTANT `Core::ConstRational(n, d)`
+    // folds to `"<n>/<d>"` via `IntValue::to_decimal_string` on each component; a runtime Rational is a
+    // later increment (declines cleanly).
+    let to_string_ty = rational_to_string_type(ast);
+    let to_string_op = list_op_record(ast, "rational-to-string", to_string_ty);
+    let to_string_key = push_atom(ast, Leaf::Name("to-string".into()));
+    children.push({
+        let eq = push_atom(ast, Leaf::Name("=".into()));
+        push_list(ast, vec![eq, to_string_key, to_string_op])
+    });
     // `numerator : Rational → BigInt` / `denominator : Rational → BigInt` — read the components of the
     // normalized (lowest-terms, denominator > 0) pair. BigInt-valued (either can exceed i64); floor/round/
     // integer-projection compose in Cadenza on top.
@@ -1482,6 +1494,18 @@ fn rational_value_type(ast: &mut Arenas) -> StructId {
     let rational = intrinsic_node(ast, "Rational");
     let rational2 = intrinsic_node(ast, "Rational");
     let body = arrow_type(ast, rational, rational2);
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// `(fn () (-> Rational String))` for `Rational.to-string` — the canonical `num/den` text rendering.
+/// Zero-param `fn` wrapper so `scheme_of` reads a monomorphic SCHEME; `(meta apply)` = the
+/// `rational-to-string` intrinsic.
+fn rational_to_string_type(ast: &mut Arenas) -> StructId {
+    let rational = intrinsic_node(ast, "Rational");
+    let string = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, rational, string);
     let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])

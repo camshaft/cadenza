@@ -2665,6 +2665,25 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     Core::Poison(r) => Core::Poison(r),
                     _ => Core::RationalDen { operand: args[0] },
                 },
+                // `Rational.to-string` — the canonical `numerator/denominator` text. A CONSTANT
+                // `Core::ConstRational(n, d)` (already normalized: lowest terms, `d > 0`, sign on `n`) folds
+                // to `"<n>/<d>"` — each component via `IntValue::to_decimal_string` (magnitude-size
+                // independent), the denominator ALWAYS shown so `5/1` renders "5/1" (the value form). A
+                // runtime Rational is a later increment (declines cleanly), like `Int.to-string`.
+                Some(Prim::RationalToString) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstRational(n, d) => {
+                        trace!(target: "rcdzc::fold", node = id.0, "Rational.to-string folds a constant rational to its num/den String");
+                        Core::ConstStr(
+                            format!("{}/{}", n.to_decimal_string(), d.to_decimal_string()).into(),
+                        )
+                    }
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Poison(Reject::decline(
+                        "Rational.to-string on a runtime rational is not available in this increment — \
+                         only a compile-time-constant rational folds to its num/den String; the runtime \
+                         render lands with its own runtime op",
+                    )),
+                },
                 // `Rational.truncate r` — the integer part TOWARD ZERO, narrowed to `Int64`. A DERIVATION
                 // (no runtime op): a CONSTANT `Core::ConstRational(n, d)` (normalized, `d > 0`) folds to the
                 // truncating quotient `n / d` (`IntValue::divmod` truncates toward zero, remainder takes the

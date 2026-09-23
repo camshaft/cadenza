@@ -21443,3 +21443,43 @@
            the shared `int-to-string-radix` prim, same base range 2..=36 and const-trap semantics.")
   (input (BigInt.to-string-radix 255N 16))
   (output (: "ff" String)))
+
+; ============================================================================================
+; Rendering a RATIONAL — Rational.to-string. The canonical `numerator/denominator` text of the
+; normalized rational (lowest terms, denominator > 0, sign on the numerator), the denominator
+; ALWAYS shown so the whole rational `5/1` renders "5/1" (matching the value form `(: 5/1 Rational)`).
+; A constant `Core::ConstRational(n, d)` folds to "<n>/<d>" via `IntValue::to_decimal_string` on each
+; component; a runtime Rational is a later increment (declines cleanly). Distinct from the integer
+; renders — a rational is a PAIR, so it has its own `rational-to-string` prim.
+(case
+  "a rational renders as numerator/denominator"
+  (doc
+    "`(Rational.to-string (Rational.of 1 2))` = \"1/2\": the exact rational renders as its
+           lowest-terms num/den pair — the text form of the value `(: 1/2 Rational)`.")
+  (input (Rational.to-string (Rational.of 1 2)))
+  (output (: "1/2" String)))
+
+(case
+  "the rendered rational is in lowest terms"
+  (doc
+    "`(Rational.to-string (Rational.of 6 4))` = \"3/2\": `Rational.of` normalizes (gcd-reduces), so
+           the render shows the reduced pair 3/2, not 6/4 — the render reads the normalized components.")
+  (input (Rational.to-string (Rational.of 6 4)))
+  (output (: "3/2" String)))
+
+(case
+  "a negative rational carries the sign on the numerator"
+  (doc
+    "`(Rational.to-string (Rational.of -3 10))` = \"-3/10\": the normalized form keeps the
+           denominator positive and the sign on the numerator, so the text shows a single leading `-`.")
+  (input (Rational.to-string (Rational.of -3 10)))
+  (output (: "-3/10" String)))
+
+(case
+  "a whole rational keeps its /1 denominator"
+  (doc
+    "`(Rational.to-string (Rational.of-int 5))` = \"5/1\": an integer as a rational is `5/1`, and the
+           render ALWAYS shows the denominator (matching the value form `(: 5/1 Rational)`) — it does not
+           collapse to the bare integer text.")
+  (input (Rational.to-string (Rational.of-int 5)))
+  (output (: "5/1" String)))
