@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(18);
+    let shape = c.variant(19);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -383,8 +383,27 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // misalignment (drop fires without the U14 dup) double-frees the env cell → the captured `k` reads
         // freed → wrong value / trap. Returns the KNOWN `10*(3 + a) + 7` (the closure applied to 3 + `m.b`=7);
         // a regression corrupts the captured-k read, caught by determinism / opt-invariance / differential.
-        _ => format!(
+        17 => format!(
             "(do (def (main) (do (def m (Record.merge #record((= f (fn ((: y Int64)) (+ y {a})))) #record((= b 7)))) (+ (* 10 (m.f 3)) m.b))) (export main))"
+        ),
+        // 18 — Value.decode CODEC round-trip + the #9547 relaxed sread-UAF interior-view fence (22:1873).
+        // The FIRST shape exercising the R2 value-codec: `Value.encode` a runtime List → `Value.decode` →
+        // `(Option (List Int64))`, match Some, and take a BORROW-only INTERIOR VIEW of the decoded payload
+        // (`List.at l 0` — a dup-backed borrow — + `List.len l`). `Value.decode` lowers to `Core::ValueDecode`
+        // — a fresh-owned `(Option a)` producer (payload owned exclusively). #9546 added ValueDecode to
+        // `sum_shell_reclaim_ok`'s fresh-producer set (the AstDecode sibling); #9547 then RELAXED the
+        // `sum_cont_arm_interior_view_on_scrutinee` sread-UAF fence (a 2026-07-19 guard against a view aliasing
+        // INTO the payload that outlives the shell deep-drop) to ADMIT when BOTH (1) the scrutinee is in the
+        // fresh-producer set (payload owned exclusively, no caller alias) AND (2) the consuming set is EMPTY
+        // (borrow+dup interior view, dup≥drop balanced). A UAF-FENCE RELAX is the risky direction: an
+        // over-relax that admits a CONSUMING / caller-aliasing view (a payload-return escape, a Bytes.slice
+        // view, or the self-recursive PARAM path) would DANGLE the interior view past the shell drop → UAF.
+        // Returns the KNOWN `len*1000 + first = 3000 + a` (3 elems, first = a); at the fenced tip it decodes +
+        // views correctly, and a fence over-relax / ValueDecode-shell mis-reclaim corrupts the decoded value
+        // or traps — caught by determinism / opt-invariance / differential. The SOLE codec (encode/decode)
+        // shape; genuinely-new value-observable surface on an actively-relaxed UAF fence.
+        _ => format!(
+            "(do (def (main) (match (: (Value.decode (Value.encode #list({a} (+ {a} 5) (+ {a} 10)))) (Option (List Int64))) ((Some l) (+ (* (List.len l) 1000) (Option.expect (List.at l 0) \"first\"))) ((None u) -1))) (export main))"
         ),
     };
     Program { source }
@@ -5112,8 +5131,8 @@ mod tests {
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
         // Distinctive, mutually-exclusive markers for the seventeen shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 18];
-        for seed in 0u64..768 {
+        let mut reached = [false; 19];
+        for seed in 0u64..832 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5164,13 +5183,15 @@ mod tests {
                 reached[16] = true;
             } else if src.contains("(def m (Record.merge ") {
                 reached[17] = true;
+            } else if src.contains("(Value.decode (Value.encode ") {
+                reached[18] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
                 reached[0] = true;
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all eighteen reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all nineteen reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
