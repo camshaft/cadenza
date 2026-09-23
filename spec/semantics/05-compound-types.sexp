@@ -24910,7 +24910,8 @@
       (export main)))
   (call main (: 100 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak))
+  ; RE-TIGHTENED (v-memory-safety + v-core-opt REFINE(A) follow-on to #9558): scalar-keyed (Int64) `#tuple(k _v)` trie `sorted` fold. The owned-fold surplus-skip now admits via head_destructured_only_to_scalars — the head tuple is destructured ENTIRELY to SCALAR fields (k,_v Int64, COPIED at the match, no alias to the head cell), so freeing the head after the RestFrom split dangles nothing. #9558's coarse consuming>=1 false-declined it (scalars aren't a heap-payload consume); the additive scalar-destructure disjunct restores it. DBG census 0, value 100. Was known-leak (#9551 revert collateral).
+  (live-objects 0))
 
 (case
   "a trie spanning NEGATIVE and positive keys enumerates in signed numeric order"
@@ -24946,7 +24947,8 @@
       (export main)))
   (call main (: 100 Int64))
   (output (: 1001 Int64))
-  (live-objects known-leak))
+  ; RE-TIGHTENED (v-memory-safety + v-core-opt REFINE(A) follow-on to #9558): the signed-key face of the scalar-trie `inc` fold — same `#tuple(k _v)` Int64 scalar destructure. Admits via head_destructured_only_to_scalars (all-scalar fields copied at the match). DBG census 0, value 1001. Was known-leak (#9551 revert collateral).
+  (live-objects 0))
 
 (case
   "a negative-key trie churned back keys and enumerates like the direct build"
