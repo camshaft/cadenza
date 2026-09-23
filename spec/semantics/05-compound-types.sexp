@@ -30385,6 +30385,63 @@
   (live-objects 0))
 
 (case
+  "a bare MatchSum over List.at of a threaded (List (Option Int64)) reclaims the extracted element shell while the list is rebuilt in the same step (no live objects)"
+  (doc
+    "Regression lock for the matchsum_view element-shell reclaim (v-memory-safety). `dp` is a
+           `(List (Option Int64))` threaded through `bld`; each iteration BOTH borrow-reads `(List.at dp 0)`
+           and rebuilds `dp` via `List.push` in the SAME step. The read's `(Option (Option Int64))` is matched
+           by a BARE MatchSum (NOT SumExpect) to extract a SCALAR `h`, and the pushed value `(Some (+ i h))`
+           embeds NOTHING of the borrowed element -> the element shell is dead-after the scalar read.
+           `matchsum_view_shell_reclaim_ok` reclaims that shell (owned single-view producer List.at, stashed
+           slot, consuming-payload-sites empty) so a leaked shell does NOT accumulate to ~N; dp[0] is never
+           overwritten so `h`=1 every iteration and the final read is 1. This is the bare-MatchSum sibling of
+           the Option.expect(List.at) SumExpect case above; both are 0 on main and this locks that.")
+  (input
+    (do
+      (def
+        (bld (: dp (List (Option Int64))) (: i Int64) (: n Int64))
+        (if
+          (< i n)
+          (bld (List.push dp (Some (+ i (match (List.at dp 0) ((Some (Some h)) h) (_ 0))))) (+ i 1) n)
+          dp))
+      (def
+        (main (: n Int64))
+        (match (List.at (bld #list((Some 1)) 1 n) 0) ((Some (Some r)) r) (_ -1)))
+      (export main)))
+  (call main (: 500 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
+  "a bare MatchSum over List.at of a threaded (List (List Int64)) reclaims the extracted nested-list element shell while the list is rebuilt in the same step (no live objects)"
+  (doc
+    "Regression lock for the matchsum_view element-shell reclaim over a NESTED-HEAP payload (v-memory-safety).
+           `dp` is a `(List (List Int64))` threaded through `bld`; each iteration borrow-reads `(List.at dp 0)`
+           (an `(Option (List Int64))`), matches Some to bind the inner row, and pushes `(List.push row i)` --
+           a FRESH list built from the borrowed row -- back onto `dp`. The borrowed element shell (the outer
+           Option) is dead-after the match, reclaimed by `matchsum_view_shell_reclaim_ok`, so it does not
+           accumulate to ~N. dp[0] is never overwritten (row stays `#list(1)`) so the final nested read is 1.
+           The heap-payload (nested List) sibling of the bare-MatchSum scalar case above; 0 on main, locked.")
+  (input
+    (do
+      (def
+        (bld (: dp (List (List Int64))) (: i Int64) (: n Int64))
+        (if
+          (< i n)
+          (bld (List.push dp (List.push (match (List.at dp 0) ((Some row) row) (_ #list())) i)) (+ i 1) n)
+          dp))
+      (def
+        (main (: n Int64))
+        (match
+          (List.at (bld #list(#list(1)) 1 n) 0)
+          ((Some row) (match (List.at row 0) ((Some r) r) (_ -1)))
+          (_ -1)))
+      (export main)))
+  (call main (: 500 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
   "a match over an owned all-scalar-payload Some shell from List.at reclaims it across a loop (no live objects)"
   (doc
     "Each iteration reads element 1 of a fresh runtime list via List.at (a fresh Some shell, all-scalar
