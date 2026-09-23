@@ -525,7 +525,19 @@ pub enum FleetCmd {
     /// `trunk` if missing) and ensure a tmux window named after it is running `window.sh`. Idempotent
     /// — a window that already exists is left alone, so re-running never duplicates anything. This is
     /// the "single command" that recreates the whole fleet after a reboot.
-    Up,
+    ///
+    /// `--crons-only` runs ONLY the non-disruptive phase: re-materialize the tracked hub source + git
+    /// hooks/symlinks + reconcile every tagged control-plane cron (the `ensure_*_cron` drivers), then
+    /// STOP before the roster/window bringup. It touches NO tmux window and needs no `$TMUX`, so a landed
+    /// cron change (a cadence bump, a new/enabled/disabled `# fleet:` cron) can be deployed live WITHOUT
+    /// the window bringup a full `up` forces — the recurring reason cron deploys got deferred during the
+    /// watchdog-off period. Existing `up` (no flag) is byte-for-byte unchanged.
+    Up {
+        /// Reconcile the materialized source + tagged crons only; skip the roster/window bringup (no tmux
+        /// needed). For deploying a landed cron change without disrupting live windows.
+        #[arg(long)]
+        crons_only: bool,
+    },
     /// Stop every agent (mark `stopped`, drop each a stop-file the loop checks) but LEAVE the tmux
     /// windows open, so their scrollback survives for inspection.
     Down,
@@ -1487,7 +1499,7 @@ fn urgency_tag(u: &str) -> &'static str {
 pub fn run(paths: &Paths, cmd: FleetCmd) {
     let fleet = Fleet::new(paths);
     match cmd {
-        FleetCmd::Up => up(&fleet),
+        FleetCmd::Up { crons_only } => up(&fleet, crons_only),
         FleetCmd::Down => down(&fleet),
         FleetCmd::Status => status(&fleet),
         FleetCmd::Hub => hub(&fleet),
@@ -2812,7 +2824,7 @@ fn ensure_claude_symlinks(fleet: &Fleet) {
     }
 }
 
-fn up(fleet: &Fleet) {
+fn up(fleet: &Fleet, crons_only: bool) {
     // Materialize the tracked source (role bodies + contract + window.sh) into the runtime dir so
     // window.sh has a stable hub-anchored path. Then reconcile the tracked ROSTER into the runtime
     // registry: a standing agent declared in the roster but absent from the registry is added
@@ -2894,6 +2906,17 @@ fn up(fleet: &Fleet) {
     // flip the instant the operator GOes it. Re-enable = flip REARM_STALE_ENABLED + land. Independent of the
     // other self-crons; fail-open + drift-healed.
     ensure_rearm_stale_cron(fleet);
+    // `--crons-only`: the reconcile above (materialized source + every tagged cron) is the whole job —
+    // STOP before the roster/window bringup. That phase requires `$TMUX` and touches live windows; skipping
+    // it lets a landed cron change deploy WITHOUT disrupting running agents (the deferred-deploy friction
+    // during watchdog-off). Everything above is idempotent + non-disruptive (file copies + crontab reconcile).
+    if crons_only {
+        println!(
+            "fleet up --crons-only: re-materialized hub source + reconciled all tagged control-plane crons; \
+             skipped the roster/window bringup (no tmux touched)."
+        );
+        return;
+    }
     let mut reg = fleet.load();
     let roster = fleet.load_roster();
     let mut added = 0usize;
