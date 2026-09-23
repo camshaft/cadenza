@@ -1507,13 +1507,18 @@ pub fn emit(
     // SINGLE effect (every host import shares one effect name); a program delegating two distinct effects
     // declines (the multi-interface shape composes in a later increment).
     if !host_imports.is_empty() {
-        let iface = host_imports[0].effect.clone();
-        if host_imports.iter().any(|h| h.effect != iface) {
+        let effect = host_imports[0].effect.clone();
+        if host_imports.iter().any(|h| h.effect != effect) {
             return Err(Reject::declined(
                 crate::diag::DeclineId::WasmMultiHostEffectDelegation,
                 "delegating more than one host effect is not supported (one interface per envelope)",
             ));
         }
+        // B1b: name the imported host interface by the imposed world's FQ import interface
+        // (`cadenza:platform/probe`), matching what the world declares and what a host provides — the same
+        // name the reducer bytes-provider path uses. Fall back to the bare effect name when no imposed world
+        // declares a matching import interface (the no-world bare-effect case, byte-identical to before).
+        let iface = world_import_iface_for_effect(db, &effect).unwrap_or(effect);
         // COMPOUND host RESULT support (B1): a spilled compound host result (string/bytes/list/tuple/record/
         // option/result/variant — anything `result_is_liftable`) crosses on this plain host-delegating path
         // too, not only the bytes-provider / typed interface-instance paths. `build_host_result_types` derives
@@ -6142,6 +6147,25 @@ fn world_has_import_interface(world_bytes: &[u8]) -> bool {
         return false;
     };
     !world.imports.is_empty()
+}
+
+/// The FULLY-QUALIFIED WIT interface name a host `effect` binds to under the imposed target world, or `None`
+/// when no world is imposed or none matches. A guest effect declared by `synthesize_world_import_effect_decls`
+/// is named after the import interface's SHORT kebab segment (`cadenza:platform/probe` → `probe`), so the
+/// reverse map finds the world IMPORT interface whose short kebab segment equals the effect and returns its
+/// FULL name. The plain host-delegating envelope imports the host interface under THIS name — matching the
+/// world the component declares (and what a host provides) — instead of the bare effect name, the same way
+/// the reducer bytes-provider path uses `world.imports[..].name`. Purely world/WIT-shape-driven.
+fn world_import_iface_for_effect(db: &Db, effect: &str) -> Option<String> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let world_bytes = db.wit_world.as_ref()?;
+    let arenas = crate::codec::decode(world_bytes)?;
+    let world = crate::wit_world::parse_target_world(&arenas, arenas.root)?;
+    let want = kebab_extern_name(effect);
+    world.imports.iter().find_map(|i| {
+        let short = i.name.rsplit('/').next().unwrap_or(&i.name);
+        (kebab_extern_name(short) == want).then(|| i.name.clone())
+    })
 }
 
 fn world_bytes_crossing_export(layout: &Layout, world_bytes: &[u8]) -> Option<usize> {

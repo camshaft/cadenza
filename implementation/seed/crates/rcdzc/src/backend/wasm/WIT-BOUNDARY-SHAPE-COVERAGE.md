@@ -101,11 +101,14 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   still declines on `assemble_host_runtime_resource*` (scalar/unit host ops only; a String-param or
   compound result declines). Needs the same instance-type + `needs_realloc` mem threading B1 applied to
   the plain envelope, across the 5 resource-escape assembler variants (B2).
-- **[naming, B1b]** the plain + resource-escape paths name the host import interface by the guest EFFECT
-  name (`probe`), NOT the world's declared FQ import interface (`cadenza:platform/probe`, which the
-  reducer bytes-provider path uses via `world.imports[..].name`). A real host that wires by the WIT world
-  interface name may not bind the effect-named import. Flagged to v-hivemind; fix = derive the FQ name
-  from `db.wit_world` for a world-imposed host op. (Pre-existing for scalar host ops; surfaced by B1.)
+- **[naming, B1b] the PLAIN host-delegating envelope now names the host import by the world's FQ import
+  interface — ✅ DONE.** `world_import_iface_for_effect(db, effect)` reverse-maps the guest effect (named
+  after the interface's SHORT kebab segment by `synthesize_world_import_effect_decls`) to the world IMPORT
+  interface's FULL name (`cadenza:platform/probe`), used as the component import extern name — matching what
+  the world declares + what a host provides (as the reducer bytes-provider path already does). Falls back to
+  the effect name with no imposed world (byte-identical). WIT-dump verified (`import cadenza:probe/probe`).
+  REMAINING: the 5 resource-escape assembler sites (`assemble_host_runtime_resource*`) still name by effect —
+  fold this same helper in when B2 wires compound results there.
 - **[emit]** multi-payload variant case (≥2 payloads); mixed int↔float / f32↔f64 single-payload
   variant join — see `variant_scalar_payload_cases` / `variant_liftable_payload_cases`.
 - **[emit]** compound variant payload at the ARG (register-flatten) position; compound-payload
