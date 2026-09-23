@@ -15,11 +15,18 @@ Grep the name to find the arm.
 A host operation (`(effect …)` op) crosses on one of three paths, selected inside
 `first_unrepresentable_host_op` (the master decline gate, `backend/wasm/host.rs`) by two booleans:
 
-- **bare** — a plain `(effect …)`: `!allow_option_bytes && !peer_bound`. Scalar/unit results only;
-  scalar/unit/string/bytes arguments only. The compound envelope is intentionally NOT on this path.
-- **world** — the world-driven / reducer / typed-interface path: `allow_option_bytes && !peer_bound`
-  (needs a component + a `wit_world` with a bytes-crossing or typed-record export; set in
-  `backend/wasm/mod.rs` where `allow_option_bytes` is computed). This is the compound envelope.
+- **bare** — a plain `(effect …)` with NO imposed world: `!allow_option_bytes && !peer_bound`.
+  Scalar/unit results only; scalar/unit/string/bytes arguments only. The compound envelope is NOT on
+  this path when no world is imposed.
+- **world** — the world-driven path: `allow_option_bytes && !peer_bound`. `allow_option_bytes` (set in
+  `backend/wasm/mod.rs`) engages when EITHER (a) a component + a `wit_world` with a bytes-crossing or
+  typed-record EXPORT (the reducer / typed-interface path), OR (b) the imposed `wit_world` declares an
+  IMPORT interface (`world_has_import_interface`) — so a CUSTOM import-only world engages the compound
+  envelope too, not just the built-in reducer/platform interfaces (v-wit-boundary B0). This is the
+  compound envelope. The COMPOUND host-import RESULT now crosses on BOTH the reducer/typed-interface
+  emit AND the plain host-delegating envelope (`assemble_host_runtime{,_mem}` / `assemble_host{,_mem}`,
+  which declare the result's WIT defined-type via `build_host_result_types` + a shared-mem realloc;
+  v-wit-boundary B1, SHAPE 83).
 - **peer** — a peer-bound effect (`db.effect_bindings`): any compound crosses as an opaque `u32`
   handle via `extern_abi_val_type` (no structural marshal — by design).
 
@@ -44,6 +51,7 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 | List&lt;scalar\|bytes\|list\|tuple\|record\|option\|variant&gt; | arg + result | world | `list_elem_marshalable` / `result_is_liftable` (List) | 12, 24, 30, 33, 34, 38, 39 |
 | Tuple (all leaf-liftable) | arg + result | world | `result_is_liftable` (Tuple) | 33, 34 |
 | Record (all fields boundary/leaf, incl. nested + WIT-order reorder) | arg + result + export | world/export | `is_boundary_record` / `result_is_liftable` (Record) / `record_interface_export` | 11, 13, 19, 20, 21, 25, 29, 31, 35, 36 |
+| compound host-IMPORT RESULT (record/string/bytes/list/tuple/option/result/variant) on the PLAIN host-delegating envelope — a CUSTOM import-only `wit_world`, no typed export, plain top-level guest export | result | world (plain-envelope) | `world_has_import_interface` + `result_is_liftable` (`build_host_result_types` declares the WIT type; `needs_realloc` mem shape) | 83 |
 | option&lt;scalar\|bytes\|leaf-liftable&gt; | field + result | world | `option_payload_ty` | 8, 16, 35, 36, 38 |
 | result&lt;list&lt;u8&gt;, enum&gt; | arg + result | world | `result_bytes_enum` | 15, 17 |
 | variant (scalar / mixed-width join / compound payload) + payloadless enum | arg + result | world | `variant_scalar_payload_cases` / `variant_liftable_payload_cases` / `enum_cases` | 18, 32, + vres/cvp/mwv/wen families |
@@ -81,7 +89,23 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   here (`spilled_result_wit_type`). Imposed-world works; a synthesized-world option/result *result*
   cannot self-declare (rolls into the nominal-decl increment).
 
-**Emit side — this crate (v-rust-backend):**
+**Emit side — v-wit-boundary (custom import-only wit-world, plain host-delegating envelope):**
+- **[emit, ARG]** a NOMINAL/compound host-op ARGUMENT (record/enum/variant/list param) on the PLAIN
+  host-delegating envelope declines cleanly (a decline-don't-miscompile guard in `mod.rs`) — the arg
+  marshal + nominal-type instance-type declaration is a later slice (B3). The RESULT side is DONE (B1).
+- **[emit, RESULT]** an ENUM host-op RESULT crossing BY VALUE (one i32 disc) on the plain host-delegating
+  envelope declines (needs its nominal `enum` exported in the host import instance-type); a spilled
+  compound result IS emitted (B1). Later slice.
+- **[emit, RESOURCE-ESCAPE]** the resource-escape entrypoint form — a host result escaping DIRECTLY as
+  the guest export result (`run()->String = host sim in (sim.echo "hi")`, v-hivemind's literal repro) —
+  still declines on `assemble_host_runtime_resource*` (scalar/unit host ops only; a String-param or
+  compound result declines). Needs the same instance-type + `needs_realloc` mem threading B1 applied to
+  the plain envelope, across the 5 resource-escape assembler variants (B2).
+- **[naming, B1b]** the plain + resource-escape paths name the host import interface by the guest EFFECT
+  name (`probe`), NOT the world's declared FQ import interface (`cadenza:platform/probe`, which the
+  reducer bytes-provider path uses via `world.imports[..].name`). A real host that wires by the WIT world
+  interface name may not bind the effect-named import. Flagged to v-hivemind; fix = derive the FQ name
+  from `db.wit_world` for a world-imposed host op. (Pre-existing for scalar host ops; surfaced by B1.)
 - **[emit]** multi-payload variant case (≥2 payloads); mixed int↔float / f32↔f64 single-payload
   variant join — see `variant_scalar_payload_cases` / `variant_liftable_payload_cases`.
 - **[emit]** compound variant payload at the ARG (register-flatten) position; compound-payload
@@ -145,8 +169,11 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
 
 ## By design — NOT gaps
 
-- **bare-effect** path is scalar/unit-only for results (the world-driven path is the compound
-  envelope). State it; don't "close" it.
+- **bare-effect** path (NO imposed `wit_world`) is scalar/unit-only for results (the world-driven path
+  is the compound envelope). State it; don't "close" it. NOTE: this holds only WITHOUT an imposed world
+  — a plain host-delegating guest WITH an imposed import-declaring `wit_world` now crosses a compound
+  RESULT (v-wit-boundary B1, SHAPE 83); it is the presence of the world, not the export shape, that opens
+  the compound envelope on this path.
 - **peer-bound** crosses any compound as an opaque `u32` handle (`extern_abi_val_type`) — no
   structural marshal is intended.
 
@@ -168,6 +195,12 @@ other host-RESULT shapes whose only running SHAPE is the reducer-export form.
 
 ## Recently closed
 
+- compound host-IMPORT RESULT on the PLAIN host-delegating envelope for a CUSTOM import-only wit-world
+  (v-wit-boundary B1, PR #9573) — `allow_option_bytes` broadened to `world_has_import_interface` (B0);
+  `build_host_result_types` threaded through `assemble_host_runtime{,_mem}` / `assemble_host{,_mem}` to
+  declare the result's WIT defined-type + `needs_realloc` shared-mem shape; SHAPE 83 (record result,
+  WIT-dump verified `record host-result-t0`). The emit lift was already structural — only the decline gate
+  + the instance-type declaration were missing. Bare-effect (no world) unchanged.
 - host-string-RESULT (world path) — `result_is_liftable` gained the `string` leaf arm (#4894); SHAPE 57.
 - unit OUTBOUND synth — `ty_natural_wit` `Ty::Unit → WitType::Unit` (#4903), the exact inverse of
   `wit_type_to_ty`'s inbound arm; a synthesized-world unit result now self-declares.
