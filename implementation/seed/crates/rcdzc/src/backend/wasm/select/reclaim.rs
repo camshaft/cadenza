@@ -2309,6 +2309,64 @@ pub(super) fn is_sumexpect_row_op_operand(
     false
 }
 
+/// Whether the `Core::SumExpect` result `id` is consumed by EXACTLY ONE `MatchSum` and NOTHING ELSE — its
+/// only two references in `top_body` are that match's discriminant tag-read (a `MatchSum{scrutinee: id}`)
+/// AND its payload extract (a `SumPayload{scrutinee: id}`). This is the MATCH-CONSUMER analog of
+/// [`is_sumexpect_row_op_operand`]: a single logical consumer (the match) references the SumExpect result
+/// TWICE (tag + payload), so `count_node_refs == 2` defeats the `refs == 1` single-consumer classifier in
+/// [`collect_sumexpect_view_reclaim_seen`] and the OUTER `List.at`/`Map.lookup` Option shell (a fresh-owned
+/// single-view producer — already in [`is_owned_single_view_producer`]) is left in NEITHER set → un-dropped
+/// → leaks one shell per read (the COIN-CHANGE `Option.expect(List.at dp …)`-in-a-loop leak, 540/163).
+///
+/// SOUNDNESS (v-core-opt gate-owner-blessed): the load-bearing property is 2-refs-BOTH-from-ONE-match ⟹ the
+/// SumExpect RESULT (the inner Option) is consumed only by that match and is DEAD-AFTER it ⟹ the SumExpect
+/// OPERAND (the outer producer Option) is a dead-after droppable temporary. Route the outer to the SHELL-set:
+/// the SumExpect emit's `compound_dupd` DUPs the extracted inner (rc++) BEFORE the `reclaim_shell` deep-drop
+/// of the outer (cascade -1), netting the inner LIVE for the match — the branch-(b) HEAP-payload dup-site
+/// lockstep, zero double-free (both `reclaim_shell` and `compound_dupd` key on `sumexpect_shell_reclaim`
+/// membership, emit.rs:3798/3850, so the dup and the drop can never diverge). A 3rd reference, or two refs
+/// that are NOT the tag+payload of the SAME match (two independent logical uses), means the result may be
+/// live elsewhere / the outer not dead-after → DECLINE (conservative: leak beats UAF). No need to inspect the
+/// match ARM's disposition of the extracted payload — the dup-site makes the outer drop sound regardless.
+pub(super) fn is_sumexpect_match_consumer(db: &mut Db, top_body: StructId, id: StructId) -> bool {
+    if !matches!(core_of(db, id), Core::SumExpect { .. }) {
+        return false;
+    }
+    if count_node_refs(db, top_body, id) != 2 {
+        return false;
+    }
+    // Collect the DISTINCT parent nodes referencing `id` (a node referencing it twice would be a single
+    // parent with refs==2 — NOT the two-distinct-parents match shape, so it fails the exactly-two check).
+    let mut parents: Vec<StructId> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![top_body];
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        let children = core_child_ids(db, n);
+        if children.contains(&id) && !parents.contains(&n) {
+            parents.push(n);
+        }
+        for c in children {
+            stack.push(c);
+        }
+    }
+    if parents.len() != 2 {
+        return false;
+    }
+    let mut has_match = false;
+    let mut has_payload = false;
+    for &p in &parents {
+        match core_of(db, p) {
+            Core::MatchSum { scrutinee, .. } if scrutinee == id => has_match = true,
+            Core::SumPayload { scrutinee, .. } if scrutinee == id => has_payload = true,
+            _ => return false,
+        }
+    }
+    has_match && has_payload
+}
+
 pub(super) fn collect_row_op_field_dups(
     db: &mut Db,
     id: StructId,
@@ -2549,6 +2607,29 @@ pub(super) fn collect_sumexpect_view_reclaim_seen(
         && is_owned_single_view_producer(db, scrutinee)
         && is_heap_type(&type_of(db, id))
         && is_sumexpect_row_op_operand(db, top_body, id)
+    {
+        shell_set.insert(id);
+        for child in core_child_ids(db, id) {
+            collect_sumexpect_view_reclaim_seen(db, child, top_body, view_set, shell_set, seen);
+        }
+        return;
+    }
+    // MATCH-CONSUMER extraction shell (COIN-CHANGE 540/163, v-mem-safety + v-core-opt gate-owner-blessed). A
+    // `(Option.expect (List.at/Map.lookup …))` whose result is consumed by EXACTLY ONE MatchSum references
+    // the SumExpect result TWICE (the match's tag-read + payload-extract), so `count_node_refs == 2` defeats
+    // the `refs == 1` single-consumer branches below AND the `refs == 0` escape branch → the OUTER producer
+    // Option shell would land in NEITHER set → leak one shell per read (accumulating in a fold, e.g. COIN's
+    // `at0`=`Option.expect(List.at dp j)` per DP cell). `is_sumexpect_match_consumer` recognizes the shape
+    // (2-refs-both-from-one-match ⟹ inner dead-after that match ⟹ the outer is a dead-after droppable temp)
+    // and routes the OUTER to the SHELL-set, mirroring the row-op route above. The SumExpect emit's
+    // `compound_dupd` DUPs the extracted HEAP inner (rc++) BEFORE the `reclaim_shell` deep-drop of the outer
+    // (cascade -1) — both keyed on `sumexpect_shell_reclaim` membership (emit.rs:3798/3850), so the branch-(b)
+    // dup-site lockstep is automatic (dup ≥ drop, inner nets LIVE for the match, zero double-free). A 3rd ref
+    // or two independent uses → declines (leak-over-UAF).
+    if let Core::SumExpect { scrutinee, .. } = core_of(db, id)
+        && is_owned_single_view_producer(db, scrutinee)
+        && is_heap_type(&type_of(db, id))
+        && is_sumexpect_match_consumer(db, top_body, id)
     {
         shell_set.insert(id);
         for child in core_child_ids(db, id) {

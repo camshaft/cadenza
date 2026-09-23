@@ -30354,6 +30354,37 @@
   (live-objects 0))
 
 (case
+  "Option.expect over an owned Some shell from List.at whose HEAP payload is matched reclaims it across a loop (no live objects)"
+  (doc
+    "The HEAP-PAYLOAD sibling of the scalar List.at Option.expect loop-reclaim above (v-memory-safety
+           SumExpect-operand match-consumer reclaim). The list is a `(List (Option Int64))`, so `(List.at …)`
+           is an `(Option (Option Int64))` and `Option.expect` extracts a HEAP `(Option Int64)` inner Option
+           that the arm MATCHES — the SumExpect result is consumed by EXACTLY ONE match (its tag-read +
+           payload-extract = 2 refs). The SumExpect emit must DUP the extracted inner (rc++) BEFORE deep-
+           dropping the outer List.at Some shell (the branch-(b) heap-payload dup-site lockstep), so the inner
+           nets live for the match and the outer shell is reclaimed — a leaked outer shell scales to ~N live
+           (measured live-objects 500 at f 500 without the reclaim). 500 iters × (element 1 = Some 10 → 10) = 5000.")
+  (input
+    (do
+      (def
+        (build (: i Int64) (: n Int64) (: acc (List (Option Int64))))
+        (if (< i n) (build (+ i 1) n (List.push acc (Some (* i 10)))) acc))
+      (def
+        (loop (: j Int64) (: n Int64) (: tot Int64))
+        (if
+          (< j n)
+          (loop
+            (+ j 1)
+            n
+            (+ tot (match (Option.expect (List.at (build 0 3 #list()) 1) "v") ((Some v) v) ((None _) 0))))
+          tot))
+      (def (f (: n Int64)) (loop 0 n 0))
+      (export f)))
+  (call f (: 500 Int64))
+  (output (: 5000 Int64))
+  (live-objects 0))
+
+(case
   "a match over an owned all-scalar-payload Some shell from List.at reclaims it across a loop (no live objects)"
   (doc
     "Each iteration reads element 1 of a fresh runtime list via List.at (a fresh Some shell, all-scalar
