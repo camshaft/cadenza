@@ -1365,8 +1365,10 @@ pub enum FleetCmd {
     /// Autonomous STALE-HEARTBEAT RE-ARM scan (the non-destructive `/loop`-cron self-heal): re-arm any
     /// active agent whose heartbeat has gone stale past its window with a send-keys `continue` / `/loop`
     /// — and NOTHING else. A strict SUBSET of `watchdog`, exactly like `drain-nudge` is: same
-    /// heartbeat-staleness verdict (`stale_window_secs`), the SAME never-interrupt-a-heads-down-agent
-    /// pane-busy guard + 2-capture confirming recapture, the SAME anti-thrash grace, and the SAME
+    /// heartbeat-staleness verdict (`stale_window_secs`), the SAME never-interrupt-a-heads-down-agent guard —
+    /// now the DEFINITIVE 2-capture `pane_liveness_verdict` TOKEN-DELTA gate (only a confirmed IDLE prompt is
+    /// re-armable, unified with the manual `reissue-loop` #9632 + the #9594/#9628 standing directive) — the
+    /// SAME anti-thrash grace, and the SAME
     /// `rearm_action`/`escalate_repeated_nudge` dead-cron escalation + streak bookkeeping (sharing the
     /// watchdog's rearm markers so running both never double-arms). It takes NONE of the watchdog's
     /// DESTRUCTIVE actions — no window recreate, no wedge-Escape, no dead-letter/spent-note reap, no window
@@ -7534,19 +7536,27 @@ fn rearm_stale_scan(
         {
             continue;
         }
-        // Never interrupt a heads-down agent (operator 2026-09-09): if the pane shows work in flight, a stale
-        // heartbeat is just a long tick, not a dead loop. SUSPECT from one capture, then CONFIRM with a
-        // 2-capture recheck (a single snapshot can catch the sub-second gap between tool-turns) before
-        // treating it as re-armable — identical to the drain-nudge / watchdog discipline.
-        let pane = capture_pane(session, &a.name);
-        if pane.as_deref().is_some_and(pane_shows_working) {
-            continue;
+        // Never interrupt a heads-down agent (operator 2026-09-09): a stale heartbeat on a pane that is
+        // actually WORKING is just a long tick, not a dead loop. SUSPECT from one cheap capture, then CONFIRM
+        // with the DEFINITIVE 2-capture TOKEN-DELTA verdict — the SAME `pane_liveness_verdict` gate the manual
+        // `reissue-loop` uses (#9632) and the concierge standing directive (#9594/#9628) requires. Only a
+        // genuinely IDLE prompt is re-armable: a pane that shows work on the recapture, OR whose token count
+        // CHANGED across the two captures (a working turn caught at a bare `❯` between tool-calls — the
+        // v-hivemind #9628 misflag this replaces the old `pane_shows_working`-only recheck to catch), OR a
+        // backgrounded wait, is ALIVE — leave it for the watchdog rather than nudge/reissue INTO live work.
+        let pane1 = capture_pane(session, &a.name);
+        if pane1.as_deref().is_some_and(pane_shows_working) {
+            continue; // capture 1 already shows work in flight — cheap early-out, no recapture needed.
         }
         std::thread::sleep(std::time::Duration::from_secs(
             DRAIN_STALL_CONFIRM_DELAY_SECS,
         ));
-        if window_is_working(session, &a.name) {
-            continue; // work in flight on the recheck → mid-tick, not stalled.
+        let verdict = match (pane1.as_deref(), capture_pane(session, &a.name).as_deref()) {
+            (Some(a), Some(b)) => pane_liveness_verdict(a, b),
+            _ => PaneVerdict::Unknown, // can't read the pane → fail CLOSED (don't re-arm), like #9632.
+        };
+        if !pane_verdict_allows_reissue(&verdict) {
+            continue; // working / backgrounded-wait / unknown → alive-or-unclear, not a re-armable idle loop.
         }
         // Choose the re-arm action, IDENTICAL to the watchdog: cheap `continue` for a loop that merely missed
         // a tick; escalate to re-issuing `/loop` only when a prior nudge didn't stick (the dead-cron
@@ -22041,6 +22051,35 @@ mod tests {
         assert!(!pane_verdict_allows_reissue(&BackgroundedWaitProgressing));
         assert!(!pane_verdict_allows_reissue(&BackgroundedWaitFrozen));
         assert!(!pane_verdict_allows_reissue(&Unknown));
+    }
+
+    #[test]
+    fn rearm_stale_never_rearms_a_live_pane_only_a_static_idle_prompt() {
+        // The autonomous rearm-stale guard re-arms IFF `pane_verdict_allows_reissue(pane_liveness_verdict(
+        // c1, c2))` — unified with the manual reissue-loop (#9632) on the token-delta discriminator. Pin the
+        // live-pane scenarios it must NOT re-arm (the old `pane_shows_working`-only recheck let some through),
+        // and the one dead-loop signature it may.
+        let rearmable =
+            |c1: &str, c2: &str| pane_verdict_allows_reissue(&pane_liveness_verdict(c1, c2));
+
+        // v-hivemind #9628: a bare `❯` whose token count CLIMBS is a working turn → NOT re-armable (the exact
+        // misflag the single-capture `pane_shows_working` recheck missed, since the pane reads as idle).
+        assert!(!rearmable("❯\n↓ 37.6k tokens\n", "❯\n↓ 38.3k tokens\n"));
+        // A backgrounded wait (progressing OR frozen) is alive-or-unclear → leave it for the watchdog, don't
+        // nudge/reissue it via the benign self-heal.
+        assert!(!rearmable(
+            "Waiting for task…\n↓ 10.0k tokens\n",
+            "Waiting for task…\n↓ 12.0k tokens\n"
+        ));
+        assert!(!rearmable(
+            "Waiting for task…\n↓ 10.0k tokens\n",
+            "Waiting for task…\n↓ 10.0k tokens\n"
+        ));
+        // A clearly-working pane (esc-to-interrupt footer) → NOT re-armable.
+        let working = "out\n⏵⏵ bypass permissions · esc to interrupt · ← for agents\n";
+        assert!(!rearmable(working, working));
+        // ONLY a genuinely IDLE `❯` prompt with a STATIC token count is re-armable — the dead-loop signature.
+        assert!(rearmable("scrolled up\n❯\n", "scrolled up\n❯\n"));
     }
 
     #[test]
