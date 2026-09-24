@@ -7021,13 +7021,6 @@ fn collect_discarded_value_warnings(db: &mut Db) -> Vec<Diagnostic> {
             // handler — each non-final emit performs, `main` returns n*10+2, delete → n*10+0).
             if crate::lower::subtree_reaches_host_call(db, s)
                 || crate::lower::subtree_reaches_effect_perform(db, s)
-                // NO DRIFT with the DCE lowering (compute.rs do-fold / lower_let §283 override, concierge
-                // #083499/#083505): a discarded statement with an OBSERVABLE EFFECT / EXPLICIT DIVERGENCE (a
-                // host call, a `Core::Call`/`CallClosure`, or an explicit `Core::Trap`) is now KEPT
-                // (force-evaluated), so its deletion is NOT behavior-preserving and CDZ0307 must not advise
-                // removing it. A discarded pure-scalar IMPLICIT arith trap (`(/ 100 d)`) stays elidable per
-                // §283, so this predicate leaves it warnable (its delete-heuristic remains behavior-preserving).
-                || crate::lower::discarded_stmt_has_observable_effect(db, s)
             {
                 continue;
             }
