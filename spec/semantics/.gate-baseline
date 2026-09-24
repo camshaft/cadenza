@@ -11257,7 +11257,7 @@ todo	a symbol interned from a DECOMPOSED (NFD) String.from-bytes canonicalizes t
 todo	a try over a mutual-recursive callee short-circuits out of the converted loop once BRICK 3b lands
 pass	a tuple splat inside an effect-handler body spreads its elements
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
-todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
+pass	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an OWNING consumer of a String entry parameter (String.concat) should cross and return the owned result
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 pass	an effectful-operand splat inside a handle body performs exactly once
