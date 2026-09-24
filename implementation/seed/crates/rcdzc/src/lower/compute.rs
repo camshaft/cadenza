@@ -427,8 +427,9 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             // poison OR a non-constant runtime `Core`. A `const_eval`-discovered trap (`CVal::Trap`) still
             // surfaces as its fail-loud ConstTrap core via the `matches!` below.
             let mut budget: u64 = 1_000_000;
+            let folded_ty = crate::infer::type_of(db, expr);
             if let Some(cv) = const_eval(db, expr, &CEnv::default(), &mut budget)
-                && let Some(core) = cval_to_core(db, &cv)
+                && let Some(core) = cval_to_core_ty(db, &cv, &folded_ty)
                 && (core_is_const_value(db, &core) || matches!(cv, CVal::Trap(_)))
             {
                 core
@@ -701,8 +702,9 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // consumed by a Member, not a bare call.)
                 {
                     let mut budget: u64 = 1_000_000;
+                    let folded_ty = crate::infer::type_of(db, id);
                     if let Some(cv) = const_eval(db, id, &CEnv::default(), &mut budget)
-                        && let Some(core) = cval_to_core(db, &cv)
+                        && let Some(core) = cval_to_core_ty(db, &cv, &folded_ty)
                         && (core_is_const_value(db, &core) || matches!(cv, CVal::Trap(_)))
                     {
                         return core;
@@ -1803,6 +1805,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                                     })
                                 {
                                     let mut budget: u64 = 1_000_000;
+                                    let folded_ty = crate::infer::type_of(g, id);
                                     if let Some(cv) = const_eval_apply(
                                         g,
                                         id,
@@ -1810,7 +1813,7 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                                         &args,
                                         &CEnv::default(),
                                         &mut budget,
-                                    ) && let Some(core) = cval_to_core(g, &cv)
+                                    ) && let Some(core) = cval_to_core_ty(g, &cv, &folded_ty)
                                         && (core_is_const_value(g, &core)
                                             || matches!(cv, CVal::Trap(_)))
                                     {
@@ -1951,8 +1954,9 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                     // general const-evaluator on the body; a genuinely unproductive nullary self-recursion
                     // (`(def (f) (f))`) yields no constant and falls through to the CDZ0999 decline.
                     let mut budget: u64 = 1_000_000;
+                    let folded_ty = crate::infer::type_of(db, body);
                     if let Some(cv) = const_eval(db, body, &CEnv::default(), &mut budget)
-                        && let Some(core) = cval_to_core(db, &cv)
+                        && let Some(core) = cval_to_core_ty(db, &cv, &folded_ty)
                         && (core_is_const_value(db, &core) || matches!(cv, CVal::Trap(_)))
                     {
                         return core;
