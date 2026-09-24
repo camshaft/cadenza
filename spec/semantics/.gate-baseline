@@ -11329,3 +11329,4 @@ pass	a plain (non-reducer) guest passes an OPTION host-op ARGUMENT via a pure-IM
 pass	a plain (non-reducer) guest passes a TUPLE host-op ARGUMENT via a pure-IMPORT custom wit-world
 pass	a plain (non-reducer) guest passes a RECORD host-op ARGUMENT with an OPTION field via a pure-IMPORT custom wit-world
 pass	a plain (non-reducer) guest passes a RECORD host-op ARGUMENT with a TUPLE field via a pure-IMPORT custom wit-world
+pass	a run() body performing SEVEN host ops ending in a non-empty STRING-arg query does not corrupt the string arg
