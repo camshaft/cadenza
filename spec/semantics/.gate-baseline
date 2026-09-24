@@ -11303,7 +11303,7 @@ todo	read of malformed text is a coded reject, not a wrong value
 todo	rpp1 a scalar-fielded Record entry param projects both fields
 todo	rpp2 an open-row helper projects a field of the boundary Record param
 todo	rpp3 a Record entry param with a heap list field measures both
-todo	rpp4 a scalar Tuple entry param projects both positions
+pass	rpp4 a scalar Tuple entry param projects both positions
 todo	sbn2 a runtime utf8 CONSTRUCTION segment declines pending the encode increment (utf8 is pattern-only)
 todo	spx2 a Char entry param declines pending a boundary representation
 todo	srm2 a NESTED set-rest re-match peels two residual layers (should-work: the residual is a first-class set)
