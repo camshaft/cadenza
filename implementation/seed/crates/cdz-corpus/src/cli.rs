@@ -1263,6 +1263,12 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
             }
             None => leaves.push(str_leaf(&mut b, &n.to_string())),
         }
+        // The `cadenza-tolerate` facet marker rides after the count leaf(s) — `(live-objects "2"
+        // "cadenza-tolerate")` — so `decode_test_run` sets `live_objects_cadenza_tolerate` (direct exact /
+        // cadenza `<= N`). The count is retained (unlike known-leak, which drops it).
+        if rec.live_objects_cadenza_tolerate {
+            leaves.push(str_leaf(&mut b, "cadenza-tolerate"));
+        }
         kids.push(form(&mut b, "live-objects", leaves));
     }
     // `(no-other-errors)` — the case-level no-cascade flag carried verbatim to the grade side (a bare

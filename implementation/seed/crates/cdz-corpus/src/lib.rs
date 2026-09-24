@@ -111,6 +111,12 @@ pub struct Record {
     /// current leak grandfathered when the opt-out default landed (graded identically to a plain
     /// `(live-objects N)`; the flag records the intent so the marker set can be shrunk over time).
     pub live_objects_known_leak: bool,
+    /// `true` iff the case authored a `(live-objects N cadenza-tolerate)` facet marker — the DIRECT wasm hop
+    /// keeps its exact `== N` assertion (the UAF/double-free count-guard) while the CADENZA re-emit hop
+    /// tolerates `<= N` (its binary-AST tree-dedup can safely reclaim fewer cells). Shredded through to the
+    /// grade side (`TestRun::live_objects_cadenza_tolerate`); the count is retained (unlike known-leak). See
+    /// `cdz-corpus-grade`'s `check_live_objects_scalar` `allow_fewer` path. `false` = exact-both (default).
+    pub live_objects_cadenza_tolerate: bool,
     /// PER-CALL positional counts from a `(live-objects [known-leak] N1 N2 …)` clause with 2+ counts (one
     /// per call, in order) — `None` for the uniform/absent form. Expresses an arm-dependent balance a single
     /// count cannot (a leak that scales with input size). `live_objects` holds the FIRST count (uniform /
@@ -769,6 +775,10 @@ pub fn render(records: &[Record]) -> String {
                 }
                 None => out.push_str(&n.to_string()),
             }
+            // The `cadenza-tolerate` facet marker renders after the count(s) (`live-objects\t2\tcadenza-tolerate`).
+            if r.live_objects_cadenza_tolerate {
+                out.push_str("\tcadenza-tolerate");
+            }
             out.push('\n');
         }
         out.push_str("---\n");
@@ -968,6 +978,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut component_name: Option<String> = None;
     let mut live_objects: Option<u32> = None;
     let mut live_objects_known_leak = false;
+    let mut live_objects_cadenza_tolerate = false;
     let mut live_objects_per_call: Option<Vec<u32>> = None;
     let mut no_other_errors = false;
     let mut no_diagnostic: Vec<String> = Vec::new();
@@ -1317,6 +1328,12 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     live_objects_known_leak = true;
                     toks.remove(0);
                 }
+                // `cadenza-tolerate` facet marker (any position) — direct exact / cadenza `<= N`; stripped
+                // before the counts are parsed (mirrors `decode_test_run`).
+                if let Some(pos) = toks.iter().position(|s| s == "cadenza-tolerate") {
+                    live_objects_cadenza_tolerate = true;
+                    toks.remove(pos);
+                }
                 // ONE count = uniform; 2+ = per-call positional (call i asserts count i). `live_objects`
                 // keeps the FIRST (uniform / direct-gate path); `live_objects_per_call` carries the list.
                 let counts: Vec<u32> = toks.iter().filter_map(|s| s.parse::<u32>().ok()).collect();
@@ -1370,6 +1387,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         wit_world_ast,
         live_objects,
         live_objects_known_leak,
+        live_objects_cadenza_tolerate,
         live_objects_per_call,
         no_other_errors,
         no_diagnostic,
@@ -2625,6 +2643,29 @@ mod tests {
             "legacy renders bare: {text}"
         );
         assert!(!text.contains("known-leak\t2"), "count is dropped: {text}");
+    }
+
+    /// The `(live-objects N cadenza-tolerate)` facet marker sets `live_objects_cadenza_tolerate` (NOT
+    /// known-leak), RETAINS the count N (the direct hop asserts exact N; the cadenza hop tolerates `<= N`),
+    /// and renders after the count (`live-objects\t2\tcadenza-tolerate`) so the shred round-trips the marker
+    /// to the grade side. Regression guard for the shred/emit gap that made the facet unreachable (#9596 was
+    /// grade-side only → any facet case graded RED until the shredder carried the marker).
+    #[test]
+    fn live_objects_cadenza_tolerate_marker_parses_and_renders() {
+        let src = r#"(case "x"
+                 (input (do (type L (Cons (Tuple Int64 L)) Nil) (def (main) (L.Cons (tuple 1 (L.Nil ())))) (export main)))
+                 (call main) (output (: (L.Cons (tuple 1 (L.Nil ()))) L))
+                 (live-objects 2 cadenza-tolerate))"#;
+        let recs = read(src).unwrap();
+        assert!(recs[0].live_objects_cadenza_tolerate);
+        assert!(!recs[0].live_objects_known_leak);
+        assert_eq!(recs[0].live_objects, Some(2));
+        assert_eq!(recs[0].live_objects_per_call, None);
+        let text = to_records(src).unwrap();
+        assert!(
+            text.contains("live-objects\t2\tcadenza-tolerate\n"),
+            "facet renders count + marker: {text}"
+        );
     }
 
     /// A CLEAN `(live-objects N1 N2 N3)` clause with 2+ counts parses PER-CALL: `live_objects` = the first,
