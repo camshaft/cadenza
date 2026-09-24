@@ -207,6 +207,21 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
     c
 }
 
+/// Whether `id` is a PARTIAL application — an `Apply` of a multi-parameter function to FEWER arguments
+/// than its arity, which lowers to a `Core::Closure` (an eta/section value). Detected PURELY from the
+/// resolved form (`resolved_of` + `lambda_params_of`, both of which reduce but do NOT lower/lift), so
+/// asking never triggers the very `lower_lambda_value` lift it guards against. `None` param list (a head
+/// that is not a function value — a ctor, an effect op, a computed head) is NOT a partial application here.
+fn is_partial_application(db: &mut Db, id: StructId) -> bool {
+    let Resolved::Apply { head, args } = resolved_of(db, id) else {
+        return false;
+    };
+    match crate::eval::lambda_params_of(db, head) {
+        Some(params) => args.len() < params.len(),
+        None => false,
+    }
+}
+
 /// Whether the core form at `id` reaches a `Core::HostCall` (directly or nested) — a bounded structural
 /// walk over the core tree. Used by the `do`-sequencing lowering to decide whether a non-final statement
 /// has a host-call side effect that must be emitted (rather than dropped by the ordinary `Ref{last}` fold).
@@ -230,7 +245,21 @@ pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
         // `core_of` lowering entirely for it. This is what dominated the real corpus workload: the old code
         // forced `core_of` on EVERY node — including every leaf atom — of every do-statement subtree.
         crate::ast::Struct::List(children) => {
-            matches!(core_of(db, id), Core::HostCall { .. })
+            // A node that lowers to a `Core::Closure` — a bare lambda VALUE or a PARTIAL application of a
+            // multi-param function — is NEVER a `Core::HostCall` (a host call is a full-arity effect-op
+            // perform), so forcing `core_of` here to test for one changes NOTHING in the verdict. But
+            // `core_of` on such a node LIFTS the lambda (`lower_lambda_value`), recording its
+            // capturing-reference occurrences in `db.captured_ref` — and those occurrences are SHARED with
+            // a sibling INLINE β-reduction (a partial application `f(x)` sitting in the same init subtree as
+            // the full call `f(y, x)`, e.g. the `L |> g(a)` pipe whose RHS `g(a)` survives as a partial-app
+            // AST child beside the spliced full apply). The stale `captured_ref` entry then makes the inline
+            // use lower to a `Core::Captured` env-read in the ENCLOSING (env-less) scope — an invalid module
+            // ("expected i32, found i64", CDZ0910). Skip the `core_of` probe for a function-value node and
+            // rely on the structural child recursion to find any host call inside it (unchanged: the walk
+            // already descends every child, including a lambda body, unconditionally).
+            let is_function_value = matches!(resolved_of(db, id), Resolved::Lambda { .. })
+                || is_partial_application(db, id);
+            (!is_function_value && matches!(core_of(db, id), Core::HostCall { .. }))
                 || children.iter().any(|&c| subtree_reaches_host_call(db, c))
         }
         crate::ast::Struct::Atom(_) => false,
