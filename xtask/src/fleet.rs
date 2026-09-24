@@ -7404,13 +7404,24 @@ fn drain_nudge_scan(fleet: &Fleet, session: &str, dry_run: bool, drain_nudge_gra
             continue;
         }
         suspected += 1;
-        // Confirming recapture: one snapshot can catch a busy agent in the sub-second gap between tool-turns
-        // — only the already-suspected agent pays this short delay, never every idle pane.
+        // Confirming recapture + TOKEN-DELTA liveness (the #9644/#9594 discriminator, unified with
+        // rearm-stale + reissue-loop): one snapshot can catch a busy agent in the sub-second gap between
+        // tool-turns, AND a bare-prompt agent whose token count CLIMBS across the two captures is a working
+        // turn (the v-hivemind #9628 case) or a live backgrounded wait — either way ALIVE, not a drain-stall.
+        // `pane_liveness_verdict`'s Working arm already subsumes a `pane_shows_working` recapture. Only the
+        // already-suspected agent pays this short delay, never every idle pane.
         std::thread::sleep(std::time::Duration::from_secs(
             DRAIN_STALL_CONFIRM_DELAY_SECS,
         ));
-        if !drain_stall_confirmed(true, window_is_working(session, &a.name)) {
-            continue; // work in flight on the recheck → mid-tick, not stalled
+        let alive_on_recheck = match (pane.as_deref(), capture_pane(session, &a.name).as_deref()) {
+            (Some(a), Some(b)) => matches!(
+                pane_liveness_verdict(a, b),
+                PaneVerdict::Working | PaneVerdict::BackgroundedWaitProgressing
+            ),
+            _ => false, // couldn't recapture → not proven alive; the stall's other exonerations still apply.
+        };
+        if !drain_stall_confirmed(true, alive_on_recheck) {
+            continue; // work in flight / token still advancing → mid-tick, not stalled
         }
         if queue_is_draining(prev_depth, actionable_depth) {
             continue; // depth dropped since last sweep → the loop is consuming its own mail
@@ -22080,6 +22091,34 @@ mod tests {
         assert!(!rearmable(working, working));
         // ONLY a genuinely IDLE `❯` prompt with a STATIC token count is re-armable — the dead-loop signature.
         assert!(rearmable("scrolled up\n❯\n", "scrolled up\n❯\n"));
+    }
+
+    #[test]
+    fn drain_nudge_recheck_treats_a_progressing_pane_as_alive_not_a_stall() {
+        use PaneVerdict::*;
+        // The drain-nudge recheck confirms a stall via `drain_stall_confirmed(true, alive_on_recheck)`, where
+        // `alive_on_recheck` = the 2-capture verdict is Working OR BackgroundedWaitProgressing (#9644 parity
+        // with rearm-stale). A CONFIRMED stall (nudgeable) requires NOT alive. Mirror the guard's expression:
+        let confirmed_stall = |c1: &str, c2: &str| {
+            let alive = matches!(
+                pane_liveness_verdict(c1, c2),
+                Working | BackgroundedWaitProgressing
+            );
+            drain_stall_confirmed(true, alive)
+        };
+        // v-hivemind #9628: a bare `❯` whose token count CLIMBS is a working turn → alive → NOT a stall (the
+        // misflag the old single-capture `window_is_working` recheck let through as a drain-stall).
+        assert!(!confirmed_stall(
+            "❯\n↓ 37.6k tokens\n",
+            "❯\n↓ 38.3k tokens\n"
+        ));
+        // A live (progressing) backgrounded wait → alive → NOT a stall.
+        assert!(!confirmed_stall(
+            "Waiting…\n↓ 10.0k tokens\n",
+            "Waiting…\n↓ 12.0k tokens\n"
+        ));
+        // A genuinely IDLE prompt with a STATIC token count → a real drain-stall (nudgeable), unchanged.
+        assert!(confirmed_stall("scrolled up\n❯\n", "scrolled up\n❯\n"));
     }
 
     #[test]
