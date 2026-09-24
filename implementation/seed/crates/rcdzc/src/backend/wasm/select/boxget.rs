@@ -7,6 +7,19 @@ use super::*;
 /// representation at all (a function/type-value) DECLINES. Reads the solved type.
 pub(super) fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     let ty = type_of(db, id);
+    // LIVE-HANDLE SAFETY NET: a node whose solved type did NOT resolve (`Var`/`Any`) but which PROVABLY
+    // produces an i32 heap HANDLE (a const-HOISTED compound whose node type reads `Any` — a `global.get`
+    // static record/list/sum — or a nominal-sum payload whose variant type never ground) must be stored
+    // AS-IS, not boxed. `box_op_ty(Var/Any)` defaults to `box-int` (the i64 dead-phantom cell), which feeds
+    // the i32 handle to `box-int` → "expected i64, found i32" (CDZ0910) — the record-field-wrapped
+    // `List(nominal-record)` host-arg witness, where the const `SC.SC({name:…})` payload record hoists to a
+    // global and its SumNew payload / the enclosing list element are boxed via `box_op` with an `Any` node
+    // type. This mirrors the SAME net `box_op_for` already applies for a `Var`/`Any` DECLARED slot type
+    // (both-unresolved case); centralizing it here also covers every bare-`box_op` element/payload site. A
+    // genuinely-dead phantom (non-handle) `Var`/`Any` node still takes the uniform `box-int` cell below.
+    if matches!(ty, Ty::Var(_) | Ty::Any) && node_produces_heap_handle(db, id) {
+        return Ok(None);
+    }
     box_op_ty(db, &ty)
 }
 
