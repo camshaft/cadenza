@@ -11001,7 +11001,7 @@ todo	an effect bound to a peer routes a two-argument op to the boundary
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 todo	an effectful-operand splat inside a handle body performs exactly once
 todo	an enum PARAM member whose guest case order MISMATCHES the WIT remaps the disc by case NAME — the param twin of SHAPE 64
-todo	an escaping captured continuation is refused, not miscompiled
+pass	an escaping captured continuation is refused, not miscompiled
 todo	an option<s64> param field is read and rebuilt by the wrapper on both arms (via an imposed WIT world)
 todo	bk1 two runtime Blake3 digests of the same bytes bare-compare equal
 todo	bk2 one-byte-different inputs bare-compare unequal digests

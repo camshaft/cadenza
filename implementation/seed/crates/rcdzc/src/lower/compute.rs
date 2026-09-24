@@ -3213,6 +3213,20 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 // root cause — an unbound head is a scope error, not merely "not applyable".
                 None => match core_of(db, head) {
                     Core::Poison(r) => Core::Poison(r),
+                    // A RESUME-CAPTURING ESCAPING CONTINUATION — a handler arm returns its continuation as
+                    // a closure (`(flip (u) s (fn (x) (resume x s)))`) that becomes the handle's value and
+                    // is applied OUTSIDE the handle. The handle value folds to a closure whose body still
+                    // references `resume`: a reified delimited continuation the seed does not build, so it
+                    // is a PERMANENT boundary reject (CDZ0406), not the generic codeless "not applyable".
+                    // A plain arm-returned closure that captures no `resume` folds to a clean lambda that
+                    // `lambda_of` reads upstream (applyable, should-work) and never reaches here.
+                    _ if crate::eval::is_resume_capturing_escape(db, head) => {
+                        trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: escaping captured continuation → CDZ0406");
+                        Core::Poison(Reject::coded(
+                            crate::diag::Code::ClosureEscapesEffect,
+                            crate::diag::CAPTURED_CONTINUATION_ESCAPE_DECLINE,
+                        ))
+                    }
                     _ => {
                         trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: head is not applyable (decline)");
                         Core::Poison(Reject::decline(crate::diag::NOT_APPLYABLE_DECLINE))
