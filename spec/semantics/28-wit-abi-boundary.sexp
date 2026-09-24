@@ -5304,3 +5304,48 @@ cases
   (host-calls (call cadenza:platform/probe.f))
   (output 2)
   (live-objects 0))
+
+(case
+  "a top-level option<list<u8>> host-op ARGUMENT with a Some payload crosses as built-in option, rope copied to mem"
+  (doc
+    "SHAPE 106 (v-wit-boundary) — a top-level `option<list<u8>>` host-op ARGUMENT with a `Some b\"…\"`
+           payload. Widens the built-in `option<T>` arg (SHAPE 97, option<scalar>) to a Bytes payload: the
+           guest flattens the value-heap Option to `(disc, ptr, len)` core slots — on Some it copies the payload
+           rope into the shared `mem` at the running scratch cursor and pushes `(ptr,len)`
+           (`emit_option_reg_flatten`'s bytes branch, the register twin of a Bytes record FIELD). The component
+           boundary type is the built-in `option<list<u8>>`. `live-objects 0` proves the marshaled-arg reclaim
+           balances (the Option shell is deep-dropped after its rope is copied out — no leak, no UAF).")
+  (wit-world
+    (world w (import cadenza:platform/probe (member f (func (param x (option (list (u8)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op f (-> (Option Bytes) Int64)))
+      (def (run) (host (probe) (probe.f (Some b"hi"))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.f (: 2 Int64)))
+  (host-calls (call cadenza:platform/probe.f))
+  (output 2)
+  (live-objects 0))
+
+(case
+  "a top-level option<list<u8>> host-op ARGUMENT with a None value crosses as built-in option none"
+  (doc
+    "SHAPE 107 (v-wit-boundary) — the None arm of the `option<list<u8>>` host-op ARGUMENT (SHAPE 106's
+           twin): a `(None)` value flattens to `(disc=0, ptr=0, len=0)` — a WIT `option` none carries no
+           payload, so the guest writes nothing to `mem` and the host receives `none`. Exercises the branch the
+           SHAPE-97 option<scalar> path only covered for scalars; the const-`(None)` payload now grounds to
+           `list<u8>` via the perform-arg-vs-declared-param grounding (the SHAPE-103 fix), so the option<bytes>
+           functype + marshal agree. Host returns its scalar (assert 5). `live-objects 0`.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member f (func (param x (option (list (u8)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op f (-> (Option Bytes) Int64)))
+      (def (run) (host (probe) (probe.f (None))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.f (: 5 Int64)))
+  (host-calls (call cadenza:platform/probe.f))
+  (output 5)
+  (live-objects 0))

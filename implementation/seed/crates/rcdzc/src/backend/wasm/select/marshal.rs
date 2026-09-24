@@ -929,10 +929,12 @@ pub(super) fn emit_variant_reg_flatten(
 /// so the `(disc, payload)` push happens AFTER the `if` (single-value `BlockType`). Scoped to a SCALAR payload
 /// (`abi_val_type`) — an `option<bytes>`/`option<compound>` top-level arg needs a mem cursor (a later
 /// increment) and is declined at classification. `work_base` is the first free scratch slot for this marshal.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_option_reg_flatten(
     db: &mut Db,
     var_slot: u32,
     fty: &Ty,
+    cursor: Option<u32>,
     work_base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
@@ -940,11 +942,6 @@ pub(super) fn emit_option_reg_flatten(
 ) -> Result<(), Reject> {
     let payload_ty = crate::backend::wasm::host::option_payload_ty(db, fty)
         .ok_or_else(|| Reject::decline("a top-level option arg is not an option-shaped sum"))?;
-    let pv = valtype_of(&payload_ty).ok_or_else(|| {
-        Reject::decline("a top-level option arg payload is not a scalar this increment")
-    })?;
-    let read = get_op_ty(db, &payload_ty)?
-        .ok_or_else(|| Reject::decline("an option payload scalar has no unbox op"))?;
     // The guest decl's SOME discriminant = the single-payload variant's index (robust to the `Option` decl
     // order — mirrors the `option<scalar>` record-field flatten).
     let Ty::Sum { decl, .. } = fty.strip_nominal() else {
@@ -959,6 +956,80 @@ pub(super) fn emit_option_reg_flatten(
             .position(|v| v.payloads.len() == 1)
             .ok_or_else(|| Reject::decline("the option arg has no payload variant"))? as i32
     };
+    // A `Bytes` payload flattens to the built-in `option<list<u8>>`: `(disc:i32, ptr:i32, len:i32)`. On Some
+    // the payload rope is copied into `mem` at the running scratch `cursor` (the same copy a Bytes ARG / a
+    // Bytes record FIELD does) and `(ptr,len)` pushed; on None all three slots are 0 (a none `option` never
+    // reads its payload). The disc slot mirrors the guest some-disc → WIT some=1 / none=0.
+    if matches!(payload_ty, Ty::Bytes) {
+        let cursor = cursor.expect("an option<bytes> arg reserves the scratch cursor (pre-scan)");
+        let disc_out = work_base;
+        let ptr_out = work_base + 1;
+        let len_out = work_base + 2;
+        let rope_slot = work_base + 3;
+        let pos_slot = work_base + 4;
+        for s in [disc_out, ptr_out, len_out, rope_slot, pos_slot] {
+            scratch_ty.insert(s, ValType::I32);
+        }
+        *high = (*high).max(work_base + 5);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_DISC)); // [guest disc]
+        out.push(Lir::ConstI32(some_disc));
+        out.push(Lir::I32Eq);
+        out.push(Lir::If(BlockType::Empty)); // Some
+        out.push(Lir::ConstI32(1));
+        out.push(Lir::LocalSet(disc_out));
+        out.push(Lir::LocalGet(cursor)); // ptr = cursor (BEFORE the copy advances it)
+        out.push(Lir::LocalSet(ptr_out));
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload list<u8> handle]
+        out.push(Lir::LocalSet(rope_slot));
+        out.push(Lir::LocalGet(rope_slot));
+        out.push(Lir::CallImport(OP_BYTES_LEN)); // [len]
+        out.push(Lir::LocalSet(len_out));
+        out.push(Lir::ConstI32(0));
+        out.push(Lir::LocalSet(pos_slot));
+        out.push(Lir::Block(BlockType::Empty));
+        out.push(Lir::Loop(BlockType::Empty));
+        out.push(Lir::LocalGet(pos_slot));
+        out.push(Lir::LocalGet(len_out));
+        out.push(Lir::I32GeS);
+        out.push(Lir::BrIf(1));
+        out.push(Lir::LocalGet(cursor));
+        out.push(Lir::LocalGet(pos_slot));
+        out.push(Lir::I32Add);
+        out.push(Lir::LocalGet(rope_slot));
+        out.push(Lir::LocalGet(pos_slot));
+        out.push(Lir::CallImport(OP_BYTES_GET));
+        out.push(Lir::I32Store8 { offset: 0 });
+        out.push(Lir::LocalGet(pos_slot));
+        out.push(Lir::ConstI32(1));
+        out.push(Lir::I32Add);
+        out.push(Lir::LocalSet(pos_slot));
+        out.push(Lir::Br(0));
+        out.push(Lir::End);
+        out.push(Lir::End);
+        out.push(Lir::LocalGet(cursor));
+        out.push(Lir::LocalGet(len_out));
+        out.push(Lir::I32Add);
+        out.push(Lir::LocalSet(cursor)); // cursor += len
+        out.push(Lir::Else); // None → (0, 0, 0)
+        out.push(Lir::ConstI32(0));
+        out.push(Lir::LocalSet(disc_out));
+        out.push(Lir::ConstI32(0));
+        out.push(Lir::LocalSet(ptr_out));
+        out.push(Lir::ConstI32(0));
+        out.push(Lir::LocalSet(len_out));
+        out.push(Lir::End);
+        out.push(Lir::LocalGet(disc_out)); // push (disc, ptr, len)
+        out.push(Lir::LocalGet(ptr_out));
+        out.push(Lir::LocalGet(len_out));
+        return Ok(());
+    }
+    let pv = valtype_of(&payload_ty).ok_or_else(|| {
+        Reject::decline("a top-level option arg payload is not a scalar/bytes this increment")
+    })?;
+    let read = get_op_ty(db, &payload_ty)?
+        .ok_or_else(|| Reject::decline("an option payload scalar has no unbox op"))?;
     let disc_out = work_base;
     let pval = work_base + 1;
     scratch_ty.insert(disc_out, ValType::I32);

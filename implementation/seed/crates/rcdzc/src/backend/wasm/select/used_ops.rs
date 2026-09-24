@@ -1189,7 +1189,10 @@ pub(super) fn collect_used_ops_into_seen(
                     // from `variant_scalar_payload_cases`), mirroring the emit-side dispatch order.
                     at if !peer_bound
                         && crate::backend::wasm::host::option_payload_ty(db, &at).is_some_and(
-                            |p| crate::backend::wasm::host::abi_val_type(&p).is_some(),
+                            |p| {
+                                crate::backend::wasm::host::abi_val_type(&p).is_some()
+                                    || matches!(p, Ty::Bytes)
+                            },
                         ) =>
                     {
                         out.insert(OP_SUM_DISC);
@@ -1200,9 +1203,15 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_DROP);
                         if let Some(payload) =
                             crate::backend::wasm::host::option_payload_ty(db, &at)
-                            && let Ok(Some(read)) = get_op_ty(db, &payload)
                         {
-                            out.insert(read);
+                            // A `Bytes` payload copies its rope into `mem` on Some (`bytes-len`/`bytes-get`); a
+                            // scalar payload unboxes with its get-op.
+                            if matches!(payload, Ty::Bytes) {
+                                out.insert(OP_BYTES_LEN);
+                                out.insert(OP_BYTES_GET);
+                            } else if let Ok(Some(read)) = get_op_ty(db, &payload) {
+                                out.insert(read);
+                            }
                         }
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
