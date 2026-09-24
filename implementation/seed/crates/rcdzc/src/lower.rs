@@ -285,7 +285,7 @@ pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
 /// discarded EFFECT / CALL / EXPLICIT-trap. Read by the `do`-fold (compute.rs), `wrap_body_with_strict_arg_eval`,
 /// and `collect_discarded_value_warnings` (CDZ0307 no-drift). `core_of` is memoized so the walk is cheap.
 ///
-/// ★ TRANSITIVE EFFECT through a NON-RECURSIVE call (concierge #083755, v-compiler-primitives find, breaker
+/// KEYSTONE: TRANSITIVE EFFECT through a NON-RECURSIVE call (concierge #083755, v-compiler-primitives find, breaker
 /// confirmed on main 664ec2af2d): a discarded `helper(args)` where `helper` is a NON-RECURSIVE def whose body
 /// performs a HOST effect (`sys.add-storage`) and returns Unit was SILENTLY DROPPED — the two disjuncts above
 /// BOTH miss it: (a) `subtree_reaches_host_call` recurses the call-SITE syntactic children only (never the
