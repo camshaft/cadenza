@@ -565,8 +565,26 @@ pub(super) fn lower_lambda_value(
     }
     // The RESULT type is the body's; if that is `Any` (a body that returns e.g. a sum whose payload
     // depends on an as-yet-unpinned param), fall back to the expected arrow's result type.
+    //
+    // The same fallback also rescues a body whose result type is left UNGROUND at a machine-repr-
+    // dependent width — canonically an unconditionally-DIVERGING body such as `(fn (_x) (trap "…"))`.
+    // `trap : ∀a. String → a`, so its result instantiates to a fresh var; on a path that never
+    // returns (and where nothing else pins it, e.g. the closure passed to `for-each` whose empty-
+    // source arm never calls it) that var stays free — `Ty::Var`, not `Ty::Any`, so the arm above
+    // misses it. Ground it to the DECLARED result (the expected arrow's `R`, e.g. `for-each`'s
+    // `f: Int64 -> Unit` → `Unit`) when that IS representable, the closure-result analog of the
+    // perform-arg grounding in #9612 and the sibling param fallback above. If no representable
+    // expected result is in hand, keep the body type and let the decline below fire (SAFE refusal).
     let ret_ty = match crate::infer::type_of(db, body) {
         crate::ty::Ty::Any => expected_ret.clone().unwrap_or(crate::ty::Ty::Any),
+        t if !matches!(t, crate::ty::Ty::Unit)
+            && crate::backend::wasm::lir::valtype_of(&t).is_none()
+            && matches!(&expected_ret, Some(r)
+                if matches!(r, crate::ty::Ty::Unit)
+                    || crate::backend::wasm::lir::valtype_of(r).is_some()) =>
+        {
+            expected_ret.clone().unwrap()
+        }
         t => t,
     };
     // A `Unit` result is REPRESENTABLE as a ZERO-RESULT functype (the serializer emits a Unit-returning
