@@ -552,12 +552,17 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
 /// each of which is well-formed + terminating + computes a deterministic Int64.
 pub fn generate_effect(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let form = c.variant(7);
-    // Form 6 needs a TOP-LEVEL performing helper (a local `def` that performs an effect DECLINES CDZ0401),
-    // so it emits the FULL program itself rather than a main-body wrapped below. See gen_effect_discarded_call_program.
+    let form = c.variant(8);
+    // Forms 6 and 7 need a TOP-LEVEL helper def (a local `def` that performs an effect DECLINES CDZ0401),
+    // so each emits the FULL program itself rather than a main-body wrapped below.
     if form == 6 {
         let mut src = String::new();
-        gen_effect_discarded_call_program(&mut c, &mut src);
+        gen_effect_discarded_call_program(&mut c, &mut src); // discarded-perform state-threading
+        return Program { source: src };
+    }
+    if form == 7 {
+        let mut src = String::new();
+        gen_effect_splat_handler_program(&mut c, &mut src); // #9642 splat-in-handler-body expansion
         return Program { source: src };
     }
     let mut body = String::new();
@@ -3362,6 +3367,37 @@ fn gen_effect_discarded_call_program<C: Choice>(c: &mut C, out: &mut String) {
     .ok();
 }
 
+/// The #9642 EFFECTFUL-OPERAND SPLAT-IN-A-HANDLER-BODY expansion form — a value-observable fence for the
+/// tail-resumptive fold's newly-added call-site-splat expansion. `reduce_handle` previously DECLINED any
+/// handler body containing a call-site splat `(.. t)` in argument position (CDZ0907 — the fold's own
+/// type+lower path bypassed the shared `expand_call_splat_args`, so a raw splat would reach a backend as
+/// the WHOLE tuple where a scalar element belongs, an invalid artifact). #9642 EXPANDS statically-expandable
+/// splats first (`expand_call_splats_in_subtree`) then re-checks — the expandable case
+/// `(one (.. #tuple((T.tick)))) → (one (T.tick))` becomes the direct-perform-arg shape the fold folds, and
+/// a splat the expander cannot statically lift still DECLINES (decline-don't-miscompile preserved). This
+/// emits that shape: a handler body applies a top-level helper `one` to a SPLAT of a 1-tuple containing a
+/// PERFORM `(T.tick)`; the perform resumes with the handler state `s0`, so the splat MUST expand to perform
+/// EXACTLY ONCE and thread `s0` into `one`. Value = `s0 * b` (one multiplies its arg by b; T.tick returns
+/// the initial state s0). A regression that mis-expands the splat (spreads the whole tuple where a scalar
+/// is wanted → invalid artifact, caught by the validity path) or DOUBLE-performs (state advances twice →
+/// wrong value) or re-declines (unavailable) trips determinism / opt-invariance / differential. NULLARY
+/// (a pure-guest effect program, no export param); the effectful-operand splat "performs exactly once"
+/// invariant is the 09-functions witness #9642 flipped todo->pass on wasm (main 4->12, 10->30). MUST be a
+/// top-level helper (`one`) so this form emits the full program. First splat-in-handler-body effect form —
+/// the reduce_handle splat-expansion path no other effect form reaches. Deterministic Int64 (`s0 * b`).
+fn gen_effect_splat_handler_program<C: Choice>(c: &mut C, out: &mut String) {
+    let s0 = c.int_bounded(1, 9); // initial handler state = what T.tick resumes with (>=1 so the product is nonzero)
+    let b = c.int_bounded(2, 9); // `one`'s multiplier (>=2 so the multiply is load-bearing, not identity)
+    write!(
+        out,
+        "(do (effect T (op tick (-> Int64))) \
+         (def (one (: a Int64)) (* a {b})) \
+         (def (main) (handle T {s0} ((tick () s (resume s (+ s 1)))) (one (.. #tuple((T.tick)))))) \
+         (export main))"
+    )
+    .ok();
+}
+
 /// A `Map.lookup` body: `(match (Map.lookup <2-entry-const-map> <key>) ((Some v) v) (None <dflt>))` —
 /// the keyed map read yielding `Option V`, consumed to an Int64 by matching Some/None. Half the time
 /// the key is PRESENT (→ `Some` → the stored value), half DEFINITELY-ABSENT (→ `None` → the default),
@@ -5384,18 +5420,19 @@ mod tests {
 
     /// [`generate_effect`] — the Effect generator behind `--effect` (value-observable coverage of the
     /// effects lowering) — must keep its two load-bearing invariants: (1) EVERY generated program COMPILES
-    /// (an effect body that declines exercises no lowering); and (2) ALL SEVEN forms stay reachable across
+    /// (an effect body that declines exercises no lowering); and (2) ALL EIGHT forms stay reachable across
     /// varied entropy (single-handler, nested-handler, effect+collection, multi-op, mapstate, cfjoin,
-    /// discarded-call DCE) — a wiring edit that drops a form would silently stop fuzzing that slice.
+    /// discarded-call, splat-in-handler) — a wiring edit that drops a form would silently stop fuzzing that slice.
     #[test]
     fn generate_effect_reaches_all_forms_and_compiles() {
         // Distinctive, mutually-exclusive markers (see `generate_effect`): nested = two effects E1/E2;
         // multiop = one effect E with two ops o1/o2; collection = a `List`; mapstate = effect T / op bump
-        // threading a Map handler-state; cfjoin = op tick (control-flow-join nested-tuple new-state);
+        // threading a Map handler-state; splat = the `(.. #tuple((T.tick)))` splat (checked BEFORE cfjoin,
+        // which form 7 ALSO matches via `(op tick `); cfjoin = op tick (control-flow-join nested-tuple);
         // discarded-call = a top-level `(def (bump (: x Int64)) …)` performing helper (checked BEFORE the
         // single-handler marker, which form 6 ALSO contains); single = the plain one-op form.
-        let mut reached = [false; 7];
-        for seed in 0u64..392 {
+        let mut reached = [false; 8];
+        for seed in 0u64..448 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(97);
             let mut bytes = Vec::new();
             for _ in 0..24 {
@@ -5410,6 +5447,8 @@ mod tests {
             );
             if src.contains("(def (bump (: x Int64)) (E.o x))") {
                 reached[6] = true; // discarded-call state-threading (contains `(effect E (op o ` too — check first)
+            } else if src.contains("(.. #tuple((T.tick)))") {
+                reached[7] = true; // splat-in-handler (contains `(op tick ` too — check BEFORE cfjoin)
             } else if src.contains("(effect E1 ") {
                 reached[1] = true; // nested-handler
             } else if src.contains("(effect E (op o1 ") {
@@ -5426,7 +5465,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all seven effect forms must be reachable across seeds: reached={reached:?}"
+            "all eight effect forms must be reachable across seeds: reached={reached:?}"
         );
     }
 
@@ -6343,6 +6382,37 @@ mod tests {
         assert!(
             saw_discarded,
             "should emit a top-level performing `bump` helper called in discarded non-tail position"
+        );
+    }
+
+    /// `gen_effect_splat_handler_program` emits a well-formed #9642 splat-in-handler-body program (a handler
+    /// body applies a top-level `one` to a splat `(.. #tuple((T.tick)))` of a 1-tuple containing a perform;
+    /// the splat must expand to perform exactly once and thread the state). Emits the FULL program (a
+    /// top-level `one`), so it is NOT main-body-wrapped. Every program COMPILES (the expander lifts the
+    /// statically-expandable splat); asserts the splat + perform structure + confirms the value `s0 * b`
+    /// (s0>=1, b>=2 so the multiply is load-bearing).
+    #[test]
+    fn gen_effect_splat_handler_program_is_well_formed_and_compiles() {
+        let mut saw_splat = false;
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(5501);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut src = String::new();
+            gen_effect_splat_handler_program(&mut ByteCursorChoice::new(&bytes), &mut src);
+            saw_splat |= src.contains("(one (.. #tuple((T.tick))))") && src.contains("(op tick ");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "splat-in-handler effect program must COMPILE (the expander lifts the splat): {src}"
+            );
+        }
+        assert!(
+            saw_splat,
+            "should emit an effectful-operand splat `(.. #tuple((T.tick)))` applied in a handler body"
         );
     }
 
