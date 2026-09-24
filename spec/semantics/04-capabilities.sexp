@@ -92,6 +92,28 @@
   (output (: unit Unit))
   (host-calls (call log.emit (: "x" String))))
 
+; The EFFECT-OBSERVATION guard for the dropped-discarded-effectful-call class (#083755 / #9635 fixed the DCE;
+; this pins it in the corpus). A DISCARDED non-final statement that is a CALL to a NON-RECURSIVE callee
+; performing a host op must still run the op. `main` delegates `log`; its body `(do (helper) unit)` DISCARDS
+; `(helper)` — a non-recursive def whose Unit body performs `log.emit` — and yields `unit`. The op is
+; observable (ordered host call), so the discarded statement MUST be kept. A do-block dead-statement
+; elimination that judged `(helper)` by its INLINED core (β-reduced → not a `Core::Call`) and by the syntactic
+; AST walk (which stops at the call node, not the callee body) saw neither a `Core::Call` nor a host call and
+; DROPPED it — `log.emit` silently vanished (zero host calls). The fix follows the call into its inlined core.
+; This case is the effect-observation pin that class needs: unlike the return-value cases, the guest VALUE is
+; unchanged (`unit`) whether or not the effect fires — only the `(host-calls …)` observation distinguishes a
+; kept effect from a dropped one, so `(output (: unit Unit))` alone would be hollow-green.
+(case
+  "a discarded call to a non-recursive callee performing a host op keeps the effect"
+  (input
+    (do
+      (effect log (op emit (-> String Unit)))
+      (def (helper) (log.emit "fx"))
+      (def (main) (host (log) (do (helper) unit)))
+      (export main)))
+  (output (: unit Unit))
+  (host-calls (call log.emit (: "fx" String))))
+
 ; Reachability is a STATIC (call-graph) property: an effect performed only inside an `if`-branch is REACHED
 ; (it could run), so the delegation grants it and the program compiles — and then the RUNTIME branch decides
 ; whether the host call actually fires. These pin both sides: with the branch taken, the delegated effect
