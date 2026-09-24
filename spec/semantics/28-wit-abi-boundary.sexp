@@ -5394,3 +5394,28 @@ cases
   (host-calls (call cadenza:platform/probe.f))
   (output 12)
   (live-objects 0))
+
+(case
+  "a top-level tuple<list<u8>, list<u8>> host-op ARGUMENT with an EMPTY first Bytes element (len-0 rope, cursor no-advance)"
+  (doc
+    "SHAPE 110 (v-wit-boundary) — a top-level `tuple<list<u8>, list<u8>>` host-op ARGUMENT whose FIRST Bytes
+           element is EMPTY (`b\"\"`). Pins the len-0 rope edge of `emit_tuple_reg_flatten`'s Bytes branch: the
+           copy loop runs ZERO iterations (its `pos >= len` guard is true at entry), `cursor += 0` does NOT
+           advance, and the pushed `(ptr, len)` is `(cursor, 0)` — so the SECOND (non-empty) element's rope is
+           still copied to `cursor` (which the empty element left unmoved) and the two `(ptr,len)` pairs remain
+           well-formed. Guards against an off-by-one in the copy-loop bound / a spurious cursor bump on a
+           zero-length element (which would misplace the following element). The tuple crosses as WIT
+           `tuple<list<u8>, list<u8>>`; host returns its scalar (assert 3 = len b\"\" (0) + len b\"xyz\" (3)).
+           `live-objects 0`.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member f (func (param x (tuple (list (u8)) (list (u8)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op f (-> (Tuple Bytes Bytes) Int64)))
+      (def (run) (host (probe) (probe.f #tuple(b"" b"xyz"))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.f (: 3 Int64)))
+  (host-calls (call cadenza:platform/probe.f))
+  (output 3)
+  (live-objects 0))
