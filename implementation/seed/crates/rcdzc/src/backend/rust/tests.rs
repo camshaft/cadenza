@@ -8507,6 +8507,33 @@ fn rustc_host_seq_elides_a_discarded_pure_statement_no_spurious_trap() {
 }
 
 #[test]
+fn rustc_keeps_a_discarded_call_to_a_nonrecursive_effectful_def() {
+    // #083755 (v-compiler-primitives find, breaker-confirmed on main 664ec2af2d): the TRANSITIVE-through-a-
+    // call twin of the §283 elide above — and its OPPOSITE verdict. DCE MUST NOT drop a discarded call to a
+    // NON-RECURSIVE def whose body performs an observable HOST effect (returning Unit). `helper` performs
+    // `io.put` (a host effect); `main` DISCARDS the call `(helper 1)` in non-final `do` position then returns
+    // 42. `helper` is small + non-recursive, so `core_of` INLINES it out of a `Core::Call`, AND
+    // `subtree_reaches_host_call` walks only the call-SITE syntactic children (never descends into helper's
+    // DEFINITION body) — so the two original disjuncts of `discarded_stmt_has_observable_effect` BOTH missed
+    // it and the host call was SILENTLY DROPPED (the emit had NO `__cdz_host_io_put`: a miscompile, the
+    // program did strictly less than written). The added `subtree_reaches_effect_perform` disjunct (which
+    // RESOLVES pre-core so inlining can't hide the perform, and FOLLOWS the callee body once, cycle-guarded)
+    // now KEEPS it. This is an EFFECT-OBSERVATION guard — the presence of the shim call proves the effect
+    // survives DCE — NOT a live-objects census pin (a dropped host effect has no live-objects signal, so a
+    // census pin would be hollow; breaker). Contrast the §283 sibling: a PURE discarded stmt is ELIDED; a
+    // discarded EFFECT-through-a-non-recursive-call is KEPT.
+    let src = "(module m (effect io (op put (-> Int64 Unit))) \
+        (def (helper (: x Int64)) (io.put x)) \
+        (def (main) (host (io) (do (helper 1) 42))) (export main))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("__cdz_host_io_put"),
+        "a discarded call to a NON-RECURSIVE host-effectful helper must KEEP the host call (the effect is \
+         observable, not dead) — the `__cdz_host_io_put` shim call must be present, not DCE-dropped:\n{rs}"
+    );
+}
+
+#[test]
 fn rustc_dead_let_heap_ctor_force_evals_trapping_scalar_arg() {
     // CASE2 (#5194/#5328, breaker cross-backend gate-check-rust red): the STRICT-construction twin of the
     // adv-56 elide above. A REACHED list/set/map ctor whose result is DEAD still MUST evaluate its

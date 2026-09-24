@@ -284,6 +284,21 @@ pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
 /// two operator rulings: §283 elides a discarded pure-scalar implicit trap; the new directive keeps a
 /// discarded EFFECT / CALL / EXPLICIT-trap. Read by the `do`-fold (compute.rs), `wrap_body_with_strict_arg_eval`,
 /// and `collect_discarded_value_warnings` (CDZ0307 no-drift). `core_of` is memoized so the walk is cheap.
+///
+/// ★ TRANSITIVE EFFECT through a NON-RECURSIVE call (concierge #083755, v-compiler-primitives find, breaker
+/// confirmed on main 664ec2af2d): a discarded `helper(args)` where `helper` is a NON-RECURSIVE def whose body
+/// performs a HOST effect (`sys.add-storage`) and returns Unit was SILENTLY DROPPED — the two disjuncts above
+/// BOTH miss it: (a) `subtree_reaches_host_call` recurses the call-SITE syntactic children only (never the
+/// callee DEFINITION body), and (b) a small non-recursive `helper` is INLINED by `core_of`, so the node is no
+/// longer a `Core::Call` and `reaches_call_or_explicit_trap`'s match fails too. So we ALSO OR in
+/// `subtree_reaches_effect_perform`, which RESOLVES each node (pre-core, so handler-folding / inlining can't
+/// hide the perform) and FOLLOWS a callee's body ONCE (cycle-guarded, depth-bounded) — catching a host / effect
+/// perform reachable transitively through a non-recursive call. (A discarded non-recursive helper that TRAPS is
+/// already preserved by inlining — `trap`→`unreachable` is a terminator that survives — so only the
+/// non-divergent effect case leaked; the recursive-callee case stays a `Core::Call` and is kept by disjunct (b).)
+/// This ALSO closes the direct discarded-USER-effect-perform gap (an in-program `handle` folds a perform away
+/// from a bare `HostCall`, so disjunct (a) missed it). Keeps CDZ0307 no-drift: `collect_discarded_value_warnings`
+/// already ORs in `subtree_reaches_effect_perform`, so the keep decision and the diagnostic stay aligned.
 pub(crate) fn discarded_stmt_has_observable_effect(db: &mut Db, id: StructId) -> bool {
     fn reaches_call_or_explicit_trap(db: &mut Db, id: StructId) -> bool {
         match db.ast.get(id).clone() {
@@ -311,7 +326,13 @@ pub(crate) fn discarded_stmt_has_observable_effect(db: &mut Db, id: StructId) ->
             crate::ast::Struct::Atom(_) => false,
         }
     }
-    subtree_reaches_host_call(db, id) || reaches_call_or_explicit_trap(db, id)
+    subtree_reaches_host_call(db, id)
+        || reaches_call_or_explicit_trap(db, id)
+        // TRANSITIVE host / effect perform through a NON-RECURSIVE call (resolves + follows the callee body
+        // once, cycle-guarded), the shape the two disjuncts above miss because the callee inlines out of a
+        // `Core::Call` and is never descended into. See the doc comment (#083755). Placed last: it is the
+        // costlier walk, so the cheaper structural disjuncts short-circuit the common case first.
+        || subtree_reaches_effect_perform(db, id)
 }
 
 /// Whether the subtree at `id` REACHES an effect-op PERFORM — an application whose head names an effect
