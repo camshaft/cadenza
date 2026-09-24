@@ -4206,12 +4206,22 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
         Type::U64 => parse(s.parse::<u64>().ok().map(Val::U64))?,
         Type::Float32 => parse(s.parse::<f32>().ok().map(Val::Float32))?,
         Type::Float64 => parse(s.parse::<f64>().ok().map(Val::Float64))?,
-        Type::Char => parse(
-            s.chars()
-                .next()
-                .filter(|_| s.chars().count() == 1)
-                .map(Val::Char),
-        )?,
+        // The corpus writes a Char argument as its value-form literal `#\<word>` (`(: #\a Char)` → `s` =
+        // `#\a`, and `#\λ`, `#\space`, `#\newline`, …). Decode the `#\`-prefixed form via the front-end's
+        // canonical `char_leaf` (single scalar / escape / named char — the exact inverse of `render_char`), so
+        // the marshalled value matches the source Char, not the raw token. A bare single-character arg (a plain
+        // CLI `--arg a`) is still accepted verbatim.
+        Type::Char => {
+            let ch = if let Some(word) = s.strip_prefix("#\\") {
+                match cadenza_syntax::literal::char_leaf(word) {
+                    cadenza_syntax::ast::Leaf::Char(c) => Some(c),
+                    _ => None, // BadChar (surrogate / out-of-range / unknown name) → parse error below
+                }
+            } else {
+                s.chars().next().filter(|_| s.chars().count() == 1)
+            };
+            parse(ch.map(Val::Char))?
+        }
         // The corpus writes a string argument as a QUOTED literal (`(: "abc" String)` → `s` = `"abc"`,
         // quotes included). Parse the literal — strip the delimiters, apply the closed escape set, and
         // NFC-normalize — exactly as the front-end reads a source string, so the marshalled value is the
@@ -4598,6 +4608,30 @@ mod tests {
         assert_eq!(corrupt_bytes(&[]), vec![0xff]);
         assert_eq!(corrupt_bytes(&[0x42]), vec![0xff]);
         assert_ne!(corrupt_bytes(&[0x42]), vec![0x42u8]);
+    }
+
+    /// `coerce_one` marshals a Char CLI argument from its value-form literal `#\<word>` — the form the corpus
+    /// grader passes for `(: #\a Char)` — via the front-end's canonical `char_leaf` (single scalar, multibyte
+    /// scalar, named char), and still accepts a bare single-character arg. Regression guard for the
+    /// wasm-boundary Char entry-param cases (spx2/spx2b, #9659): the missing `#\` decode red the
+    /// corpus-gate-coarse-09-functions runtime-trial shard with "cannot parse `#\a` as Char" (a coverage gap
+    /// the coarse subset had not exercised at land time).
+    #[test]
+    fn coerce_char_arg_accepts_the_hash_backslash_literal_and_bare_form() {
+        use wasmtime::component::Type;
+        let ch = |v: Val| match v {
+            Val::Char(c) => c,
+            other => panic!("expected a Char, got {other:?}"),
+        };
+        // `#\<word>` value-form literals: single scalar, multibyte scalar, named char.
+        assert_eq!(ch(coerce_one("#\\a", &Type::Char).unwrap()), 'a');
+        assert_eq!(ch(coerce_one("#\\λ", &Type::Char).unwrap()), 'λ');
+        assert_eq!(ch(coerce_one("#\\space", &Type::Char).unwrap()), ' ');
+        assert_eq!(ch(coerce_one("#\\newline", &Type::Char).unwrap()), '\n');
+        // A bare single-character CLI arg stays accepted (back-compat with a plain `--arg a`).
+        assert_eq!(ch(coerce_one("a", &Type::Char).unwrap()), 'a');
+        // A malformed `#\` literal (unknown name) is a clean parse error, never a panic.
+        assert!(coerce_one("#\\notaname", &Type::Char).is_err());
     }
 
     /// bytes-second run-wiring: the byte-scanner walks a component's top-level sections + returns the
