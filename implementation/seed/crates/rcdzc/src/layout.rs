@@ -2342,18 +2342,15 @@ pub fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructI
         //     UNANNOTATED param. The fix is to ANNOTATE it (the backend must not invent a width the program
         //     did not write; `numeric-model.md` no implicit width).
         //   - NO BOUNDARY REPRESENTATION: the type is DETERMINED (annotated, ground) but is a type that
-        //     simply cannot cross the component boundary — a `Char`, a bare arrow, an internal-only width.
+        //     simply cannot cross the component boundary — a bare arrow, an internal-only integer width.
         //     Annotating does NOT help (it is already annotated); the message must NAME the type and say it
         //     has no boundary representation, not "ambiguous — annotate it" (which sends the author to add
-        //     an annotation that is already present). The scalar-`Char` export gap (v-property-testing).
-        // A `Char` now has a CORE machine slot (`valtype_of(Ty::Char) == I32`, the runtime Char rep) but
-        // still has NO component-BOUNDARY representation (`comp_valtype_of(Ty::Char) == None`, and unlike a
-        // Record/List it does not escape via the resource `encode()` path) — so a Char EXPORT PARAM must
-        // still decline with the NO-BOUNDARY-REP diagnostic (naming the type), NOT slip through the core-slot
-        // gate to a later, worse decline. The runtime Char rep is for IN-BODY chars (an `if`-join, a local);
-        // crossing a Char at the component boundary is a separate later increment.
-        let no_boundary_rep = crate::backend::wasm::lir::valtype_of(&ty).is_none()
-            || matches!(ty.strip_nominal(), Ty::Char);
+        //     an annotation that is already present).
+        // A `Char` now crosses as the WIT `char` primitive (`comp_valtype_of(Ty::Char) == Some(char)`, one
+        // `i32` code point — the same core slot the runtime Char uses), so a Char EXPORT PARAM is admitted
+        // (spx2); it is no longer excluded here. A width with no aliased boundary form (7/24/48-bit) still has
+        // `valtype_of == None` and declines via the first clause.
+        let no_boundary_rep = crate::backend::wasm::lir::valtype_of(&ty).is_none();
         if no_boundary_rep {
             let ambiguous = matches!(ty, Ty::Any) || crate::infer::ty_has_free_var(db, &ty);
             trace!(target: "rcdzc::layout", %name, binder = binder.0, ty = %ty.render_name(&db.name_ctx()), ambiguous, "decline: exported parameter has no boundary machine type");
@@ -2364,7 +2361,7 @@ pub fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructI
             } else {
                 format!(
                     "export `{name}`: parameter type `{}` has no component-boundary representation — \
-                     only the aliased integer widths, `Bool`, and `Float` cross the boundary; it is \
+                     only the aliased integer widths, `Bool`, `Char`, and `Float` cross the boundary; it is \
                      already annotated, so an annotation cannot fix this (use a boundary-representable \
                      parameter type)",
                     ty.render_name(&db.name_ctx())

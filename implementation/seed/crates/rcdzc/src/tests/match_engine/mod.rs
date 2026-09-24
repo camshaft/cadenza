@@ -611,28 +611,6 @@ fn an_exported_unannotated_param_surfaces_in_check_with_an_annotate_fix() {
 }
 
 #[test]
-fn an_exported_annotated_char_param_names_the_no_boundary_representation_not_ambiguous() {
-    // DIAGNOSTIC QUALITY (v-property-testing's scalar-Char gap): an exported param annotated with a
-    // type that HAS no component-boundary representation (`Char`) must NOT report "ambiguous — annotate
-    // it" — the param IS annotated, so that advice is misleading (sends the author to add an annotation
-    // that is already present). The message must instead NAME the type and say it has no boundary
-    // representation. The unannotated-`Any` case still says "ambiguous" (the sibling test above).
-    let msg = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (f (: c Char)) 1) (export f))",
-    )))
-    .expect_err("a Char boundary param must decline")
-    .message;
-    assert!(
-        msg.contains("Char") && msg.contains("no component-boundary representation"),
-        "an annotated Char export param names the type + the boundary-rep cause, not ambiguity: {msg}"
-    );
-    assert!(
-        !msg.contains("ambiguous"),
-        "an ANNOTATED param must not be called ambiguous — the annotation is present: {msg}"
-    );
-}
-
-#[test]
 fn a_non_recursive_scalar_match_scrutinee_param_is_grounded_not_declined_heap_walk() {
     // #6426's dedup-unmask exposed CDZ0900 "matching a compound value needs a heap walk" on an
     // unannotated SCALAR-match parameter of a NON-recursive def: the param stayed `Any` (a non-recursive

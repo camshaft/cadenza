@@ -161,6 +161,9 @@ pub const COMP_U64: u8 = 0x77;
 pub const COMP_F32: u8 = 0x76;
 /// component `f64`.
 pub const COMP_F64: u8 = 0x75;
+/// component `char` — a Unicode scalar value; canonically flattens to one `i32` code point. Fills the
+/// `0x74` slot the generated table skipped (see `wit_ctype`'s local mirror).
+pub const COMP_CHAR: u8 = 0x74;
 /// component `string`.
 pub const COMP_STRING: u8 = 0x73;
 /// core TYPE section id.
