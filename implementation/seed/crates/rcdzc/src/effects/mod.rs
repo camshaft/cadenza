@@ -2568,6 +2568,74 @@ pub fn ground_seed_if_handle_init(db: &mut Db, id: StructId, t: crate::ty::Ty) -
     crate::infer::ground_handler_state_ty(db, t, arms_list)
 }
 
+/// Ground a PERFORM ARGUMENT's under-constrained type against the operation's DECLARED parameter type
+/// (`capabilities-and-effects.md` §Performing An Operation Is Typed — "performing an operation MUST check
+/// its arguments against the operation's declared parameter types"). A bare `(None)` / `#list()` perform
+/// arg infers `Option(_)` / `List(_)` — an ungrounded payload/element var — because `type_of(perform)`
+/// unifies each arg into the op parameter only in its OWN LOCAL subst (to derive the perform's RESULT type,
+/// `infer/construct.rs`), and never writes that grounding back to the arg node; so the arg node MEMOIZES the
+/// unground `(Option _)`. At the host boundary the option/list arm guards on `abi_val_type(payload).is_some()`,
+/// which FAILS for the unground var: the host-import functype builder drops the param (0 core slots) while the
+/// arg marshal still pushes the folded value (1 slot) → "values remaining on stack" (CDZ0910), and the op
+/// silently does not host-delegate. This hook — the perform-arg twin of [`ground_seed_if_handle_init`] — grounds
+/// the arg's type against the op's declared param at memoization time, so every later read (incl. the emit) sees
+/// the concrete type. GATED to a CONCRETE declared param (no free var): a generic op param leaves the arg
+/// unchanged (no-op) and avoids cross-`Fresh` var aliasing, so it pins exactly a genuinely-declared width/
+/// payload/element type. Fixes the whole under-constrained-perform-arg class (SHAPE 103 const-None option arg,
+/// SHAPE 104 bare empty-list arg). Diagnosed by v-wit-boundary + v-core-opt; general form of
+/// [`crate::infer::ground_handler_state_ty`].
+pub fn ground_perform_arg_ty(db: &mut Db, id: StructId, t: crate::ty::Ty) -> crate::ty::Ty {
+    if !crate::infer::ty_has_free_var(db, &t) {
+        return t;
+    }
+    let Some(parent) = db.parent_of(id) else {
+        return t;
+    };
+    // `parent` must be a perform `(E.op arg…)` — an Apply whose head is an effect operation — and `id` one of
+    // its ARGUMENTS (not the head). `resolved_of` returns an owned `Resolved` (the `db` borrow ends here), so
+    // the `scheme_of` mutation below is free of a borrow conflict.
+    let (head, pos) = match resolved_of(db, parent) {
+        Resolved::Apply { head, args } if crate::eval::effect_op_of(db, head).is_some() => {
+            match args.iter().position(|&a| a == id) {
+                Some(p) => (head, p),
+                None => return t,
+            }
+        }
+        _ => return t,
+    };
+    // Peel the op's declared `(meta t)` scheme to the parameter type at argument position `pos`.
+    let mut fresh = crate::unify::Fresh::new();
+    let Some(scheme) = crate::eval::scheme_of(db, head, &mut fresh) else {
+        return t;
+    };
+    let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut param_ty = None;
+    for i in 0..=pos {
+        match cur {
+            crate::ty::Ty::Fn(p, r) => {
+                if i == pos {
+                    param_ty = Some(*p);
+                    break;
+                }
+                cur = *r;
+            }
+            _ => break,
+        }
+    }
+    let Some(param_ty) = param_ty else {
+        return t;
+    };
+    // Only ground against a CONCRETE declared param (no free var): a generic param is a no-op and could
+    // otherwise alias the arg's own `Fresh` vars. This pins exactly the declared payload/element/width.
+    if crate::infer::ty_has_free_var(db, &param_ty) {
+        return t;
+    }
+    let mut subst = crate::unify::Subst::new();
+    let ncx = db.name_ctx();
+    let _ = crate::unify::unify(&mut subst, &t, &param_ty, &ncx);
+    subst.apply(&t)
+}
+
 fn tail_resume_next_state_of(db: &mut Db, node: StructId) -> Option<StructId> {
     match resolved_of(db, node) {
         Resolved::Resume { next_state, .. } => Some(next_state),
