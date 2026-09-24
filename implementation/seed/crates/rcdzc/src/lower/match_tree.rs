@@ -103,14 +103,37 @@ pub(super) fn fold_sum_path(
     // inner sum's `Payload` then descends the sum (constant) or correctly declines the fold (runtime).
     let mut ty = crate::infer::type_of(db, root);
     for step in steps {
-        // A `Payload` step over a NOMINAL NEWTYPE sub-value is a no-op: the box is erased, so the newtype
-        // construction lowered its payload core DIRECTLY at `cur` (no `Core::SumNew` to descend). PEEL one
-        // nominal layer off the type cursor and leave `cur` unchanged (a following `Payload` reads a wrapped
-        // sum, a following `Elem` reads a multi-payload newtype's tuple).
+        // A `Payload` step over a NOMINAL NEWTYPE sub-value. The newtype box is erased at RUN TIME, but it
+        // may still be PRESENT in the CORE tree: a newtype construction reached here (e.g. a `Node.Node(7)`
+        // that a record-field projection folded to) lowers to a single-payload `Core::SumNew` whose box the
+        // backend drops only at emit, not in the core. Whether to descend that box turns on what the newtype
+        // wraps — see the inner-is-sum split just below. The historical behaviour (peel the TYPE, leave `cur`)
+        // was correct only when `cur` was already the erased inner value; when `cur` still carried the box it
+        // returned the un-erased `SumNew` with the erased-inner TYPE — a core/type mismatch emitting a `Node`
+        // enum (i32 handle) where the inner `UInt64` (i64) is wanted (CDZ0910 on wasm / "sum construction node
+        // is not a sum type" on rust; breaker: nested record-newtype-of-newtype-field).
         if matches!(step, PathStep::Payload)
             && let crate::ty::Ty::Nominal { inner, .. } = &ty
         {
-            ty = (**inner).clone();
+            let inner_ty = (**inner).clone();
+            // Descend the box ONLY when the inner is NOT itself a sum. When the newtype wraps a SUM
+            // (`(type Cached (Mk (Option …)))`) the box erases TRANSPARENTLY onto the inner sum — `cur`'s
+            // `SumNew` and the inner sum's `SumNew` are the SAME value at runtime (byte-identical to the
+            // bare sum), so the historical no-op (keep `cur`, peel the type; the inner sum's own following
+            // `Payload` then descends it) is correct and must be preserved. When the inner is a SCALAR /
+            // RECORD / TUPLE, the box's `SumNew` is a genuine extra core node whose erased type is NOT a
+            // sum; leaving `cur` on it returned that un-erased `SumNew` with a non-sum type (the CDZ0910 /
+            // rust "not a sum type" mismatch), so unwrap to the payload — the erased inner value.
+            let inner_is_sum = matches!(inner_ty.strip_nominal(), crate::ty::Ty::Sum { .. });
+            if !inner_is_sum
+                && let Core::SumNew { payloads, .. } = core_of(db, cur)
+                && payloads.len() == 1
+            {
+                cur = payloads[0];
+                ty = crate::infer::type_of(db, cur);
+            } else {
+                ty = inner_ty;
+            }
             continue;
         }
         // A `Payload` step over a MULTI-payload `SumNew` is a no-op landing on the payload TUPLE; the

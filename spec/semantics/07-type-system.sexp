@@ -4132,6 +4132,34 @@
       (export main)))
   (output (: 7 Int64)))
 
+; A record-newtype whose FIELD is itself a scalar-newtype — `(type Req (Req (Record (: node Node) …)))`
+; over `(type Node (Node UInt64))` — must keep the inner scalar's DECLARED WIDTH when the field is
+; unwrapped through both nominal boxes. Nominal types erase transparently: `Req.Req(f)` peels to the
+; record, `(. f node)` reads a `Node`, `Node.Node(nid)` peels to the `UInt64`. When the whole chain is a
+; compile-time constant the payload-extraction path is CONST-FOLDED (`fold_sum_path`), and the fold walked
+; a `Payload` step over a single-payload nominal box by peeling only the TYPE while leaving the cursor on
+; the box's `SumNew`. That returned an un-erased `SumNew` whose erased type is a SCALAR, not a sum — the
+; defect surfaced as CDZ0910 (wasm i64-value vs i32-handle width mismatch) and as the rust backend's
+; "sum construction node is not a sum type" (a `SumNew` core with a non-sum erased type reaching
+; `sum_variant_path`). The fold now DESCENDS the box to its payload when the inner strips to a NON-sum
+; (scalar / record / tuple), recovering the erased inner value at its declared width; it preserves the
+; historical no-op when the inner is itself a SUM (that box erases byte-identically onto the inner sum —
+; see `a_newtype_over_a_sum_erases_to_the_same_component_as_the_bare_sum`). `nid` reads 7 at its full
+; UInt64 width, `+ 1` = 8. A representation that carried the inner scalar as an i32 handle answers wrong
+; (or fails to compile on rust); an erasure that unwrapped the sum-inner case regresses byte-identity.
+(case
+  "a record-newtype field that is a scalar-newtype keeps the inner scalar's declared width when unwrapped"
+  (input
+    (do
+      (type Node (Node UInt64))
+      (type Req (Req (Record (: node Node) (: path String))))
+      (def (main)
+        (match (Req.Req #record((= node (Node.Node 7)) (= path "/h")))
+          ((Req.Req f)
+            (match (. f node) ((Node.Node nid) (+ nid 1))))))
+      (export main)))
+  (output (: 8 UInt64)))
+
 ; --- A chained generic instantiated at a MAP type. ---
 (case
   "a chained generic instantiates at a MAP type and both tuple slots share the CHAMP"
