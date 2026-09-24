@@ -13,11 +13,13 @@
 # restart). That non-destructive-BY-CONSTRUCTION restraint is what would make it safe on a frequent cron.
 # It EXCLUDES pr-sync (whose stale-mid-batch shape needs the watchdog's trunk/gate/lease exonerations).
 #
-# LANDED-BUT-OFF: the `# fleet:rearm-stale` crontab line ships DISABLED (commented) — `ensure_rearm_stale_cron`
-# keyed on REARM_STALE_ENABLED=false — pending the operator's ASK1 ruling on whether a non-destructive
-# send-keys `/loop` re-arm is in scope of the 2026-09-10 destructive-watchdog ban. This wrapper exists so the
-# mechanism is ready to flip the instant the operator says GO; until then nothing schedules it. The command is
-# still runnable by hand (dry-run especially) for inspection.
+# ENABLED (operator seq 1251, ASK1 GREEN 2026-09-24): the `# fleet:rearm-stale` crontab line now ships LIVE
+# (`ensure_rearm_stale_cron` keyed on REARM_STALE_ENABLED=true). It is the sanctioned NON-destructive self-heal
+# — token-delta-gated (#9644: never nudges work-in-flight) + a send-keys `/loop` re-arm NOT a window-kill
+# (ban-compliant) — with an escalation rung (#9660) that SURFACES a not-sticking reissue as a likely session
+# wedge (rate-limited note + watchdog.log) needing an operator restart, instead of re-arming forever. The
+# DESTRUCTIVE early-reap remains unbuilt + operator-gated (1251 authorizes non-destructive automation only).
+# The command is also runnable by hand (dry-run especially) for inspection.
 #
 # WHY A WRAPPER (not a raw `cargo xtask` in the crontab): the fleet HUB is a BARE repo (no cargo project), so
 # `cargo xtask` needs a real worktree. This picks a worktree with a BUILT `xtask` binary and runs it DIRECTLY
