@@ -5442,3 +5442,28 @@ cases
   (host-calls (call cadenza:platform/probe.f))
   (output 5)
   (live-objects 0))
+
+(case
+  "a host op with TWO COMPOUND params (tuple<list<u8>,s64> and option<list<u8>>) — cross-arg scratch cursor, two cursor-consumers"
+  (doc
+    "SHAPE 112 (v-wit-boundary) — a host op `f(tuple<list<u8>, s64>, option<list<u8>>) -> s64` with TWO
+           COMPOUND params BOTH consuming the per-call scratch cursor. Newly reachable now that multi-param host
+           ops cross (SHAPE 111): every earlier multi-region-cursor case put the Bytes copies WITHIN a single
+           compound arg (tuple<bytes,bytes> 108, bytes-scalar-bytes 109); this is the first with two SEPARATE
+           compound args each copying a rope to `mem`. Pins that the cursor advances ACROSS args — arg 0's tuple
+           Bytes element copies at the cursor (which advances), then arg 1's `option` Some payload copies to the
+           ALREADY-ADVANCED cursor — so the two args' mem regions are DISJOINT and the flattened core slots are
+           `(ptr0,len0, s, disc1,ptr1,len1)`. Host returns its scalar (assert 5 = len b\"hi\" (2) + len b\"xyz\"
+           (3)). `live-objects 0`.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member f (func (param p (tuple (list (u8)) (s64))) (param q (option (list (u8)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op f (-> (Tuple Bytes Int64) (Option Bytes) Int64)))
+      (def (run) (host (probe) (probe.f #tuple(b"hi" 7) (Some b"xyz"))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.f (: 5 Int64)))
+  (host-calls (call cadenza:platform/probe.f))
+  (output 5)
+  (live-objects 0))
