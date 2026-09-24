@@ -1066,19 +1066,25 @@ pub(super) fn emit_option_reg_flatten(
     Ok(())
 }
 
-/// Marshal a top-level value-heap `tuple<scalar…>` host argument whose handle is in `tup_slot` into the
-/// POSITIONALLY-FLATTENED core slots the built-in `tuple<T…>` param lowers to — one scalar per element in
-/// element (= declaration = component) order, no discriminant, pushed onto the operand stack in order. The
-/// register twin of a record's scalar-field marshal (`emit_record_arg_marshal`), but POSITIONAL: a tuple's
-/// WIT order IS its element order (no name reorder), so element `i` reads the value-heap cell at index `i`
-/// (`arr-get i`, which borrows the tuple) + its wrap-free get-op (+ an i64→i32 narrow for a narrow int/char).
-/// Scoped to ALL-SCALAR elements (`get_op_ty`) — a compound element needs a mem cursor (a later increment) and
-/// is declined at classification. Pure register pushes (no scratch/mem), so the tuple handle stays borrowed
-/// and is reclaimed by the caller.
+/// Marshal a top-level value-heap `tuple<…>` host argument whose handle is in `tup_slot` into the
+/// POSITIONALLY-FLATTENED core slots the built-in `tuple<T…>` param lowers to — pushed onto the operand stack
+/// in element (= declaration = component) order, no discriminant. A SCALAR element is one core slot (the
+/// register twin of a record's scalar-field marshal, but POSITIONAL: element `i` reads the value-heap cell at
+/// index `i` via `arr-get i`, which borrows the tuple, + its wrap-free get-op, + an i64→i32 narrow for a narrow
+/// int/char). A `Bytes` element's rope is copied into `mem` at the running scratch `cursor` and pushed as
+/// `(ptr,len)` (2 slots, the same copy a Bytes ARG / a Bytes record FIELD does). Scoped to SCALAR-or-`Bytes`
+/// elements — a compound element is declined at classification. `work_base` is the first free scratch slot for
+/// the Bytes copy (rope/len/pos, only touched when a Bytes element is present). All reads BORROW `tup_slot` (no
+/// consume/drop; the caller reclaims it).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_tuple_reg_flatten(
     db: &mut Db,
     tup_slot: u32,
     fty: &Ty,
+    cursor: Option<u32>,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
     out: &mut Emit,
 ) -> Result<(), Reject> {
     let Ty::Tuple(elems) = fty.strip_nominal() else {
@@ -1086,8 +1092,61 @@ pub(super) fn emit_tuple_reg_flatten(
     };
     let elems = elems.to_vec(); // release the borrow of `fty` before the &mut db calls
     for (i, ety) in elems.iter().enumerate() {
+        // A `Bytes` element: read the value-heap cell's rope handle (`arr-get i`, borrows the tuple), copy its
+        // logical bytes into `mem` at the running `cursor`, push `(ptr,len)`, and advance the cursor by the
+        // length — the SAME rope→mem copy a Bytes record field / a Some option<bytes> payload does.
+        if matches!(ety.strip_nominal(), Ty::Bytes) {
+            let cursor =
+                cursor.expect("a tuple<…,bytes,…> arg reserves the scratch cursor (pre-scan)");
+            let ptr_slot = work_base;
+            let rope_slot = work_base + 1;
+            let len_slot = work_base + 2;
+            let pos_slot = work_base + 3;
+            for s in [ptr_slot, rope_slot, len_slot, pos_slot] {
+                scratch_ty.insert(s, ValType::I32);
+            }
+            *high = (*high).max(work_base + 4);
+            out.push(Lir::LocalGet(cursor)); // ptr = cursor (captured BEFORE the copy advances it)
+            out.push(Lir::LocalSet(ptr_slot));
+            out.push(Lir::LocalGet(tup_slot));
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::CallImport(OP_ARR_GET)); // [element list<u8> handle] (borrows the tuple)
+            out.push(Lir::LocalSet(rope_slot));
+            out.push(Lir::LocalGet(rope_slot));
+            out.push(Lir::CallImport(OP_BYTES_LEN)); // [len]
+            out.push(Lir::LocalSet(len_slot));
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::LocalSet(pos_slot));
+            out.push(Lir::Block(BlockType::Empty));
+            out.push(Lir::Loop(BlockType::Empty));
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::LocalGet(len_slot));
+            out.push(Lir::I32GeS);
+            out.push(Lir::BrIf(1));
+            out.push(Lir::LocalGet(cursor));
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::I32Add);
+            out.push(Lir::LocalGet(rope_slot));
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::CallImport(OP_BYTES_GET));
+            out.push(Lir::I32Store8 { offset: 0 });
+            out.push(Lir::LocalGet(pos_slot));
+            out.push(Lir::ConstI32(1));
+            out.push(Lir::I32Add);
+            out.push(Lir::LocalSet(pos_slot));
+            out.push(Lir::Br(0));
+            out.push(Lir::End);
+            out.push(Lir::End);
+            out.push(Lir::LocalGet(cursor));
+            out.push(Lir::LocalGet(len_slot));
+            out.push(Lir::I32Add);
+            out.push(Lir::LocalSet(cursor)); // cursor += len
+            out.push(Lir::LocalGet(ptr_slot)); // push (ptr, len)
+            out.push(Lir::LocalGet(len_slot));
+            continue;
+        }
         let read = get_op_ty(db, ety)?.ok_or_else(|| {
-            Reject::decline("a top-level tuple arg element is not a scalar this increment")
+            Reject::decline("a top-level tuple arg element is not a scalar/bytes this increment")
         })?;
         out.push(Lir::LocalGet(tup_slot));
         out.push(Lir::ConstI32(i as i32));

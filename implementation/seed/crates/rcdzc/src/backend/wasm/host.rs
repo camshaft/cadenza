@@ -626,6 +626,17 @@ pub fn record_has_tuple_field(ty: &Ty) -> bool {
     }
 }
 
+/// Whether a top-level `tuple<…>` ARG has a `Bytes` element — its rope is copied into shared `mem` (pushed as
+/// `(ptr,len)`), so the arg needs the running scratch cursor reserved just like a Bytes arg / a Bytes record
+/// field. An all-scalar tuple does NOT (it flattens positionally to inline core slots). Complements
+/// [`record_has_bytes_field`] for the cursor-reservation gate (the top-level tuple twin of a Bytes record field).
+pub fn tuple_has_bytes_element(ty: &Ty) -> bool {
+    match ty.strip_nominal() {
+        Ty::Tuple(elems) => elems.iter().any(|e| matches!(e.strip_nominal(), Ty::Bytes)),
+        _ => false,
+    }
+}
+
 /// Whether a record ARG has an `option<bytes>` FIELD anywhere in its tree (recursing into nested records) —
 /// its Some arm copies the payload rope into shared `mem`, so the arg needs the running scratch cursor. An
 /// `option<scalar>` does NOT (it flattens to core slots). Complements [`record_has_bytes_field`]/
@@ -1238,20 +1249,27 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                         };
                         params.push(HostParam::Option(Box::new(abi)));
                     }
-                    // A top-level `tuple<scalar…>` arg crosses as the built-in WIT `tuple<T…>` — the guest
-                    // flattens the value-heap tuple POSITIONALLY (one scalar core slot per element, no disc).
-                    // SCOPED to an ALL-SCALAR tuple this increment: only push when EVERY element has an
-                    // `abi_val_type` — a tuple with a Bytes/compound element (which would need a mem cursor) is a
-                    // later increment (leaves `params` short → declined). Checked BEFORE the scalar `_` arm (a
-                    // tuple has no `abi_val_type`, so `_` would decline).
+                    // A top-level `tuple<…>` arg crosses as the built-in WIT `tuple<T…>` — the guest flattens
+                    // the value-heap tuple POSITIONALLY (a SCALAR element as one core slot, a `Bytes` element as
+                    // `(ptr,len)` copied into `mem`, no disc). Admitted when EVERY element is a scalar
+                    // (`abi_val_type`) OR `Bytes` — a compound (record/list/…) element is a later increment
+                    // (leaves `params` short → declined). A Bytes element maps to `RecordFieldAbi::Bytes` (the
+                    // register twin of the `RecordFieldAbi::Bytes` record field, `emit_tuple_reg_flatten`'s bytes
+                    // branch). Checked BEFORE the scalar `_` arm (a tuple has no `abi_val_type`, so `_` would
+                    // decline).
                     Ty::Tuple(elems)
                         if !peer_bound
                             && !elems.is_empty()
-                            && elems.iter().all(|e| abi_val_type(e).is_some()) =>
+                            && elems.iter().all(|e| {
+                                abi_val_type(e).is_some() || matches!(e.strip_nominal(), Ty::Bytes)
+                            }) =>
                     {
                         let abis = elems
                             .iter()
-                            .map(|e| RecordFieldAbi::Scalar(abi_val_type(e).unwrap()))
+                            .map(|e| match abi_val_type(e) {
+                                Some(pv) => RecordFieldAbi::Scalar(pv),
+                                None => RecordFieldAbi::Bytes, // tuple<…, list<u8>, …> element → (ptr, len)
+                            })
                             .collect();
                         params.push(HostParam::Tuple(abis));
                     }
@@ -1774,13 +1792,13 @@ pub fn first_unrepresentable_host_op(
                 && !peer_bound
                 && option_payload_ty(db, &at)
                     .is_some_and(|p| abi_val_type(&p).is_some() || matches!(p, Ty::Bytes));
-            // A top-level `tuple<scalar…>` arg crosses NATIVELY as the built-in WIT `tuple<T…>` — the guest
-            // flattens the value-heap tuple positionally (`select::emit_tuple_reg_flatten`). Same reducer/
-            // host-fused gating; admitted only for an ALL-SCALAR tuple (a compound element needs a mem cursor,
-            // a later increment) — matching the classifier + the marshal, in lockstep.
+            // A top-level `tuple<…>` arg crosses NATIVELY as the built-in WIT `tuple<T…>` — the guest flattens
+            // the value-heap tuple positionally (`select::emit_tuple_reg_flatten`; a Bytes element copies its
+            // rope into `mem`). Same reducer/host-fused gating; admitted for an ALL-SCALAR-OR-`Bytes` tuple (a
+            // compound element needs a later increment) — matching the classifier + the marshal, in lockstep.
             let arg_is_boundary_tuple = allow_option_bytes
                 && !peer_bound
-                && matches!(at.strip_nominal(), Ty::Tuple(elems) if !elems.is_empty() && elems.iter().all(|e| abi_val_type(e).is_some()));
+                && matches!(at.strip_nominal(), Ty::Tuple(elems) if !elems.is_empty() && elems.iter().all(|e| abi_val_type(e).is_some() || matches!(e.strip_nominal(), Ty::Bytes)));
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)

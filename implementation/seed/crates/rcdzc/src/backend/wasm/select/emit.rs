@@ -6123,6 +6123,8 @@ pub(super) fn emit(
                     // A top-level `option<bytes>` arg copies the payload rope into `mem` on Some → needs the cursor.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
                         .is_some_and(|p| matches!(p, Ty::Bytes))
+                    // A top-level `tuple<…,bytes,…>` arg copies each Bytes element's rope into `mem` → the cursor.
+                    || crate::backend::wasm::host::tuple_has_bytes_element(&at)
             });
             let scratch_cursor_slot = if has_runtime_compound {
                 let slot = base.max(*high);
@@ -6375,7 +6377,17 @@ pub(super) fn emit(
                         *high = (*high).max(tup_slot + 1);
                         emit(db, arg, slots, tup_slot + 1, high, scratch_ty, layout, out)?; // [handle]
                         out.push(Lir::LocalSet(tup_slot));
-                        emit_tuple_reg_flatten(db, tup_slot, &at, out)?;
+                        let work_base = *high;
+                        emit_tuple_reg_flatten(
+                            db,
+                            tup_slot,
+                            &at,
+                            scratch_cursor_slot,
+                            work_base,
+                            high,
+                            scratch_ty,
+                            out,
+                        )?;
                         // MARSHALED-ARG RECLAIM (v-memory-safety, tuple twin of the record/option host-arg
                         // reclaim): `emit_tuple_reg_flatten` read each element via borrowing `arr-get` + unbox —
                         // pure-borrow, no dup, no handle moved out — so the tuple handle in `tup_slot` is DEAD
