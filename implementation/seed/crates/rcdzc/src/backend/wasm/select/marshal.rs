@@ -920,6 +920,81 @@ pub(super) fn emit_variant_reg_flatten(
     Ok(())
 }
 
+/// Marshal a top-level value-heap `option<scalar>` host argument whose handle is in `var_slot` into the
+/// canonical `(disc:i32, payload)` core-slot flatten the built-in `option<T>` param lowers to, pushing the two
+/// values onto the operand stack. The register twin of the `RecordFieldAbi::Option` field flatten (the
+/// `option<scalar>` arm of `emit_record_arg_marshal`): read the value-heap Option's guest discriminant, map its
+/// SOME arm (the single-payload variant, found dynamically so it is robust to the `Option` decl order) to the
+/// WIT `option` some=1 (unbox the payload) and NONE to none=0 (payload-width zero), side-effecting into scratch
+/// so the `(disc, payload)` push happens AFTER the `if` (single-value `BlockType`). Scoped to a SCALAR payload
+/// (`abi_val_type`) — an `option<bytes>`/`option<compound>` top-level arg needs a mem cursor (a later
+/// increment) and is declined at classification. `work_base` is the first free scratch slot for this marshal.
+pub(super) fn emit_option_reg_flatten(
+    db: &mut Db,
+    var_slot: u32,
+    fty: &Ty,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let payload_ty = crate::backend::wasm::host::option_payload_ty(db, fty)
+        .ok_or_else(|| Reject::decline("a top-level option arg is not an option-shaped sum"))?;
+    let pv = valtype_of(&payload_ty).ok_or_else(|| {
+        Reject::decline("a top-level option arg payload is not a scalar this increment")
+    })?;
+    let read = get_op_ty(db, &payload_ty)?
+        .ok_or_else(|| Reject::decline("an option payload scalar has no unbox op"))?;
+    // The guest decl's SOME discriminant = the single-payload variant's index (robust to the `Option` decl
+    // order — mirrors the `option<scalar>` record-field flatten).
+    let Ty::Sum { decl, .. } = fty.strip_nominal() else {
+        unreachable!("option is a Sum")
+    };
+    let some_disc = {
+        let d = db
+            .type_decl_by_occ(*decl)
+            .ok_or_else(|| Reject::decline("the option arg's sum decl was not found"))?;
+        d.variants
+            .iter()
+            .position(|v| v.payloads.len() == 1)
+            .ok_or_else(|| Reject::decline("the option arg has no payload variant"))? as i32
+    };
+    let disc_out = work_base;
+    let pval = work_base + 1;
+    scratch_ty.insert(disc_out, ValType::I32);
+    scratch_ty.insert(pval, pv);
+    *high = (*high).max(work_base + 2);
+    let zero = match pv {
+        ValType::I64 => Lir::ConstI64(0),
+        ValType::F64 => Lir::F64ConstBits(0),
+        ValType::F32 => Lir::F32ConstBits(0),
+        _ => Lir::ConstI32(0),
+    };
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [guest disc]
+    out.push(Lir::ConstI32(some_disc));
+    out.push(Lir::I32Eq);
+    out.push(Lir::If(BlockType::Empty)); // guest disc == some_disc → Some
+    out.push(Lir::ConstI32(1)); // WIT `option` some = 1
+    out.push(Lir::LocalSet(disc_out));
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload handle]
+    out.push(Lir::CallImport(read)); // [payload scalar]
+    if read == OP_GET_INT && matches!(pv, ValType::I32) {
+        out.push(Lir::I32WrapI64); // a narrow int / char payload narrows to its i32 slot
+    }
+    out.push(Lir::LocalSet(pval));
+    out.push(Lir::Else); // None
+    out.push(Lir::ConstI32(0)); // WIT `option` none = 0
+    out.push(Lir::LocalSet(disc_out));
+    out.push(zero);
+    out.push(Lir::LocalSet(pval));
+    out.push(Lir::End);
+    out.push(Lir::LocalGet(disc_out)); // push (disc, payload)
+    out.push(Lir::LocalGet(pval));
+    Ok(())
+}
+
 /// Marshal a value-heap RECORD host argument whose handle is in `rec_slot` into the FLATTENED core slots the
 /// component `record` param lowers to, pushing them onto the operand stack in NAME-LEX field order (= the
 /// component record's field declaration order = the core flatten order). Per field: a SCALAR reads back

@@ -4990,16 +4990,16 @@ cases
 (case
   "a plain (non-reducer) guest passes an OPTION host-op ARGUMENT via a pure-IMPORT custom wit-world"
   (doc
-    "SHAPE 97 (v-wit-boundary corpus TODO) — an `option<s64>` host-op ARGUMENT (probe.f : func(option<s64>)
-           -> s64) on a PURE-IMPORT custom wit-world with a PLAIN top-level export. The next compound-ARG shape
-           after record (SHAPE 92) / variant (SHAPE 93) / list (SHAPE 94) / enum (SHAPE 96): an OPTION arg. The
-           idealistic behavior is that the value-heap `Option` flattens to the canonical `option<T>` core form
-           (a `disc:i32` + the inner's flattened slots) and crosses as a built-in WIT `option<s64>` referenced
-           by the op's component functype; run() performs probe.f(Some 7), the host stub returns 20. TODAY the
-           arg classifier (collect_host_imports_at) has NO Option arm — an `option` arg falls through to the
-           scalar arm, abi_val_type returns None, and the boundary guard DECLINES CLEANLY (CDZ0903, decline-
-           don't-miscompile) — so this case grades Todo now and auto-locks to Pass when the option-arg emit
-           (a new HostParam::Option + the option core flatten/marshal) lands. Stub f -> 20.")
+    "SHAPE 97 — an `option<s64>` host-op ARGUMENT (probe.f : func(option<s64>) -> s64) on a PURE-IMPORT custom
+           wit-world with a PLAIN top-level export. The OPTION arm of the compound-ARG vocabulary (after record
+           SHAPE 92 / variant SHAPE 93 / list SHAPE 94 / enum SHAPE 96). The value-heap `Option` flattens to the
+           canonical `(disc:i32, payload)` core form (the register twin of the option<scalar> record-FIELD
+           flatten, `select::emit_option_reg_flatten`, mapping the guest some-disc to WIT option some=1/none=0)
+           and crosses as the BUILT-IN WIT `option<s64>` (verified via wit-dump: `f: func(p0: option<s64>)` — a
+           per-param structural CRef, NOT a nominal variant substitute), referenced by the op's component
+           functype. run() performs probe.f(Some 7), the host stub returns 20. A VALID component that runs is the
+           pin. SCOPED to a SCALAR payload; an option<compound> (bytes/record) top-level arg is a later increment
+           (declined). Twin of the option-in-record SHAPE 99.")
   (wit-world
     (world w (import cadenza:platform/probe (member f (func (param x (option (s64))) (result (s64)))))))
   (input

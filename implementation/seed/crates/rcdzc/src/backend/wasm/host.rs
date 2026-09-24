@@ -80,6 +80,16 @@ pub enum HostParam {
     /// component discriminant order). The guest marshals it via `select::emit_variant_reg_flatten` (the same
     /// helper a `RecordFieldAbi::Variant` field uses); a mixed int/float payload is excluded by the detector.
     Variant(Vec<(String, Option<AbiValType>)>),
+    /// A bare `option<scalar>` param (the top-level position, not nested in a record/list) — crosses as the
+    /// built-in WIT `option<T>` type (NOT a nominal `variant` DEFINED type; a `variant{none,some(T)}` substitute
+    /// fails the structural component-link match against a host declaring `option`), referenced by a per-param
+    /// structural `CRef` (like [`List`](HostParam::List)). Its core form flattens (canonical variant flatten) to
+    /// `(disc:i32, payload)` — the SAME core shape as an `option<scalar>` record FIELD. Carries the payload's
+    /// scalar ABI. The guest marshals it via `select::emit_option_reg_flatten` (the register twin of the
+    /// `RecordFieldAbi::Option` field flatten), mapping the guest Option's some-disc to the WIT `option` some=1
+    /// / none=0. An `option<compound>` (bytes/record) top-level arg is a later increment (declined — the
+    /// classifier only pushes this for a scalar payload, leaving `params` short otherwise).
+    Option(Box<RecordFieldAbi>),
 }
 
 /// Whether a record-field ABI bottoms out at a `list<u8>` (`Bytes`) leaf — so a `list<T>` param carrying it
@@ -1200,6 +1210,21 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             variant_scalar_payload_cases(db, &at).unwrap(),
                         ));
                     }
+                    // A top-level `option<scalar>` arg crosses as the built-in WIT `option<T>` (its own arm —
+                    // `variant_scalar_payload_cases` above EXCLUDES option-shaped sums, since option needs the
+                    // distinct built-in type, not a `variant` DEFINED type). Its core `(disc, payload)` flatten
+                    // is the register twin of the `RecordFieldAbi::Option` field. SCOPED to a SCALAR payload this
+                    // increment: only push when the payload has an `abi_val_type` — an `option<bytes>`/`option<
+                    // compound>` top-level arg (which would need a mem cursor) leaves `params` short → declined.
+                    // Checked BEFORE the scalar `_` arm (a Sum has no `abi_val_type`, so `_` would decline).
+                    _ if !peer_bound
+                        && option_payload_ty(db, &at)
+                            .is_some_and(|p| abi_val_type(&p).is_some()) =>
+                    {
+                        let payload = option_payload_ty(db, &at).unwrap();
+                        let pv = abi_val_type(&payload).unwrap();
+                        params.push(HostParam::Option(Box::new(RecordFieldAbi::Scalar(pv))));
+                    }
                     _ => {
                         let v = if peer_bound {
                             extern_abi_val_type(&at)
@@ -1703,6 +1728,14 @@ pub fn first_unrepresentable_host_op(
             let arg_is_boundary_variant = allow_option_bytes
                 && !peer_bound
                 && variant_scalar_payload_cases(db, &at).is_some();
+            // A top-level `option<scalar>` arg crosses NATIVELY as the built-in WIT `option<T>` — the guest
+            // flattens the value-heap Option to `(disc, payload)` core slots (`select::emit_option_reg_flatten`,
+            // the register twin of the `option<scalar>` record-FIELD flatten). Same reducer/host-fused gating; an
+            // `option<compound>` (bytes/record) top-level arg needs a mem cursor (a later increment) so it is
+            // admitted here only for a SCALAR payload — matching the classifier + the marshal, in lockstep.
+            let arg_is_boundary_option = allow_option_bytes
+                && !peer_bound
+                && option_payload_ty(db, &at).is_some_and(|p| abi_val_type(&p).is_some());
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
@@ -1710,6 +1743,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_enum
                 && !arg_is_boundary_list
                 && !arg_is_boundary_variant
+                && !arg_is_boundary_option
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }
