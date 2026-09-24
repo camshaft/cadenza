@@ -6120,6 +6120,9 @@ pub(super) fn emit(
                     || crate::backend::wasm::host::record_has_tuple_field(&at)
                     // A `list<T>` arg marshals into `mem` (its outer array + each element) → needs the cursor.
                     || matches!(at.strip_nominal(), Ty::List(_))
+                    // A top-level `option<bytes>` arg copies the payload rope into `mem` on Some → needs the cursor.
+                    || crate::backend::wasm::host::option_payload_ty(db, &at)
+                        .is_some_and(|p| matches!(p, Ty::Bytes))
             });
             let scratch_cursor_slot = if has_runtime_compound {
                 let slot = base.max(*high);
@@ -6394,7 +6397,10 @@ pub(super) fn emit(
                     // (option is a Sum EXCLUDED from `variant_scalar_payload_cases`) and the scalar `_` arm (a
                     // Sum's `emit` yields a HANDLE, not the flattened slots the built-in `option` param expects).
                     _ if crate::backend::wasm::host::option_payload_ty(db, &at).is_some_and(
-                        |p| crate::backend::wasm::host::abi_val_type(&p).is_some(),
+                        |p| {
+                            crate::backend::wasm::host::abi_val_type(&p).is_some()
+                                || matches!(p, Ty::Bytes)
+                        },
                     ) =>
                     {
                         let opt_slot = arg_base.max(*high);
@@ -6404,7 +6410,14 @@ pub(super) fn emit(
                         out.push(Lir::LocalSet(opt_slot));
                         let work_base = *high;
                         emit_option_reg_flatten(
-                            db, opt_slot, &at, work_base, high, scratch_ty, out,
+                            db,
+                            opt_slot,
+                            &at,
+                            scratch_cursor_slot,
+                            work_base,
+                            high,
+                            scratch_ty,
+                            out,
                         )?;
                         // MARSHALED-ARG RECLAIM (v-memory-safety, option twin of the variant host-arg reclaim):
                         // `emit_option_reg_flatten` read the disc + (on Some) unboxed the payload scalar via

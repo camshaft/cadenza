@@ -11334,3 +11334,5 @@ pass	a single host op with a NON-EMPTY string arg AND a spilled list<record> res
 pass	a compile-time-constant None passed as a top-level option host-op ARGUMENT (corpus TODO — pre-existing bug)
 todo	a bare empty-list literal passed as a top-level list<s64> host-op ARGUMENT (corpus TODO — same ungrounded-arg root as the const-None case)
 todo	a top-level tuple<list<u8>, s64> host-op ARGUMENT (bytes-carrying tuple — corpus TODO, next arg-vocab widening)
+pass	a top-level option<list<u8>> host-op ARGUMENT with a Some payload crosses as built-in option, rope copied to mem
+pass	a top-level option<list<u8>> host-op ARGUMENT with a None value crosses as built-in option none
