@@ -6360,6 +6360,33 @@ pub(super) fn emit(
                             out.push(Lir::CallImport(OP_DROP));
                         }
                     }
+                    // A top-level `tuple<scalar…>` argument: the guest emits the value-heap tuple HANDLE into a
+                    // slot, then decomposes it into the POSITIONALLY-flattened scalar core slots via
+                    // `emit_tuple_reg_flatten` (`arr-get i` + unbox per element, no disc). Checked before the
+                    // scalar `_` arm (a tuple's `emit` yields a HANDLE, not the flattened slots the built-in
+                    // `tuple` param expects); a compound-element tuple declines inside the flatten (lockstep with
+                    // the decline gate).
+                    Ty::Tuple(_) => {
+                        let tup_slot = arg_base.max(*high);
+                        scratch_ty.insert(tup_slot, ValType::I32);
+                        *high = (*high).max(tup_slot + 1);
+                        emit(db, arg, slots, tup_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(tup_slot));
+                        emit_tuple_reg_flatten(db, tup_slot, &at, out)?;
+                        // MARSHALED-ARG RECLAIM (v-memory-safety, tuple twin of the record/option host-arg
+                        // reclaim): `emit_tuple_reg_flatten` read each element via borrowing `arr-get` + unbox —
+                        // pure-borrow, no dup, no handle moved out — so the tuple handle in `tup_slot` is DEAD
+                        // after the flatten. When the arg is a freshly-built OWNED tuple (`heap_operand_ownership
+                        // == Owned`) or a child-dup site, deep-drop it (each element was COPIED out as a scalar,
+                        // so the cascade is balanced; else the tuple shell leaks per host call). A BORROWED tuple
+                        // is left untouched (leak-over-UAF). Import mirror in `collect_used_ops`'s tuple-arg arm.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(tup_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
                     // A top-level `option<scalar>` argument: the guest emits the value-heap Option HANDLE into a
                     // slot, then decomposes it into the canonical `(disc, payload)` register-flatten via
                     // `emit_option_reg_flatten` (the register twin of the `option<scalar>` record-FIELD flatten),

@@ -995,6 +995,42 @@ pub(super) fn emit_option_reg_flatten(
     Ok(())
 }
 
+/// Marshal a top-level value-heap `tuple<scalar…>` host argument whose handle is in `tup_slot` into the
+/// POSITIONALLY-FLATTENED core slots the built-in `tuple<T…>` param lowers to — one scalar per element in
+/// element (= declaration = component) order, no discriminant, pushed onto the operand stack in order. The
+/// register twin of a record's scalar-field marshal (`emit_record_arg_marshal`), but POSITIONAL: a tuple's
+/// WIT order IS its element order (no name reorder), so element `i` reads the value-heap cell at index `i`
+/// (`arr-get i`, which borrows the tuple) + its wrap-free get-op (+ an i64→i32 narrow for a narrow int/char).
+/// Scoped to ALL-SCALAR elements (`get_op_ty`) — a compound element needs a mem cursor (a later increment) and
+/// is declined at classification. Pure register pushes (no scratch/mem), so the tuple handle stays borrowed
+/// and is reclaimed by the caller.
+pub(super) fn emit_tuple_reg_flatten(
+    db: &mut Db,
+    tup_slot: u32,
+    fty: &Ty,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let Ty::Tuple(elems) = fty.strip_nominal() else {
+        return Err(Reject::decline("a top-level tuple arg is not a tuple"));
+    };
+    let elems = elems.to_vec(); // release the borrow of `fty` before the &mut db calls
+    for (i, ety) in elems.iter().enumerate() {
+        let read = get_op_ty(db, ety)?.ok_or_else(|| {
+            Reject::decline("a top-level tuple arg element is not a scalar this increment")
+        })?;
+        out.push(Lir::LocalGet(tup_slot));
+        out.push(Lir::ConstI32(i as i32));
+        out.push(Lir::CallImport(OP_ARR_GET)); // [element] (borrows the tuple)
+        out.push(Lir::CallImport(read)); // [scalar]
+        // A NARROW int / char element boxes into the i64 int cell, so `get-int` returns an i64 — but its core
+        // slot is i32 (its aliased width), so narrow it. A 64-bit int / bool / float needs no narrow.
+        if read == OP_GET_INT && matches!(valtype_of(ety), Some(ValType::I32)) {
+            out.push(Lir::I32WrapI64);
+        }
+    }
+    Ok(())
+}
+
 /// Marshal a value-heap RECORD host argument whose handle is in `rec_slot` into the FLATTENED core slots the
 /// component `record` param lowers to, pushing them onto the operand stack in NAME-LEX field order (= the
 /// component record's field declaration order = the core flatten order). Per field: a SCALAR reads back

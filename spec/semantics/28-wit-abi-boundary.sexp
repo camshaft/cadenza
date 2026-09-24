@@ -5016,15 +5016,15 @@ cases
 (case
   "a plain (non-reducer) guest passes a TUPLE host-op ARGUMENT via a pure-IMPORT custom wit-world"
   (doc
-    "SHAPE 98 (v-wit-boundary corpus TODO) — a `tuple<s64, s64>` host-op ARGUMENT (probe.g : func(tuple<s64,
-           s64>) -> s64) on a PURE-IMPORT custom wit-world with a PLAIN top-level export. The TUPLE arm of the
-           compound-ARG vocabulary (positional sibling of the RECORD arg SHAPE 92). The idealistic behavior is
-           that the value-heap tuple flattens positionally to one core slot per element and crosses as a built-in
-           WIT `tuple<s64, s64>` referenced by the op's component functype; run() performs probe.g(#tuple(3 4)),
-           the host stub returns 30. TODAY the arg classifier has NO Tuple arm — a `tuple` arg falls through to
-           the scalar arm, abi_val_type returns None, and the boundary guard DECLINES CLEANLY (CDZ0903, decline-
-           don't-miscompile) — so this case grades Todo now and auto-locks to Pass when the tuple-arg emit lands.
-           Stub g -> 30.")
+    "SHAPE 98 — a `tuple<s64, s64>` host-op ARGUMENT (probe.g : func(tuple<s64, s64>) -> s64) on a PURE-IMPORT
+           custom wit-world with a PLAIN top-level export. The TUPLE arm of the compound-ARG vocabulary
+           (positional sibling of the RECORD arg SHAPE 92). The value-heap tuple flattens POSITIONALLY to one
+           scalar core slot per element (no discriminant, via `select::emit_tuple_reg_flatten` — arr-get each
+           element + unbox) and crosses as the BUILT-IN WIT `tuple<s64, s64>` (verified via wit-dump: `g: func(p0:
+           tuple<s64, s64>)` — a per-param structural CRef), referenced by the op's component functype. run()
+           performs probe.g(#tuple(3 4)), the host stub returns 30. A VALID component that runs is the pin. SCOPED
+           to ALL-SCALAR elements; a tuple with a compound element is a later increment (declined). Twin of the
+           tuple-in-record SHAPE 100.")
   (wit-world
     (world w (import cadenza:platform/probe (member g (func (param p (tuple (s64) (s64))) (result (s64)))))))
   (input

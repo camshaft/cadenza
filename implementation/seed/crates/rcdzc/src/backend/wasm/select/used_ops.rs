@@ -1164,6 +1164,24 @@ pub(super) fn collect_used_ops_into_seen(
                         collect_list_elem_ops(db, &elem, out);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
+                    // A top-level `tuple<scalar…>` arg is decomposed by `emit_tuple_reg_flatten`: `arr-get` per
+                    // element + the element scalar's unbox op. Declare them (else the marshal's `CallImport`
+                    // resolves to u32::MAX → an invalid module), then descend to collect the ops that BUILD the
+                    // tuple value. Mirrors the emit-side dispatch (a concrete `Ty::Tuple` arm).
+                    Ty::Tuple(elems) if !peer_bound => {
+                        let elems: Vec<Ty> = elems.iter().cloned().collect();
+                        out.insert(OP_ARR_GET);
+                        // Import mirror of the marshaled-tuple-arg reclaim (emit.rs `HostCall` tuple arm): the
+                        // emit deep-drops the tuple cell iff `Owned` or a dup-site — declare `drop` for every
+                        // tuple host-arg (safe superset, same policy as the other compound arms).
+                        out.insert(OP_DROP);
+                        for e in &elems {
+                            if let Ok(Some(read)) = get_op_ty(db, e) {
+                                out.insert(read);
+                            }
+                        }
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     // A top-level `option<scalar>` arg is decomposed by `emit_option_reg_flatten`: `sum-disc`,
                     // and on the Some arm `sum-payload` + the payload scalar's unbox op. Declare them (else the
                     // marshal's `CallImport` resolves to u32::MAX → an invalid module), then descend to collect

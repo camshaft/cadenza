@@ -201,6 +201,15 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                 params.push(wasm_abi::CORE_I32); // the discriminant
                 flatten_record_field_abi(payload, &mut params);
             }
+            // A top-level `tuple<scalar…>` param flattens its elements POSITIONALLY INLINE — one scalar core
+            // slot per element in element order, no discriminant (unlike Option) — IDENTICAL to a
+            // `RecordFieldAbi::Tuple` field (`flatten_record_field_abi`). The component boundary type is the
+            // built-in `tuple<T…>` (see mod.rs `host_op_comp_functype`).
+            HostParam::Tuple(elems) => {
+                for e in elems {
+                    flatten_record_field_abi(e, &mut params);
+                }
+            }
         }
     }
     // `params` now holds exactly the FLATTENED core-slot bytes (a scalar = 1, a string/bytes = 2, a record
