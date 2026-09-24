@@ -5423,23 +5423,18 @@ cases
 (case
   "a host op with TWO params (list<u8> and s64) crosses as a two-param WIT import — cross-arg scratch cursor"
   (doc
-    "SHAPE 111 (v-wit-boundary corpus TODO) — a host op with TWO params, `f(list<u8>, s64) -> s64`, on the
-           plain host-delegating envelope. Every prior host-arg SHAPE was SINGLE-param (a multi-field
-           record/tuple bundled the params); a host WIT func with MULTIPLE top-level params is a distinct, so-far
-           unwitnessed shape. FOUND GAP: the compiler currently DECLINES CLEANLY (not-yet-implemented,
-           decline-don't-miscompile — the honest floor) rather than emitting a two-param import. The idealistic
-           behavior is that it crosses as a genuine two-param WIT import with the per-call scratch cursor threaded
-           across DISTINCT args — arg 0's `list<u8>` backing copied to `mem` at the cursor (which advances) while
-           arg 1's `s64` passes INLINE without touching it, so the core slots interleave `(ptr,len, s)` and the
-           host returns its scalar (assert 5 = len b\"abc\" (3) + 2). Grades Todo now (clean decline) and
-           auto-locks to Pass when multi-param host-op support lands. Parked like B2 (SHAPE 95) — a real
-           coverage gap with no current consumer (v-hivemind bundles params in a record); revive on demand.
-           `live-objects 0`.")
+    "SHAPE 111 (v-wit-boundary) — a host op with TWO params, `f(list<u8>, s64) -> s64`, on the plain
+           host-delegating envelope. Every prior host-arg SHAPE was SINGLE-param (a multi-field record/tuple
+           bundled the params); this pins that a host WIT func with MULTIPLE top-level params crosses as a genuine
+           two-param import and that the per-call scratch cursor is threaded across DISTINCT args — arg 0's
+           `list<u8>` (guest `Bytes`) backing is copied to `mem` at the cursor (which advances) while arg 1's
+           `s64` passes INLINE without touching it, so the core slots interleave `(ptr,len, s)`. Host returns its
+           scalar (assert 5 = len b\"abc\" (3) + 2). `live-objects 0`.")
   (wit-world
     (world w (import cadenza:platform/probe (member f (func (param b (list (u8))) (param n (s64)) (result (s64)))))))
   (input
     (do
-      (effect probe (op f (-> (List (U8)) Int64 Int64)))
+      (effect probe (op f (-> Bytes Int64 Int64)))
       (def (run) (host (probe) (probe.f b"abc" 2)))
       (export run)))
   (call run)
