@@ -7052,19 +7052,42 @@ fn try_bare_entry_param_component(
         // flattened to `(disc, payload…)`. Build it DIRECTLY as the def arg via the closure-arg classifier's
         // `SumArgRebuild` (branch on the boundary disc → `sum-new`); the def owns the built cell. `ty_natural_wit`
         // declines a `Ty::Sum`, so the WIT type comes from the Db-aware `spilled_result_wit_type` (`option<T>`).
-        if let Some((_slot, vts, rebuild)) = fixed_shape_option_scalar_arg(db, gty) {
-            let wit = crate::backend::wasm::host::spilled_result_wit_type(db, gty)?;
-            // SCOPE = genuine `option<T>` ONLY. `fixed_shape_option_scalar_arg` also classifies a
-            // `result<ok,err>`, but `spilled_result_wit_type` resolves a Result to a WIT `variant` (two payload
-            // cases), NOT the built-in `result` — a type whose flattening/disc convention DISAGREES with the
-            // option-shaped `SumArgRebuild` lift built here, so admitting it emitted an INVALID component
-            // (a `result<scalar,scalar>` param). Until a dedicated Result entry-param sub-slice ties the WIT
-            // type and the lift together, DECLINE a Result param: fall through to the honest sum decline
-            // (`ty_natural_wit`→None below would also decline, but returning early keeps the reason clear).
-            // erp1 pins the Result rung; eo1-3/eop1 (Option) stay green.
-            if !matches!(wit, crate::wit_world::WitType::Option(_)) {
-                return None;
-            }
+        if let Some((slot, vts, rebuild)) = fixed_shape_option_scalar_arg(db, gty) {
+            use crate::backend::wasm::envelope::ArgSlot;
+            // The WIT type crossing the boundary depends on the classified sum shape. An `option<T>` comes from
+            // the Db-aware `spilled_result_wit_type`. A `result<ok,err>` is SYNTHESIZED here directly from the
+            // guest Result's two payload types: a `result<…>` is a STRUCTURAL (anonymous-allowed) WIT former —
+            // like `option`/`tuple` and UNLIKE a general `variant` or a nominal `record` — so it needs no
+            // exported defined type and assembles cleanly on the bare top-level export path (erp2). The
+            // `SumArgRebuild` the classifier returned already carries the result disc convention (Ok=0, Err=1)
+            // + the payload join, so the SAME lift serves it; only the WIT type differed (the bare route used
+            // to synthesize a `variant` via `spilled_result_wit_type` — a disagreeing type that emitted an
+            // INVALID component — so it declined Result; synthesizing `result<ok,err>` fixes that).
+            let wit = match &slot {
+                ArgSlot::Result(_, _) => {
+                    let crate::ty::Ty::Sum { args, .. } = gty.strip_nominal() else {
+                        return None;
+                    };
+                    if args.len() != 2 {
+                        return None; // a `Result ok err` has exactly two type args
+                    }
+                    let ok = crate::wit_world::ty_natural_wit(&args[0])?;
+                    let err = crate::wit_world::ty_natural_wit(&args[1])?;
+                    crate::wit_world::WitType::Result {
+                        ok: Some(Box::new(ok)),
+                        err: Some(Box::new(err)),
+                    }
+                }
+                _ => {
+                    // An Option shape: `spilled_result_wit_type` gives `option<T>`. Anything else (a
+                    // classification whose WIT is not an Option here) declines — belt-and-suspenders.
+                    let w = crate::backend::wasm::host::spilled_result_wit_type(db, gty)?;
+                    if !matches!(w, crate::wit_world::WitType::Option(_)) {
+                        return None;
+                    }
+                    w
+                }
+            };
             // The canonical flattening of `option<T>` is `(disc: i32, payload…)` — a leading disc then the
             // payload leaf/leaves (`vts`). `emit_sum_field` reads the disc at the running leaf cursor.
             param_vts.push(ValType::I32.byte());

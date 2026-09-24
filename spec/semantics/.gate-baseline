@@ -11280,7 +11280,7 @@ todo	ep1 TWO String entry params concat in declaration order
 todo	equality on a TUPLE containing a closure is rejected CDZ0216 (NotEquatable — the fn leaf poisons the compound walk)
 todo	er1 a Rational entry param in exact arithmetic
 todo	erp1 a Result entry param delivers its Ok payload
-todo	erp2 a Result entry param with two scalar payloads declines pending the Result lift
+pass	erp2 a Result entry param with two scalar payloads declines pending the Result lift
 todo	expect traps on the absent case of a runtime optional
 todo	ey1 a Symbol entry param keys a Map
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
