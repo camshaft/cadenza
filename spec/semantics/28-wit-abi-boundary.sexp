@@ -4838,3 +4838,36 @@ cases
   (host-calls (call cadenza:platform/probe.stat))
   (output 42)
   (live-objects 0))
+
+(case
+  "a plain (non-reducer) guest passes a RECORD host-op ARGUMENT via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 92 — an all-scalar RECORD host-op ARGUMENT (probe.push : func(record{a,b}) -> s64) on a
+           PURE-IMPORT custom wit-world with a PLAIN top-level export (no reducer/typed interface, no
+           component-name) — the v-wit-boundary B3 shape: compound host ARGUMENTS on the plain host-delegating
+           envelope. B1/B1b crossed compound host RESULTS on this path; B3 routes the world-imposed plain path
+           through `build_host_group`, which declares the record's WIT type in the host import instance-type,
+           lays it as a nominal DEFINED type (`record_defs`), and bakes the nominal-arg type index into the
+           op's component functype — so the guest FLATTENS the value-heap record into the op's core slots (two
+           s64), exactly as the reducer path's record-arg marshal (`emit_record_arg_marshal`) does. Before B3
+           the plain path declined a record ARG (it crossed only scalar/string/`list<u8>` args). run() builds
+           {a:3,b:4}, performs probe.push, returns the stubbed result. A VALID component that runs is the pin:
+           a mis-declared record-arg type (missing the nominal DEFINED type or a wrong nominal index) fails
+           component validation (CDZ0910). This is the IMPORT-side plain-path twin of the reducer SHAPE 13
+           (record{a,b} arg via deliver.push under a typed reducer export).")
+  (wit-world
+    (world
+      w
+      (import
+        cadenza:platform/probe
+        (member push (func (param m (record (= a (s64)) (= b (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: a Int64) (: b Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= a 3) (= b 4)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 99 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 99)
+  (live-objects 0))
