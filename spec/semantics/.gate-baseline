@@ -11338,3 +11338,4 @@ pass	a top-level option<list<u8>> host-op ARGUMENT with a Some payload crosses a
 pass	a top-level option<list<u8>> host-op ARGUMENT with a None value crosses as built-in option none
 pass	a top-level tuple<list<u8>, list<u8>> host-op ARGUMENT (TWO Bytes elements) crosses as built-in tuple, both ropes copied to disjoint mem
 pass	a top-level tuple<list<u8>, s64, list<u8>> host-op ARGUMENT (Bytes-SCALAR-Bytes interleave) crosses as built-in tuple
+pass	a top-level tuple<list<u8>, list<u8>> host-op ARGUMENT with an EMPTY first Bytes element (len-0 rope, cursor no-advance)
