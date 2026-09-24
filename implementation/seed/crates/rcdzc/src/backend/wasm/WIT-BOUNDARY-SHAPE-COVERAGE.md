@@ -107,9 +107,17 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   plain path:** the program emits NO host import and instead compiles to the effect-reification form
   (exports `cadenza:run/run`, returns a `{correlation,kind:"effect/probe",payload,schema_descriptor}`
   reflection envelope), so the scripted host-response never matches. record/variant/list/scalar args all
-  take the plain host-import path; only the all-nullary enum arg reifies. Root: something upstream of the
-  mod.rs:1509 plain path (host-import collection / reducer detection) routes an all-nullary-enum-arg effect
-  to reification — NOT yet diagnosed; the enum-arg corpus case is PARKED until it is.
+  take the plain host-import path; only the all-nullary enum arg reifies. ROOT CAUSE (diagnosed tick 18):
+  UPSTREAM of the wasm host-boundary emit. An all-nullary-enum host-op ARG makes the effects/lowering pass
+  REIFY the host call into a compound effect-request value instead of keeping it a `Core::HostCall`, so
+  `run()`'s result type becomes that record, the export is a `resource t` (confirmed via wit-dump:
+  `interface run { resource t; ... }`), and `emit` (mod.rs:157) takes its RESOURCE-ESCAPE early-return
+  branch (~:301) and NEVER reaches host-import collection at :788. Proof: a trace at :788 fires for the
+  variant arg (host_imports.len()=1) but NOT the enum arg; a NON-constant enum arg reifies identically
+  (so it is the all-nullary enum TYPE, not const-folding). `(host (probe) ...)` explicitly host-delegates
+  probe and a payload-bearing variant arg stays delegated, so reifying the all-nullary-enum-arg call is
+  inconsistent — an EFFECTS/LOWERING bug (v-effects domain), NOT the wasm host-boundary emit. The enum-arg
+  corpus case is PARKED (it would FAIL, not todo — it runs to the wrong value).
 - **[emit, RESULT] a payloadless ENUM host-op RESULT crossing BY VALUE on the plain host-delegating
   envelope — ✅ DONE (SHAPE 90).** Rides the SAME `result_crefs[i]` path as a spilled compound:
   `build_host_result_types` already maps `enum_result` to the enum's nominal `enum` DEFINED+EXPORTED type
