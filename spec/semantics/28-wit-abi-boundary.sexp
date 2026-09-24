@@ -5217,8 +5217,19 @@ cases
            position trips it. The idealistic behavior is that the const None crosses as WIT `option none` and the
            host returns its scalar (assert 5). Grades Todo now (CDZ0910 is a coded compile error) and auto-locks
            to Pass when the const-None option-arg emit is fixed. Runtime-option control is SHAPE 97 (Some) + the
-           conditional-option path. Root-cause needs a WAT dump of the emitted arg marshal (validation blocks the
-           artifact write, so a bypass is required to inspect the imbalance).")
+           conditional-option path. ROOT CAUSE (verified via a WAT dump of the invalid module): a bare `(None)`
+           arg's inferred type is `Option(Var)` — an UNGROUNDED payload var, because a perform/host-call argument
+           is NOT checked against the operation's DECLARED parameter type (capabilities-and-effects.md #Performing
+           An Operation Is Typed), so nothing grounds the None payload to `s64`; `(Some 5)` only works because the
+           literal `5` self-provides an `Int(Deferred)` payload. Both the host-import FUNCTYPE builder
+           (`collect_host_imports_at`) and the arg MARSHAL (`select/emit.rs`) guard the option arm on
+           `abi_val_type(payload).is_some()`, which FAILS for the unground var: the functype builder's fallback
+           drops the param (0 core slots) while the marshal's scalar fallback still pushes the folded None handle
+           (1 slot) — the 1-vs-0 mismatch IS the 'values remaining on stack' imbalance. Confirmed: annotating the
+           arg `(: (None) (Option Int64))` grounds the payload and compiles clean. Same defect class as the
+           handler-state func-12 fix (`infer::ground_handler_state_ty`): an ungrounded `Option(_)` read at a
+           width-dependent site. Correct fix is at the perform-argument check — ground the arg against the op's
+           declared param type; routed to the inference owner. Blast-radius-scoped, so not landed with this pin.")
   (wit-world
     (world w (import cadenza:platform/probe (member f (func (param x (option (s64))) (result (s64)))))))
   (input
