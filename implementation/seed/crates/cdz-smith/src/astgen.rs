@@ -167,7 +167,7 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(24);
+    let shape = c.variant(25);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -511,8 +511,31 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // faithful (the width class the bug bit). Returns the KNOWN `a + b`; verified wasm==rust==8 at a=7,b=1.
         // First nested-newtype-of-newtype const-fold shape — a distinct emit path (fold_sum_path box-descend)
         // no reclaim/effect shape reaches.
-        _ => format!(
+        23 => format!(
             "(do (type Node (Node UInt64)) (type Req (Req (Record (: node Node) (: path String)))) (def (main) (match (Req.Req #record((= node (Node.Node {a})) (= path \"/h\"))) ((Req.Req f) (match (. f node) ((Node.Node nid) (+ nid {b})))))) (export main))"
+        ),
+        // 24 — CDZ0910 "2nd root" const-HOIST record-wrapped-List-of-nominal WIDTH miscompile (07-type-system,
+        // #9631 wasm + #9633 rust-root). The THIRD CDZ0910 arm, now differential-clean on BOTH backends (S581
+        // watch fired). A const record `cfg` whose field `items` is a `#list` of a RECORD-NEWTYPE `SC(Record …)`
+        // is a §2d static compound that HOISTS to a build-once module global; the const-eval reifier
+        // (cval_to_core) minted the hoisted SumNew/Record children with `Ty::Any` (type_of short-circuits on
+        // the memo → true type never computed). Two consequences the fixes address: WASM box_op(Any) defaulted
+        // to box-int, box-int'ing the live i32 heap HANDLE → "expected i64 found i32" INVALID WASM (#9631 nets
+        // it: store the handle as-is when the solved type is Var/Any AND node_produces_heap_handle); RUST
+        // sum_variant_path saw a non-Ty::Sum SumNew → "sum construction node is not a sum type" DECLINE (#9633
+        // roots it: the reifier now THREADS the inferred Ty into each synth child AND ERASES a nominal-newtype
+        // construction — reifying the payload core directly, no Core::SumNew). Until #9633 the rust side
+        // DECLINED (S581 held this out as not-cleanly-addable); now BOTH compile+run. NULLARY (a pure
+        // const-hoist, no export param — the arm my nullary grammar CAN reach, unlike the #9586 runtime-export
+        // arm still Boundary-1-blocked). Value-observable BOTH ways: (validity) a regression reintroducing the
+        // Ty::Any-stamp emits an INVALID component / a rust decline; (value) the return reads the const-hoisted
+        // list's length (through the reify) AND the first element's Int64 THROUGH the nominal-newtype erasure +
+        // record projection — a wrong reify corrupts either. Returns the KNOWN `10*3 + a` (len 3, first elem
+        // `a`); verified wasm==rust==37 at a=7. First const-HOISTED record-field-List-of-record-newtype shape —
+        // exercises the §2d static-compound reifier path (cval_to_core type-threading + newtype erasure) no
+        // other shape reaches (shape 23 is a fold_sum_path CONST-FOLD, not a hoisted global).
+        _ => format!(
+            "(do (type SC (SC (Record (: n Int64)))) (def (main) (let ((cfg #record((= items #list((SC.SC #record((= n {a}))) (SC.SC #record((= n {b}))) (SC.SC #record((= n {d})))))))) (+ (* 10 (List.len (. cfg items))) (match (List.at (. cfg items) 0) ((Some sc) (match sc ((SC.SC r) (. r n)))) (None 0))))) (export main))"
         ),
     };
     Program { source }
@@ -5282,9 +5305,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the twenty-four shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 24];
-        for seed in 0u64..1080 {
+        // Distinctive, mutually-exclusive markers for the twenty-five shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 25];
+        for seed in 0u64..1125 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5345,6 +5368,8 @@ mod tests {
                 reached[22] = true;
             } else if src.contains("(type Req (Req (Record (: node Node)") {
                 reached[23] = true;
+            } else if src.contains("(type SC (SC (Record (: n Int64)))") {
+                reached[24] = true;
             } else if src.contains("(type L (Nil) (Cons (List Int64) L))") {
                 reached[19] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
@@ -5353,7 +5378,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-four reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-five reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 

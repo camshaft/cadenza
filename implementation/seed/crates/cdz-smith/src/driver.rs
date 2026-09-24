@@ -84,7 +84,10 @@ pub enum GenMode {
     /// must DECLINE or re-free the caller's reused borrow, the CAESAR-class double-free), and a CDZ0910
     /// nested-newtype const-fold WIDTH fence (a record-newtype whose field is a scalar-newtype, unwrapped
     /// through both nominal boxes as a compile-time constant -> fold_sum_path must descend the box to its
-    /// payload at the inner scalar's declared width or emit invalid wasm, #9623)). Densifies
+    /// payload at the inner scalar's declared width or emit invalid wasm, #9623), and a CDZ0910 const-HOIST
+    /// record-wrapped-List-of-record-newtype fence (a §2d static compound whose reifier must thread the
+    /// inferred type + erase the nominal-newtype construction or box-int a live handle / decline on rust,
+    /// #9631 wasm + #9633 rust-root)). Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
