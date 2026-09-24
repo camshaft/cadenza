@@ -5273,3 +5273,34 @@ cases
   (host-calls (call cadenza:platform/probe.g))
   (output 7)
   (live-objects 0))
+
+(case
+  "a top-level tuple<list<u8>, s64> host-op ARGUMENT (bytes-carrying tuple — corpus TODO, next arg-vocab widening)"
+  (doc
+    "SHAPE 105 (v-wit-boundary corpus TODO) — a top-level `tuple<list<u8>, s64>` host-op ARGUMENT: a tuple
+           one of whose elements is a `list<u8>` (Bytes). The all-SCALAR tuple arg already crosses as the
+           built-in WIT `tuple<T…>` (SHAPE 98/100, flattened positionally inline); this widens it to a tuple
+           carrying a Bytes element. Currently DECLINES (CDZ0903): the tuple-arg classifier
+           (`collect_host_imports_at`) admits a tuple only when EVERY element has an `abi_val_type` (all-scalar),
+           and the register-only `emit_tuple_reg_flatten` flattens each element as a scalar — a Bytes element
+           needs a mem-CURSOR copy (rope→`mem`, push `(ptr,len)`), exactly as a Bytes RECORD FIELD already does
+           (`emit_record_arg_marshal`'s Bytes branch) and as `flatten_record_field_abi` already lowers a
+           `RecordFieldAbi::Bytes` to 2 core slots. The idealistic behavior is that the tuple crosses as WIT
+           `tuple<list<u8>, s64>` (the Bytes element as `(ptr,len)` into the shared memory, the s64 inline) and
+           the host returns its scalar (assert 2 = len of b\"hi\"). Grades Todo now (CDZ0903 is a coded decline)
+           and auto-locks to Pass when the tuple-with-Bytes-element arg emit lands (classification admits a
+           Bytes element as `RecordFieldAbi::Bytes`; `emit_tuple_reg_flatten` gains a cursor-aware Bytes branch;
+           `set_needs_memory` fires; `used_ops` mirrors bytes-len/get). Distinct from the ungrounded-arg TODOs
+           (SHAPE 103/104): this is a marshal-widening gap, not a perform-arg typing gap.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member f (func (param x (tuple (list (u8)) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op f (-> (Tuple Bytes Int64) Int64)))
+      (def (run) (host (probe) (probe.f (tuple b"hi" 7))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.f (: 2 Int64)))
+  (host-calls (call cadenza:platform/probe.f))
+  (output 2)
+  (live-objects 0))
