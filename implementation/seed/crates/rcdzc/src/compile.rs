@@ -4799,6 +4799,16 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             && r.message
                 .contains(crate::diag::DIFFERENT_TYPES_COMPARISON_MARKER)
     });
+    // Likewise: a comparison whose operand is a COMPOUND CONTAINING A FUNCTION leaf (`(= (tuple 1 f) …)`) is
+    // rejected by `infer` as the coded CDZ0216 NotEquatable (a closure has no canonical identity — a
+    // PERMANENT reject, not a not-yet-built limit). Because the operand is a compound the emit path cannot
+    // fold, `lower` ALSO returns the uncoded COMPOUND_COMPARISON_DECLINE (equality) or the ordering carve-out
+    // — a CONSEQUENCE of the un-equatable leaf, not an independent deferral. Drop that decline for the coded
+    // CDZ0216 (the real, permanent defect) as the ONE primary — mirrors the different-types drop above. The
+    // ordering form is included so `(< (tuple 1 f) …)` doesn't double-error either.
+    let has_uncomparable_fn_compound_reject = faults.iter().any(|r| {
+        r.code == Some(Code::NotEquatable) && r.message.contains("nested in this compound")
+    });
     // Likewise: a TUPLE accessed by NAME — `(. (tuple 1 2) foo)` — is rejected by `infer` with the precise,
     // actionable "a tuple is accessed by position, not by name `foo` — use a numeric index …" at the def.
     // When that def is CALLED from an exported body, the emit path's reached-poison walk lowers the reduced
@@ -5280,6 +5290,17 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             // (one operand is a compound/text it cannot fold). Drop that misleading decline for the coded
             // reject (recognize BOTH decline forms so a mismatched-type ORDERING compare doesn't double-error).
             if has_different_types_comparison_reject
+                && r.is_decline()
+                && (r.message.contains(crate::diag::COMPOUND_COMPARISON_DECLINE)
+                    || r.message
+                        .contains(crate::diag::COMPOUND_ORDERING_NO_TOTAL_ORDER_DECLINE))
+            {
+                return false;
+            }
+            // The fn-in-a-compound sibling: drop the emit-path compound-comparison / ordering decline when the
+            // coded CDZ0216 NotEquatable (a function nested in a compared compound) is present — the CDZ0216 is
+            // the ONE primary (permanent), the decline is its lowering consequent.
+            if has_uncomparable_fn_compound_reject
                 && r.is_decline()
                 && (r.message.contains(crate::diag::COMPOUND_COMPARISON_DECLINE)
                     || r.message
