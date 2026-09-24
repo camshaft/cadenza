@@ -5093,3 +5093,76 @@ cases
   (host-calls (call cadenza:platform/probe.q))
   (output 24)
   (live-objects 0))
+
+(case
+  "a run() body performing SEVEN host ops ending in a non-empty STRING-arg query does not corrupt the string arg"
+  (doc
+    "SHAPE 101 (v-wit-boundary regression guard, requested by v-hivemind + concierge) — a PURE-IMPORT custom
+           wit-world with SEVEN host ops delegated in ONE run() body (mixed scalar / list<u8> / string ARGS and
+           scalar / list<record> RESULTS): store, compute, node, put, spawn, send, then a LAST materialize op
+           whose FIRST arg is a NON-EMPTY string. v-hivemind reported (on OLD pins 4ada599 / ab7db95) a
+           context-sensitive miscompile where a non-empty string host-arg mislowered to a bad (ptr,len) once
+           ENOUGH host ops shared a frame — wasmtime's canonical-ABI lift of that string then trapped invalid
+           utf-8; the empty-string variant passed. On CURRENT main this PLAIN-HOST shape PASSES (verified in real
+           wasmtime via cdz-run): every arg — including materialize's `session-spawned` — lifts correctly, so this
+           pins that the many-host-op inline arg-marshal + slot-allocation keeps each string arg's (ptr,len)
+           intact across a 7-op frame. NOTE: this guards the PLAIN-HOST path; v-hivemind's real flow additionally
+           uses RESOURCE-typed ops (spawn/cluster return handle resources) — if a residual repro survives it is on
+           the resource path, tracked separately. materialize returns 2 records → List.len 2.")
+  (wit-world
+    (world
+      w
+      (import
+        cadenza:platform/sys
+        (member store (func (param k (list (u8))) (param v (list (u8))) (result (u64))))
+        (member compute (func (param n (u64)) (param name (string)) (result (u64))))
+        (member node (func (param label (string)) (result (u64))))
+        (member put (func (param prog (list (u8))) (result (u64))))
+        (member spawn (func (param nid (u64)) (param prog (u64)) (result (u64))))
+        (member send (func (param to (u64)) (param msg (list (u8))) (result (u64))))
+        (member
+          materialize
+          (func
+            (param kind (string))
+            (param session (list (u8)))
+            (param source (string))
+            (result (list (record (= id (s64))))))))))
+  (input
+    (do
+      (effect sys
+        (op store (-> Bytes (-> Bytes UInt64)))
+        (op compute (-> UInt64 (-> String UInt64)))
+        (op node (-> String UInt64))
+        (op put (-> Bytes UInt64))
+        (op spawn (-> UInt64 (-> UInt64 UInt64)))
+        (op send (-> UInt64 (-> Bytes UInt64)))
+        (op materialize (-> String (-> Bytes (-> String (List (Record (: id Int64))))))))
+      (def (run)
+        (host (sys)
+          (let ((_s1 (sys.store b"key" b"val")))
+            (let ((_c1 (sys.compute 3 "adder")))
+              (let ((n1 (sys.node "c1")))
+                (let ((p1 (sys.put b"program-bytes")))
+                  (let ((a1 (sys.spawn n1 p1)))
+                    (let ((_r1 (sys.send a1 b"m")))
+                      (List.len (sys.materialize "session-spawned" b"" ""))))))))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond sys.store (: 0 UInt64))
+    (respond sys.compute (: 0 UInt64))
+    (respond sys.node (: 1 UInt64))
+    (respond sys.put (: 2 UInt64))
+    (respond sys.spawn (: 3 UInt64))
+    (respond sys.send (: 4 UInt64))
+    (respond sys.materialize (: #list(#record((= id 1)) #record((= id 2))) (List (Record (: id Int64))))))
+  (host-calls
+    (call cadenza:platform/sys.store)
+    (call cadenza:platform/sys.compute)
+    (call cadenza:platform/sys.node)
+    (call cadenza:platform/sys.put)
+    (call cadenza:platform/sys.spawn)
+    (call cadenza:platform/sys.send)
+    (call cadenza:platform/sys.materialize))
+  (output 2)
+  (live-objects 0))
