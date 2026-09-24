@@ -14813,7 +14813,7 @@
 ; Today the specializer declines the handle (CDZ0900, #7826 — the coded floor that replaced an
 ; accept-to-invalid-artifact; breaker adv 2026-09-02).
 (case
-  "an effectful-operand splat inside a handle body performs exactly once (should-work; today the specializer declines)"
+  "an effectful-operand splat inside a handle body performs exactly once"
   (input
     (do
       (effect T (op tick (-> Int64)))
