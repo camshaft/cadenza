@@ -5166,3 +5166,40 @@ cases
     (call cadenza:platform/sys.materialize))
   (output 2)
   (live-objects 0))
+
+(case
+  "a single host op with a NON-EMPTY string arg AND a spilled list<record> result crosses both correctly"
+  (doc
+    "SHAPE 102 (v-wit-boundary regression guard) — a SINGLE host op materialize(kind:string, session:list<u8>,
+           source:string) -> list<record{id}> on a PURE-IMPORT custom wit-world: a NON-EMPTY string ARG
+           ALONGSIDE a spilled compound (list<record>) RESULT on the SAME op. This is the minimal single-op form
+           of the interaction v-hivemind originally suspected (a compound-list result mislowering a non-empty
+           string arg). It was UNPINNED: existing string-ARG cases (log.emit) pair a string arg with a scalar/
+           unit result, and existing spilled-RESULT cases pair a compound result with scalar/unit args — the
+           COMBINATION (non-empty string arg + spilled list<record> result, one op) had no guard. On current main
+           it PASSES (verified in real wasmtime): the `session-spawned` arg lifts correctly host-side AND the
+           list<record> result lifts into the value-heap, List.len 2. Pins that the string-arg (ptr,len) marshal
+           and the spilled-result retptr/lift do not corrupt each other on one op. Complements the 7-op SHAPE 101.")
+  (wit-world
+    (world
+      w
+      (import
+        cadenza:platform/sys
+        (member
+          materialize
+          (func
+            (param kind (string))
+            (param session (list (u8)))
+            (param source (string))
+            (result (list (record (= id (s64))))))))))
+  (input
+    (do
+      (effect sys (op materialize (-> String (-> Bytes (-> String (List (Record (: id Int64))))))))
+      (def (run) (host (sys) (List.len (sys.materialize "session-spawned" b"" ""))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond sys.materialize (: #list(#record((= id 7)) #record((= id 8))) (List (Record (: id Int64))))))
+  (host-calls (call cadenza:platform/sys.materialize))
+  (output 2)
+  (live-objects 0))
