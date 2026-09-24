@@ -193,6 +193,14 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                     params.push(cb);
                 }
             }
+            // A top-level `option<scalar>` param flattens (canonical variant flatten) to `(disc:i32,
+            // flatten(payload))` — the disc slot then the payload's own flattened slots (one scalar this
+            // increment) — IDENTICAL to a `RecordFieldAbi::Option` field (`flatten_record_field_abi`). The
+            // component boundary type is the built-in `option<T>` (see mod.rs `host_op_comp_functype`).
+            HostParam::Option(payload) => {
+                params.push(wasm_abi::CORE_I32); // the discriminant
+                flatten_record_field_abi(payload, &mut params);
+            }
         }
     }
     // `params` now holds exactly the FLATTENED core-slot bytes (a scalar = 1, a string/bytes = 2, a record

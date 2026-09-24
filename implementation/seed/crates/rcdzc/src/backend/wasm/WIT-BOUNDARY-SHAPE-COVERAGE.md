@@ -52,7 +52,7 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 | Tuple (all leaf-liftable) | arg + result | world | `result_is_liftable` (Tuple) | 33, 34 |
 | Record (all fields boundary/leaf, incl. nested + WIT-order reorder) | arg + result + export | world/export | `is_boundary_record` / `result_is_liftable` (Record) / `record_interface_export` | 11, 13, 19, 20, 21, 25, 29, 31, 35, 36 |
 | compound host-IMPORT RESULT (record/string/bytes/list/tuple/option/result/variant) on the PLAIN host-delegating envelope — a CUSTOM import-only `wit_world`, no typed export, plain top-level guest export | result | world (plain-envelope) | `world_has_import_interface` + `result_is_liftable` (`build_host_result_types` declares the WIT type; `needs_realloc` mem shape) | 83 |
-| option&lt;scalar\|bytes\|leaf-liftable&gt; | field + result | world | `option_payload_ty` | 8, 16, 35, 36, 38 |
+| option&lt;scalar\|bytes\|leaf-liftable&gt; | field + result + TOP-LEVEL arg (scalar payload) | world | `option_payload_ty` (arg: `HostParam::Option` → built-in `option<T>` via per-param CRef + `emit_option_reg_flatten`) | 8, 16, 35, 36, 38, 97 (top-level arg), 99 (record field) |
 | result&lt;list&lt;u8&gt;, enum&gt; | arg + result | world | `result_bytes_enum` | 15, 17 |
 | variant (scalar / mixed-width join / compound payload) + payloadless enum | arg + result | world | `variant_scalar_payload_cases` / `variant_liftable_payload_cases` / `enum_cases` | 18, 32, + vres/cvp/mwv/wen families; PLAIN-envelope host RESULT: 90 (enum), 91 (variant) |
 | scalar-param → spilled compound (record) result | export | export | `needs_result_wrapper` (SpillRecord retptr) | 56, sp1–sp7 |

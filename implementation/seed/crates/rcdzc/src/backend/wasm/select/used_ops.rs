@@ -1164,6 +1164,30 @@ pub(super) fn collect_used_ops_into_seen(
                         collect_list_elem_ops(db, &elem, out);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
+                    // A top-level `option<scalar>` arg is decomposed by `emit_option_reg_flatten`: `sum-disc`,
+                    // and on the Some arm `sum-payload` + the payload scalar's unbox op. Declare them (else the
+                    // marshal's `CallImport` resolves to u32::MAX → an invalid module), then descend to collect
+                    // the ops that BUILD the option value. Checked BEFORE the variant arm (option is excluded
+                    // from `variant_scalar_payload_cases`), mirroring the emit-side dispatch order.
+                    at if !peer_bound
+                        && crate::backend::wasm::host::option_payload_ty(db, &at).is_some_and(
+                            |p| crate::backend::wasm::host::abi_val_type(&p).is_some(),
+                        ) =>
+                    {
+                        out.insert(OP_SUM_DISC);
+                        out.insert(OP_SUM_PAYLOAD);
+                        // Import mirror of the marshaled-option-arg reclaim (emit.rs `HostCall` option arm): the
+                        // emit deep-drops the option cell iff `Owned` or a dup-site — declare `drop` for every
+                        // option host-arg (safe superset, same policy as the other compound arms).
+                        out.insert(OP_DROP);
+                        if let Some(payload) =
+                            crate::backend::wasm::host::option_payload_ty(db, &at)
+                            && let Ok(Some(read)) = get_op_ty(db, &payload)
+                        {
+                            out.insert(read);
+                        }
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     // A bare scalar-payload VARIANT arg (top-level) is decomposed by `emit_variant_reg_flatten`:
                     // `sum-disc`, and on a payload case `sum-payload` + the payload scalar's unbox op. Declare
                     // them (else the marshal's `CallImport` resolves to u32::MAX → an invalid module), then

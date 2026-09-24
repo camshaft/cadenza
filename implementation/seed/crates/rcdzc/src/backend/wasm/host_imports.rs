@@ -523,6 +523,18 @@ pub(super) fn host_op_comp_functype(
             // at most one nominal param type this slice. Its `(disc, payload)` crosses as the flattened core
             // slots (serialize.rs); the defined type is built by `build_host_group` (the variant_params branch).
             HostParam::Variant(_) => encode::uleb128(nominal_type_idx as u64, &mut param_items),
+            // A top-level `option<scalar>` param references its built-in `(option <payload>)` DEFINED type by
+            // the per-param `CRef` the caller computed (`build_host_result_types`), like a `list<T>` param —
+            // an `option` is STRUCTURAL (anonymous-allowed), NOT nominal, so it rides the same per-param
+            // structural-CRef path rather than the single `nominal_type_idx`.
+            HostParam::Option(_) => {
+                let cref = list_param_crefs
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or(crate::backend::wasm::wit_ctype::CRef::Idx(list_type_idx));
+                crate::backend::wasm::wit_ctype::encode_cref(&cref, &mut param_items);
+            }
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
@@ -629,7 +641,11 @@ pub(super) fn build_host_result_types(
         let wit_params = host::wit_op_param_types(db, &h.effect, &h.op);
         let mut per_param: Vec<Option<CRef>> = vec![None; h.params.len()];
         for (i, p) in h.params.iter().enumerate() {
-            if matches!(p, host::HostParam::List(_))
+            // A `list<T>` OR a top-level `option<scalar>` arg references a STRUCTURAL DEFINED type built from
+            // the WORLD's declared param WIT type (`(list <elem>)` / `(option <payload>)`) — `add_wit_type_
+            // deduped` lays either into the shared table (deduped with results + each other) and the
+            // export-aware remap below covers both (a structural type is anonymous-allowed, define-only).
+            if matches!(p, host::HostParam::List(_) | host::HostParam::Option(_))
                 && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
             {
                 per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
@@ -1038,12 +1054,16 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         // and the classifier only produces `Enum` for a non-peer-bound host op) → declines here.
         // A `list<T>` param likewise has no scalar peer-ABI form (a peer-bound list crosses as its `u32`
         // handle, and the classifier only produces `List` for a non-peer-bound host op) → declines here.
+        // A top-level `option<scalar>` param likewise has no scalar peer-ABI form (a peer-bound option crosses
+        // as its `u32` handle, and the classifier only produces `Option` for a non-peer-bound host op) →
+        // declines here.
         host::HostParam::Str
         | host::HostParam::Bytes
         | host::HostParam::Record(_)
         | host::HostParam::Enum(_)
         | host::HostParam::List(_)
-        | host::HostParam::Variant(_) => None,
+        | host::HostParam::Variant(_)
+        | host::HostParam::Option(_) => None,
     }
 }
 

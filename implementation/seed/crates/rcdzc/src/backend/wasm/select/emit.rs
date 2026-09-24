@@ -6360,6 +6360,40 @@ pub(super) fn emit(
                             out.push(Lir::CallImport(OP_DROP));
                         }
                     }
+                    // A top-level `option<scalar>` argument: the guest emits the value-heap Option HANDLE into a
+                    // slot, then decomposes it into the canonical `(disc, payload)` register-flatten via
+                    // `emit_option_reg_flatten` (the register twin of the `option<scalar>` record-FIELD flatten),
+                    // mapping the guest some-disc to WIT `option` some=1 / none=0. Checked BEFORE the variant arm
+                    // (option is a Sum EXCLUDED from `variant_scalar_payload_cases`) and the scalar `_` arm (a
+                    // Sum's `emit` yields a HANDLE, not the flattened slots the built-in `option` param expects).
+                    _ if crate::backend::wasm::host::option_payload_ty(db, &at).is_some_and(
+                        |p| crate::backend::wasm::host::abi_val_type(&p).is_some(),
+                    ) =>
+                    {
+                        let opt_slot = arg_base.max(*high);
+                        scratch_ty.insert(opt_slot, ValType::I32);
+                        *high = (*high).max(opt_slot + 1);
+                        emit(db, arg, slots, opt_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(opt_slot));
+                        let work_base = *high;
+                        emit_option_reg_flatten(
+                            db, opt_slot, &at, work_base, high, scratch_ty, out,
+                        )?;
+                        // MARSHALED-ARG RECLAIM (v-memory-safety, option twin of the variant host-arg reclaim):
+                        // `emit_option_reg_flatten` read the disc + (on Some) unboxed the payload scalar via
+                        // borrowing `sum-disc`/`sum-payload` — pure-borrow, no dup, no handle moved out — so the
+                        // Option handle in `opt_slot` is DEAD after the flatten. When the arg is a freshly-built
+                        // OWNED option (`heap_operand_ownership == Owned`) or a child-dup site, deep-drop it (the
+                        // payload was COPIED out as a scalar, so the cascade is balanced; else the Option shell
+                        // leaks per host call). A BORROWED option is left untouched (leak-over-UAF). Import mirror
+                        // in `collect_used_ops`'s option-arg arm.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(opt_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
                     // A bare scalar-payload VARIANT argument (the top-level param position): the guest emits
                     // the value-heap variant HANDLE into a slot, then decomposes it into the canonical
                     // `(disc, payload)` register-flatten via the SAME `emit_variant_reg_flatten` the record-
