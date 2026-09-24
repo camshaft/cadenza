@@ -91,8 +91,9 @@ pub enum GenMode {
     /// heap-Map handler-state threaded through resume — the #9522/#9525 handler-state-threading reclaim
     /// family —, a control-flow-join nested-tuple resume new-state — the #9532→#9533 SumPayload-reclaim-
     /// off-a-join-scrutinee invalid-wasm miscompile —, and a DISCARDED non-tail call to a top-level helper
-    /// that latently performs — the #9606 DCE-drops-a-discarded-observable-effect miscompile, whose latent
-    /// effect threads the handler state read by the kept tail perform) that each return a KNOWN Int64. PURE-GUEST (effects lower to guest continuation code, no host boundary), so unlike
+    /// that latently performs, whose effect threads the handler state read by the kept tail perform — a
+    /// discarded-perform state-threading shape; NOT a #9606 DCE tripwire, since the perform IS kept by
+    /// subtree_reaches_effect_perform and #9606-class dropped-assert/trap drops are value-invisible) that each return a KNOWN Int64. PURE-GUEST (effects lower to guest continuation code, no host boundary), so unlike
     /// host imports they RUN to a value and are VALUE-OBSERVABLE by all three sweeps. Densifies coverage of
     /// the effects LOWERING (continuation capture, handler-stack resolution, the abort/continuation-drop
     /// path) — a complex area whose `gen_effect_*` generators existed but fed no standing sweep. `--effect`.

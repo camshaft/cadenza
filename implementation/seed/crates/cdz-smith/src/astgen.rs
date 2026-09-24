@@ -3282,24 +3282,27 @@ fn gen_effect_cfjoin_body<C: Choice>(c: &mut C, out: &mut String) {
     .ok();
 }
 
-/// The #9606 DCE-DROPS-A-DISCARDED-OBSERVABLE-EFFECT witness — a value-observable regression tripwire for
-/// the core-optimizer's dead-code-elimination. #9606 fixed a MISCOMPILE where DCE dropped a NON-TAIL
-/// DISCARDED statement (or unused let-init) whenever it did not SYNTACTICALLY reach a host call — dropping
-/// it even when the effect was reached only THROUGH A CALL BOUNDARY (the W2/W3 "call-boundary loss": a
-/// `Core::Call` whose callee performs a latent effect the caller cannot see). The effect silently vanished
-/// (hollow-green across the MembrainHivemind conformance suite). This emits the call-boundary-loss shape:
-/// `bump` is a TOP-LEVEL helper that INTERNALLY performs `E.o` (so the discard site sees only a
-/// `Core::Call (bump a)`, NOT a syntactic perform), placed as a DISCARDED non-tail statement `(do (bump a)
-/// (E.o b))` inside the handler body. `bump`'s perform threads the handler state (`s -> s+a`); the KEPT
-/// tail `(E.o b)` then reads that state. So the discarded call's latent effect is OBSERVED in the return:
-/// value = `s0 + a` (state after bump's perform, read by the tail perform); if a regression re-drops the
-/// discarded `(bump a)`, the state stays `s0` and the tail perform returns `s0` — a wrong value. Caught by
-/// opt-differential (DCE is an On optimization: O0 keeps the discarded call -> s0+a, an opt-gated re-drop
-/// at On -> s0 -> O0 != On divergence). `a` is bounded `1..=9` so the discarded effect ALWAYS shifts the
-/// value (a=0 would make bug==correct — a hollow guard). MUST be a top-level helper: a LOCAL `def` that
-/// performs declines CDZ0401, so this form emits the full program (not a main-body). First effect form with
-/// a DISCARDED-statement perform (forms 0-5 all USE their perform results) and the first exercising the
-/// DCE / observable-effect interaction. Deterministic Int64 (`s0 + a`).
+/// A DISCARDED-STATEMENT effect form: a top-level `bump` helper that performs `E.o` is called in DISCARDED
+/// non-tail position `(do (bump a) (E.o b))` inside the handler body; `bump`'s perform threads the handler
+/// state (`s -> s+a`), and the KEPT tail `(E.o b)` reads that state, so the discarded call's effect is
+/// OBSERVED in the return: value = `s0 + a`. `a` is bounded `1..=9` so the discarded effect always shifts
+/// the value. MUST be a top-level helper (a LOCAL `def` that performs declines CDZ0401), so this form emits
+/// the FULL program (not a main-body). First effect form with a DISCARDED-statement perform (forms 0-5 all
+/// USE their perform results) — it covers the discarded-call + state-threading lowering. Deterministic
+/// Int64 (`s0 + a`).
+///
+/// HONESTY CORRECTION (S579): this was ADDED (S578, #9607) claiming to tripwire the #9606 DCE-drops-a-
+/// discarded-observable-effect miscompile, but it does NOT — and re-verifying against the #9614 REVERT of
+/// #9606 (buggy DCE live on trunk) it STILL compiles to the correct `s0 + a` (wasm==rust==8, opt O0==On).
+/// Reason: the DCE keep-check `subtree_reaches_effect_perform` (rcdzc lower.rs:284) FOLLOWS the callee body
+/// ACROSS the call boundary and detects `bump`'s `E.o` perform → the discarded `(bump a)` is KEPT even by
+/// the reverted-buggy DCE. So an ALGEBRAIC-effect perform through a call is NOT the #9606 gap. The true
+/// #9606 gap is a discarded call/statement whose observable behavior is a DIVERGENCE / explicit `Core::Trap`
+/// (or a host effect the syntactic checks miss) — and that class is a VALUE-DIFFERENTIAL BLIND SPOT: a
+/// dropped assert/trap does NOT change the returned value (precisely why #9606 was "hollow-green" in
+/// conformance — the drivers' non-tail asserts vanished without altering any value). cdz-smith's value
+/// oracles structurally cannot catch #9606-class DCE drops; conformance + rc-trace (v-effects) own it.
+/// This form is KEPT as a valid discarded-perform state-threading effect shape, NOT a #9606 guard.
 fn gen_effect_discarded_call_program<C: Choice>(c: &mut C, out: &mut String) {
     let s0 = c.int_bounded(0, 9);
     let a = c.int_bounded(1, 9); // >=1 so the discarded effect always shifts the value (never hollow)
@@ -5357,7 +5360,7 @@ mod tests {
                 "every effect program must COMPILE: {src}"
             );
             if src.contains("(def (bump (: x Int64)) (E.o x))") {
-                reached[6] = true; // discarded-call DCE (contains `(effect E (op o ` too — check first)
+                reached[6] = true; // discarded-call state-threading (contains `(effect E (op o ` too — check first)
             } else if src.contains("(effect E1 ") {
                 reached[1] = true; // nested-handler
             } else if src.contains("(effect E (op o1 ") {
@@ -6262,12 +6265,12 @@ mod tests {
         );
     }
 
-    /// `gen_effect_discarded_call_program` emits a well-formed #9606 DCE tripwire (a DISCARDED non-tail call
-    /// to a top-level `bump` helper that internally performs `E.o`, whose latent effect threads the handler
-    /// state read by the KEPT tail perform) — the call-boundary-loss shape the buggy DCE dropped. Emits the
-    /// FULL program (a local performing `def` declines CDZ0401), so it is NOT main-body-wrapped. Every
-    /// program COMPILES; asserts the discarded-call structure + confirms the KNOWN value `s0 + a` is
-    /// value-observable (a>=1 so the discarded effect always shifts the value — never a hollow guard).
+    /// `gen_effect_discarded_call_program` emits a well-formed DISCARDED-PERFORM effect program (a discarded
+    /// non-tail call to a top-level `bump` helper that performs `E.o`, whose effect threads the handler state
+    /// read by the KEPT tail perform). Emits the FULL program (a local performing `def` declines CDZ0401), so
+    /// it is NOT main-body-wrapped. Every program COMPILES; asserts the discarded-call structure + confirms
+    /// the value `s0 + a` (a>=1 so the discarded effect always shifts the value). NOTE: this is NOT a #9606
+    /// DCE tripwire — the perform is KEPT by subtree_reaches_effect_perform (see the generator doc).
     #[test]
     fn gen_effect_discarded_call_program_is_well_formed_and_compiles() {
         let mut saw_discarded = false;
