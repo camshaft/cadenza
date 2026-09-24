@@ -5530,7 +5530,7 @@ fn an_all_nullary_sum_orders_by_i32_discriminant_not_the_value_cmp_heap_walk() {
         (def (lt (: x Tri) (: y Tri)) (< x y)) \
         (def (main) 0) (export main))";
     match lower_body(all_nullary, "lt") {
-        Core::Compare { .. } => {} // ✔ i32 tag compare — orders by discriminant
+        Core::Compare { .. } => {} // OK: i32 tag compare — orders by discriminant
         Core::ValueCmp { .. } => panic!(
             "an all-nullary sum `<` must lower to a scalar i32 tag Core::Compare, NOT Core::ValueCmp \
              (the heap walk misreads a bare enum-disc → #43 Equal-for-distinct-variants soundness bug)"
@@ -5543,7 +5543,7 @@ fn an_all_nullary_sum_orders_by_i32_discriminant_not_the_value_cmp_heap_walk() {
         (def (lt (: x Mix) (: y Mix)) (< x y)) \
         (def (main) 0) (export main))";
     match lower_body(payload_sum, "lt") {
-        Core::ValueCmp { .. } => {} // ✔ boxed sum → the descriptor-guided heap walk (unchanged)
+        Core::ValueCmp { .. } => {} // OK: boxed sum → the descriptor-guided heap walk (unchanged)
         other => panic!(
             "a PAYLOAD-carrying sum `<` must still lower to Core::ValueCmp (boxed heap walk), got {other:?}"
         ),

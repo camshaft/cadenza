@@ -467,13 +467,37 @@ fn is_emoji_char(c: char) -> bool {
         || (0x1F000..=0x1FAFF).contains(&o) // Emoticons / Pictographs / Supplemental (😀 🔑 🎉 🪤 🔴 🩸 …)
 }
 
-/// True if a line is a Rust COMMENT (`///` doc, `//!` inner-doc, `//` line, or a `*` doc-block
-/// continuation) — the emoji-ban targets COMMENTS/DOCS (the operator's stated pain), not code. A
-/// functional emoji in a string/char literal (an output marker, a Unicode test string) is out of scope;
-/// scanning only comment lines skips those structurally instead of by a fragile per-file exception.
-fn line_is_comment(line: &str) -> bool {
-    let t = line.trim_start();
-    t.starts_with("///") || t.starts_with("//!") || t.starts_with("//") || t.starts_with('*')
+/// Return the COMMENT portion of `line` (from the comment marker to end-of-line), or None if the line has
+/// no Rust comment. The emoji-ban targets COMMENTS/DOCS (the operator's stated pain), not code — so we scan
+/// only this region, and a functional emoji in a string/char literal (an output marker, a Unicode test
+/// string) is skipped structurally rather than by a fragile per-file exception. STRING-aware: a `//` (or
+/// `/*`) INSIDE a double-quoted `"…"` (a URL/path/test string) does NOT open a comment. Covers BOTH a
+/// leading comment (`///`/`//!`/`//`, or a `*` doc-block continuation) AND an INLINE trailing comment
+/// (`code // comment` — the gap v-core-opt flagged: lower.rs:1463's `Core::MapMerge {..} // 🛑` slipped
+/// through the old leading-only scoper). Escapes inside a string are skipped. A `'"'`-style char literal is
+/// not tracked — that can only cause a rare false-NEGATIVE (a missed comment), never a false emoji flag.
+fn comment_region(line: &str) -> Option<&str> {
+    if line.trim_start().starts_with('*') {
+        return Some(line.trim_start());
+    }
+    let b = line.as_bytes();
+    let mut in_str = false;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' if in_str => {
+                i += 2; // skip an escaped char inside a string (e.g. \" does not close the string)
+                continue;
+            }
+            b'"' => in_str = !in_str,
+            b'/' if !in_str && i + 1 < b.len() && (b[i + 1] == b'/' || b[i + 1] == b'*') => {
+                return Some(&line[i..]); // i is at an ASCII `/`, always a char boundary
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// True if a comment line legitimately DOCUMENTS a character as the subject of Unicode-handling test
@@ -515,9 +539,11 @@ fn emoji_inside_a_quote(line: &str) -> bool {
 pub fn banned_emoji_hits(text: &str) -> Vec<(usize, char)> {
     text.lines()
         .enumerate()
-        .filter(|(_, line)| line_is_comment(line) && !is_unicode_test_doc(line))
-        .flat_map(|(i, line)| {
-            line.chars()
+        .filter_map(|(i, line)| comment_region(line).map(|c| (i, c)))
+        .filter(|(_, comment)| !is_unicode_test_doc(comment))
+        .flat_map(|(i, comment)| {
+            comment
+                .chars()
                 .filter(|c| is_emoji_char(*c))
                 .map(move |c| (i + 1, c))
         })
@@ -1380,6 +1406,22 @@ mod tests {
             banned_emoji_hits("// ok\n// status ✓ vs ✗\n"),
             vec![(2, '✓'), (2, '✗')]
         );
+
+        // FLAGGED: an INLINE / trailing comment after code (the gap v-core-opt flagged — lower.rs:1463's
+        // `Core::MapMerge {..} // 🛑` slipped through the old leading-only `//` scoper).
+        assert_eq!(
+            banned_emoji_hits("Core::MapMerge { .. } // 🛑 STOPGAP\n"),
+            vec![(1, '🛑')]
+        );
+        // ...and the string BEFORE such a comment is still skipped; only the comment's emoji flags.
+        assert_eq!(
+            banned_emoji_hits("let e = \"😀\"; // decorative 🎉\n"),
+            vec![(1, '🎉')]
+        );
+
+        // NOT flagged: a `//` INSIDE a string literal (a URL/path) does NOT open a comment, so an emoji
+        // after it in the SAME string stays out of scope.
+        assert!(banned_emoji_hits("let u = \"http://x/😀\";\n").is_empty());
 
         // NOT flagged: technical typography in a comment (the whole point of scope B).
         assert!(banned_emoji_hits("/// A → B ⇒ C — ∀x ∈ S, x ≥ 0 ≠ 1 … ── §4 café β\n").is_empty());
