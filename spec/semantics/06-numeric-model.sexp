@@ -21552,3 +21552,57 @@
   (input (do (def (main (: x Float64)) (Float64.to-string x)) (export main)))
   (call main (: 3.14 Float64))
   (output (: "3.14" String)))
+
+; ============================================================================================
+; to-string BOUNDARY / EDGE INVARIANTS — pinned so a future change cannot silently regress them.
+; (These already pass; they witness the sharp corners the render must keep getting right.)
+(case
+  "Int8.min renders without a negation overflow (narrow signed boundary)"
+  (doc
+    "`(Int8.to-string Int8.min)` = \"-128\": the most-negative Int8, whose magnitude 128 is one past
+           Int8.max — the render reads the value's true magnitude, so a narrow signed minimum renders
+           correctly rather than overflowing a naive negate. Pins the boundary for a narrow width.")
+  (input (Int8.to-string Int8.min))
+  (output (: "-128" String)))
+
+(case
+  "Int16.min renders its full negative-boundary magnitude"
+  (input (Int16.to-string Int16.min))
+  (output (: "-32768" String)))
+
+(case
+  "a negative value renders sign then base digits in an explicit base"
+  (doc
+    "`(Int64.to-string-radix -255 16)` = \"-ff\": the sign is a leading `-` before the base-16 digits —
+           the base governs only the digit alphabet, the sign is independent.")
+  (input (Int64.to-string-radix -255 16))
+  (output (: "-ff" String)))
+
+(case
+  "octal (base 8) renders correctly"
+  (input (Int64.to-string-radix 64 8))
+  (output (: "100" String)))
+
+(case
+  "Rational.of normalizes a negative denominator: sign moves to the numerator"
+  (doc
+    "`(Rational.to-string (Rational.of 1 -2))` = \"-1/2\": `Rational.of` normalizes so the denominator
+           is positive and the sign lives on the numerator — so the text is \"-1/2\", never \"1/-2\". Pins
+           the sign-normalization invariant the render depends on.")
+  (input (Rational.to-string (Rational.of 1 -2)))
+  (output (: "-1/2" String)))
+
+(case
+  "zero float renders as 0.0"
+  (input (Float64.to-string 0.0))
+  (output (: "0.0" String)))
+
+(case
+  "a sub-one float renders its leading zero before the point"
+  (input (Float64.to-string 0.25))
+  (output (: "0.25" String)))
+
+(case
+  "a large negative BigInt renders its full magnitude with a sign"
+  (input (BigInt.to-string -123456789012345678901234567890N))
+  (output (: "-123456789012345678901234567890" String)))
