@@ -52,6 +52,7 @@ a `Ty::Sum`) is synthesized on the EMIT side here (`spilled_result_wit_type`), N
 | Tuple (all leaf-liftable; TOP-LEVEL arg = scalar OR `Bytes` elements) | arg + result + field + TOP-LEVEL arg (scalar+Bytes elems) | world | `result_is_liftable` (Tuple); arg: `HostParam::Tuple` → built-in `tuple<T…>` via per-param CRef + `emit_tuple_reg_flatten` (positional; a Bytes element copies its rope to `mem` at the shared cursor, `arg_is_boundary_tuple`) | 33, 34, 98 (top-level all-scalar arg), 100 (record field), 105 (tuple&lt;bytes,s64&gt; arg), 108 (two Bytes elems, disjoint mem), 109 (Bytes-scalar-Bytes interleave), 110 (empty Bytes element) |
 | Record (all fields boundary/leaf, incl. nested + WIT-order reorder) | arg + result + export | world/export | `is_boundary_record` / `result_is_liftable` (Record) / `record_interface_export` | 11, 13, 19, 20, 21, 25, 29, 31, 35, 36 |
 | compound host-IMPORT RESULT (record/string/bytes/list/tuple/option/result/variant) on the PLAIN host-delegating envelope — a CUSTOM import-only `wit_world`, no typed export, plain top-level guest export | result | world (plain-envelope) | `world_has_import_interface` + `result_is_liftable` (`build_host_result_types` declares the WIT type; `needs_realloc` mem shape) | 83 |
+| MULTI-PARAM host op (≥2 top-level WIT params, e.g. `f(list<u8>, s64) -> s64`) | arg | world (plain-envelope) | `collect_host_imports_at` classifies EACH arg into `params` (no arity limit); per-call scratch cursor threaded across args | 111 |
 | option&lt;scalar\|bytes\|leaf-liftable&gt; | field + result + TOP-LEVEL arg (scalar OR bytes payload) | world | `option_payload_ty` (arg: `HostParam::Option` → built-in `option<T>` via per-param CRef + `emit_option_reg_flatten`; a Bytes payload copies its rope to `mem` on Some) | 8, 16, 35, 36, 38, 97 (top-level scalar arg), 99 (record field), 106 (option&lt;bytes&gt; Some arg), 107 (option&lt;bytes&gt; None arg) |
 | result&lt;list&lt;u8&gt;, enum&gt; | arg + result | world | `result_bytes_enum` | 15, 17 |
 | variant (scalar / mixed-width join / compound payload) + payloadless enum | arg + result | world | `variant_scalar_payload_cases` / `variant_liftable_payload_cases` / `enum_cases` | 18, 32, + vres/cvp/mwv/wen families; PLAIN-envelope host RESULT: 90 (enum), 91 (variant) |
@@ -144,13 +145,6 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   the effect name with no imposed world (byte-identical). WIT-dump verified (`import cadenza:probe/probe`).
   REMAINING: the 5 resource-escape assembler sites (`assemble_host_runtime_resource*`) still name by effect —
   fold this same helper in when B2 wires compound results there.
-- **[emit, ARG-side] MULTI-PARAM host op** — a host WIT func with MORE THAN ONE top-level param
-  (`f(list<u8>, s64) -> s64`). Every wired host-arg shape is SINGLE-param (a record/tuple bundles multi
-  params); a genuine multi-param host import DECLINES CLEANLY today (not-yet-implemented,
-  decline-don't-miscompile). SHAPE 111 pins the idealistic two-param import (per-call cursor threaded across
-  args) as a corpus TODO (auto-locks to Pass when multi-param support lands). PARKED — no current consumer
-  (v-hivemind bundles params in a record); revive on demand (concierge steer 2026-09-24, same disposition
-  as B2 / SHAPE 95).
 - **[emit]** multi-payload variant case (≥2 payloads); mixed int↔float / f32↔f64 single-payload
   variant join — see `variant_scalar_payload_cases` / `variant_liftable_payload_cases`.
 - **[emit]** compound variant payload at the ARG (register-flatten) position; compound-payload
