@@ -733,18 +733,19 @@
       (export main)))
   ; n=0: caller passes xs to the go↔helper SCC (which borrows len=3) AND reuses xs after (len=3) → 3+3=6;
   ; the SCC must NOT free the caller's borrowed xs → it stays leaking (the caller-ownership guard declines).
-  ; known-leak (dual-path divergence): the DIRECT wasm leaks exactly 2 (the caller-ownership UAF guard —
-  ; freeing the caller's reused borrow = the CAESAR double-free). But the CADENZA re-emit lowers the OPTIMIZED
-  ; core, where `caller` is INLINED into `main` and its `#list(1 2 (+ n 1))` literal is DUPLICATED across the
-  ; two use sites (`go xs` and `List.len xs`) → two INDEPENDENT single-use lists, NO borrowed-and-reused shared
-  ; handle → both safely reclaim to 0 (value still 6). The aliasing the guard protects is eliminated by the
-  ; inlining-dup, so the cadenza reclaim is SOUND, not an over-drop (v-cadenza-backend verified via re-emit).
-  ; An exact `(live-objects N)` can't express "direct=2, cadenza=0" (pure-binary grades it exact on BOTH hops),
-  ; so this is marked known-leak (count is a non-blocking tighten-advisory, not asserted on either hop). The
-  ; direct-path over-drop guard is retained via the value (misvalue) + rc-trace (rc-underflow) tripwires.
+  ; cadenza-tolerate (dual-path divergence): the DIRECT wasm leaks EXACTLY 2 (the caller-ownership UAF guard —
+  ; freeing the caller's reused borrow = the CAESAR double-free), asserted exact so a direct over-drop to 0
+  ; still FAILS. But the CADENZA re-emit lowers the OPTIMIZED core, where `caller` is INLINED into `main` and
+  ; its `#list(1 2 (+ n 1))` literal is DUPLICATED across the two use sites (`go xs` and `List.len xs`) → two
+  ; INDEPENDENT single-use lists, NO borrowed-and-reused shared handle → both safely reclaim to 0 (value 6).
+  ; The aliasing the guard protects is eliminated by the inlining-dup (a binary-AST tree-serialization artifact:
+  ; the codec forbids shared subtrees), so the cadenza reclaim is SOUND, not an over-drop (v-cadenza-backend
+  ; verified via re-emit + rc-trace: two allocs rc 0→1→0, no underflow). The `cadenza-tolerate` facet (#9596)
+  ; lets the DIRECT hop keep its exact-2 count-guard while the CADENZA hop tolerates ≤2 — restoring the
+  ; direct-path UAF count-tripwire the earlier known-leak interim (#9562) had relaxed.
   (call main (: 0 Int64))
   (output (: 6 Int64))
-  (live-objects known-leak 2))
+  (live-objects 2 cadenza-tolerate))
 
 (case
   "a CLOSURE param carrying a captured heap env leaks in a self-recursive fn with a SINGLE call (closures trip the SCC miss more readily than list params)"
