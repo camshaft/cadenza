@@ -4160,6 +4160,27 @@
       (export main)))
   (output (: 8 UInt64)))
 
+; The DIRECTLY-NESTED companion of the record-field case above: a newtype whose payload is ITSELF a
+; scalar-newtype — `(type B (B A))` over `(type A (A UInt64))`. Each nominal box erases independently, so
+; unwrapping through both (`B.B(a)` then `A.A(n)`) must peel ONE nominal layer per `Payload` step and land
+; on the inner `UInt64` at full width. The const-fold walks two single-payload nominal boxes: `fold_sum_path`
+; descends `B`'s box (its inner `A` strips to the non-sum `UInt64`) to the `A.A(41)` node, then descends
+; `A`'s box to the scalar `41`; `+ 1` = 42. A fold that peeled only the type cursor on either layer returned
+; an un-erased `SumNew` at a scalar type (CDZ0910 i64/i32 on wasm, "sum construction node is not a sum type"
+; on rust); a fold that stopped after one layer never reaches the inner scalar. Locks the nest-depth-2 arm
+; of the scalar-newtype unwrap invariant beside its record-field sibling.
+(case
+  "a newtype whose payload is itself a scalar-newtype unwraps through both boxes to the inner scalar width"
+  (input
+    (do
+      (type A (A UInt64))
+      (type B (B A))
+      (def (main)
+        (match (B.B (A.A 41))
+          ((B.B a) (match a ((A.A n) (+ n 1))))))
+      (export main)))
+  (output (: 42 UInt64)))
+
 ; --- A chained generic instantiated at a MAP type. ---
 (case
   "a chained generic instantiates at a MAP type and both tuple slots share the CHAMP"
