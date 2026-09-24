@@ -11260,7 +11260,7 @@ todo	a zero-arg module member called the natural way (m.get) folds (consistency 
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an OWNING consumer of a String entry parameter (String.concat) should cross and return the owned result
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
-todo	an effectful-operand splat inside a handle body performs exactly once (should-work; today the specializer declines)
+pass	an effectful-operand splat inside a handle body performs exactly once
 todo	an entrypoint delegating two distinct host effects performs both and returns its computed value
 todo	an escaping captured continuation is refused, not miscompiled
 todo	byp2 a Bytes entry param destructured by a runtime bin match declines

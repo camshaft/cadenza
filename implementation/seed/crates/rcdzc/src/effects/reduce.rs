@@ -46,6 +46,47 @@ fn body_has_call_site_splat(db: &Db, node: StructId) -> bool {
     walk(db, node, &mut budget)
 }
 
+/// Rewrite the subtree, EXPANDING every statically-expandable call-site splat `(.. t)` argument via the
+/// shared `expand_call_splat_args` — the "thread the expansion through this fold, then lift" follow-up to
+/// the `body_has_call_site_splat` decline in `reduce_handle`. Bottom-up: expand children first, then — if
+/// THIS node is a non-construction application carrying a spread arg — rebuild it with the expanded arg
+/// list (e.g. `(one (.. #tuple((E.op))))` → `(one (E.op))`, the direct-perform-arg shape the fold already
+/// folds). A splat the shared expander cannot statically expand (a runtime/perform-reaching tuple operand,
+/// expander case (ii)) is left as its RAW marker, so the caller's re-check of `body_has_call_site_splat`
+/// on the result still declines it — only the syntactic-`#tuple` / pure-ref splat is lowered here.
+fn expand_call_splats_in_subtree(db: &mut Db, node: StructId) -> StructId {
+    let children = match db.ast.get(node) {
+        Struct::List(children) => children.clone(),
+        _ => return node,
+    };
+    let new_children: Vec<StructId> = children
+        .iter()
+        .map(|&c| expand_call_splats_in_subtree(db, c))
+        .collect();
+    let is_construction = db.ast.compound_ctor_leaf(node).is_some();
+    let has_call_splat = !is_construction
+        && new_children
+            .iter()
+            .enumerate()
+            .any(|(i, &c)| i > 0 && db.ast.spread_operand(c).is_some());
+    if has_call_splat
+        && let Some(expanded) = crate::eval::expand_call_splat_args(db, &new_children[1..])
+    {
+        let mut list = Vec::with_capacity(expanded.len() + 1);
+        list.push(new_children[0]);
+        list.extend(expanded);
+        let rebuilt = db.push_list(list);
+        crate::resolve::resolve_subtree(db, rebuilt);
+        return rebuilt;
+    }
+    if new_children != children {
+        let rebuilt = db.push_list(new_children);
+        crate::resolve::resolve_subtree(db, rebuilt);
+        return rebuilt;
+    }
+    node
+}
+
 /// are the resolved handle's children.
 pub fn reduce_handle(
     db: &mut Db,
@@ -67,16 +108,23 @@ pub fn reduce_handle(
     // is bounded separately by `THREAD_INLINE_LIMIT` in `thread_bounded`.)
     let mut guard = db.enter_reduction()?;
     let db = guard.db();
-    // DECLINE-DON'T-MISCOMPILE (breaker): a call-site splat `(.. t)` lexically inside this handler BODY is
-    // not yet supported — the tail-resumptive fold below types + lowers the body through its own path that
-    // bypasses the shared `expand_call_splat_args` expansion, so the raw splat reached a backend as the WHOLE
-    // tuple where a scalar element belongs, shipping an INVALID artifact on both targets
-    // (accept-to-invalid-artifact, worse than a decline). Decline the whole handle fold if the body contains
-    // such a splat (`cdz compile` then reports the clean "handler not reducible" decline) rather than
-    // emitting a broken component. Follow-up: thread `expand_call_splat_args` through this fold, then lift.
-    if body_has_call_site_splat(db, body) {
-        return None;
-    }
+    // CALL-SITE SPLAT `(.. t)` lexically inside this handler BODY: the tail-resumptive fold below types +
+    // lowers the body through its own path that bypasses the shared `expand_call_splat_args` expansion, so a
+    // RAW splat would reach a backend as the WHOLE tuple where a scalar element belongs (an invalid artifact,
+    // worse than a decline). EXPAND the statically-expandable splats first (the threaded-then-lift follow-up):
+    // a syntactic `#tuple`/pure-ref operand — e.g. `(one (.. #tuple((E.op))))` → `(one (E.op))` — becomes the
+    // direct-perform-arg shape the fold already folds. Then RE-CHECK: if a splat REMAINS it is a runtime /
+    // perform-reaching tuple operand the expander cannot lift (expander case (ii)) — DECLINE that (a clean
+    // "handler not reducible"), as before, rather than emit a broken component.
+    let body = if body_has_call_site_splat(db, body) {
+        let expanded = expand_call_splats_in_subtree(db, body);
+        if body_has_call_site_splat(db, expanded) {
+            return None;
+        }
+        expanded
+    } else {
+        body
+    };
     // [cp4] Bind-once a multi-use nullary performing-factory let-local to the VERBATIM factory body (the
     // preserved capture-let = ca1m shape #3894 folds to 150), before the fold's per-use inline collapses
     // the creation-time capture into a per-application perform (silent 170). No-op unless the exact narrow
