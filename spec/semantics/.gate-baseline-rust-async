@@ -11123,3 +11123,4 @@ todo	a plain guest matches an option<record> host-import result via a pure-IMPOR
 todo	a plain guest reads the length of a list<record> host-import result via a pure-IMPORT custom wit-world
 todo	a plain guest matches an ENUM host-import result via a pure-IMPORT custom wit-world
 todo	a plain guest matches a scalar-payload VARIANT host-import result via a pure-IMPORT custom wit-world
+todo	a plain (non-reducer) guest passes a RECORD host-op ARGUMENT via a pure-IMPORT custom wit-world

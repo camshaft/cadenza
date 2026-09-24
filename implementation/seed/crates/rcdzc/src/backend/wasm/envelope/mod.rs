@@ -1998,15 +1998,20 @@ pub fn assemble_host(
     // interleaved-(ty,export) scalar shape, byte-identical to before.
     needs_list: bool,
     result_defs: &[(Vec<u8>, bool)],
+    // Nominal host-ARGUMENT defined types (B3): the record / enum / bare-variant param types this
+    // interface's ops reference, laid after `(list u8)` + `result_defs` (the op functypes already carry the
+    // matching nominal EXPORT index via `build_host_group`). Empty for a scalar/string/`list<u8>`-only arg
+    // set (byte-identical).
+    record_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     let h = host_fns.len();
     let m = exports.len();
 
     // sec 7: the effect's instance-type — component type 0. Built by the shared `host_effect_instance_type`,
-    // which prepends the `(list u8)` + any spilled-RESULT defined types (B1) ahead of the interleaved
-    // (ty, export) per-op decls. With `needs_list=false` + no `result_defs` this is byte-identical to the
-    // former inline scalar-only builder.
-    let instance_type = host_effect_instance_type(host_fns, needs_list, result_defs, &[]);
+    // which prepends the `(list u8)` + any spilled-RESULT defined types (B1) + any nominal host-ARG defined
+    // types (B3) ahead of the interleaved (ty, export) per-op decls. With everything empty this is
+    // byte-identical to the former inline scalar-only builder.
+    let instance_type = host_effect_instance_type(host_fns, needs_list, result_defs, record_defs);
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
     // sec 10: import the effect interface as an instance of component type 0, under the effect's name —
@@ -2671,6 +2676,9 @@ pub fn assemble_host_runtime(
     // scalar/unit host set (byte-identical to before).
     needs_list: bool,
     result_defs: &[(Vec<u8>, bool)],
+    // Nominal host-ARGUMENT defined types (B3) — see `assemble_host`. Empty for a scalar/string/`list<u8>`-only
+    // arg set (byte-identical to before).
+    record_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     let h = host_fns.len();
     let k = imports.len();
@@ -2683,7 +2691,7 @@ pub fn assemble_host_runtime(
             host_fns,
             needs_list || host_fns.iter().any(|f| f.has_list_param),
             result_defs,
-            &[],
+            record_defs,
         );
         let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
@@ -2866,6 +2874,9 @@ pub fn assemble_host_runtime_mem(
     // Compound-host-RESULT defined types (B1) — see `assemble_host_runtime`.
     needs_list: bool,
     result_defs: &[(Vec<u8>, bool)],
+    // Nominal host-ARGUMENT defined types (B3) — see `assemble_host`. Empty for a scalar/string/`list<u8>`-only
+    // arg set (byte-identical to before).
+    record_defs: &[Vec<u8>],
     // A SPILLED compound host RESULT (B1): the host writes it through a retptr into the SHARED memory via
     // `cabi_realloc`, which the host-op canon-lower references as a Realloc option at COMPONENT-lower-time
     // (before the program core) — so it must be the mem module's `cabi_realloc`, aliased as CORE FUNC 0.
@@ -2886,7 +2897,7 @@ pub fn assemble_host_runtime_mem(
             host_fns,
             needs_list || host_fns.iter().any(|f| f.has_list_param),
             result_defs,
-            &[],
+            record_defs,
         );
         let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
@@ -3394,6 +3405,7 @@ fn shared_mem_realloc_module() -> Vec<u8> {
 /// comp funcs `h..h+m`. Core instances: mem `0`, host-ops `1`, program `2`. (Any spilled-RESULT defined
 /// types are laid INSIDE the effect instance-type's own local index space, so the component type space above
 /// is unchanged.)
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_host_mem(
     core: &[u8],
     exports: &[BoundaryExport],
@@ -3403,6 +3415,9 @@ pub fn assemble_host_mem(
     // to the former inline scalar-only builder.
     needs_list: bool,
     result_defs: &[(Vec<u8>, bool)],
+    // Nominal host-ARGUMENT defined types (B3) — see `assemble_host`. Empty for a scalar/string/`list<u8>`-only
+    // arg set (byte-identical to before).
+    record_defs: &[Vec<u8>],
     // A SPILLED compound host RESULT (B1) needs the shared `cabi_realloc` aliased as CORE FUNC 0 — see
     // `assemble_host_runtime_mem`. `false` → byte-identical to the string-param-only shape.
     needs_realloc: bool,
@@ -3413,8 +3428,9 @@ pub fn assemble_host_mem(
     let rs = needs_realloc as u32;
 
     // sec 7: the effect's instance-type — component type 0. Built by the shared `host_effect_instance_type`
-    // (prepends `(list u8)` + spilled-RESULT defined types ahead of the per-op (ty, export) decls; B1).
-    let instance_type = host_effect_instance_type(host_fns, needs_list, result_defs, &[]);
+    // (prepends `(list u8)` + spilled-RESULT defined types + nominal host-ARG defined types ahead of the
+    // per-op (ty, export) decls; B1 + B3).
+    let instance_type = host_effect_instance_type(host_fns, needs_list, result_defs, record_defs);
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
     // sec 10: import the effect interface as an instance of component type 0 (kebab-normalized name).

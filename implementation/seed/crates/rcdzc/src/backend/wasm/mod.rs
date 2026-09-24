@@ -1514,62 +1514,55 @@ pub fn emit(
                 "delegating more than one host effect is not supported (one interface per envelope)",
             ));
         }
-        // B1b: name the imported host interface by the imposed world's FQ import interface
-        // (`cadenza:platform/probe`), matching what the world declares and what a host provides — the same
-        // name the reducer bytes-provider path uses. Fall back to the bare effect name when no imposed world
-        // declares a matching import interface (the no-world bare-effect case, byte-identical to before).
-        let iface = world_import_iface_for_effect(db, &effect).unwrap_or(effect);
-        // COMPOUND host RESULT support (B1): a spilled compound host result (string/bytes/list/tuple/record/
-        // option/result/variant — anything `result_is_liftable`) crosses on this plain host-delegating path
-        // too, not only the bytes-provider / typed interface-instance paths. `build_host_result_types` derives
-        // the component defined-type(s) for each op's WIT result generally (`emit_result_lift` performs the
-        // matching guest lift at the call site, structurally). The host import instance-type then DECLARES
-        // those defined types (`host_effect_instance_type` via `needs_list`/`result_defs`), and the op's
-        // functype references its result by `result_crefs[i]`. The core module (`core_module_with_host`) already
-        // canon-lowers a spilled result `(args…, retptr) -> ()` + imports `cabi_realloc`. A payloadless ENUM
-        // RESULT crossing BY VALUE (one i32 disc, NOT spilled) rides the SAME `result_crefs[i]` path —
-        // `build_host_result_types` maps `enum_result` to the enum's nominal `enum` DEFINED+EXPORTED type
-        // (`host_import_functype` keeps the core result a bare i32), so it needs no extra wiring here.
+        // B1 / B1b / B3 — the plain host-delegating envelope's per-interface type computation. When the
+        // imposed world declares an IMPORT interface for this effect, route through `build_host_group` (the
+        // SAME per-interface computation the reducer/bytes-provider path uses): it yields the FQ host
+        // interface name (B1b), the compound-RESULT defined types (B1 — string/bytes/list/tuple/record/
+        // option/result/variant, anything `result_is_liftable`, plus a by-value enum result), each op's
+        // component functype with its nominal-ARGUMENT type index baked in (B3 — a record/enum/bare-variant
+        // param), and the nominal host-ARG defined types (`record_defs`, B3). `emit_result_lift` +
+        // the guest arg marshals (`emit_record_arg_marshal` / `emit_list_arg_marshal` / `emit_variant_reg_
+        // flatten`) perform the matching guest-side lift/marshal structurally; `core_module_with_host`
+        // canon-lowers a spilled result `(args…, retptr) -> ()` + imports `cabi_realloc`. A host interface
+        // whose ARG/RESULT shape this slice cannot marshal DECLINES inside `build_host_group` (single-nominal-
+        // kind, string+record, multi-record, …) — decline-don't-miscompile, never a mis-emit.
         //
-        // DECLINE-DON'T-MISCOMPILE (the arg slice is pending): the decline gate opened this path to any imposed
-        // IMPORT world (mod.rs `world_has_import_interface`), which also admits a shape this envelope does not
-        // emit — a NOMINAL/compound host ARGUMENT (record/enum/variant/list param) needs its type declared + a
-        // marshal. That stays declined HERE (a clean decline, never a mis-emit) until the arg slice; a spilled
-        // compound OR by-value enum RESULT with scalar/string/`list<u8>` args is what this slice emits.
-        if host_imports.iter().any(|h| {
-            h.params.iter().any(|p| {
-                !matches!(
-                    p,
-                    host::HostParam::Scalar(_) | host::HostParam::Str | host::HostParam::Bytes
-                )
-            })
-        }) {
-            return Err(Reject::decline(
-                "the plain host-delegating envelope crosses scalar, string, and `list<u8>` host-op \
-                 arguments and a spilled compound result; a record, enum, variant, or list argument \
-                 has no component boundary form on this path",
-            ));
-        }
-        // The spilled-RESULT component defined types, built GENERALLY from each op's WIT result type (the same
-        // mechanism the typed interface-instance / bytes-provider paths use). `needs_list` = the shared
-        // `(list u8)` at instance-type index 0 is required (every spilled result bottoms out at `list<u8>`, or
-        // a `list<u8>` arg); `result_defs` are the defined types laid at indices `1..`; `result_crefs[i]` is
-        // the CRef op `i`'s functype result references. Args are scalar/string/`list<u8>` here (guarded above),
-        // so no nominal-arg or per-list-arg CRef threading is needed on this path yet.
-        let (needs_list, result_defs, result_crefs, _arg_list_crefs) =
-            build_host_result_types(db, &host_imports);
-        let host_fns: Vec<envelope::HostFn> = host_imports
-            .iter()
-            .enumerate()
-            .map(|(i, h)| envelope::HostFn {
-                op: h.op.clone(),
-                // `list_type_idx = 0`: a `list<u8>` (Bytes) arg references the shared `(list u8)` at index 0,
-                // which `needs_list` prepends. `nominal_type_idx = 0`: no nominal args on this path (guarded).
-                comp_functype: host_op_comp_functype(h, 0, 0, &[], result_crefs[i].clone()),
-                has_list_param: h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)),
-                core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
-            })
-            .collect();
+        // No imposed IMPORT world → keep the FLAT bare-effect computation: `allow_option_bytes` is false
+        // without a world (both its disjuncts require `db.wit_world`), so `first_unrepresentable_host_op`
+        // already declined every compound ARG/RESULT at the hoisted top guard — only scalar/unit results and
+        // scalar/string/`list<u8>` args reach here, needing no nominal-arg type. Byte-identical to before.
+        let (iface, host_fns, needs_list, result_defs, record_defs) = if let Some(world_bytes) = db
+            .wit_world
+            .clone()
+            .filter(|wb| world_has_import_interface(wb))
+        {
+            let group = build_host_group(db, &world_bytes, &effect, &host_imports)?;
+            (
+                group.effect_iface,
+                group.host_fns,
+                group.needs_list,
+                group.result_defs,
+                group.record_defs,
+            )
+        } else {
+            let iface = world_import_iface_for_effect(db, &effect).unwrap_or(effect);
+            let (needs_list, result_defs, result_crefs, _arg_list_crefs) =
+                build_host_result_types(db, &host_imports);
+            let host_fns: Vec<envelope::HostFn> = host_imports
+                .iter()
+                .enumerate()
+                .map(|(i, h)| envelope::HostFn {
+                    op: h.op.clone(),
+                    // `list_type_idx = 0`: a `list<u8>` (Bytes) arg references the shared `(list u8)` at index
+                    // 0 (`needs_list` prepends it). `nominal_type_idx = 0`: no nominal args reach the no-world
+                    // branch (the top guard declined them).
+                    comp_functype: host_op_comp_functype(h, 0, 0, &[], result_crefs[i].clone()),
+                    has_list_param: h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)),
+                    core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
+                })
+                .collect();
+            (iface, host_fns, needs_list, result_defs, Vec::new())
+        };
         // A spilled compound host RESULT is written by the host through a retptr into linear memory, which the
         // guest lift reads back — so it needs the shared-memory core shape (`cabi_realloc` + memory), exactly
         // like a `string`/`list<u8>` PARAM. Route a compound-result set to the `_mem` assembler even when every
@@ -1595,6 +1588,7 @@ pub fn emit(
                     &import_name,
                     needs_list,
                     &result_defs,
+                    &record_defs,
                     host_has_spilled,
                 )
             } else {
@@ -1607,6 +1601,7 @@ pub fn emit(
                     &import_name,
                     needs_list,
                     &result_defs,
+                    &record_defs,
                 )
             });
         }
@@ -1622,6 +1617,7 @@ pub fn emit(
                 &host_fns,
                 needs_list,
                 &result_defs,
+                &record_defs,
                 host_has_spilled,
             )
         } else {
@@ -1632,6 +1628,7 @@ pub fn emit(
                 &host_fns,
                 needs_list,
                 &result_defs,
+                &record_defs,
             )
         });
     }

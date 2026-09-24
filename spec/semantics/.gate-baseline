@@ -11320,3 +11320,4 @@ todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
 pass	a plain guest matches a scalar-payload VARIANT host-import result via a pure-IMPORT custom wit-world
 todo	Record.with sets an Option-of-a-UInt64-newtype field of a multi-field record, then a let-destructure reads it back
+pass	a plain (non-reducer) guest passes a RECORD host-op ARGUMENT via a pure-IMPORT custom wit-world

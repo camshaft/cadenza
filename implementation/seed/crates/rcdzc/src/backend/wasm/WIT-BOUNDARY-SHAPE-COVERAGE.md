@@ -90,9 +90,17 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   cannot self-declare (rolls into the nominal-decl increment).
 
 **Emit side — v-wit-boundary (custom import-only wit-world, plain host-delegating envelope):**
-- **[emit, ARG]** a NOMINAL/compound host-op ARGUMENT (record/enum/variant/list param) on the PLAIN
-  host-delegating envelope declines cleanly (a decline-don't-miscompile guard in `mod.rs`) — the arg
-  marshal + nominal-type instance-type declaration is a later slice (B3). The RESULT side is DONE (B1).
+- **[emit, ARG] a NOMINAL/compound host-op ARGUMENT (record/enum/bare-variant param) on the PLAIN
+  host-delegating envelope — ✅ DONE (B3, SHAPE 92).** The world-imposed plain path now routes through
+  `build_host_group` (the SAME per-interface computation the reducer/bytes-provider path uses), which
+  declares the nominal-arg WIT type in the host import instance-type (`record_defs`, threaded through the
+  four plain assemblers into `host_effect_instance_type`) and bakes the nominal-arg type index into the op's
+  component functype; the guest flattens the value-heap record/enum/variant into the op's core slots via the
+  existing `emit_record_arg_marshal` / `emit_variant_reg_flatten` marshals. The former decline-don't-
+  miscompile arg-guard is GONE. A shape `build_host_group` cannot marshal (single-nominal-kind mix,
+  string+record, multi-record) still declines INSIDE it — decline-don't-miscompile preserved. The no-world
+  bare-effect branch keeps the flat scalar/string/`list<u8>`-arg path (the top guard declined compound args
+  there since `allow_option_bytes` is false without a world). The RESULT side was already DONE (B1).
 - **[emit, RESULT] a payloadless ENUM host-op RESULT crossing BY VALUE on the plain host-delegating
   envelope — ✅ DONE (SHAPE 90).** Rides the SAME `result_crefs[i]` path as a spilled compound:
   `build_host_result_types` already maps `enum_result` to the enum's nominal `enum` DEFINED+EXPORTED type
