@@ -271,8 +271,8 @@ fi
 # sweeps seeds in order until the cap, so a higher count reaches more shapes before the backstop). Findings
 # file into the SAME fleet queue (`determinism-*` / `opt-invariance-*`, tagged `reclaim-shapes`).
 # NOTE: bump this in step with generate_reclaim_shapes's `variant(N)` whenever a new shape lands (was 100
-# for the original 5-shape family; 460 ≈ 23×20 as of the 23-shape generator).
-RECLAIM_COUNT="${CDZ_SMITH_RECLAIM_COUNT:-460}"
+# for the original 5-shape family; 480 ≈ 24×20 as of the 24-shape generator).
+RECLAIM_COUNT="${CDZ_SMITH_RECLAIM_COUNT:-480}"
 if [ "$RECLAIM_COUNT" -gt 0 ]; then
   RC_BIN="$CRATE_DIR/target/release/cdz-smith"
   if [ -x "$RC_BIN" ] || ( cd "$CRATE_DIR" && cargo build -q --release --features differential 2>/dev/null ); then
