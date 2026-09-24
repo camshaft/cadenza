@@ -568,13 +568,45 @@ pub(crate) fn check_application(
             );
             return;
         }
+        // A built-in comparison whose operand is a compound CONTAINING a function/closure leaf is CDZ0216
+        // (NotEquatable): the comparison walks the whole spine to the arrow leaf, which has no canonical
+        // identity — it is neither equatable nor orderable. Left unwalked, the compound heap walk falls
+        // through to the generic CDZ0900 "needs a heap walk" DEFERRAL, wrongly signalling not-yet-reducible
+        // for what is a PERMANENT reject; worse, a reference-eq fallback over `(= (tuple 1 f) (tuple 1 f))`
+        // (the SAME `f` both sides) would return TRUE, silently blessing the identity semantics the spec
+        // forbids. This is the FUNCTION sibling of the abstract-operand compound check just above (PR#890),
+        // sharing `key_ty_contains_fn` with the Map/Set-key gate. Scoped to a NESTED fn: a bare `Ty::Fn`
+        // operand is excluded here and owned by the more precise CDZ0203 `Ty::Fn` operand arm below (which
+        // distinguishes a partial application from a genuine fn and carries the forgot-to-apply hint).
+        let nested_fn_operand = |ty: &Ty| {
+            if matches!(ty, Ty::Fn(_, _) | Ty::Cont { .. }) {
+                None
+            } else {
+                key_ty_contains_fn(ty)
+            }
+        };
+        if let Some(fn_ty) = nested_fn_operand(&a).or_else(|| nested_fn_operand(&b)) {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: built-in comparison on a compound containing a function leaf (CDZ0216)");
+            out.push(
+                Reject::coded(
+                    Code::NotEquatable,
+                    format!(
+                        "a function value `{}` nested in this compound cannot be compared — a \
+                         function has no canonical identity, so it is neither equatable nor orderable; \
+                         compare the values the closure captures rather than the closure itself",
+                        fn_ty.render_name(&db.name_ctx())
+                    ),
+                )
+                .at(head),
+            );
+            return;
+        }
         // NOTE: a direct `(=)`/`<`/`compare` whose operand is a bare FUNCTION value is ALREADY rejected
         // below (the `Ty::Fn` operand arm → CDZ0203 "this operation is not defined on a function value",
         // with a forgot-to-apply hint). That path is more precise (distinguishes a partial application from
-        // a genuine fn) and owns the direct-comparison-operand case, so CDZ0216 is NOT re-emitted here —
-        // it is scoped to the Map/Set KEY position (above), where no operator-operand arm applies. (A fn
-        // NESTED in a compound compared by `=` is a rare edge the CDZ0203 arm's top-level check doesn't
-        // walk; left to that arm's evolution rather than duplicating the walk under a second code.)
+        // a genuine fn) and owns the direct-comparison-operand case, so CDZ0203 stays the bare-operand code
+        // — CDZ0216 above is scoped to a fn NESTED in a compound (and to the Map/Set KEY position), where no
+        // top-level operator-operand arm applies.
         // Comparing a SYMBOL to the plain STRING it wraps is a comparison ACROSS THE NOMINAL BOUNDARY —
         // CDZ0202 (17-symbols "a string compared to a symbol is a type error"). A Symbol is a nominal over
         // String; a nominal value never silently compares equal to the untagged shape it was declared
