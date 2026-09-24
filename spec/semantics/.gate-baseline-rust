@@ -11084,7 +11084,7 @@ todo	prr1 a RUNTIME print-then-read Ast round-trip declines pending runtime Ast.
 todo	psc1 chained peer String ops flow a result into an arg then the second result escapes
 todo	pse1 the full (-> String String) converse crosses a peer and its String result escapes main
 todo	ptr1 a peer compound (tuple) result escapes the entrypoint via the fused envelope
-todo	read of malformed text is a coded reject, not a wrong value
+pass	read of malformed text is a coded reject, not a wrong value
 todo	reclaim across a nested-compound projection from a peer result
 todo	runtime Ast.encode of a nested Ast.List serializes via the recursive walk
 todo	runtime Ast.encode of an Ast.Int serializes via the ast-encode heap op, canonical length

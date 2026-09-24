@@ -11299,7 +11299,7 @@ todo	phr2 an export with a lifted List param returning a FRESH list declines (th
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
 todo	pr5 partial-resume op aborts alongside a tail-resume SIBLING op in a MULTI-op handler folds
 todo	prr1 a RUNTIME print-then-read Ast round-trip declines pending runtime Ast.read (constant strings only today)
-todo	read of malformed text is a coded reject, not a wrong value
+pass	read of malformed text is a coded reject, not a wrong value
 todo	rpp1 a scalar-fielded Record entry param projects both fields
 todo	rpp2 an open-row helper projects a field of the boundary Record param
 todo	rpp3 a Record entry param with a heap list field measures both

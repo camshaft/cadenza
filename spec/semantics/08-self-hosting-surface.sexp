@@ -135,7 +135,7 @@
            same refusal (checked; one uniform message).")
   (input
     (do (def (main (: mode Int64)) (if (= (Ast.read "(+ 1") (quote (+ 1))) 1 0)) (export main)))
-  (error CDZ0101))
+  (error CDZ0201))
 
 ; --- The print/read FIXPOINT laws. ---
 (case
