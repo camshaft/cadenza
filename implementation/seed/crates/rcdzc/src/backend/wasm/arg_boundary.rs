@@ -441,7 +441,12 @@ pub(super) fn fixed_shape_sum_param_arg(
     // an all-nullary sum (WIT `enum`) → Enum (one disc); an aliased-width scalar → Scalar; else decline.
     let classify = |db: &mut Db, pty: &Ty| -> Option<(SumArmPayload, Vec<ValType>)> {
         match pty.strip_nominal() {
-            Ty::Bytes => Some((SumArmPayload::Bytes, vec![ValType::I32, ValType::I32])),
+            Ty::Bytes => Some((
+                SumArmPayload::Bytes {
+                    ptr_from_i64: false,
+                },
+                vec![ValType::I32, ValType::I32],
+            )),
             Ty::Sum { decl: sd, .. } => {
                 let all_nullary = {
                     let dref = db.type_decl_by_occ(*sd)?;

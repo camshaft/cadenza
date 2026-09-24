@@ -7072,6 +7072,138 @@ fn option_list_arg(
     ))
 }
 
+/// A `result<scalar, String>` (or the symmetric `result<String, scalar>`) entry param — a two-payload Result
+/// where ONE arm is an aliased-width scalar and the OTHER is a `String` (a memory-bearing `(ptr, len)` leaf).
+/// The all-scalar Result is [`arg_boundary::fixed_shape_option_scalar_arg`]'s path (which returns `None` for a
+/// String arm); this is its memory-bearing counterpart (erp1). It crosses as a STRUCTURAL `result<ok, err>`;
+/// the canonical ABI JOINS the two arms' flattened payload slots position-by-position, taking the WIDER core
+/// width at each position. When the scalar arm is `i64` (e.g. `Int64`), the join widens slot 0 to `i64`, so the
+/// String arm reads its `ptr` from that slot with an `i32.wrap_i64` (`SumArmPayload::Bytes { ptr_from_i64 }`) —
+/// the different-width case. The rebuilt `String` is the SAME UTF-8 byte-leaf a `Bytes` builds (no decode).
+/// Bare-route local (like [`option_list_arg`]): the WIT `result<ok, err>` is synthesized at the call site, so
+/// this returns no `ArgSlot` (the shared closure/typed-route classifiers are untouched). `None` unless exactly
+/// one arm is a scalar and the other a `String`, and the only differing join width is an `{i32, i64}` mix (a
+/// float×i32 mix would need a reinterpret, not a wrap — a later slice).
+fn result_scalar_string_arg(
+    db: &mut Db,
+    gty: &crate::ty::Ty,
+) -> Option<(
+    Vec<crate::backend::wasm::lir::ValType>,
+    crate::backend::wasm::serialize::SumArgRebuild,
+)> {
+    use crate::backend::wasm::lir::ValType;
+    use crate::backend::wasm::serialize::{SumArgArm, SumArgRebuild, SumArmPayload};
+    use crate::ty::Ty;
+    let Ty::Sum { decl, args, .. } = gty.strip_nominal() else {
+        return None;
+    };
+    let args = args.clone();
+    let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
+        let dr = db.type_decl_by_occ(*decl)?;
+        if dr.variants.len() != 2 {
+            return None;
+        }
+        (
+            dr.params.clone(),
+            dr.variants.iter().map(|v| v.payloads.clone()).collect(),
+        )
+    };
+    // RESULT shape: BOTH variants carry exactly one payload (Ok a, Err b).
+    if variant_payloads.iter().any(|p| p.len() != 1) {
+        return None;
+    }
+    // The instantiated payload type of variant `vi` (its single payload occ resolves a generic param → args).
+    let payload_ty = |db: &mut Db, vi: usize| -> Option<Ty> {
+        let occ = variant_payloads[vi][0];
+        let pname = db
+            .ast
+            .head_name(occ)
+            .or_else(|| db.ast.as_name(occ))?
+            .to_string();
+        let pi = params.iter().position(|p| *p == pname)?;
+        args.get(pi).cloned()
+    };
+    let ok_ty = payload_ty(db, 0)?;
+    let err_ty = payload_ty(db, 1)?;
+    // Classify one payload side: a String (memory `(ptr, len)` leaf) or an aliased-width scalar.
+    #[derive(Clone, Copy)]
+    enum Kind {
+        Str,
+        Scalar {
+            box_op: &'static str,
+            extend: Option<bool>,
+            vt: ValType,
+        },
+    }
+    fn classify(ty: &crate::ty::Ty) -> Option<(Kind, Vec<ValType>)> {
+        use crate::backend::wasm::lir::{ValType, valtype_of};
+        if matches!(ty.strip_nominal(), crate::ty::Ty::String) {
+            return Some((Kind::Str, vec![ValType::I32, ValType::I32]));
+        }
+        if let Some(crate::backend::wasm::serialize::FieldRebuild::Scalar { box_op, extend }) =
+            crate::backend::wasm::arg_boundary::scalar_field_rebuild(ty)
+        {
+            let vt = valtype_of(ty)?;
+            return Some((Kind::Scalar { box_op, extend, vt }, vec![vt]));
+        }
+        None
+    }
+    let (ok_kind, ok_vts) = classify(&ok_ty)?;
+    let (err_kind, err_vts) = classify(&err_ty)?;
+    // EXACTLY one String arm + one scalar arm (all-scalar → fixed_shape_option_scalar_arg; two-String later).
+    let str_count = matches!(ok_kind, Kind::Str) as u8 + matches!(err_kind, Kind::Str) as u8;
+    if str_count != 1 {
+        return None;
+    }
+    // Position-wise WIDENING join: take the wider core per position; only an {i32, i64} mix widens (→ i64).
+    let join_len = ok_vts.len().max(err_vts.len());
+    let mut joined = Vec::with_capacity(join_len);
+    for i in 0..join_len {
+        let w = match (ok_vts.get(i), err_vts.get(i)) {
+            (Some(a), Some(b)) if a == b => *a,
+            (Some(a), None) => *a,
+            (None, Some(b)) => *b,
+            (Some(ValType::I32), Some(ValType::I64)) | (Some(ValType::I64), Some(ValType::I32)) => {
+                ValType::I64
+            }
+            _ => return None, // a float×i32 mix (needs reinterpret) or empty — a later slice
+        };
+        joined.push(w);
+    }
+    // slot 0's join width decides the wrap flags: a String arm wraps its i64-joined ptr; a NARROW (i32-core)
+    // scalar sharing an i64 slot recovers its low 32 bits first (never triggered by a scalar+String Result,
+    // since a String's slot 0 is i32 — slot 0 is only i64 when the scalar side itself is i64).
+    let slot0_i64 = joined.first() == Some(&ValType::I64);
+    let build = |kind: Kind| -> SumArmPayload {
+        match kind {
+            Kind::Str => SumArmPayload::Bytes {
+                ptr_from_i64: slot0_i64,
+            },
+            Kind::Scalar { box_op, extend, vt } => SumArmPayload::Scalar {
+                box_op,
+                extend,
+                wrap_join: slot0_i64 && vt == ValType::I32,
+            },
+        }
+    };
+    // Component `result<ok, err>` sends Ok = boundary disc 0; the guest builds each arm with its decl disc.
+    Some((
+        joined,
+        SumArgRebuild {
+            base_param: 1,
+            boundary_true_disc: 0,
+            arm_true: SumArgArm {
+                decl_disc: 0,
+                payload: build(ok_kind),
+            },
+            arm_false: SumArgArm {
+                decl_disc: 1,
+                payload: build(err_kind),
+            },
+        },
+    ))
+}
+
 /// The PLAIN-EXPORT ENTRY-PARAM emit (entry-param declines slice 1): a SINGLE bare exported def whose param
 /// is a memory-bearing `String`/`Bytes` (crossing as `string`/`list<u8>`) gets a guest LIFT WRAPPER — the
 /// wrapper copies the incoming `(ptr, len)` bytes out of linear memory into a value-heap `Bytes` (a `String`
@@ -7133,6 +7265,40 @@ fn try_bare_entry_param_component(
             }
             // BORROW-only (this slice): the def matches the Some to read `List.len`/element, then the wrapper
             // reclaims the built sum shell (which deep-drops the inner vec) after the call.
+            let _ = body;
+            mem_leaf_params.push(None);
+            sum_params.push(Some((rebuild, true)));
+            cell_params.push(None);
+            cell_slots.push(None);
+            cell_drop_after.push(false);
+            cell_escaped_fields.push(None);
+            wit_params.push((format!("p{i}"), wit));
+            continue;
+        }
+        // A `result<scalar, String>` entry param (erp1): a memory-bearing Result arm the scalar Result
+        // classifier declines. Crosses as a STRUCTURAL `result<ok, err>`, flattened `(disc, <joined slots>)`;
+        // the String arm builds a guest String (a UTF-8 byte-leaf), wrapping its i64-joined ptr where the
+        // scalar arm widened slot 0. Tried BEFORE `fixed_shape_option_scalar_arg` (which returns None for a
+        // String arm). WIT synthesized as `result<ok, err>` (structural — no defined-type wall) from the args.
+        if let Some((vts, rebuild)) = result_scalar_string_arg(db, gty) {
+            let (ok, err) = match gty.strip_nominal() {
+                Ty::Sum { args, .. } if args.len() == 2 => (
+                    crate::wit_world::ty_natural_wit(&args[0])?,
+                    crate::wit_world::ty_natural_wit(&args[1])?,
+                ),
+                _ => return None,
+            };
+            let wit = crate::wit_world::WitType::Result {
+                ok: Some(Box::new(ok)),
+                err: Some(Box::new(err)),
+            };
+            // Canonical `result<ok, err>` flattening: `(disc: i32, <joined payload slots…>)`.
+            param_vts.push(ValType::I32.byte());
+            for vt in &vts {
+                param_vts.push(vt.byte());
+            }
+            // BORROW-only (this slice): the def matches the Result; the wrapper reclaims the built sum shell
+            // (which deep-drops the String payload) after the call.
             let _ = body;
             mem_leaf_params.push(None);
             sum_params.push(Some((rebuild, true)));
