@@ -1460,7 +1460,7 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             | Core::ListPrepend { .. }
             | Core::ListUpdate { .. }
             | Core::MapNew { .. }
-            | Core::MapMerge { .. } // 🛑 STOPGAP (P0) — the boxed-CHAMP / SumNew producers below are TEMPORARILY DROPPED from the
+            | Core::MapMerge { .. } // STOPGAP (P0) — the boxed-CHAMP / SumNew producers below are TEMPORARILY DROPPED from the
                                     // keep list (kept as comments for an easy re-widen). MapNew + MapMerge ABOVE stay KEPT: they build
                                     // a FRESH CHAMP (MapMerge consumes+dups both operands, the ListConcat shape) with no live-interior
                                     // sharing — v-runtime-verified guarded-all-clean even multi-use generation-shared; MapMerge also

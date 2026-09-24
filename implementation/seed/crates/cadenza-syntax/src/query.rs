@@ -6048,7 +6048,7 @@ mod tests {
                 "\n\n\n",
                 "no trailing newline",
                 "x\n",                  // trailing newline → an empty final line
-                "café\nnaïve\n😀 tail", // multibyte: é (2 bytes), ï (2), 😀 (4)
+                "café\nnaïve\n😀 tail", // multibyte: é (2 bytes), ï (2), U+1F600 (4)
                 long_line.as_str(),     // a long single ASCII line — the fast-path stress
             ] {
                 let idx = driver::LineIndex::new(src);
