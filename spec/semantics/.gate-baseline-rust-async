@@ -10815,8 +10815,8 @@ todo	a MODULE-exported closure that performs a delegated effect cannot cross the
 todo	a SCALAR-param export returning a RECORD lifts the result (not a raw handle) (via an imposed WIT world)
 todo	a String argument handle passed to a peer stays live for a later local read (borrow not move)
 todo	a Value.encode/Value.decode round-trip of a NULLARY single-ctor newtype is Some(unit)
-todo	a `..` spread in a MAP construction entry names the pattern-only rule, not a malformed key-value entry
-todo	a `..` spread in a RECORD construction entry names the pattern-only rule, not a malformed key-value entry
+pass	a `..` construction spread of an unbound operand in a MAP reports the unbound name (CDZ0101), construction spread being legal
+pass	a `..` construction spread of an unbound operand in a RECORD reports the unbound name (CDZ0101), construction spread being legal
 todo	a bakeable nullary type-value export crosses the boundary (the control)
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a bare TUPLE export result crosses as a typed WIT tuple (declared world)

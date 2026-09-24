@@ -11222,8 +11222,8 @@ todo	a String ENTRY arg rides a rope into an effect-op argument and the arm read
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a String-typed @param accessor crosses once the world-driven result path lands
 todo	a Symbol entry parameter compares to an interned constant
-todo	a `..` spread in a MAP construction entry names the pattern-only rule, not a malformed key-value entry
-todo	a `..` spread in a RECORD construction entry names the pattern-only rule, not a malformed key-value entry
+pass	a `..` construction spread of an unbound operand in a MAP reports the unbound name (CDZ0101), construction spread being legal
+pass	a `..` construction spread of an unbound operand in a RECORD reports the unbound name (CDZ0101), construction spread being legal
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but the bare envelope declines it on wasm
 pass	a bare Value.decode with no grounding annotation is rejected CDZ0203 (unsolved target type — annotate it)
