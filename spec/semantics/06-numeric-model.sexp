@@ -16001,7 +16001,7 @@
     "`Infinity` is a usable value but not Ast-canonical: `(Ast.Float Float64.Infinity)` declines, exactly
         as `(Ast.Float Float64.nan)` does — a non-canonical float has no canonical AST value form.")
   (input (do (def (main) (Ast.Float Float64.Infinity)) (export main)))
-  (output (reject)))
+  (error CDZ0201))
 
 (case
   "Float64.of-int converts a runtime integer, rounding a large Int64 to the nearest f64"
