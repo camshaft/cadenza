@@ -328,6 +328,7 @@ const MATERIALIZED_FLEET_FILES: &[&str] = &[
     "prune-stale-targets.sh",
     "prune-tmp-inodes.sh",
     "reap-wedged-nix-clients.sh",
+    "throttle-unleased-nix.sh",
     "refresh-tools.sh",
     "cargo-nix-shim.sh",
     "nix-shim.sh",
@@ -2599,6 +2600,54 @@ fn ensure_reap_leases_cron(fleet: &Fleet) {
     }
 }
 
+/// The desired every-3-min user-crontab line for the autonomous UNLEASED-HEAVY-BUILD THROTTLE (concierge
+/// policy call + v-nix concurrence 2026-09-24), tagged `# fleet:throttle-unleased-nix` so
+/// [`reconcile_tagged_crons`] can find/heal it. Runs the HUB copy of `throttle-unleased-nix.sh --apply`:
+/// renice the process TREE of any own-user `nix build .#checks` client that is UNLEASED (no
+/// CDZ_LEASED_NIX=1) and older than ~8m, so a raw build that BYPASSED the check-lease (CDZ_CHECK_LEASE_MAX /
+/// `fleet with-lease`) yields the nix pool instead of starving gate-locals fleet-wide (the #083916 gap).
+/// NON-DESTRUCTIVE (renice only, reversible) → safe on a frequent cron like `# fleet:reap-leases`; the
+/// destructive early-REAP alternative stays OPERATOR-GATED (concierge policy). ENABLED (unlike the disabled
+/// watchdog/rearm-stale lines, which send-keys into agent windows — this touches only nix build processes).
+/// */3 matches the sibling reap crons + beats a starving build's damage window.
+fn throttle_unleased_nix_cron_line(hub_script: &str) -> String {
+    format!("*/3 * * * * bash {hub_script} --apply >/dev/null 2>&1 # fleet:throttle-unleased-nix")
+}
+
+/// Ensure the `# fleet:throttle-unleased-nix` per-3-min user-crontab entry exists + points at THIS hub's
+/// `throttle-unleased-nix.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
+/// [`ensure_reap_leases_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`).
+/// Skips silently if the script isn't materialized yet (older tree) or `crontab` is absent/errs — never
+/// blocks `fleet up`.
+fn ensure_throttle_unleased_nix_cron(fleet: &Fleet) {
+    use std::io::Write;
+    let script = fleet.root.join("throttle-unleased-nix.sh");
+    if !script.exists() {
+        return; // not materialized (older tree) → nothing to schedule
+    }
+    let desired = [(
+        "# fleet:throttle-unleased-nix",
+        throttle_unleased_nix_cron_line(&script.display().to_string()),
+    )];
+    let current = match Command::new("crontab").arg("-l").output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(_) => return, // no crontab binary → fail-open skip
+    };
+    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
+        return; // already installed verbatim
+    };
+    if let Ok(mut child) = Command::new("crontab")
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(new_tab.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
 /// The desired every-30-min user-crontab line for the Midway AEA-cookie refresh (operator note-709,
 /// approved 2026-09-13), tagged `# fleet:aea-refresh` so [`reconcile_tagged_crons`] can find/heal it. Runs
 /// the HUB copy of `aea-refresh.sh` → `mwinit --refresh-aea`, silently re-minting the ~2h AEA cookie from a
@@ -2908,6 +2957,13 @@ fn up(fleet: &Fleet, crons_only: bool) {
     // stalls the whole merge gate) are cleared even when the destructive watchdog is disabled (concierge
     // coverage-hole 2026-09-11). Independent + fail-open + drift-healed.
     ensure_reap_leases_cron(fleet);
+    // The unleased-heavy-build THROTTLE cron: `throttle-unleased-nix.sh --apply` renices the process tree of
+    // any own-user `nix build .#checks` client that is UNLEASED (no CDZ_LEASED_NIX=1) and older than ~8m, so
+    // a raw build that bypassed the check-lease yields the nix pool instead of starving gate-locals fleet-wide
+    // (concierge #083916 + v-nix concurrence 2026-09-24). NON-DESTRUCTIVE (renice, not kill — the destructive
+    // early-reap stays operator-gated), so it ships ENABLED like reap-leases. Independent + fail-open +
+    // drift-healed. Runs in the `--crons-only` path too (before the bringup return below).
+    ensure_throttle_unleased_nix_cron(fleet);
     // The Midway AEA-cookie refresh cron: `aea-refresh.sh` → `mwinit --refresh-aea` every 30 min, silently
     // re-minting the ~2h AEA cookie from the still-valid session so it never lapses mid-session (operator
     // note-709). Independent + fail-open + drift-healed; does not extend the session past its ceiling.
@@ -23304,6 +23360,27 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             None
         );
         assert_eq!(parse_cron_line("# fleet:watchdog just a note"), None);
+    }
+
+    #[test]
+    fn throttle_unleased_nix_cron_is_live_and_every_3_min() {
+        // The throttle cron ships ENABLED (renice is non-destructive, unlike the disabled watchdog/rearm
+        // lines) at */3, running the script with --apply so it actually renices.
+        let line = throttle_unleased_nix_cron_line("/hub/.claude/fleet/throttle-unleased-nix.sh");
+        assert!(line.contains("# fleet:throttle-unleased-nix"));
+        assert!(
+            line.contains("--apply"),
+            "the cron must renice, not dry-run"
+        );
+        assert!(
+            !line.trim_start().starts_with('#'),
+            "must be a LIVE line, not a commented/disabled one"
+        );
+        // cron-health sees a live 3-min fleet cron keyed on the SCRIPT stem (so it is tracked, not STALE).
+        assert_eq!(
+            parse_cron_line(&line),
+            Some((180, "throttle-unleased-nix".to_string()))
+        );
     }
 
     // NB: this test does NOT assert on the WATCHDOG_ENABLED const itself. `assert!(!WATCHDOG_ENABLED)` would
