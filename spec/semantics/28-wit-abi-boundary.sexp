@@ -5037,3 +5037,59 @@ cases
   (host-calls (call cadenza:platform/probe.g))
   (output 30)
   (live-objects 0))
+
+(case
+  "a plain (non-reducer) guest passes a RECORD host-op ARGUMENT with an OPTION field via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 99 — a RECORD host-op ARGUMENT one of whose fields is an `option<s64>` (probe.p : func(record{a:s64,
+           m:option<s64>}) -> s64) on a PURE-IMPORT custom wit-world with a PLAIN top-level export. While a
+           TOP-LEVEL option arg is not yet supported (SHAPE 97, TODO), an option-typed record FIELD already
+           crosses via the existing `RecordFieldAbi::Option` arm: the field is laid as an `(option <payload>)`
+           DEFINED type (wit-dump: `type host-record-p0 = option<s64>` referenced by `record host-record-p1`),
+           and the guest flattens the field to `(disc, payload)` in the record's core run. Pins the option-in-
+           record composite-arg support (the arg-side analogue of the option RESULT vocab). run() builds
+           {a:3, m:Some 9}, performs probe.p, the host stub returns 42. A VALID component that runs is the pin.")
+  (wit-world
+    (world
+      w
+      (import
+        cadenza:platform/probe
+        (member p (func (param r (record (= a (s64)) (= m (option (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op p (-> (Record (: a Int64) (: m (Option Int64))) Int64)))
+      (def (run) (host (probe) (probe.p #record((= a 3) (= m (Some 9))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.p (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.p))
+  (output 42)
+  (live-objects 0))
+
+(case
+  "a plain (non-reducer) guest passes a RECORD host-op ARGUMENT with a TUPLE field via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 100 — a RECORD host-op ARGUMENT one of whose fields is a `tuple<s64, s64>` (probe.q : func(record{
+           a:s64, t:tuple<s64,s64>}) -> s64) on a PURE-IMPORT custom wit-world with a PLAIN top-level export.
+           While a TOP-LEVEL tuple arg is not yet supported (SHAPE 98, TODO), a tuple-typed record FIELD already
+           crosses via the existing `RecordFieldAbi::Tuple` arm: the field is laid as a `(tuple <elem>…)` DEFINED
+           type (wit-dump: `type host-record-p0 = tuple<s64, s64>` referenced by the record) and the guest
+           flattens the tuple's elements positionally into the record's core run. Pins the tuple-in-record
+           composite-arg support (positional sibling of the option-in-record SHAPE 99). run() builds
+           {a:1, t:(2,3)}, performs probe.q, the host stub returns 24. A VALID component that runs is the pin.")
+  (wit-world
+    (world
+      w
+      (import
+        cadenza:platform/probe
+        (member q (func (param r (record (= a (s64)) (= t (tuple (s64) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op q (-> (Record (: a Int64) (: t (Tuple Int64 Int64))) Int64)))
+      (def (run) (host (probe) (probe.q #record((= a 1) (= t #tuple(2 3))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.q (: 24 Int64)))
+  (host-calls (call cadenza:platform/probe.q))
+  (output 24)
+  (live-objects 0))
