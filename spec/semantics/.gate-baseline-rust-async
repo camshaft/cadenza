@@ -10820,7 +10820,7 @@ todo	a `..` spread in a RECORD construction entry names the pattern-only rule, n
 todo	a bakeable nullary type-value export crosses the boundary (the control)
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a bare TUPLE export result crosses as a typed WIT tuple (declared world)
-todo	a bare Value.decode with no grounding annotation is rejected CDZ0203 (unsolved target type — annotate it)
+pass	a bare Value.decode with no grounding annotation is rejected CDZ0203 (unsolved target type — annotate it)
 todo	a bare enum RESULT member of a typed export interface crosses (payloadless-enum disc passthrough)
 todo	a bare list<scalar>/List PARAM member of a typed export interface crosses (mem_leaf List-arm coverage)
 todo	a bare list<u8>/Bytes PARAM member of a typed export interface crosses (multi-export list<u8> param — operator §2 decode-check half)
