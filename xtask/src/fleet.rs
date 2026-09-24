@@ -809,6 +809,28 @@ pub enum FleetCmd {
         #[arg(long, default_value = "main")]
         session: String,
     },
+    /// READ-ONLY liveness check of an agent's tmux pane, to gate a RESTART recommendation on real
+    /// evidence instead of a heartbeat-stale flag alone. Captures the pane TWICE (a few seconds apart)
+    /// and classifies: WORKING (a turn in flight — esc-to-interrupt / API-retry / a live token meter),
+    /// BACKGROUNDED-WAIT progressing-vs-frozen (a detached task; the token-count DELTA across the two
+    /// captures is the concierge-validated live-vs-hung discriminator — the elapsed timer ticks either
+    /// way), IDLE (a bare `❯` prompt — a wake/nudge is fine, a restart only if genuinely hung), or
+    /// UNKNOWN. It sends NO keystrokes and mutates nothing. This is the standing-directive tool
+    /// (concierge 2026-09-24, after a heartbeat-only heuristic mislabeled v-hivemind — mid a 12m
+    /// operator-driven turn — as stuck): NEVER recommend restarting a heartbeat-frozen agent without
+    /// confirming here that its pane is not actively working.
+    PaneCheck {
+        /// The agent whose pane to inspect (read-only).
+        name: String,
+        /// The tmux SESSION the fleet windows live in (default `main`); addresses the server directly so
+        /// it works from outside `$TMUX`, like `wake`.
+        #[arg(long, default_value = "main")]
+        session: String,
+        /// Seconds between the two captures — the window over which a live turn's token count must change
+        /// to prove liveness. Default 4s (long enough for a generating turn to advance its meter).
+        #[arg(long, default_value_t = 4)]
+        interval_secs: u64,
+    },
     /// Mirror the live gitignored work queue (`.claude/fleet/queue/`) into the TRACKED `issues/`
     /// archive at the repo root, so these hard-won reproducers are preserved in git history rather
     /// than living only in agent-local state. Copies every queue file into `issues/`, removes tracked
@@ -1554,6 +1576,11 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             operator_message,
             session,
         } => wake_cmd(&fleet, &name, operator_message, &session),
+        FleetCmd::PaneCheck {
+            name,
+            session,
+            interval_secs,
+        } => pane_check_cmd(&name, &session, interval_secs),
         FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
         FleetCmd::Sync { force } => sync(&fleet, force),
         FleetCmd::Watchdog {
@@ -11398,6 +11425,103 @@ fn parse_pane_token_count(pane_text: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// A read-only liveness verdict for an agent's pane, from TWO captures taken a few seconds apart (see
+/// `fleet pane-check`). It exists to gate a RESTART recommendation on real evidence rather than on a
+/// heartbeat-stale flag alone — the misclassification the concierge caught 2026-09-24 (v-hivemind, mid a
+/// 12m operator-driven turn, and fix-cdz-world-artifact, mid a marathon gate, both read "wedged" by
+/// heartbeat yet were very much alive). The DEFINITIVE liveness signal is the streaming token-count DELTA
+/// across the two captures (the concierge-validated discriminator: a working turn's count CHANGES, a hung
+/// one is FROZEN — the elapsed-time meter is NOT a signal, it ticks either way).
+#[derive(Debug, PartialEq, Eq)]
+enum PaneVerdict {
+    /// A turn is in flight (esc-to-interrupt / API-retry / live token meter). NEVER restart.
+    Working,
+    /// A backgrounded "Waiting for task" whose token count ADVANCED across the captures — a live detached
+    /// task. NEVER restart (the completion will resume the loop).
+    BackgroundedWaitProgressing,
+    /// A backgrounded "Waiting for task" whose token count is FROZEN across the captures — a SUSPECT dead
+    /// detached task (the watchdog's escape-wait path handles this specifically; not a plain restart).
+    BackgroundedWaitFrozen,
+    /// A bare `❯` idle prompt — not working. A wake/drain-nudge is appropriate; a RESTART is warranted only
+    /// if this is ALSO paired with a stale heartbeat AND it persists (genuinely-idle cron-dead vs briefly
+    /// between turns) — i.e. still not a restart on this single check alone.
+    IdlePrompt,
+    /// Pane content not classifiable (capture race, unusual UI). Do NOT restart on this alone.
+    Unknown,
+}
+
+/// Classify an agent's liveness from two pane captures (`p1` earlier, `p2` later). Pure so the
+/// restart-gating rule is unit-testable without tmux. Backgrounded-wait is checked FIRST (its liveness is
+/// the token delta, not the footer); then an affirmative working affordance; then a bare idle prompt; else
+/// Unknown. The token-count DELTA (`p1` vs `p2`) distinguishes a live detached task from a frozen one.
+fn pane_liveness_verdict(p1: &str, p2: &str) -> PaneVerdict {
+    let progressing = match (parse_pane_token_count(p1), parse_pane_token_count(p2)) {
+        (Some(a), Some(b)) => a != b,
+        _ => false,
+    };
+    if pane_shows_backgrounded_wait(p2) {
+        if progressing {
+            PaneVerdict::BackgroundedWaitProgressing
+        } else {
+            PaneVerdict::BackgroundedWaitFrozen
+        }
+    } else if pane_shows_working(p2) {
+        PaneVerdict::Working
+    } else if pane_shows_idle_prompt(p2) {
+        PaneVerdict::IdlePrompt
+    } else {
+        PaneVerdict::Unknown
+    }
+}
+
+/// `cargo xtask fleet pane-check <agent>` — READ-ONLY liveness check (see the `PaneCheck` CLI doc).
+/// Captures the pane twice `interval_secs` apart and prints the [`PaneVerdict`] + a plain restart-safety
+/// line. Sends NO keys, mutates nothing. Exit 0 always (a diagnostic, never a gate).
+fn pane_check_cmd(name: &str, session: &str, interval_secs: u64) {
+    let Some(p1) = capture_pane(session, name) else {
+        println!(
+            "pane-check '{name}': could NOT capture the pane (no live window in session '{session}', or tmux errored) → UNKNOWN. Do not restart on this alone."
+        );
+        return;
+    };
+    std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+    let p2 = capture_pane(session, name).unwrap_or(p1.clone());
+    let tok = |p: &str| parse_pane_token_count(p).unwrap_or_else(|| "—".to_string());
+    let (t1, t2) = (tok(&p1), tok(&p2));
+    let (verdict, safety) = match pane_liveness_verdict(&p1, &p2) {
+        PaneVerdict::Working => (
+            "WORKING (a turn is in flight)",
+            "ALIVE — DO NOT restart (a restart would kill work in flight).",
+        ),
+        PaneVerdict::BackgroundedWaitProgressing => (
+            "BACKGROUNDED-WAIT, progressing (token count advancing)",
+            "ALIVE — DO NOT restart (a live detached task; its completion resumes the loop).",
+        ),
+        PaneVerdict::BackgroundedWaitFrozen => (
+            "BACKGROUNDED-WAIT, token count FROZEN",
+            "SUSPECT hung detached task — the watchdog's escape-wait path handles this; not a plain restart.",
+        ),
+        PaneVerdict::IdlePrompt => (
+            "IDLE (bare prompt, not working)",
+            "IDLE — a wake/drain-nudge is appropriate; restart ONLY if this is genuinely hung (idle + stale heartbeat + persists across checks).",
+        ),
+        PaneVerdict::Unknown => (
+            "UNKNOWN (pane not classifiable)",
+            "INCONCLUSIVE — do NOT restart on this alone; re-check or capture the pane directly.",
+        ),
+    };
+    println!("pane-check '{name}' (session '{session}', {interval_secs}s apart): {verdict}");
+    println!(
+        "  token count: {t1} → {t2}{}",
+        if t1 != t2 {
+            " (CHANGED = live)"
+        } else {
+            " (unchanged)"
+        }
+    );
+    println!("  {safety}");
 }
 
 /// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
@@ -21835,6 +21959,36 @@ mod tests {
         assert_eq!(missing_window_action(false, false, true), ReportTmuxError);
         assert_eq!(missing_window_action(false, true, false), Nothing);
         assert_eq!(missing_window_action(false, true, true), Nothing);
+    }
+
+    #[test]
+    fn pane_liveness_verdict_distinguishes_working_from_idle_via_token_delta() {
+        use PaneVerdict::*;
+        // A turn in flight (esc-to-interrupt) → Working, whatever the token delta. NEVER a restart target.
+        let working = "some output\n⏵⏵ bypass permissions · esc to interrupt · ← for agents\n";
+        assert_eq!(pane_liveness_verdict(working, working), Working);
+        // The concierge's v-hivemind case: a long generating turn shows the live token meter, no idle ❯.
+        // The count ADVANCES across captures → definitively alive (this is the misfire the tool prevents).
+        let gen1 = "Composing… (11m 3s · ↓ 40.0k tokens)\n";
+        let gen2 = "Composing… (12m 1s · ↓ 45.8k tokens)\n";
+        assert_eq!(pane_liveness_verdict(gen1, gen2), Working);
+        // Backgrounded wait: token count ADVANCING → live detached task; FROZEN → suspect hung.
+        let wait_a = "Waiting for task…\n↓ 10.0k tokens\n";
+        let wait_b = "Waiting for task…\n↓ 12.0k tokens\n";
+        assert_eq!(
+            pane_liveness_verdict(wait_a, wait_b),
+            BackgroundedWaitProgressing
+        );
+        assert_eq!(
+            pane_liveness_verdict(wait_a, wait_a),
+            BackgroundedWaitFrozen
+        );
+        // A bare idle prompt → IdlePrompt (a wake/nudge target, not a blind restart).
+        let idle = "previous output scrolled up\n❯\n";
+        assert_eq!(pane_liveness_verdict(idle, idle), IdlePrompt);
+        // Unclassifiable content → Unknown (never restart on this alone).
+        let blank = "\n\n";
+        assert_eq!(pane_liveness_verdict(blank, blank), Unknown);
     }
 
     #[test]
