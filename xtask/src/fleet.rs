@@ -1375,8 +1375,8 @@ pub enum FleetCmd {
     /// DESTRUCTIVE actions — no window recreate, no wedge-Escape, no dead-letter/spent-note reap, no window
     /// reap, no compaction restart: none of that code EXISTS in this path, so it is non-destructive
     /// BY CONSTRUCTION. That restraint is what makes it safe to run FREQUENTLY as an autonomous fleet-up
-    /// cron, DECOUPLED from the concierge, once the operator GOes it (until then its cron ships DISABLED —
-    /// see `REARM_STALE_ENABLED` — but the command itself is runnable, dry-run especially, for inspection).
+    /// cron, DECOUPLED from the concierge — ENABLED under operator seq 1251 (its cron now ships LIVE; see
+    /// `REARM_STALE_ENABLED`), and the command is also runnable by hand (dry-run especially, for inspection).
     /// Server-direct (explicit `--session`, no `$TMUX` needed). EXCLUDES pr-sync (whose stale-mid-batch
     /// shape needs the watchdog's trunk/gate/lease exonerations; re-arming it here would false-fire).
     RearmStale {
@@ -2441,12 +2441,15 @@ fn ensure_watchdog_cron(fleet: &Fleet) {
 /// non-destructive BY CONSTRUCTION (send-keys `continue`/`/loop` only — see `rearm_stale_scan`), but whether
 /// a non-destructive send-keys `/loop` re-arm is IN or OUT of scope of the 2026-09-10 destructive-watchdog
 /// operator ban is an OPEN operator decision (ASK1, routed via the concierge). So we ship the mechanism
-/// LANDED-BUT-OFF exactly like [`WATCHDOG_ENABLED`]: the cron line is installed COMMENTED-OUT (reconcile
-/// keeps/heals the tag, so it can never silently vanish, yet cron never schedules it) and flipping this one
-/// bool to `true` + landing re-enables it the instant the operator says GO. Gates ONLY the cron line — the
-/// `fleet rearm-stale` command stays manually runnable (dry-run inspection) regardless, mirroring how
-/// `fleet watchdog` runs by hand while its cron is disabled.
-const REARM_STALE_ENABLED: bool = false;
+/// ENABLED under operator seq 1251 (2026-09-24: unpark/fund the fleet-liveness improvements). The
+/// `# fleet:rearm-stale` cron now installs LIVE (a `*/4` schedule). It is the sanctioned NON-destructive
+/// self-heal: token-delta-gated (#9644 — never nudges work-in-flight), a send-keys re-arm NOT a window-kill
+/// (ban-compliant, the same `reissue-loop` done manually), so it ends the manual reissue treadmill on
+/// fresh-spawn cron-deaths (wasm-boundary-marshal, v-disk-sweep, …). Gates ONLY the cron line; the `fleet
+/// rearm-stale` command was always runnable by hand. CARVE-OUT (operator 1251): the DESTRUCTIVE early-reap
+/// variant stays UNBUILT + gated — 1251 authorizes non-destructive automation only; flip nothing on toward a
+/// build-kill without a separate explicit operator GO.
+const REARM_STALE_ENABLED: bool = true;
 
 /// The desired `# fleet:rearm-stale` crontab line, in the state [`REARM_STALE_ENABLED`] dictates. When
 /// enabled it is a live every-4-min schedule (between the */3 drain-nudge and the */10 watchdog — a stale
@@ -2465,7 +2468,7 @@ fn rearm_stale_cron_line(hub_script: &str, enabled: bool) -> String {
 }
 
 /// Ensure the `# fleet:rearm-stale` entry exists + points at THIS hub's `rearm-stale.sh`, in the state
-/// [`REARM_STALE_ENABLED`] dictates (currently DISABLED pending ASK1). Same re-arm-on-relaunch, drift-heal,
+/// [`REARM_STALE_ENABLED`] dictates (now ENABLED / LIVE under operator seq 1251). Same re-arm-on-relaunch, drift-heal,
 /// and FAIL-OPEN discipline as [`ensure_watchdog_cron`] / [`ensure_drain_nudge_cron`], and INDEPENDENT of the
 /// other fleet crons (its own reconcile/write in `up`, preserving their lines via [`reconcile_tagged_crons`]).
 /// Installing the DISABLED form makes the LANDED-BUT-OFF state self-healing and visible (a retained, greppable
@@ -2984,12 +2987,12 @@ fn up(fleet: &Fleet, crons_only: bool) {
     // untagged-cron accident (dead 10 days, invisible to cron_stale). Re-enable = operator flips
     // WATCHDOG_ENABLED + lands. Independent of the other self-crons; fail-open + drift-healed.
     ensure_watchdog_cron(fleet);
-    // Re-assert the `# fleet:rearm-stale` entry as a FIRST-CLASS tagged cron — but DISABLED pending the
-    // operator's ASK1 ruling on whether a NON-destructive send-keys `/loop` re-arm is in scope of the
-    // 2026-09-10 ban. Like the watchdog line this does NOT schedule any run (it's commented); it exists so
-    // the LANDED-BUT-OFF re-arm mechanism is self-healing + visible (a retained, greppable tag) and ready to
-    // flip the instant the operator GOes it. Re-enable = flip REARM_STALE_ENABLED + land. Independent of the
-    // other self-crons; fail-open + drift-healed.
+    // Re-assert the `# fleet:rearm-stale` entry as a FIRST-CLASS tagged cron — now LIVE (ENABLED under
+    // operator seq 1251). It schedules the NON-destructive, #9644-token-delta-gated `/loop` self-heal (a
+    // send-keys re-arm, NOT a window-kill — ban-compliant), which auto-recovers cron-dead agents and ends the
+    // manual reissue treadmill. The DESTRUCTIVE early-reap variant remains UNBUILT + operator-gated (1251
+    // authorizes non-destructive automation only). Independent of the other self-crons; fail-open +
+    // drift-healed.
     ensure_rearm_stale_cron(fleet);
     // `--crons-only`: the reconcile above (materialized source + every tagged cron) is the whole job —
     // STOP before the roster/window bringup. That phase requires `$TMUX` and touches live windows; skipping
@@ -7541,8 +7544,8 @@ fn drain_nudge_scan(fleet: &Fleet, session: &str, dry_run: bool, drain_nudge_gra
 /// anti-thrash grace + dead-cron escalation, but ONLY the send-keys `continue`/`/loop` re-arm and NONE of
 /// the watchdog's destructive actions (window recreate/reap/Escape/reap-dead-letters/compaction-restart do
 /// not exist in this path). Shares the watchdog's rearm/streak markers, so running both never double-arms.
-/// Server-direct (explicit `session`, no `$TMUX`). Meant for a frequent decoupled cron once the operator
-/// GOes it (its cron ships DISABLED — see [`REARM_STALE_ENABLED`]); runnable by hand (dry-run) meanwhile.
+/// Server-direct (explicit `session`, no `$TMUX`). Runs on a frequent decoupled cron — ENABLED under
+/// operator seq 1251 (its cron ships LIVE; see [`REARM_STALE_ENABLED`]); also runnable by hand (dry-run).
 fn rearm_stale_scan(
     fleet: &Fleet,
     session: &str,
@@ -23413,14 +23416,14 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         );
     }
 
-    // Same LANDED-BUT-OFF discipline as the watchdog line: the tagged `# fleet:rearm-stale` cron ships
-    // COMMENTED (REARM_STALE_ENABLED=false, pending ASK1) so cron never schedules it, yet the tag is retained
-    // (reconcile keeps/heals it) and the active every-4-min form is documented inline for whoever flips the
-    // const. Does NOT assert on the const itself — flipping it is the sanctioned re-enable path, so a
-    // const-block assert would be wrong (and trip clippy::assertions_on_constants); both forms are validated
-    // via the `enabled` arg, so the test stays green whichever way it's set.
+    // The tagged `# fleet:rearm-stale` cron is now ENABLED (REARM_STALE_ENABLED=true under operator seq 1251),
+    // so it installs the LIVE every-4-min form; the DISABLED form stays a commented, unschedulable line whose
+    // tag is retained (reconcile keeps/heals it). Does NOT assert on the const itself — flipping it is the
+    // sanctioned enable/disable path, so a const-block assert would be wrong (and trip
+    // clippy::assertions_on_constants); both forms are validated via the `enabled` arg, so the test stays
+    // green whichever way it's set.
     #[test]
-    fn rearm_stale_cron_line_is_disabled_by_default_and_not_schedulable() {
+    fn rearm_stale_cron_line_gates_live_vs_commented_on_the_enabled_flag() {
         let disabled = rearm_stale_cron_line("/hub/rearm-stale.sh", false);
         // Tagged so reconcile_tagged_crons keeps/heals it — it can never silently vanish.
         assert!(disabled.contains("# fleet:rearm-stale"));
