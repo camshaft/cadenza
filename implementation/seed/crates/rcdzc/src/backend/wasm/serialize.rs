@@ -2016,8 +2016,9 @@ fn core_module_impl(
     // GLOBAL (sec 6) — one mutable i32 per STATIC BYTES payload FIRST (indices `0..n_static`, init 0), then
     // one per STATIC COMPOUND (indices `n_static..n_static+n_compounds`, init 0) — the `start` init overwrites
     // each with its once-built immortal handle — then the `cabi_realloc` bump cursor LAST (index
-    // `n_static+n_compounds`) when a DEFINED allocator is present (`n_realloc == 1`, init 16 so a returned
-    // pointer is never 0). `n_realloc == 1` already implies `wrapper_needs_memory`. Empty (byte-identical)
+    // `n_static+n_compounds`) when a DEFINED allocator is present (`n_realloc == 1`, init = the const-string
+    // data end rounded up, floored at 16 so a returned pointer is never 0 — see below). `n_realloc == 1`
+    // already implies `wrapper_needs_memory`. Empty (byte-identical)
     // when there are no static globals nor a defined cursor.
     let global_sec = if n_static > 0 || n_compounds > 0 || n_realloc == 1 {
         let global_entry = |init: i64| -> Vec<u8> {
@@ -2032,7 +2033,19 @@ fn core_module_impl(
             items.extend_from_slice(&global_entry(0));
         }
         if n_realloc == 1 {
-            items.extend_from_slice(&global_entry(16));
+            // Seat the bump cursor ABOVE the const-string data region `[0, const_end)` so a realloc'd host
+            // RESULT never clobbers a const-string arg before the host lifts it — the D5 string-arg
+            // miscompile, here on the DEFINE-mode (inline-allocator) path; the twin of the
+            // `envelope::shared_mem_realloc_module` fix on the `import_realloc` path. `align8(max(16,
+            // const_end))`: 16 keeps a returned pointer non-zero AND is byte-identical when the const-string
+            // data ends at/below 16.
+            let const_end = layout
+                .host_strings
+                .iter()
+                .map(|(s, off)| off + s.len() as u32)
+                .max()
+                .unwrap_or(0);
+            items.extend_from_slice(&global_entry(i64::from((const_end.max(16) + 7) & !7)));
         }
         section(
             wasm_abi::CORE_SEC_GLOBAL,

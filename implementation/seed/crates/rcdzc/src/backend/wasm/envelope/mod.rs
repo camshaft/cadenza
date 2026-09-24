@@ -1463,7 +1463,7 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
     // alias): alias `mem`.`mem` → core memory 0, AND (realloc mode) `mem`.`cabi_realloc` → CORE FUNC 0 — both
     // BEFORE the host-op lowers, so a compound-result host op's lower can reference the realloc.
     let mem_module_sec = core_module_section(&if needs_realloc {
-        shared_mem_realloc_module()
+        shared_mem_realloc_module(shared_realloc_init(core))
     } else {
         shared_mem_module()
     });
@@ -2941,7 +2941,7 @@ pub fn assemble_host_runtime_mem(
     // sec 1 (first): the SHARED-MEMORY core module (module 0) — with a bump `cabi_realloc` when a spilled
     // compound host RESULT needs the shared allocator (B1).
     let mem_module_sec = core_module_section(&if needs_realloc {
-        shared_mem_realloc_module()
+        shared_mem_realloc_module(shared_realloc_init(core))
     } else {
         shared_mem_module()
     });
@@ -3161,7 +3161,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
     // sec 1/2/6: the shared-memory+realloc module (core module 0) → core instance 0 → memory alias (core
     // memory 0). Carries a bump `cabi_realloc` (the S0 single allocator over memory 0); the put path leaves
     // it unused (the guest still owns its own realloc for the apply lift) — a harmless additive export.
-    let mem_module_sec = core_module_section(&shared_mem_realloc_module());
+    let mem_module_sec = core_module_section(&shared_mem_realloc_module(shared_realloc_init(core)));
     let mem_instance_sec = section(
         sec::CORE_INSTANCE,
         &wasm_vec(1, &core_instantiate_item(0, &[])),
@@ -3310,6 +3310,106 @@ pub fn assemble_bytes_roundtrip_host_provider(
 /// `"heap"` for the runtime shape). The program's core module imports each host op from `"host"`.
 const HOST_MODULE: &str = "host";
 
+/// Seat the shared bump allocator ABOVE the wrapper's const data: `align8(max(16, const_end))`, where
+/// `const_end` is the end of the highest ACTIVE data segment in `core` (the `string`-arg data segments the
+/// guest lays into the shared memory). Floored at 16 (a returned pointer is never 0, and it stays
+/// byte-identical for a program whose const data ends at/below 16). Fixes the D5 string-arg miscompile: the
+/// old fixed base of 16 let a realloc'd host RESULT allocate INTO the const-string region and clobber a
+/// const-string arg before the host lifted it. See [`shared_mem_realloc_module`].
+fn shared_realloc_init(core: &[u8]) -> u32 {
+    (max_active_data_end(core).max(16) + 7) & !7
+}
+
+/// The end (`offset + len`) of the highest ACTIVE data segment in a core module `core` — i.e. the extent of
+/// the const data written into linear memory at instantiation — or 0 if there are none. A minimal reader
+/// over the module's DATA section (id 11): PASSIVE segments (flag 1) are skipped (they are not written to
+/// memory); an ACTIVE segment's offset is read from its `i32.const` init expr. Used only to seat the shared
+/// allocator (see [`shared_realloc_init`]); a mis-parse can only mis-seat the bump cursor, which the
+/// output-validation self-check would catch.
+fn max_active_data_end(core: &[u8]) -> u32 {
+    fn uleb(b: &[u8], i: &mut usize) -> u64 {
+        let (mut r, mut s) = (0u64, 0u32);
+        while *i < b.len() {
+            let x = b[*i];
+            *i += 1;
+            r |= u64::from(x & 0x7f) << s;
+            if x & 0x80 == 0 {
+                break;
+            }
+            s += 7;
+        }
+        r
+    }
+    fn sleb(b: &[u8], i: &mut usize) -> i64 {
+        let (mut r, mut s) = (0i64, 0u32);
+        loop {
+            if *i >= b.len() {
+                break;
+            }
+            let byte = b[*i];
+            *i += 1;
+            r |= i64::from(byte & 0x7f) << s;
+            s += 7;
+            if byte & 0x80 == 0 {
+                if s < 64 && byte & 0x40 != 0 {
+                    r |= -1i64 << s;
+                }
+                break;
+            }
+        }
+        r
+    }
+    if core.len() < 8 {
+        return 0;
+    }
+    let mut i = 8; // skip magic(4) + version(4)
+    let mut max_end = 0u32;
+    while i < core.len() {
+        let id = core[i];
+        i += 1;
+        let size = uleb(core, &mut i) as usize;
+        let sec_start = i;
+        let sec_end = (sec_start + size).min(core.len());
+        if id == wasm_abi::CORE_SEC_DATA {
+            let mut j = sec_start;
+            let count = uleb(core, &mut j);
+            for _ in 0..count {
+                if j >= sec_end {
+                    break;
+                }
+                let flags = uleb(core, &mut j);
+                if flags == 1 {
+                    // passive: a bare data vec, not written to memory.
+                    let len = uleb(core, &mut j) as usize;
+                    j = (j + len).min(sec_end);
+                    continue;
+                }
+                if flags == 2 {
+                    let _memidx = uleb(core, &mut j); // active, explicit memory index
+                }
+                // offset const expr: `i32.const <sleb>` … `end` (0x0b).
+                let mut offset: i64 = 0;
+                if j < sec_end && core[j] == 0x41 {
+                    j += 1;
+                    offset = sleb(core, &mut j);
+                }
+                while j < sec_end && core[j] != 0x0b {
+                    j += 1;
+                }
+                if j < sec_end {
+                    j += 1; // consume `end`
+                }
+                let len = uleb(core, &mut j) as usize;
+                j = (j + len).min(sec_end);
+                let end = (offset.max(0) as u64 + len as u64).min(u64::from(u32::MAX)) as u32;
+                max_end = max_end.max(end);
+            }
+        }
+        i = sec_end;
+    }
+    max_end
+}
+
 /// The SHARED-MEMORY core module the string-arg host shape threads: a one-page memory EXPORTED as `mem`,
 /// nothing else. The program core module imports this memory (from module `"mem"`), and each string op's
 /// canon-LOWER binds it so the `(ptr,len)` a `string` lowers to is read out of the SAME memory the
@@ -3340,8 +3440,13 @@ fn shared_mem_module() -> Vec<u8> {
 /// cursor over memory 0 (no dual-allocator conflict). Living in this pre-instance shared module (core
 /// instance 0) it is available BEFORE the program instance, breaking the lower↔realloc circularity a
 /// list-returning host import would otherwise face (the guest imports both `mem` and `cabi_realloc`). The
-/// bump cursor inits at 16 (above the fixed `OUT=8` retarea), matching the guest's own former allocator.
-fn shared_mem_realloc_module() -> Vec<u8> {
+/// bump cursor inits at `realloc_init` — the caller seats it ABOVE the wrapper's const-string data region
+/// (`[0, const_end)`, where the guest's `string`-arg data segments live in this SAME shared memory), so a
+/// realloc'd host RESULT never overwrites a const-string arg before the host lifts it (the D5 string-arg
+/// miscompile: a large program lays a const string past the old fixed base of 16 and the first realloc wrote
+/// over it → wasmtime "invalid utf-8" on lift). `realloc_init` is floored at 16 (above the fixed `OUT=8`
+/// retarea, never 0) — see [`max_active_data_end`].
+fn shared_mem_realloc_module(realloc_init: u32) -> Vec<u8> {
     use crate::backend::wasm::wasm_abi::op;
     // type 0: (i32,i32,i32,i32) -> i32 (the cabi_realloc signature).
     let type_sec = {
@@ -3353,11 +3458,11 @@ fn shared_mem_realloc_module() -> Vec<u8> {
     // func 0: type 0.
     let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(1, &[0x00]));
     let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01])); // limits {min:1}
-    // global 0: mutable i32 bump cursor, init 16 (above the fixed OUT=8 retarea).
+    // global 0: mutable i32 bump cursor, init `realloc_init` (seated above the const-string data region).
     let global_sec = {
         let mut item = vec![wasm_abi::CORE_I32, 0x01];
         item.push(op::I32_CONST);
-        crate::backend::wasm::encode::sleb128(16, &mut item);
+        crate::backend::wasm::encode::sleb128(realloc_init as i64, &mut item);
         item.push(op::END);
         section(wasm_abi::CORE_SEC_GLOBAL, &wasm_vec(1, &item))
     };
@@ -3459,7 +3564,7 @@ pub fn assemble_host_mem(
     // sec 1 (first): the SHARED-MEMORY core module (module 0) — with a bump `cabi_realloc` for a spilled
     // compound host RESULT (B1).
     let mem_module_sec = core_module_section(&if needs_realloc {
-        shared_mem_realloc_module()
+        shared_mem_realloc_module(shared_realloc_init(core))
     } else {
         shared_mem_module()
     });
