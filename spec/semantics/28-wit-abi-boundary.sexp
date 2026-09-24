@@ -4871,3 +4871,63 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 99)
   (live-objects 0))
+
+(case
+  "a plain (non-reducer) guest passes a scalar-payload VARIANT host-op ARGUMENT via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 93 — a scalar-payload bare-VARIANT host-op ARGUMENT (probe.emit : func(variant{go, stop(s64)})
+           -> s64) on a PURE-IMPORT custom wit-world with a PLAIN top-level export — the bare-variant arm of
+           the v-wit-boundary B3 compound host-ARGUMENT support. `build_host_group` lays a single shared
+           `variant` DEFINED+EXPORTED type and bakes its index into the op's component functype; the guest
+           flattens the variant to `(disc:i32, join(payloads))` core slots via `emit_variant_reg_flatten`
+           (the same marshal a record-field variant uses, now at the top-level param position). Before B3 the
+           plain path declined a variant ARG. run() emits Stop(7) and performs probe.emit; the host stub
+           returns 88. A VALID component that runs is the pin (a mis-declared/mis-flattened variant-arg type
+           fails validation, CDZ0910). Plain-path twin of the reducer named-variant-arg SHAPE 18. Verified the
+           emitted component IMPORTS `cadenza:platform/probe` + a bare `run: func()` export (the plain host-
+           delegating shape).")
+  (wit-world
+    (world
+      w
+      (import
+        cadenza:platform/probe
+        (member emit (func (param v (variant (go) (stop (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op emit (-> Sig Int64)))
+      (def (run) (host (probe) (probe.emit (Sig.Stop 7))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.emit (: 88 Int64)))
+  (host-calls (call cadenza:platform/probe.emit))
+  (output 88)
+  (live-objects 0))
+
+(case
+  "a plain (non-reducer) guest passes a list<s64> host-op ARGUMENT via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 94 — a `list<s64>` host-op ARGUMENT (probe.sum : func(list<s64>) -> s64) on a PURE-IMPORT custom
+           wit-world with a PLAIN top-level export — the list arm of the v-wit-boundary B3 compound host-
+           ARGUMENT support. `build_host_group`'s `arg_list_crefs` prepends the shared `(list u8)` + the
+           element defined type and the op's functype references the list arg; the guest marshals the
+           value-heap list into `(ptr, count)` core slots + the element array via `emit_list_arg_marshal`.
+           Before B3 the plain path crossed only a `list<u8>` (Bytes) arg. run() builds [3,4,5] and performs
+           probe.sum; the host stub returns 12. A VALID component that runs is the pin. Plain-path twin of the
+           reducer list<s64>-arg SHAPE 12.")
+  (wit-world
+    (world
+      w
+      (import
+        cadenza:platform/probe
+        (member sum (func (param xs (list (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op sum (-> (List Int64) Int64)))
+      (def (run) (host (probe) (probe.sum #list(3 4 5))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.sum (: 12 Int64)))
+  (host-calls (call cadenza:platform/probe.sum))
+  (output 12)
+  (live-objects 0))
