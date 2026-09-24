@@ -268,6 +268,52 @@ pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
     result
 }
 
+/// Whether a DISCARDED statement / dead binding-init at `id` has an OBSERVABLE EFFECT or an EXPLICIT
+/// DIVERGENCE that DCE MUST preserve — the §283-OVERRIDE keep predicate (concierge ask #083499 + WIDEN
+/// #083505, operator "fix asap"). TRUE iff the subtree reaches ANY of:
+///   • a HOST CALL (`subtree_reaches_host_call`) — a direct observable effect;
+///   • a `Core::Call` / `Core::CallClosure` — a call whose CALLEE may perform a latent host / divergent
+///     effect the caller-side analysis cannot see (the shape-W2/W3/2/3 CALL-BOUNDARY loss: the callee
+///     returns Unit, the caller discards it, so the effect vanished when the statement was dropped);
+///   • an EXPLICIT `Core::Trap` (a programmer-written `trap`/`assert`) — eliding a REACHABLE explicit
+///     divergence is a miscompile (the W1 repro `(if 1==2 then unit else trap …)` MUST trap).
+/// It DELIBERATELY does NOT keep a discarded PURE-SCALAR IMPLICIT arith trap (`Core::DivByZeroTrap` /
+/// overflow guard from `(/ 100 d)` and friends): the operator's §283 dead-init ruling (concierge #622465)
+/// elides an UNOBSERVED implicit-arith trap (a CDZ0305 WARNING, not a fire) — the adv-56 `(do (/ 100 d) …)`
+/// case — so those stay `is_trap_free`-elidable and are left out here. This is the reconciliation of the
+/// two operator rulings: §283 elides a discarded pure-scalar implicit trap; the new directive keeps a
+/// discarded EFFECT / CALL / EXPLICIT-trap. Read by the `do`-fold (compute.rs), `wrap_body_with_strict_arg_eval`,
+/// and `collect_discarded_value_warnings` (CDZ0307 no-drift). `core_of` is memoized so the walk is cheap.
+pub(crate) fn discarded_stmt_has_observable_effect(db: &mut Db, id: StructId) -> bool {
+    fn reaches_call_or_explicit_trap(db: &mut Db, id: StructId) -> bool {
+        match db.ast.get(id).clone() {
+            // Only an APPLICATION `(head args)` (a List) lowers to a Call/CallClosure/Trap; an ATOM never
+            // does, so skip the per-node `core_of` for it (mirrors `subtree_reaches_host_call`).
+            crate::ast::Struct::List(children) => {
+                // SAME lift-hazard guard as `subtree_reaches_host_call` (CDZ0910 fix, 5d50c0fe56): a node
+                // that lowers to a `Core::Closure` — a bare lambda VALUE or a PARTIAL application — is never
+                // a `Core::Call`/`CallClosure`/`Trap` (a call is a FULL-arity application), so `core_of`-ing
+                // it here changes NOTHING in the verdict, but it LIFTS the lambda (`lower_lambda_value`),
+                // polluting `db.captured_ref` and poisoning a sibling inline β-reduction → an invalid module.
+                // Skip the probe for a function-value node and rely on the child recursion (which descends
+                // the lambda body unconditionally) to find any call/trap inside it.
+                let is_function_value = matches!(resolved_of(db, id), Resolved::Lambda { .. })
+                    || is_partial_application(db, id);
+                (!is_function_value
+                    && matches!(
+                        core_of(db, id),
+                        Core::Call { .. } | Core::CallClosure { .. } | Core::Trap
+                    ))
+                    || children
+                        .iter()
+                        .any(|&c| reaches_call_or_explicit_trap(db, c))
+            }
+            crate::ast::Struct::Atom(_) => false,
+        }
+    }
+    subtree_reaches_host_call(db, id) || reaches_call_or_explicit_trap(db, id)
+}
+
 /// Whether the subtree at `id` REACHES an effect-op PERFORM — an application whose head names an effect
 /// operation (`eval::effect_op_of`), or a `(host …)` block, directly or through a called function's body.
 /// Such a statement has an OBSERVABLE effect even though it is NOT a `Core::HostCall`: an in-program
@@ -592,11 +638,16 @@ fn collect_trap_scalar_args(db: &mut Db, id: StructId, out: &mut Vec<StructId>) 
     }
 }
 
-/// (A) CASE2: wrap `body` in a `Core::Seq` whose DISCARDED statements are the trap-possible SCALAR arg
-/// computations decomposed (via `collect_trap_scalar_args`) out of the DEAD heap-collection ctors in
-/// `dead_inits`, and MARK them in `db.strict_force_eval` so the backend Seq emit does NOT §283-elide them —
-/// the (A)-overrides-§283 rule (v-spec-oracle). Never builds a collection, never touches a borrowed/value
-/// element → no reclaim, no double-free. EXCLUDES a lambda-ish init BEFORE any `core_of` (using
+/// Wrap `body` in a `Core::Seq` that FORCE-EVALUATES the DISCARDED `dead_inits` that must run for their
+/// EFFECT, and MARK them in `db.strict_force_eval` so the backend Seq emit does NOT §283-elide them — the
+/// (A)-overrides-§283 rule (v-spec-oracle). Two kinds are forced: (i) CASE2 (#5194) the trap-possible SCALAR
+/// arg computations decomposed (via `collect_trap_scalar_args`) out of a DEAD heap-collection ctor (the ctor
+/// SHELL is never built — no reclaim, no double-free); (ii) §283 OVERRIDE (concierge #083499/#083505) the
+/// WHOLE init of any other dead binding with an OBSERVABLE EFFECT / EXPLICIT DIVERGENCE
+/// (`discarded_stmt_has_observable_effect`: reaches a host call, a `Core::Call`/`CallClosure` incl. a latent
+/// effect through the call, or an explicit `Core::Trap`) — the dead-let twin of the `compute.rs` do-fold
+/// fix. A pure init (incl. a discarded pure-scalar implicit arith trap, elidable per §283) is still elided
+/// (a Perceus no-op). EXCLUDES a lambda-ish init BEFORE any `core_of` (using
 /// `should_keep_binding`'s lift-free structural guards), because `core_of`-lowering a dead lambda binding
 /// SPECULATIVELY LIFTS it and pollutes `db.captured_ref`, poisoning the body's shared closure fold. Returns
 /// `body` unchanged when nothing trap-possible remains.
@@ -638,16 +689,37 @@ fn wrap_body_with_strict_arg_eval(
     }
     let mut stmts: Vec<StructId> = Vec::new();
     for &init in dead_inits {
+        // A LAMBDA-ish init is a pure closure VALUE — nothing to force — and `core_of`-lowering it here would
+        // SPECULATIVELY LIFT it (polluting `db.captured_ref`, poisoning the body's shared closure fold), so
+        // skip it (the lift-free structural guards `should_keep_binding` uses).
         if matches!(resolved_of(db, init), Resolved::Lambda { .. })
             || crate::eval::lambda_body(db, init).is_some()
             || if_or_match_selects_lambda(db, init)
             || compound_contains_lambda(db, init)
-            || subtree_reaches_host_call(db, init)
         {
             continue;
         }
+        // (A) CASE2 (#5194): a strict heap-COLLECTION ctor's trap-possible SCALAR args must fire though the
+        // collection is discarded — decompose just those args (the ctor SHELL is never built: force-evaluating
+        // the whole ctor would waste an alloc and risk a borrowed-element double-free). Handled specifically
+        // here, NOT by the general force-eval branch below.
         if is_strict_heap_ctor_with_trappable_arg(db, init) {
             collect_trap_scalar_args(db, init, &mut stmts);
+            continue;
+        }
+        // OPERATOR §283 OVERRIDE (concierge ask #083499 + WIDEN #083505, "fix asap") — the dead-let twin of
+        // the do-fold §283 fix (`compute.rs`): a DISCARDED binding whose init has an OBSERVABLE EFFECT or
+        // EXPLICIT DIVERGENCE (`discarded_stmt_has_observable_effect`: reaches a host call, a
+        // `Core::Call`/`CallClosure` — INCLUDING a latent effect reached only THROUGH the call, shape W2
+        // `let _x = diverge()` / shape-2 `let _cl = cluster(base)` whose `sys.cluster-new` the shallow
+        // live-filter drops — or an explicit `Core::Trap`) must be EVALUATED for its effect, not elided.
+        // Force-evaluate the WHOLE init (marked below so the backend Seq emit does NOT §283-elide it) and drop
+        // its discarded value (Unit → nothing, scalar → drop, owned-heap producer → OP_DROP — the emit.rs:6475
+        // contract). A pure init (incl. a discarded pure-scalar IMPLICIT arith trap `(/ 100 d)`, elidable per
+        // the §283 dead-init ruling) is left elided (a Perceus no-op); a borrowed leaf never reaches a
+        // call/trap so is never force-dropped here → no double-free.
+        if discarded_stmt_has_observable_effect(db, init) {
+            stmts.push(init);
         }
     }
     if stmts.is_empty() {
@@ -874,10 +946,22 @@ fn lower_let(
     }
     // The body's core (its references to kept bindings now lower to `LocalRef`).
     if kept.is_empty() {
-        // Ordinary erase — but (A) CASE2 (#5194): before erasing, force-evaluate the trap-possible scalar
-        // arg computations of any dead heap-collection ctor (their traps must occur though the collection is
-        // discarded), sequenced before the body. Every binding is dead here.
-        let dead: Vec<StructId> = bindings.iter().map(|&(_n, init)| init).collect();
+        // Ordinary erase — but before erasing, force-evaluate any DISCARDED init that must run for its effect:
+        // (A) CASE2 (#5194) the trap-possible scalar arg computations of a dead heap-collection ctor, and
+        // (§283 override) the whole init of a divergent/effectful dead binding (`wrap_body_with_strict_arg_eval`).
+        // ONLY a GENUINELY-DISCARDED binding (`uses.ref_count == 0`) is force-evaluated: a SINGLE-USE binding
+        // reaches this erase path too (it is not KEPT — it copy-propagates), but its init is INLINED into the
+        // body by the `core_of(body)` fold below, so its effect/divergence already happens there. Force-
+        // evaluating it as well would DOUBLE-emit the computation (regressed
+        // `a_single_use_runtime_binding_is_inlined_not_named`: a single-use `(x+y)` checked-add, `!is_trap_free`,
+        // emitted once forced-and-dropped then again inlined). A transitively-reached effect stays covered: a
+        // count-0 dead binding whose init INLINES a divergent sub-expression is itself `!is_trap_free`, so it
+        // is force-evaluated here and the inlined sub-expression's effect runs with it.
+        let dead: Vec<StructId> = bindings
+            .iter()
+            .filter(|&&(_n, init)| uses.ref_count(init) == 0)
+            .map(|&(_n, init)| init)
+            .collect();
         let wrapped = wrap_body_with_strict_arg_eval(db, node, &dead, body);
         return core_of(db, wrapped);
     }
