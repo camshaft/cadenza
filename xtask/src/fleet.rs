@@ -7631,11 +7631,36 @@ fn rearm_stale_scan(
         // Choose the re-arm action, IDENTICAL to the watchdog: cheap `continue` for a loop that merely missed
         // a tick; escalate to re-issuing `/loop` only when a prior nudge didn't stick (the dead-cron
         // signature), including the repeated-nudge streak escalation.
+        let ra = rearm_age_secs(fleet, &a.name, now);
         let action = escalate_repeated_nudge(
-            rearm_action(rearm_age_secs(fleet, &a.name, now), hb_age),
+            rearm_action(ra, hb_age),
             consecutive_nudge_streak(fleet, &a.name),
             REPEATED_NUDGE_ESCALATE_THRESHOLD,
         );
+        // WEDGE ESCALATION RUNG (concierge greenlit + operator seq 1251, after the wasm-boundary-marshal
+        // incident): the non-destructive re-arm has a ceiling — a SESSION WEDGE accepts the reissue keystroke
+        // but can't run a tick + stamp a heartbeat, so it stays frozen no matter how often we reissue. When a
+        // reissue is DEMONSTRABLY not sticking, SURFACE it (rate-limited) to the concierge + watchdog.log as
+        // needing an operator RESTART, instead of silently re-arming forever. We STILL send the re-arm below
+        // (non-destructive, and harmless if the diagnosis is wrong); the surface just makes the wedge visible.
+        if reissue_not_sticking(&action, ra, hb_age, WEDGE_MIN_FROZEN_SECS) {
+            let key = format!("rearm-wedge.{}", a.name);
+            let surfaced_recently =
+                sat_notify_age_secs(fleet, &key, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
+            if dry_run {
+                println!(
+                    "  DRY-RUN would SURFACE wedge '{}' (re-issued but heartbeat frozen {age}s with no reset since re-arm → non-destructive levers exhausted, needs operator restart)",
+                    a.name
+                );
+            } else if !surfaced_recently {
+                surface_wedged_agent(fleet, &a.name, age, &a.interval, now);
+                stamp_sat_notify(fleet, &key);
+                eprintln!(
+                    "  ⚠ SURFACED wedge '{}' → concierge + watchdog.log (heartbeat frozen {age}s, re-arm not sticking — needs operator restart)",
+                    a.name
+                );
+            }
+        }
         let drift = cadence_drift_ratio(age, interval);
         if dry_run {
             let how = match action {
@@ -9932,6 +9957,52 @@ fn stamp_sat_notify(fleet: &Fleet, name: &str) {
     std::fs::write(dir.join(name), "sat-notify\n").ok();
 }
 
+/// Surface a session-WEDGED agent — the rearm-stale escalation rung above reissue (concierge greenlit +
+/// operator seq 1251, after the wasm-boundary-marshal incident): the non-destructive re-arm has been applied
+/// yet the heartbeat stays frozen, so no amount of re-arming recovers it and the only remaining lever is the
+/// DESTRUCTIVE restart, which stays operator-gated. Flag it BOTH ways (concierge choice (c)): a `note` to the
+/// concierge (who routes the operator restart) AND a `watchdog.log` audit line (leading epoch + tab-separated
+/// key=value, same convention as `watchdog_log_line`). Non-destructive — surfaces only, never restarts. The
+/// caller rate-limits (a per-agent `sat-notify` marker, ~30min) so a persistent wedge notes at most 2×/hour.
+fn surface_wedged_agent(fleet: &Fleet, name: &str, frozen_secs: u64, interval: &str, now: u64) {
+    deliver(
+        fleet,
+        &Message {
+            from: "rearm-stale".to_string(),
+            to: "concierge".to_string(),
+            kind: "note".to_string(),
+            subject: format!(
+                "session WEDGE: '{name}' — non-destructive re-arm exhausted (heartbeat frozen ~{frozen_secs}s), needs an operator restart"
+            ),
+            body: format!(
+                "The autonomous rearm-stale self-heal has re-armed '{name}' (interval {interval}) but its \
+                 heartbeat has NOT reset — frozen ~{frozen_secs}s with no tick since the re-arm. That is the \
+                 SESSION-WEDGE signature (the reissue keystroke lands as a token blip but the session cannot \
+                 run a tick to completion + stamp a heartbeat), which the non-destructive re-arm CANNOT \
+                 recover. The remaining lever is the DESTRUCTIVE restart, which stays operator-gated — please \
+                 surface a hand-drive/restart of '{name}' to the operator. Report-only + rate-limited \
+                 (~30min/agent)."
+            ),
+            seq: next_seq(),
+            r#ref: String::new(),
+            in_reply_to: String::new(),
+            urgency: default_urgency(),
+        },
+    );
+    let log = fleet.root.join("watchdog.log");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+    {
+        let _ = writeln!(
+            f,
+            "{now}\trearm_stale_wedge_surfaced\tagent={name}\tfrozen_secs={frozen_secs}\taction=needs_operator_restart"
+        );
+    }
+}
+
 /// The drain-stall concierge-notify marker for this agent, as `(flagged-message-id, age-in-secs)`, or
 /// `None` if we never notified. Body = the flagged (oldest actionable) message id at notify time; mtime
 /// = when we notified. Parallels `last_drain_nudge` but for the DEFAULT-ON, note-only concierge
@@ -11830,6 +11901,40 @@ fn escalate_repeated_nudge(
 /// cron within ~2 sweeps of the dead-cron pattern, high enough that a single genuinely-missed tick
 /// (streak 1) still gets the cheap nudge first.
 const REPEATED_NUDGE_ESCALATE_THRESHOLD: u32 = 2;
+
+/// How long a heartbeat must stay FROZEN after a re-arm before the self-heal treats the re-arm as "not
+/// sticking" and surfaces a session wedge. A reissue pastes `/loop` and runs the tick-prompt IMMEDIATELY
+/// (not on the interval), so a re-arm that WORKS stamps a heartbeat within that tick (seconds-to-minutes);
+/// this floor (15 min) is far above a normal tick yet far below the ~47min freeze the wasm-boundary-marshal
+/// wedge showed — so a merely-slow recovering reissue is never mistaken for a wedge. Interval-agnostic
+/// because the reissue ticks immediately regardless of the agent's cadence.
+const WEDGE_MIN_FROZEN_SECS: u64 = 900;
+
+/// True when a re-arm is DEMONSTRABLY not sticking = a SESSION WEDGE the non-destructive self-heal cannot
+/// fix (the escalation rung above reissue — concierge greenlit + operator seq 1251). A wedged session
+/// (context-wedged / can't-submit / stuck mid-turn) accepts the reissue keystroke as a token blip but cannot
+/// run a tick to completion + stamp a heartbeat, so it stays frozen no matter how many times we reissue.
+/// Signature: the action is a `ReissueLoop`, the agent was re-armed BEFORE (`rearm_age` Some), its heartbeat
+/// has NOT reset since that re-arm (`hb_age >= rearm_age`, or it never heartbeated), and it has been frozen
+/// past `min_frozen_secs` (so a reissue merely slow to produce its FIRST heartbeat is not mistaken for a
+/// wedge). Reached only AFTER the pane-gate confirmed a genuinely IDLE prompt, so a working long tick (which
+/// shows the esc-to-interrupt affordance) never gets here. Pure so the escalation is unit-tested off fs/tmux.
+fn reissue_not_sticking(
+    action: &RearmAction,
+    rearm_age: Option<u64>,
+    hb_age: Option<u64>,
+    min_frozen_secs: u64,
+) -> bool {
+    if !matches!(action, RearmAction::ReissueLoop) {
+        return false;
+    }
+    let no_hb_since_rearm = match (hb_age, rearm_age) {
+        (Some(hb), Some(r)) => hb >= r, // re-armed, but no heartbeat since → the prior re-arm didn't stick
+        (None, Some(_)) => true,        // never heartbeated despite a prior re-arm
+        (_, None) => false,             // never re-armed → first contact, not "not sticking"
+    };
+    no_hb_since_rearm && hb_age.is_none_or(|hb| hb > min_frozen_secs)
+}
 
 /// Should a fresh-this-sweep agent (heartbeat within its stale window) have its consecutive-nudge streak
 /// CLEARED? Only when the fresh heartbeat is GENUINELY SELF-PRODUCED — i.e. its own `/loop` cron fired —
@@ -22178,6 +22283,44 @@ mod tests {
         ));
         // A genuinely IDLE prompt with a STATIC token count → a real drain-stall (nudgeable), unchanged.
         assert!(confirmed_stall("scrolled up\n❯\n", "scrolled up\n❯\n"));
+    }
+
+    #[test]
+    fn reissue_not_sticking_flags_only_a_frozen_reissue_wedge() {
+        use RearmAction::*;
+        let floor = WEDGE_MIN_FROZEN_SECS; // 900
+        // WEDGE: reissuing, re-armed before (240s ago), heartbeat frozen 3000s (≥ re-arm age, past the floor).
+        assert!(reissue_not_sticking(
+            &ReissueLoop,
+            Some(240),
+            Some(3000),
+            floor
+        ));
+        // WEDGE: reissuing, re-armed, but NEVER heartbeated (broken launch that reissue can't fix).
+        assert!(reissue_not_sticking(&ReissueLoop, Some(240), None, floor));
+        // NOT a wedge: the reissue STUCK — heartbeat reset (100s) more recently than the re-arm (240s).
+        assert!(!reissue_not_sticking(
+            &ReissueLoop,
+            Some(240),
+            Some(100),
+            floor
+        ));
+        // NOT yet: frozen only 500s (< floor) — a reissue merely slow to produce its first heartbeat.
+        assert!(!reissue_not_sticking(
+            &ReissueLoop,
+            Some(240),
+            Some(500),
+            floor
+        ));
+        // NOT a wedge: never re-armed → first contact, not "not sticking".
+        assert!(!reissue_not_sticking(&ReissueLoop, None, Some(3000), floor));
+        // NOT a wedge: a cheap NudgeContinue is not the escalated dead-cron action.
+        assert!(!reissue_not_sticking(
+            &NudgeContinue,
+            Some(240),
+            Some(3000),
+            floor
+        ));
     }
 
     #[test]
