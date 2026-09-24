@@ -1051,9 +1051,12 @@ pub fn emit(
         && extern_imports.is_empty()
         && layout.exports.iter().any(|e| {
             e.params.iter().any(|(_, t)| {
-                // A memory-bearing leaf (String/Bytes/list) OR a two-variant sum (option/result) param — the
-                // cheap pre-filter. A non-option `Sum`/`Nominal` still declines INSIDE (ty_natural_wit → None),
-                // so widening the filter to sums is safe (it just gives the entry path a chance to classify).
+                // A memory-bearing leaf (String/Bytes/list) OR a two-variant sum (option/result) OR a
+                // scalar-fielded tuple param — the cheap pre-filter. A shape the entry path cannot classify
+                // still declines INSIDE (`ty_natural_wit` → None, or the rebuild helper → None), so widening
+                // the filter is safe (it just gives the entry path a chance to classify — rpp4). A `Record` is
+                // NOT added: the bare assembler cannot declare its named WIT type yet, so it stays on the
+                // boundary-loop decline path (CDZ0904) rather than entering the entry path only to decline.
                 matches!(
                     t,
                     crate::ty::Ty::String
@@ -1061,6 +1064,7 @@ pub fn emit(
                         | crate::ty::Ty::List(_)
                         | crate::ty::Ty::Sum { .. }
                         | crate::ty::Ty::Nominal { .. }
+                        | crate::ty::Ty::Tuple(_)
                 )
             })
         })
@@ -7030,6 +7034,18 @@ fn try_bare_entry_param_component(
     let mut param_vts: Vec<u8> = Vec::new();
     let mut mem_leaf_params: Vec<Option<(serialize::MemLeafKind, bool)>> = Vec::new();
     let mut sum_params: Vec<Option<(serialize::SumArgRebuild, bool)>> = Vec::new();
+    // A scalar-fielded TUPLE entry param crosses as a native component `tuple<…>`, whose canonical ABI
+    // flattens it into its elements' core valtypes. The wrapper builds the value-heap cell (`arr-alloc`/
+    // `arr-set` + per-field box) and hands the def a BORROWED cell (rpp4) — the product-type twin of the
+    // `sum_params` arm, reusing the typed-interface-member `param_field_rebuild` classifier. `cell_params[i]
+    // = Some(fields)` drives `serialize::emit_cell_rebuild`; `cell_slots[i]` gives each element's cell slot
+    // (positional identity for a tuple). All-`None` for a scalar/mem-leaf/sum param (a `local.get`
+    // passthrough or its own lift). A RECORD param declines here (the bare assembler cannot yet declare a
+    // record's named WIT type — see the tuple arm below), so these vectors only ever carry tuple cells today.
+    let mut cell_params: Vec<Option<Vec<serialize::FieldRebuild>>> = Vec::new();
+    let mut cell_slots: Vec<Option<Vec<u32>>> = Vec::new();
+    let mut cell_drop_after: Vec<bool> = Vec::new();
+    let mut cell_escaped_fields: Vec<Option<Vec<Vec<usize>>>> = Vec::new();
     let mut wit_params: Vec<(String, crate::wit_world::WitType)> = Vec::new();
     for (i, (binder, gty)) in params.iter().enumerate() {
         // A two-variant sum (`option<T>` / `result<ok,err>`) entry param crosses as a native component sum,
@@ -7064,6 +7080,10 @@ fn try_bare_entry_param_component(
             let drop_after = true;
             mem_leaf_params.push(None);
             sum_params.push(Some((rebuild, drop_after)));
+            cell_params.push(None);
+            cell_slots.push(None);
+            cell_drop_after.push(false);
+            cell_escaped_fields.push(None);
             wit_params.push((format!("p{i}"), wit));
             continue;
         }
@@ -7088,19 +7108,69 @@ fn try_bare_entry_param_component(
                 param_vts.push(ValType::I32.byte());
                 mem_leaf_params.push(Some((kind, drop_after)));
                 sum_params.push(None);
+                cell_params.push(None);
+                cell_slots.push(None);
+                cell_drop_after.push(false);
+                cell_escaped_fields.push(None);
             }
             (None, Ty::Int(_) | Ty::Bool | Ty::Float(_)) => {
                 param_vts.push(valtype_of(gty)?.byte());
                 mem_leaf_params.push(None);
                 sum_params.push(None);
+                cell_params.push(None);
+                cell_slots.push(None);
+                cell_drop_after.push(false);
+                cell_escaped_fields.push(None);
             }
-            (None, _) => return None, // a compound/unit param — a later slice
+            // A scalar-fielded TUPLE entry param — the canonical ABI flattens it into its elements' core
+            // valtypes; the wrapper builds the value-heap cell and hands the def a BORROWED cell handle
+            // (rpp4). Reuse the typed-interface-member `param_field_rebuild` per element (positional →
+            // identity slots). The #9014 dup-aware `record_cell_param_droppable` gate decides the post-call
+            // shell reclaim (a borrowed/projected cell ⇒ drop it), and `escaped_field_projections` handles the
+            // shell-reclaim when a compound element moves out verbatim (28-wit:310 SHAPE-9). An element that is
+            // neither an aliased-width scalar nor a supported compound → `None` from `param_field_rebuild`,
+            // declining to a later slice.
+            //
+            // A RECORD param (rpp1) is NOT admitted here yet: a WIT `record<…>` is a NAMED defined type the
+            // bare-export assembler (`assemble_bare_typed_with_runtime`) does not declare/re-export, so an
+            // admitted record emits an INVALID component (the def is `func not valid to be used as export`). A
+            // `tuple<…>` is a STRUCTURAL/anonymous WIT type needing no declaration, so it assembles cleanly.
+            // Until the bare assembler declares a record's defined type, a Record param falls through to the
+            // honest `(None, _)` decline below (CDZ0904, graded `todo`) — never a codegen-defect fail.
+            (None, Ty::Tuple(gtys)) => {
+                let crate::wit_world::WitType::Tuple(wtys) = &wit else {
+                    return None;
+                };
+                if gtys.len() != wtys.len() {
+                    return None;
+                }
+                let mut rebuild = Vec::with_capacity(gtys.len());
+                for (gt, wt) in gtys.iter().zip(wtys) {
+                    rebuild.push(param_field_rebuild(db, gt, wt, &mut param_vts)?);
+                }
+                // Positional slots: element i lands in cell slot i (a tuple has no name-lex order).
+                let slots: Vec<u32> = (0..gtys.len() as u32).collect();
+                cell_params.push(Some(rebuild));
+                cell_slots.push(Some(slots));
+                mem_leaf_params.push(None);
+                sum_params.push(None);
+                cell_drop_after.push(crate::backend::wasm::select::record_cell_param_droppable(
+                    db, body, *binder,
+                ));
+                cell_escaped_fields.push(crate::backend::wasm::select::escaped_field_projections(
+                    db, body, *binder,
+                ));
+            }
+            (None, _) => return None, // an unhandled compound/unit param — a later slice
         }
         wit_params.push((format!("p{i}"), wit));
     }
-    // Require at least one memory-bearing leaf OR sum param (a scalar-only export is the existing bare path,
-    // untouched — it falls through to the boundary loop).
-    if !mem_leaf_params.iter().any(Option::is_some) && !sum_params.iter().any(Option::is_some) {
+    // Require at least one memory-bearing leaf OR sum OR record/tuple-cell param (a scalar-only export is the
+    // existing bare path, untouched — it falls through to the boundary loop).
+    if !mem_leaf_params.iter().any(Option::is_some)
+        && !sum_params.iter().any(Option::is_some)
+        && !cell_params.iter().any(Option::is_some)
+    {
         return None;
     }
     // MAX-FLAT-PARAMS GUARD (mirror of the boundary-loop guard): a String/Bytes/list param flattens to two
@@ -7162,6 +7232,24 @@ fn try_bare_entry_param_component(
         rebuild.arm_true.collect_ops(&mut |op| lift_ops.push(op));
         rebuild.arm_false.collect_ops(&mut |op| lift_ops.push(op));
     }
+    // A record/tuple-cell param builds the value-heap cell via `arr-alloc`/`arr-set` plus each field's box op
+    // (`box-int`/`box-float`/… from the field rebuilds — the per-byte baseline, so `bulk_bytes = false`). A
+    // borrowed cell the wrapper reclaims after the call needs `drop` (the #9014 shell-drop); an escaped-field
+    // shell-reclaim needs `arr-get`/`dup`/`drop` (28-wit:310 SHAPE-9).
+    if cell_params.iter().any(Option::is_some) {
+        lift_ops.extend(["arr-alloc", "arr-set"]);
+        for fields in cell_params.iter().flatten() {
+            for f in fields {
+                f.collect_box_ops_gated(false, &mut |op| lift_ops.push(op));
+            }
+        }
+    }
+    if cell_drop_after.iter().any(|&d| d) {
+        lift_ops.push("drop");
+    }
+    if cell_escaped_fields.iter().any(Option::is_some) {
+        lift_ops.extend(["arr-get", "dup", "drop"]);
+    }
     if any_drop {
         lift_ops.push("drop");
     }
@@ -7180,15 +7268,20 @@ fn try_bare_entry_param_component(
         name: name.clone(),
         param_vts,
         result_vts,
-        params: vec![None; params.len()],
-        param_slots: vec![None; params.len()],
+        // A scalar-fielded tuple entry param builds its value-heap cell via `emit_cell_rebuild` (rpp4);
+        // `cell_slots` places each element at its positional cell slot. All-`None` for a scalar/mem-leaf/sum
+        // param.
+        params: cell_params,
+        param_slots: cell_slots,
         sum_params,
         // The plain-export route lifts no payloadless-ENUM param (that is the typed-interface-MEMBER route);
         // all-`None` keeps the wrapper body's disc-remap check inert (byte-neutral passthrough).
         enum_disc_params: vec![None; params.len()],
         mem_leaf_params,
-        record_param_drop_after: vec![false; params.len()], // plain-export route has no record-cell param
-        record_param_escaped_fields: vec![None; params.len()], // ditto — no escaped-field shell-reclaim
+        // The #9014 dup-aware shell-reclaim: drop a BORROWED rebuilt cell after the def call; the escaped-field
+        // variant projects+dups each moved-out field before the deep-drop (28-wit:310 SHAPE-9).
+        record_param_drop_after: cell_drop_after,
+        record_param_escaped_fields: cell_escaped_fields,
         def_abs,
         result: serialize::ResultLower::Passthrough,
     };
