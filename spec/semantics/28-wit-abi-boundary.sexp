@@ -5369,3 +5369,28 @@ cases
   (host-calls (call cadenza:platform/probe.f))
   (output 5)
   (live-objects 0))
+
+(case
+  "a top-level tuple<list<u8>, s64, list<u8>> host-op ARGUMENT (Bytes-SCALAR-Bytes interleave) crosses as built-in tuple"
+  (doc
+    "SHAPE 109 (v-wit-boundary) — a top-level `tuple<list<u8>, s64, list<u8>>` host-op ARGUMENT: two Bytes
+           elements with a SCALAR BETWEEN them. Pins the INTERLEAVE invariant of `emit_tuple_reg_flatten` —
+           element 0 (Bytes) copies its rope to `mem` and advances the shared cursor, element 1 (scalar) pushes
+           its i64 INLINE without touching the cursor/scratch, and element 2 (Bytes) advances the cursor again to
+           a region disjoint from element 0's — so the flattened operand stack is `(ptr0,len0, s, ptr2,len2)`
+           matching the positional core-slot layout (a Bytes element = 2 slots, a scalar = 1). A distinct path
+           from the Bytes-only SHAPE 105 / Bytes-Bytes SHAPE 108: it exercises a scalar push threaded between two
+           cursor-advancing Bytes copies. The tuple crosses as WIT `tuple<list<u8>, s64, list<u8>>`; host returns
+           its scalar (assert 12 = len b\"hi\" (2) + 7 + len b\"abc\" (3)). `live-objects 0`.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member f (func (param x (tuple (list (u8)) (s64) (list (u8)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op f (-> (Tuple Bytes Int64 Bytes) Int64)))
+      (def (run) (host (probe) (probe.f #tuple(b"hi" 7 b"abc"))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.f (: 12 Int64)))
+  (host-calls (call cadenza:platform/probe.f))
+  (output 12)
+  (live-objects 0))
