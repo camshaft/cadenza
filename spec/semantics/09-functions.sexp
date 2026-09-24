@@ -14796,8 +14796,7 @@
     "`main(n)` runs `(one (.. #tuple(7)))` inside `(handle T n …)`. The splat spreads the one-tuple into
            `one`'s single parameter — `one(7) = 7 * 3 = 21` — and the handler discharges the unperformed
            `T` effect, so the result is `21` regardless of `n`. Pins that a call-site splat expands the
-           same inside a handler body as anywhere else. Currently DECLINES (CDZ0900) pending the
-           handler-fold splat expansion; a sound decline, never a miscompile.")
+           same inside a handler body as anywhere else (the handler-fold splat expansion, #9642).")
   (input
     (do
       (effect T (op tick (-> Int64)))
