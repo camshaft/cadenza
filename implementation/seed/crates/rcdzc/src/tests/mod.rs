@@ -3581,6 +3581,48 @@ fn a_record_entry_param_declines_naming_the_param_not_a_bogus_multi_export_retur
     );
 }
 
+/// DIAGNOSTIC QUALITY — homed here per v-corpus-declines/v-corpus-harness's grade-owner call after Char
+/// began crossing the boundary (the old `#\`-param match_engine/diagnostics tests were removed, and this
+/// invariant is un-encodable as a cross-backend corpus case: the wasm decline has no rust-runnable form —
+/// rust legitimately COMPILES the `Set` param). An export parameter annotated with a type that has NO
+/// component boundary representation (`Set Int64`) declines with the CODED CDZ0904 whose message NAMES the
+/// offending type and states the no-boundary-rep cause — and MUST NOT say "ambiguous — annotate it" (the
+/// param IS already annotated, so that steer is misleading; "ambiguous" is reserved for an UNANNOTATED
+/// `Any` / free-var param, a different branch). Guards the steer-quality invariant on the CDZ0904 path.
+#[test]
+fn an_annotated_no_boundary_rep_export_param_names_the_type_not_ambiguous() {
+    use crate::testkit::parse;
+    let src = "(do (def (main (: s (Set Int64))) (Set.len s)) (export main))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "a `Set` entry param has no boundary representation — it declines on this export path"
+    );
+    let d = out
+        .diagnostics
+        .iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0904"))
+        .expect("the no-boundary-rep param decline is coded CDZ0904");
+    assert!(
+        d.message.contains("Set") && d.message.contains("no scalar boundary representation"),
+        "CDZ0904 must NAME the offending type + state the no-boundary-rep cause: {}",
+        d.message
+    );
+    assert!(
+        !d.message.contains("ambiguous"),
+        "an ANNOTATED no-rep param must not get the `ambiguous — annotate it` steer (already annotated): {}",
+        d.message
+    );
+}
+
 /// A native-rust `Value.encode`/`Value.decode` over a RECURSIVE type (`Ast = … (List (List Ast))`) DECLINES
 /// rather than emitting non-terminating rust that HANGS rustc. The recursion runs through a `List` payload,
 /// which the enum-sizing recursion check (`enums::variant_is_recursive` / `reaches_decl`) deliberately
