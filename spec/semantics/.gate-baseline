@@ -11331,3 +11331,4 @@ pass	a plain (non-reducer) guest passes a RECORD host-op ARGUMENT with an OPTION
 pass	a plain (non-reducer) guest passes a RECORD host-op ARGUMENT with a TUPLE field via a pure-IMPORT custom wit-world
 pass	a run() body performing SEVEN host ops ending in a non-empty STRING-arg query does not corrupt the string arg
 pass	a single host op with a NON-EMPTY string arg AND a spilled list<record> result crosses both correctly
+todo	a compile-time-constant None passed as a top-level option host-op ARGUMENT (corpus TODO — pre-existing bug)

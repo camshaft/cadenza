@@ -5203,3 +5203,31 @@ cases
   (host-calls (call cadenza:platform/sys.materialize))
   (output 2)
   (live-objects 0))
+
+(case
+  "a compile-time-constant None passed as a top-level option host-op ARGUMENT (corpus TODO — pre-existing bug)"
+  (doc
+    "SHAPE 103 (v-wit-boundary corpus TODO) — a COMPILE-TIME-CONSTANT `(None)` passed as a top-level
+           `option<s64>` host-op ARGUMENT. This exposes a PRE-EXISTING defect in the option<scalar>-arg emit
+           (landed SHAPE 97 / #9601, which only exercised `Some`): a literal `(None)` option arg makes the guest
+           emit an INVALID module (CDZ0910 'values remaining on stack at end of block') — the const-None value
+           lowering leaves an extra operand that the option arg-marshal path does not balance. NARROW: a RUNTIME
+           option (Some OR a None from a conditional) marshals correctly, and a const `(None)` in a NON-arg
+           context (e.g. matched) is fine — ONLY a compile-time-constant None in the top-level option host-arg
+           position trips it. The idealistic behavior is that the const None crosses as WIT `option none` and the
+           host returns its scalar (assert 5). Grades Todo now (CDZ0910 is a coded compile error) and auto-locks
+           to Pass when the const-None option-arg emit is fixed. Runtime-option control is SHAPE 97 (Some) + the
+           conditional-option path. Root-cause needs a WAT dump of the emitted arg marshal (validation blocks the
+           artifact write, so a bypass is required to inspect the imbalance).")
+  (wit-world
+    (world w (import cadenza:platform/probe (member f (func (param x (option (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op f (-> (Option Int64) Int64)))
+      (def (run) (host (probe) (probe.f (None))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.f (: 5 Int64)))
+  (host-calls (call cadenza:platform/probe.f))
+  (output 5)
+  (live-objects 0))
