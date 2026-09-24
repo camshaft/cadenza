@@ -11336,3 +11336,4 @@ todo	a bare empty-list literal passed as a top-level list<s64> host-op ARGUMENT 
 pass	a top-level tuple<list<u8>, s64> host-op ARGUMENT (bytes-carrying tuple) crosses as built-in tuple, Bytes element rope copied to mem
 pass	a top-level option<list<u8>> host-op ARGUMENT with a Some payload crosses as built-in option, rope copied to mem
 pass	a top-level option<list<u8>> host-op ARGUMENT with a None value crosses as built-in option none
+pass	a top-level tuple<list<u8>, list<u8>> host-op ARGUMENT (TWO Bytes elements) crosses as built-in tuple, both ropes copied to disjoint mem
