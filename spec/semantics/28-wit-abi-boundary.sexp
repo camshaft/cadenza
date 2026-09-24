@@ -5242,3 +5242,34 @@ cases
   (host-calls (call cadenza:platform/probe.f))
   (output 5)
   (live-objects 0))
+
+(case
+  "a bare empty-list literal passed as a top-level list<s64> host-op ARGUMENT (corpus TODO — same ungrounded-arg root as the const-None case)"
+  (doc
+    "SHAPE 104 (v-wit-boundary corpus TODO) — a bare EMPTY-list literal `(list)` passed as a top-level
+           `list<s64>` host-op ARGUMENT. SAME ungrounded-perform-arg root as SHAPE 103 (the const-None option arg):
+           a bare `(list)` infers as `(List Any)` — an ungrounded ELEMENT type, because a perform/host-call
+           argument is NOT checked against the operation's DECLARED parameter type (capabilities-and-effects.md
+           #Performing An Operation Is Typed) — so nothing grounds the element to `s64`, the boundary guard sees
+           `List Any` (which has no element boundary ABI), and the op DECLINES with CDZ0903. NARROW: a NON-empty
+           list literal `(list 1 2)` grounds the element from its elements and crosses fine, and annotating
+           `(: (list) (List Int64))` also crosses — ONLY a bare empty list literal in a top-level list host-arg
+           position (where the element is otherwise unconstrained) trips it. The idealistic behavior is that the
+           empty list crosses as WIT `list<s64>` with count 0 and the host returns its scalar (assert 7). Grades
+           Todo now (CDZ0903 is a coded decline) and auto-locks to Pass when the perform-argument grounding fix
+           lands — the SAME infer:: fix as SHAPE 103 (ground each perform arg against the op's declared param
+           type). Companion regression gate to SHAPE 103: proving the fix generalizes from the option family to
+           the list family, and that the empty-element case DECLINES cleanly (CDZ0903) rather than emitting an
+           invalid module.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member g (func (param xs (list (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op g (-> (List Int64) Int64)))
+      (def (run) (host (probe) (probe.g (list))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.g (: 7 Int64)))
+  (host-calls (call cadenza:platform/probe.g))
+  (output 7)
+  (live-objects 0))
