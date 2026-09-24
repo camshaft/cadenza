@@ -994,6 +994,19 @@ pub const NO_HOME_STANDALONE_DECLINE: &str = "this effect operation is performed
 /// honest decline: there is no coded reject to defer to.)
 pub const NOT_APPLYABLE_DECLINE: &str = "value is not applyable";
 
+/// The message the emit path attaches to the coded [`Code::ClosureEscapesEffect`] (CDZ0406) reject when a
+/// handler arm returns its CONTINUATION as an escaping closure — `(flip (u) s (fn (x) (resume x s)))` makes
+/// the resume the handle's VALUE, applied OUTSIDE the handle's dynamic extent. A captured delimited
+/// continuation is a reified `Ty::Cont` heap value the seed does not build, so it is a PERMANENT boundary
+/// reject — refused up front, never compiled to a trapping / wrong-valued artifact. DISTINCT from the
+/// generic codeless [`NOT_APPLYABLE_DECLINE`]: that fires for any non-applyable head (a non-function
+/// `(5 3)`, or a plain arm-returned closure that captures no `resume` and is therefore SHOULD-WORK); this
+/// fires ONLY when the escaping closure's folded body still references `resume` (the resume-capturing
+/// discriminator, v-effects-blessed).
+pub const CAPTURED_CONTINUATION_ESCAPE_DECLINE: &str = "a captured continuation cannot escape its handler — a handler arm returns its continuation as a value \
+     applied outside the handle, and a reified delimited continuation has no machine representation at the \
+     boundary (closures escaping effects are not supported)";
+
 /// The stable PREFIX of the coded CDZ0201 "applying a non-function" reject (`cannot apply a value of
 /// type <T> — it is not a function`). `dedup_faults` matches this prefix to recognize the reject that
 /// makes the [`NOT_APPLYABLE_DECLINE`] redundant, without pinning the whole (type-name-bearing) text.

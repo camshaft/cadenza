@@ -2085,6 +2085,75 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::rc::Rc<[StructId]>, Stru
     }
 }
 
+/// True iff the resolved subtree at `node` contains a [`Resolved::Resume`] occurrence. A structural walk
+/// over the AST children plus a per-node resolved-form check, bounded by a visited set and a depth guard.
+/// On a depth/cycle limit it returns FALSE (conservative: a captured-continuation reject must not fire on
+/// an unproven term — better to fall back to the generic decline than to over-reject). Used by
+/// [`is_resume_capturing_escape`] to tell a resume-capturing escaping closure from a plain one.
+fn resolved_subtree_contains_resume(db: &mut Db, node: StructId) -> bool {
+    fn walk(
+        db: &mut Db,
+        node: StructId,
+        depth: u32,
+        visited: &mut crate::fxhash::FxHashSet<StructId>,
+    ) -> bool {
+        if depth > 64 || !visited.insert(node) {
+            return false;
+        }
+        if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
+            return true;
+        }
+        match db.ast.get(node).clone() {
+            crate::ast::Struct::List(children) => {
+                children.iter().any(|&c| walk(db, c, depth + 1, visited))
+            }
+            crate::ast::Struct::Atom(_) => false,
+        }
+    }
+    let mut visited = crate::fxhash::FxHashSet::default();
+    walk(db, node, 0, &mut visited)
+}
+
+/// True iff the value at `id` is a RESUME-CAPTURING ESCAPING CONTINUATION — a handler arm returns its
+/// continuation as a closure (`(flip (u) s (fn (x) (resume x s)))`) that becomes the handle's VALUE,
+/// applied OUTSIDE the handle's dynamic extent. This is the design-blocked captured-`k` (§4.4): it needs a
+/// reified `Ty::Cont` the seed does not build, so it is a PERMANENT boundary reject (→ CDZ0406
+/// [`crate::diag::Code::ClosureEscapesEffect`]).
+///
+/// The discriminator (v-effects-blessed): reached only from the not-applyable refuse path (the applyable
+/// case — a handle whose BODY is itself a lambda — is read by [`lambda_of`] upstream and never gets here).
+/// A handle whose body is NOT a lambda but which `reduce_handle` folds to a closure whose body STILL
+/// references `resume` is the captured-k escape. A PLAIN arm-returned closure that captures no `resume`
+/// folds to a clean `Ty::Fn` lambda that `lambda_of` reads upstream (applyable, SHOULD-WORK) — so it never
+/// reaches here, and even if walked would have no `Resolved::Resume` in its body. Do NOT gate on
+/// `Ty::Cont`: the seed never constructs it, so the escaping lambda's type is its ordinary `Ty::Fn`.
+pub(crate) fn is_resume_capturing_escape(db: &mut Db, id: StructId) -> bool {
+    match resolved_of(db, id) {
+        Resolved::Ref { value } => is_resume_capturing_escape(db, value),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            is_resume_capturing_escape(db, expr)
+        }
+        Resolved::Handle { arms, body, .. } => {
+            // A handle whose BODY is a lambda is applyable (read upstream by `lambda_of`) — not this case.
+            if lambda_of(db, body).is_some() {
+                return false;
+            }
+            // The captured-k escape: an arm returns its CONTINUATION as a closure — the arm body reduces
+            // to a lambda whose own body still references `resume`. A normal tail-resumptive arm has
+            // `resume` in TAIL position of the arm body directly (`(resume s (+ s 1))`), NOT wrapped in a
+            // returned lambda, so `lambda_of(arm.body)` is `None` and it does not match. (v-effects: the
+            // seed cannot reify such a resume into a folded closure — the fold declines it — so the handle
+            // value is the design-blocked captured-k; detecting it on the arm shape is the precise signal.)
+            let arm_bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
+            arm_bodies.into_iter().any(|b| match lambda_of(db, b) {
+                Some((_params, lbody)) => resolved_subtree_contains_resume(db, lbody),
+                None => false,
+            })
+        }
+        _ => false,
+    }
+}
+
 /// The `(meta apply)` primitive of the head value at `id`, if the head is applyable — project the
 /// `apply` field (in the `meta` namespace) and, following a ref, read the `Prim` it holds. `None`
 /// means "not applyable" (no `(meta apply)`, or it is not a primitive). This is the one dispatch step

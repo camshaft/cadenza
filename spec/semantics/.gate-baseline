@@ -11262,7 +11262,7 @@ todo	an OWNING consumer of a String entry parameter (String.concat) should cross
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 pass	an effectful-operand splat inside a handle body performs exactly once
 todo	an entrypoint delegating two distinct host effects performs both and returns its computed value
-todo	an escaping captured continuation is refused, not miscompiled
+pass	an escaping captured continuation is refused, not miscompiled
 todo	byp2 a Bytes entry param destructured by a runtime bin match declines
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)

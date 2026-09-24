@@ -13506,8 +13506,9 @@
            handle closes. This is the genuine captured-`k` frontier (§4.4): it needs a reified `Ty::Cont`
            heap value the seed does not build, so it is refused up front (a handle value that is a function
            has no machine representation at the boundary) — never compiled to a trapping / wrong-valued
-           artifact. Currently a codeless decline (a latent seq-286 code gap, tracked separately). Migrated
-           from rcdzc an_escaping_captured_continuation_is_refused_not_miscompiled.")
+           artifact. Refused with CDZ0406 (ClosureEscapesEffect): the captured continuation escapes its
+           handler and needs a reified `Ty::Cont` the seed does not build, so it is a permanent boundary
+           reject. Migrated from rcdzc an_escaping_captured_continuation_is_refused_not_miscompiled.")
   (input
     (do
       (effect Amb (op flip (-> Unit Int64)))
@@ -13515,8 +13516,7 @@
         (main)
         (let ((k (handle Amb 0 ((flip (u) s (fn (x) (resume x s)))) (+ 100 (Amb.flip))))) (k 5)))
       (export main)))
-  (call main)
-  (output (: 105 Int64)))
+  (error CDZ0406))
 
 (case
   "a partial application of a performing closure that escapes its handler is rejected"
