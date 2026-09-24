@@ -198,9 +198,12 @@ pub fn grade(
     // CANDIDATE advisory when it now measures fully clean (its reclaim fix landed → the `(live-objects
     // known-leak)` marker can be dropped). A CLEAN case (no known-leak marker) asserts its EXACT residual on
     // EVERY heap trial: > expected = a clean→leak regression (the signal the corpus MUST catch), < expected =
-    // an over-free/UAF risk. The `tolerate_fewer_live_objects` leak-ceiling path is vestigial under binary
-    // (a known-leak case never reaches a ceiling check); retained only for signature stability.
-    let _ = tolerate_fewer_live_objects;
+    // an over-free/UAF risk. EXCEPTION — a `(live-objects N cadenza-tolerate)` facet keeps the DIRECT hop
+    // exact `== N` (the UAF/double-free count-guard) but lets the CADENZA re-emit hop tolerate `<= N` (the
+    // round-trip's binary-AST tree-dedup can safely reclaim FEWER cells): `tolerate_fewer_live_objects` is
+    // passed ONLY by the cadenza-hop exec, so `allow_fewer` is true only on that hop AND only for a case that
+    // opted in. The direct exec leaves the flag false → exact both. `known-leak` still skips the count-check
+    // entirely (takes precedence), surfacing only the non-blocking TIGHTEN CANDIDATE advisory.
     if test_run.live_objects_known_leak {
         if cdz_corpus_grade::known_leak_now_clean(&per_trial_live) {
             eprintln!(
@@ -214,6 +217,7 @@ pub fn grade(
         test_run.live_objects,
         test_run.live_objects_per_call.as_deref(),
         &per_trial_scalar,
+        tolerate_fewer_live_objects && test_run.live_objects_cadenza_tolerate,
     ) {
         result.grade = std::mem::replace(&mut result.grade, Grade::Pass).worse(Grade::Fail(msg));
     }

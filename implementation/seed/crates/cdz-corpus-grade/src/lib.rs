@@ -273,6 +273,18 @@ pub struct TestRun {
     /// runtime reclaims). This flag only records the INTENT (a shrinking exception set), so tooling can
     /// find + retire markers; it does not change the assertion. `false` for `None` or a plain count.
     pub live_objects_known_leak: bool,
+    /// `true` iff the case authored a `(live-objects N cadenza-tolerate)` facet — the DIRECT-hop keeps its
+    /// EXACT `== N` assertion (the UAF/double-free count-guard: a witness pinning exactly N catches a
+    /// direct-path drop to a wrong count), while the CADENZA re-emit hop tolerates `<= N`. The cadenza
+    /// round-trip can legitimately reclaim FEWER cells than the direct path (binary-AST tree serialization
+    /// de-dups a shared subtree into single-use literals that each reclaim), so a plain exact pin would RED
+    /// the cadenza hop and the only prior escape — `known-leak` — silences the count-check on BOTH hops
+    /// (losing the direct UAF guard entirely). This facet keeps the direct guard live while accommodating
+    /// the cadenza tree-dedup. Only the cadenza-hop exec opts into the tolerance (via
+    /// `--tolerate-fewer-live-objects`); the direct exec stays exact regardless. `false` = exact-both (the
+    /// default; no behavior change for non-divergent cases). Independent of `known_leak` (which, when set,
+    /// skips the count-check first and makes this moot).
+    pub live_objects_cadenza_tolerate: bool,
     /// PER-CALL positional expected counts — `Some` iff the case authored `(live-objects [known-leak] N1 N2
     /// …)` with 2+ counts, one per trial in call order. `None` for the uniform/absent forms (then
     /// `live_objects` applies to every call). This expresses an ARM-DEPENDENT balance a single count cannot:
@@ -367,7 +379,7 @@ pub fn check_live_objects(
     expected: Option<u32>,
     per_call: Option<&[u32]>,
 ) -> Option<String> {
-    check_live_objects_scalar(per_trial, expected, per_call, &[])
+    check_live_objects_scalar(per_trial, expected, per_call, &[], false)
 }
 
 /// As [`check_live_objects`], plus the #7527 scalar-return discriminator: `per_trial_scalar[i]` says whether
@@ -383,7 +395,12 @@ pub fn check_live_objects_scalar(
     expected: Option<u32>,
     per_call: Option<&[u32]>,
     per_trial_scalar: &[bool],
+    allow_fewer: bool,
 ) -> Option<String> {
+    // `allow_fewer` (the CADENZA-hop tolerance for a `(live-objects N cadenza-tolerate)` facet): a measured
+    // count STRICTLY BELOW the expected passes (the cadenza re-emit reclaimed MORE — strictly safer, no leak);
+    // only a count ABOVE the expected (a real leak) still fails. `false` (the default + the direct hop) keeps
+    // the strict `== N` assertion in both arms.
     // POSITIONAL: `(live-objects [known-leak] N1 N2 …)` — one expected count per trial, index-aligned to
     // the call order. This is the arm-dependent case (e.g. a leak that SCALES with input size): call 0 may
     // balance to N1 while call 1 balances to N2. A no-heap trial (`None`) is skipped (its entry is ignored).
@@ -399,10 +416,15 @@ pub fn check_live_objects_scalar(
         }
         for (i, live) in per_trial.iter().enumerate() {
             if let Some(n) = live
-                && *n != list[i]
+                && (if allow_fewer {
+                    *n > list[i]
+                } else {
+                    *n != list[i]
+                })
             {
                 return Some(format!(
-                    "live-objects mismatch on call {i}: expected {}, got {n}",
+                    "live-objects mismatch on call {i}: expected {}{}, got {n}",
+                    if allow_fewer { "<=" } else { "" },
                     list[i]
                 ));
             }
@@ -414,7 +436,7 @@ pub fn check_live_objects_scalar(
     let want = expected.unwrap_or(0);
     for (i, live) in per_trial.iter().enumerate() {
         if let Some(n) = live
-            && *n != want
+            && (if allow_fewer { *n > want } else { *n != want })
         {
             // #7527 discriminator: under a must-reclaim-to-0 expectation, a LATER trial (i > 0) that
             // RETURNS a heap value owns a nonzero reachable-return count a single `(live-objects 0)` clause
@@ -426,10 +448,11 @@ pub fn check_live_objects_scalar(
             // A single-trial case keeps the historical (call-index-free) message so its verdict text stays
             // stable; a multi-call case names the offending call so a depth-scaling leak is legible.
             let has_multiple_heap_trials = per_trial.iter().filter(|l| l.is_some()).count() > 1;
+            let bound = if allow_fewer { "<=" } else { "" };
             return Some(if has_multiple_heap_trials {
-                format!("live-objects mismatch on call {i}: expected {want}, got {n}")
+                format!("live-objects mismatch on call {i}: expected {bound}{want}, got {n}")
             } else {
-                format!("live-objects mismatch: expected {want}, got {n}")
+                format!("live-objects mismatch: expected {bound}{want}, got {n}")
             });
         }
     }
@@ -1599,6 +1622,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut warns = Vec::new();
     let mut live_objects: Option<u32> = None;
     let mut live_objects_known_leak = false;
+    let mut live_objects_cadenza_tolerate = false;
     let mut live_objects_per_call: Option<Vec<u32>> = None;
     let mut no_other_errors = false;
     let mut no_diagnostic: Vec<String> = Vec::new();
@@ -1659,6 +1683,8 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
             // ONE count = uniform (every call == N); 2+ counts = PER-CALL positional (call i == Ni). Both
             // forms may carry the known-leak marker. `live_objects` gets the FIRST count (uniform/direct-gate
             // path); `live_objects_per_call` gets the whole list when 2+ (the wasm nix path's per-call check).
+            // A `cadenza-tolerate` marker leaf (any position) opts the case into direct-exact/cadenza-`<=N`
+            // grading (see `live_objects_cadenza_tolerate`); it is stripped before the counts are parsed.
             Some("live-objects") => {
                 let items = a.as_form(clause, "live-objects").unwrap_or(&[]);
                 let mut leaves: Vec<String> =
@@ -1666,6 +1692,10 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
                 if leaves.first().map(String::as_str) == Some("known-leak") {
                     live_objects_known_leak = true;
                     leaves.remove(0);
+                }
+                if let Some(pos) = leaves.iter().position(|s| s == "cadenza-tolerate") {
+                    live_objects_cadenza_tolerate = true;
+                    leaves.remove(pos);
                 }
                 let counts: Vec<u32> = leaves
                     .iter()
@@ -1705,6 +1735,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         warns,
         live_objects,
         live_objects_known_leak,
+        live_objects_cadenza_tolerate,
         live_objects_per_call,
         no_other_errors,
         no_diagnostic,
@@ -3100,6 +3131,7 @@ mod tests {
             warns: vec![],
             live_objects: None,
             live_objects_known_leak: false,
+            live_objects_cadenza_tolerate: false,
             live_objects_per_call: None,
             no_other_errors: false,
             no_diagnostic: vec![],
@@ -3187,6 +3219,7 @@ mod tests {
             warns: vec![],
             live_objects: None,
             live_objects_known_leak: false,
+            live_objects_cadenza_tolerate: false,
             live_objects_per_call: None,
             no_other_errors: false,
             no_diagnostic: vec![],
@@ -3243,6 +3276,7 @@ mod tests {
             warns: vec![],
             live_objects: None,
             live_objects_known_leak: false,
+            live_objects_cadenza_tolerate: false,
             live_objects_per_call: None,
             no_other_errors: no_other,
             no_diagnostic: vec![],
@@ -3314,6 +3348,7 @@ mod tests {
             warns: vec![],
             live_objects: None,
             live_objects_known_leak: false,
+            live_objects_cadenza_tolerate: false,
             live_objects_per_call: None,
             no_other_errors: false,
             no_diagnostic: phrases,
@@ -3978,26 +4013,75 @@ mod tests {
         // reachable cells) — NOT a leak. With the discriminator (later trial = heap-return), it PASSES;
         // strict (no discriminator) FALSE-FAILS it.
         assert_eq!(
-            check_live_objects_scalar(&[Some(0), Some(2)], Some(0), None, &[true, false]),
+            check_live_objects_scalar(&[Some(0), Some(2)], Some(0), None, &[true, false], false),
             None
         );
         assert!(check_live_objects(&[Some(0), Some(2)], Some(0), None).is_some()); // strict still fails
 
         // A genuine scalar-return later-trial leak (both trials scalar) is STILL caught.
         assert!(
-            check_live_objects_scalar(&[Some(0), Some(5)], Some(0), None, &[true, true])
+            check_live_objects_scalar(&[Some(0), Some(5)], Some(0), None, &[true, true], false)
                 .as_deref()
                 .unwrap()
                 .contains("call 1")
         );
         // Trial 0 is the always-checked calibration: a heap-return on trial 0 is NOT skipped.
-        assert!(check_live_objects_scalar(&[Some(2)], Some(0), None, &[false]).is_some());
+        assert!(check_live_objects_scalar(&[Some(2)], Some(0), None, &[false], false).is_some());
         // Empty per_trial_scalar = strict (no skip).
-        assert!(check_live_objects_scalar(&[Some(0), Some(2)], Some(0), None, &[]).is_some());
+        assert!(
+            check_live_objects_scalar(&[Some(0), Some(2)], Some(0), None, &[], false).is_some()
+        );
         // A positional `(live-objects N1 N2)` case is unaffected by the discriminator (author-specified).
         assert!(
-            check_live_objects_scalar(&[Some(0), Some(2)], Some(0), Some(&[0, 0]), &[true, false])
-                .is_some()
+            check_live_objects_scalar(
+                &[Some(0), Some(2)],
+                Some(0),
+                Some(&[0, 0]),
+                &[true, false],
+                false
+            )
+            .is_some()
+        );
+    }
+
+    /// The `(live-objects N cadenza-tolerate)` facet's `allow_fewer` grading (the CADENZA-hop tolerance):
+    /// a count STRICTLY BELOW the pinned N passes (the round-trip's tree-dedup reclaimed more — safer),
+    /// `== N` passes, and a count ABOVE N (a real leak) still fails. The direct hop (`allow_fewer = false`)
+    /// keeps the strict `== N` UAF/double-free guard.
+    #[test]
+    fn check_live_objects_cadenza_tolerate_allows_fewer_not_more() {
+        // UNIFORM: pinned 2. allow_fewer: 0/1/2 pass, 3 fails; strict: only 2 passes.
+        assert_eq!(
+            check_live_objects_scalar(&[Some(0)], Some(2), None, &[], true),
+            None
+        );
+        assert_eq!(
+            check_live_objects_scalar(&[Some(1)], Some(2), None, &[], true),
+            None
+        );
+        assert_eq!(
+            check_live_objects_scalar(&[Some(2)], Some(2), None, &[], true),
+            None
+        );
+        assert!(
+            check_live_objects_scalar(&[Some(3)], Some(2), None, &[], true)
+                .as_deref()
+                .unwrap()
+                .contains("<=2")
+        );
+        // Direct hop stays exact: fewer FAILS when allow_fewer is off (the UAF guard).
+        assert!(check_live_objects_scalar(&[Some(0)], Some(2), None, &[], false).is_some());
+        assert!(check_live_objects_scalar(&[Some(1)], Some(2), None, &[], false).is_some());
+        // POSITIONAL under tolerance: each call tolerates <= its own Ni; a call above its Ni fails.
+        assert_eq!(
+            check_live_objects_scalar(&[Some(0), Some(1)], None, Some(&[2, 3]), &[], true),
+            None
+        );
+        assert!(
+            check_live_objects_scalar(&[Some(2), Some(4)], None, Some(&[2, 3]), &[], true)
+                .as_deref()
+                .unwrap()
+                .contains("call 1")
         );
     }
 

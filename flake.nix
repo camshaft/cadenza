@@ -4592,11 +4592,13 @@
               args+=(--peer "$(cat ${build}/$pn.iface)=$pw")
             done
             args+=(--runtime ${runtimeDebug})
-            # (v-corpus-harness #5766) The CADENZA-HOP path only: on a `(live-objects known-leak N)` case, a
-            # count <= N PASSES (the cadenza round-trip reclaiming FEWER cells than the direct-wasm path is
-            # strictly-SAFER — no leak, just tighter reclaim); > N still fails. This is CADENZA-ONLY: the direct
-            # wasm `mkCorpusExec` deliberately stays EXACT `== N` as the leak drift-guard (a direct-path count
-            # change — either direction — must red). Clears e.g. 13-strings 0023 (a benign hop reclaiming 3 fewer).
+            # (v-corpus-harness) The CADENZA-HOP path only: a `(live-objects N cadenza-tolerate)` case grades
+            # `<= N` here — the cadenza round-trip reclaiming FEWER cells than the direct-wasm path (its
+            # binary-AST tree-dedup can safely collapse a shared subtree) is strictly-SAFER, no leak; `> N`
+            # still fails. This is CADENZA-ONLY: the direct wasm `mkCorpusExec` leaves the flag off and stays
+            # EXACT `== N`, preserving the UAF/double-free count-guard a witness pins (so a direct-path count
+            # drop still reds). Non-`cadenza-tolerate` cases stay exact on BOTH hops. (A `known-leak` case is
+            # not count-checked at all — this flag no longer affects it.)
             args+=(--tolerate-fewer-live-objects)
             cdz-run "''${args[@]}"
             echo "ok: corpus-cadenza ${name} case ${idx}" > "$out"
