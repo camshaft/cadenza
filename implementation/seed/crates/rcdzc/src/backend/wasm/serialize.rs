@@ -1204,7 +1204,7 @@ fn core_module_impl(
             // bytes out, and a `list<scalar>` arm loads each element (option<bytes>/option<list<…>>).
             || w.sum_params.iter().flatten().any(|(rebuild, _)| {
                 let arm_reads_memory = |a: &SumArgArm| {
-                    matches!(a.payload, SumArmPayload::Bytes | SumArmPayload::List(_))
+                    matches!(a.payload, SumArmPayload::Bytes { .. } | SumArmPayload::List(_))
                         || matches!(&a.payload, SumArmPayload::Compound(fs) if fs.iter().any(FieldRebuild::has_bytes_leaf))
                 };
                 arm_reads_memory(&rebuild.arm_true) || arm_reads_memory(&rebuild.arm_false)
@@ -1567,7 +1567,7 @@ fn core_module_impl(
                 // element cursor.
                 || wrap.sum_params.iter().flatten().any(|(rebuild, _)| {
                     let arm_needs_scratch = |a: &SumArgArm| {
-                        matches!(a.payload, SumArmPayload::Bytes | SumArmPayload::List(_))
+                        matches!(a.payload, SumArmPayload::Bytes { .. } | SumArmPayload::List(_))
                             || matches!(&a.payload, SumArmPayload::Compound(fs) if fs.iter().any(FieldRebuild::has_bytes_leaf))
                     };
                     arm_needs_scratch(&rebuild.arm_true) || arm_needs_scratch(&rebuild.arm_false)
@@ -1597,6 +1597,7 @@ fn core_module_impl(
                         MemLeafKind::Str | MemLeafKind::Bytes => {
                             emit_bytes_leaf_copy_in(
                                 leaf,
+                                false, // a top-level string/bytes ptr is i32 (no variant-join widening)
                                 buf,
                                 ctr,
                                 import_realloc,
@@ -3206,7 +3207,7 @@ impl FieldRebuild {
             FieldRebuild::Sum(r) => [&r.arm_true, &r.arm_false]
                 .iter()
                 .any(|a| match &a.payload {
-                    SumArmPayload::Bytes => true,
+                    SumArmPayload::Bytes { .. } => true,
                     SumArmPayload::Compound(fs) => fs.iter().any(FieldRebuild::has_bytes_leaf),
                     _ => false,
                 }),
@@ -3251,7 +3252,7 @@ impl SumArgArm {
                     f.collect_box_ops_gated(bulk_bytes, out);
                 }
             }
-            SumArmPayload::Bytes => {
+            SumArmPayload::Bytes { .. } => {
                 if bulk_bytes {
                     out("bytes-new");
                 } else {
@@ -3295,11 +3296,16 @@ pub enum SumArmPayload {
     /// no `variant` naming wall). Proven by the `an_option_tuple_payload_closure_arg_crosses_by_native_
     /// flattening` oracle.
     Compound(Vec<FieldRebuild>),
-    /// A `list<u8>` payload (an `Ok = list<u8>` arm — the reducer response's `answer: result<payload, error>`).
-    /// The list flattened to `(ptr, len)` — TWO consecutive leaves at the payload base; the arm allocates a
-    /// guest `Bytes` and copies the bytes out of memory 0 (exactly like a top-level [`FieldRebuild::BytesLeaf`]),
-    /// leaving the handle as this arm's payload. Needs the wrapper's scratch locals + memory 0.
-    Bytes,
+    /// A `list<u8>` / `string` payload (an `Ok = list<u8>` arm — the reducer response's
+    /// `answer: result<payload, error>` — or an `Err = string` arm, e.g. `result<Int64, String>`, erp1). The
+    /// payload flattened to `(ptr, len)` — TWO consecutive leaves at the payload base; the arm allocates a
+    /// guest `Bytes` and copies the bytes out of memory 0 (exactly like a top-level [`FieldRebuild::BytesLeaf`];
+    /// a `String` builds the SAME UTF-8 byte-leaf handle as a `Bytes`, no decode). Needs the wrapper's scratch
+    /// locals + memory 0. `ptr_from_i64` = the canonical variant JOIN widened the payload's FIRST slot (the
+    /// `ptr`) to `i64` because the OTHER arm carries a wider (`i64`) scalar there — the different-width Result
+    /// case (erp1): the guest `i32.wrap_i64`s the joined `ptr` slot to recover the i32 address before the copy.
+    /// `false` for a same-width payload slot (both arms i32-core at slot0 — the reducer `result<list<u8>, enum>`).
+    Bytes { ptr_from_i64: bool },
     /// An all-nullary variant / WIT `enum` payload (an `Err = error` arm). The enum flattened to ONE i32 disc
     /// leaf at the payload base. Every case is nullary and the guest declares the same enum in the same case
     /// order, so the boundary disc IS the guest decl disc: the arm reads the disc leaf and builds the inner
@@ -3358,7 +3364,7 @@ impl SumArgRebuild {
                 }
                 // A `list<u8>` (Bytes) or `list<scalar>` payload flattens to `(ptr, len)` — two leaves; an
                 // enum to one disc leaf.
-                SumArmPayload::Bytes | SumArmPayload::List(_) => 2,
+                SumArmPayload::Bytes { .. } | SumArmPayload::List(_) => 2,
                 SumArmPayload::Enum => 1,
             }
         };
@@ -3420,11 +3426,13 @@ fn emit_sum_arm(
                 out,
             ); // [disc, unit]
         }
-        SumArmPayload::Bytes => {
-            // The `list<u8>` payload crossed as `(ptr, len)` at the payload base; copy it into a guest `Bytes`
-            // (exactly like a top-level `BytesLeaf`), leaving the handle as this arm's payload.
+        SumArmPayload::Bytes { ptr_from_i64 } => {
+            // The `list<u8>`/`string` payload crossed as `(ptr, len)` at the payload base; copy it into a guest
+            // `Bytes` (exactly like a top-level `BytesLeaf`; a `String` IS the same UTF-8 byte-leaf), leaving the
+            // handle as this arm's payload. `ptr_from_i64` wraps the joined `i64` ptr slot to i32 first (the
+            // different-width Result join — erp1).
             let (buf, ctr) = scratch.expect("a Bytes sum arm needs the wrapper's scratch locals");
-            emit_bytes_leaf_copy_in(payload_param, buf, ctr, bulk_bytes, imp, out); // [disc, bytes-handle]
+            emit_bytes_leaf_copy_in(payload_param, *ptr_from_i64, buf, ctr, bulk_bytes, imp, out); // [disc, bytes-handle]
         }
         SumArmPayload::Enum => {
             // The enum payload crossed as ONE i32 disc leaf; build the inner all-nullary cell
@@ -3610,7 +3618,7 @@ fn emit_cell_rebuild(
             }
             FieldRebuild::BytesLeaf => {
                 let (buf, ctr) = scratch.expect("a BytesLeaf needs the wrapper's scratch locals");
-                emit_bytes_leaf_copy_in(*cursor, buf, ctr, bulk_bytes, imp, out); // → [arr, i, buf]
+                emit_bytes_leaf_copy_in(*cursor, false, buf, ctr, bulk_bytes, imp, out); // → [arr, i, buf]
                 *cursor += 2; // the list flattened to (ptr, len)
             }
             FieldRebuild::Sum(rebuild) => {
@@ -3634,6 +3642,7 @@ fn emit_cell_rebuild(
 /// call carries no loop), kept in the signature so callers need not renumber their reserved scratch.
 fn emit_bytes_leaf_copy_in(
     ptr_leaf: u32,
+    ptr_from_i64: bool,
     buf: u32,
     ctr: u32,
     bulk_bytes: bool,
@@ -3642,12 +3651,20 @@ fn emit_bytes_leaf_copy_in(
 ) {
     use crate::backend::wasm::wasm_abi::op;
     let len_leaf = ptr_leaf + 1;
+    // Read the `ptr` core-param slot, wrapping i64→i32 when the variant JOIN widened it (a different-width
+    // Result whose OTHER arm carries an i64 scalar at slot0 — erp1). The `len` slot is always i32.
+    let get_ptr = |out: &mut Vec<u8>| {
+        out.push(op::LOCAL_GET);
+        uleb128(ptr_leaf as u64, out);
+        if ptr_from_i64 {
+            out.push(op::I32_WRAP_I64);
+        }
+    };
     if bulk_bytes {
         // handle = bytes-new(ptr, len) — the `list<u8>` arg is canon-lowered to the `(ptr, len)` pair, read
         // straight out of linear memory 0; one cross-component call replaces the alloc + per-byte-set loop.
         // Only valid where the envelope provides a shared allocator at lower-time (the host-`_mem` assembler).
-        out.push(op::LOCAL_GET);
-        uleb128(ptr_leaf as u64, out);
+        get_ptr(out);
         out.push(op::LOCAL_GET);
         uleb128(len_leaf as u64, out);
         out.push(op::CALL);
@@ -3686,8 +3703,7 @@ fn emit_bytes_leaf_copy_in(
     uleb128(buf as u64, out);
     out.push(op::LOCAL_GET);
     uleb128(ctr as u64, out);
-    out.push(op::LOCAL_GET);
-    uleb128(ptr_leaf as u64, out);
+    get_ptr(out);
     out.push(op::LOCAL_GET);
     uleb128(ctr as u64, out);
     out.push(op::I32_ADD);
