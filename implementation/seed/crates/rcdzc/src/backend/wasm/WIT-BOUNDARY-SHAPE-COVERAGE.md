@@ -128,7 +128,13 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   the guest export result (`run()->String = host sim in (sim.echo "hi")`, v-hivemind's literal repro) —
   still declines on `assemble_host_runtime_resource*` (scalar/unit host ops only; a String-param or
   compound result declines). Needs the same instance-type + `needs_realloc` mem threading B1 applied to
-  the plain envelope, across the 5 resource-escape assembler variants (B2).
+  the plain envelope, across the 5 resource-escape assembler variants (B2). **A COMPOUND host RESULT now
+  declines CLEANLY (CDZ0900) at both resource-escape sites (`mod.rs` ~2528 and ~5315, next to the existing
+  String-PARAM guard) — decline-don't-miscompile.** Before this guard a scalar-param host op with a
+  compound (e.g. String) result laid the result-lift op without declaring it, so the lift resolved to an
+  out-of-range func index and the component failed wasm validation ("unknown function"). SHAPE 95 pins the
+  idealistic escaping-String behavior as a corpus TODO (grades Todo via CDZ0900, auto-locks to Pass when
+  B2 lands).
 - **[naming, B1b] the PLAIN host-delegating envelope now names the host import by the world's FQ import
   interface — ✅ DONE.** `world_import_iface_for_effect(db, effect)` reverse-maps the guest effect (named
   after the interface's SHORT kebab segment by `synthesize_world_import_effect_decls`) to the world IMPORT

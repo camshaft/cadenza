@@ -11323,3 +11323,4 @@ todo	Record.with sets an Option-of-a-UInt64-newtype field of a multi-field recor
 pass	a plain (non-reducer) guest passes a RECORD host-op ARGUMENT via a pure-IMPORT custom wit-world
 pass	a plain (non-reducer) guest passes a scalar-payload VARIANT host-op ARGUMENT via a pure-IMPORT custom wit-world
 pass	a plain (non-reducer) guest passes a list<s64> host-op ARGUMENT via a pure-IMPORT custom wit-world
+todo	a String host-import result escapes DIRECTLY as the entrypoint result via a pure-IMPORT custom wit-world

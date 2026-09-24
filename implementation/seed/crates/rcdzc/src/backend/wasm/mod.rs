@@ -2531,6 +2531,24 @@ fn emit_runtime_resource(
                  (a scalar/unit host op result-escaping as a resource IS supported)",
             ));
         }
+        // DECLINE-DON'T-MISCOMPILE (B2 pending): a COMPOUND host RESULT (string / bytes / list / tuple /
+        // record / option / result / variant / enum — anything `spilled_result`/`enum_result`) escaping
+        // through this resource path needs the B1 result-lift machinery (`build_host_result_types` +
+        // `emit_result_lift` + a `cabi_realloc`) the plain host-delegating envelope has, which this
+        // scalar-only resource-escape assembler does NOT yet declare — so the lift op resolves to an
+        // out-of-range func index and the emitted component fails validation (CDZ0910 "unknown function").
+        // Decline CLEANLY here instead (the honest floor) until B2 threads the lift through the
+        // `assemble_host_runtime_resource*` sites. A scalar/unit host result-escaping IS supported.
+        if host_imports
+            .iter()
+            .any(|h| h.spilled_result.is_some() || h.enum_result.is_some())
+        {
+            return Err(Reject::unsupported(
+                "a host op with a compound result (string / bytes / list / record / option / variant / \
+                 enum) escaping directly as a resource entrypoint is not supported (a scalar/unit host op \
+                 result-escaping as a resource IS supported)",
+            ));
+        }
         // The host op set, laid FIRST in the core module (host imports `0..h`) — a `CallHostImport(i)`
         // resolves to core func `i`. Record `host_order` so `select` emits each `Core::HostCall` with its
         // raw index, shift `import_base` past the `h` host ops + `k` runtime ops + resource-new/rep, then
@@ -5298,6 +5316,22 @@ fn emit_runtime_bytes_resource(
             return Err(Reject::unsupported(
                 "a host op with a STRING parameter in a resource-escaping entrypoint is not supported \
                  (a scalar/unit host op result-escaping as a resource IS supported)",
+            ));
+        }
+        // DECLINE-DON'T-MISCOMPILE (B2 pending): a COMPOUND host RESULT (string / bytes / list / tuple /
+        // record / option / result / variant / enum — anything `spilled_result`/`enum_result`) reached in
+        // this with-methods resource escape needs the B1 result-lift machinery this scalar-only assembler
+        // does NOT yet declare; without it the lift op resolves to an out-of-range func index and the
+        // component fails validation (CDZ0910 "unknown function"). Decline CLEANLY until B2 threads the
+        // lift through the `assemble_host_runtime_resource*` sites. A scalar/unit host result IS supported.
+        if host_imports
+            .iter()
+            .any(|h| h.spilled_result.is_some() || h.enum_result.is_some())
+        {
+            return Err(Reject::unsupported(
+                "a host op with a compound result (string / bytes / list / record / option / variant / \
+                 enum) escaping directly as a resource entrypoint is not supported (a scalar/unit host op \
+                 result-escaping as a resource IS supported)",
             ));
         }
         let iface = host_imports[0].effect.clone();
