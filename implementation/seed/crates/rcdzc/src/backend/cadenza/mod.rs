@@ -302,6 +302,30 @@ fn synth_binding_name(i: usize) -> std::rc::Rc<str> {
     format!("_cdz_let{i}").into()
 }
 
+/// Whether re-emitting the subtree rooted at `id` would PERFORM a host effect — i.e. it contains a
+/// `Core::HostCall` anywhere. Used to guard the `Core::SumPayload` deep-read scrutinee-re-emit fallback: an
+/// effectful match scrutinee is already evaluated ONCE by the match, so re-emitting it to project a deep,
+/// unregistered slot would re-perform its effect (fire it again per deep read) — a duplication miscompile.
+/// (Cheap in the common case — the deep-read fallback is rare and scrutinees are small; a `seen` set bounds a
+/// shared-node DAG.)
+fn subtree_performs_host_call(db: &mut Db, id: StructId) -> bool {
+    fn go(db: &mut Db, id: StructId, seen: &mut std::collections::HashSet<StructId>) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if matches!(core_of(db, id), Core::HostCall { .. }) {
+            return true;
+        }
+        for c in crate::backend::wasm::select::core_child_ids(db, id) {
+            if go(db, c, seen) {
+                return true;
+            }
+        }
+        false
+    }
+    go(db, id, &mut std::collections::HashSet::new())
+}
+
 /// True iff `target` appears anywhere in the CORE subtree rooted at `node` — i.e. `node` (transitively via
 /// `core_child_ids`) references `target`. A `Core::SumPayload{scrutinee}` read yields its scrutinee as a
 /// child, so a body reading the scrutinee's payload is caught. Used to check that a folded match's Leaf body
@@ -3086,6 +3110,27 @@ fn emit_expr_viewed(
                     {
                         break 'prefix (pty, b.name(nm), plen);
                     }
+                }
+                // GUARD (14b-effects 0409, "adv-62 nested face"): no registered binder prefix, so this walk
+                // would RE-EMIT the whole scrutinee to project the deep slot. When the scrutinee performs a
+                // host effect (a `Core::HostCall` in it), that re-emission RE-PERFORMS the effect — the match
+                // already evaluated the scrutinee once, so projecting deep reads off a fresh re-emission fires
+                // the host op once PER deep read (0409: an effectful tuple `(let ((v (io.get))) #tuple(fns))`
+                // whose arm body reads `[Elem(1),Elem(0)]` / `[Elem(1),Elem(1)]` re-emitted `(io.get)` twice
+                // more → HOP2 traps on the un-supplied 2nd response; direct wasm shares the one node, fires
+                // once). Decline rather than duplicate an observable effect. (The proper fix — register the
+                // tuple/record destructure binder's TYPE in `payload_tys` so the longest-prefix divert above
+                // resolves the deep read off the bound binder instead of the scrutinee — is banked as a
+                // follow-up; a pure scrutinee re-emit here is a benign value-eq re-walk, unaffected.)
+                if subtree_performs_host_call(db, scrutinee) {
+                    return Err(Reject::unsupported(
+                        "the Cadenza backend does not support re-emitting a deep projection of an EFFECTFUL \
+                         match scrutinee (a host-call in the scrutinee) whose intermediate binder slot was not \
+                         registered: projecting the deep slot requires re-emitting the scrutinee, which would \
+                         re-perform its host effect (fire it once per deep read) — declines to avoid an \
+                         effect-duplication miscompile"
+                            .to_string(),
+                    ));
                 }
                 (
                     crate::infer::type_of(db, scrutinee),
