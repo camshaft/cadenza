@@ -103,21 +103,22 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   there since `allow_option_bytes` is false without a world). The RESULT side was already DONE (B1).
   Verified end-to-end on the plain path (import `cadenza:platform/probe` + bare `run: func()` export, host
   stub matched): RECORD arg (SHAPE 92), scalar-payload bare-VARIANT arg (SHAPE 93), `list<s64>` arg
-  (SHAPE 94). **KNOWN GAP — a payloadless (all-nullary) ENUM host-op ARG on this shape does NOT reach the
-  plain path:** the program emits NO host import and instead compiles to the effect-reification form
-  (exports `cadenza:run/run`, returns a `{correlation,kind:"effect/probe",payload,schema_descriptor}`
-  reflection envelope), so the scripted host-response never matches. record/variant/list/scalar args all
-  take the plain host-import path; only the all-nullary enum arg reifies. ROOT CAUSE (diagnosed tick 18):
-  UPSTREAM of the wasm host-boundary emit. An all-nullary-enum host-op ARG makes the effects/lowering pass
-  REIFY the host call into a compound effect-request value instead of keeping it a `Core::HostCall`, so
-  `run()`'s result type becomes that record, the export is a `resource t` (confirmed via wit-dump:
-  `interface run { resource t; ... }`), and `emit` (mod.rs:157) takes its RESOURCE-ESCAPE early-return
-  branch (~:301) and NEVER reaches host-import collection at :788. Proof: a trace at :788 fires for the
-  variant arg (host_imports.len()=1) but NOT the enum arg; a NON-constant enum arg reifies identically
-  (so it is the all-nullary enum TYPE, not const-folding). `(host (probe) ...)` explicitly host-delegates
-  probe and a payload-bearing variant arg stays delegated, so reifying the all-nullary-enum-arg call is
-  inconsistent — an EFFECTS/LOWERING bug (v-effects domain), NOT the wasm host-boundary emit. The enum-arg
-  corpus case is PARKED (it would FAIL, not todo — it runs to the wrong value).
+  (SHAPE 94). **A payloadless (all-nullary) ENUM host-op ARG now REACHES the plain path (re-verified tick
+  20 on HEAD) — the tick-18 resource-escape reification is NO LONGER REPRODUCIBLE.** `(effect probe (op emit
+  (-> Col Int64)))` + `(host (probe) (probe.emit (Col.Red)))` against an imposed world declaring
+  `emit: func(param c (enum red green blue)) -> s64` lowers to `Core::HostCall` (trace: `apply: host-delegated
+  perform → Core::HostCall (sync import / plain host-delegation)` at compute.rs:1293 — so `is_world_import_op`
+  returns TRUE, NO reify), and the emitted component imports `cadenza:platform/probe` with the enum arg
+  crossing as a properly-cased WIT `enum host-record-p0 { red, green, blue }` (NOT `cadenza:run/run` +
+  `resource t`). So the tick-18 diagnosis (an all-nullary enum arg reifies to the resource-escape form) was
+  either fixed by an intervening B3 landing or predicated on a subtly different repro; on HEAD the enum arg
+  host-delegates like the record/variant/list/scalar args. RESIDUE (cosmetic): the reflected arg type is named
+  by the generic `host-record-p<n>` scheme, so an ENUM arg gets an ENUM type MISNAMED `host-record-p0` — it is
+  a real WIT `enum` with the right cases (structural WIT match at link is by case-set, so a conforming host
+  still satisfies it), only the type NAME is a misnomer. FOLLOW-ON (low-pri, non-blocking): un-park the
+  enum-arg corpus case and gate the VALUE round-trip (untested here — the plain-path host-response should now
+  match, unlike the tick-18 reflection-envelope form that never matched); optionally rename the enum arm's
+  reflected type off the `host-record-p` prefix. v-hivemind uses records/options, not bare enums as args.
 - **[emit, RESULT] a payloadless ENUM host-op RESULT crossing BY VALUE on the plain host-delegating
   envelope — ✅ DONE (SHAPE 90).** Rides the SAME `result_crefs[i]` path as a spilled compound:
   `build_host_result_types` already maps `enum_result` to the enum's nominal `enum` DEFINED+EXPORTED type
