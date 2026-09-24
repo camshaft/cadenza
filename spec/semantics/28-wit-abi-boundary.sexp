@@ -5345,3 +5345,27 @@ cases
   (host-calls (call cadenza:platform/probe.f))
   (output 5)
   (live-objects 0))
+
+(case
+  "a top-level tuple<list<u8>, list<u8>> host-op ARGUMENT (TWO Bytes elements) crosses as built-in tuple, both ropes copied to disjoint mem"
+  (doc
+    "SHAPE 108 (v-wit-boundary) — a top-level `tuple<list<u8>, list<u8>>` host-op ARGUMENT: a tuple with TWO
+           `list<u8>` (Bytes) elements. Pins the invariant that `emit_tuple_reg_flatten`'s single shared scratch
+           CURSOR advances across MULTIPLE Bytes elements so the second rope is copied to a DISJOINT `mem` region
+           past the first (each element captures `ptr = cursor` before its copy, then `cursor += len`), and the
+           two `(ptr,len)` pairs flatten positionally in element order — the multi-Bytes-element twin of the
+           single-Bytes SHAPE 105. Without a shared advancing cursor the second copy would clobber the first.
+           The tuple crosses as WIT `tuple<list<u8>, list<u8>>` and the host returns its scalar
+           (assert 5 = len b\"hi\" (2) + len b\"xyz\" (3)). `live-objects 0`.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member f (func (param x (tuple (list (u8)) (list (u8)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op f (-> (Tuple Bytes Bytes) Int64)))
+      (def (run) (host (probe) (probe.f #tuple(b"hi" b"xyz"))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.f (: 5 Int64)))
+  (host-calls (call cadenza:platform/probe.f))
+  (output 5)
+  (live-objects 0))
