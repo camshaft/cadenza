@@ -26326,6 +26326,57 @@
   (call main (: 1 Int64))
   (output (: 2 Int64)))
 
+; ── Record.with replacing an Option-of-scalar-newtype field of a MULTI-field record, where the record is
+; ── threaded through a PIPE whose right side is a PARTIAL application `(on (Node nid))`. The pipe rewrites
+; ── `(|> m (on x))` to the full apply `(on m x)`, but the partial-application AST child `(on x)` SURVIVES
+; ── beside it — and `should_keep_binding`'s `subtree_reaches_host_call` used to force `core_of` on that
+; ── child, LIFTING it to a `Core::Closure` and recording its captured-reference occurrences in
+; ── `db.captured_ref`. Those occurrences are SHARED with the full apply's inline β-reduction, so the inline
+; ── use of the `on`-field value (`(Some (Node nid))`) lowered to a `Core::Captured` env-read in the env-less
+; ── caller: the wasm build applied `arr-get`/`get-int` (the sum-payload extract path) to the UNBOXED i64
+; ── newtype value, so `sum-new`'s payload was `box-int(get-int(arr-get nid 1))` — an aggregate accessor over
+; ── a scalar, which fails wasm validation "expected i32, found i64" (surfaced as CDZ0910). The FIX makes
+; ── `subtree_reaches_host_call` skip the `core_of` probe on a lambda-value / partial-application node (never a
+; ── host call), so no speculative lift pollutes `captured_ref`. GUARD = the RUN: a regression re-emits the
+; ── invalid module (denied artifact — no value) or reads a wrong capture, so it can't reach 42.
+(case
+  "Record.with of an Option-of-newtype field, threaded through a pipe partial application, runs (no capture-leak miscompile)"
+  (doc
+    "Root-caused by v-wit-boundary; reproduces host-free. A `(|> m (on (Node nid)))` pipe whose RHS is a
+           partial application of the 2-arg `on` left a dead partial-app AST child that
+           `subtree_reaches_host_call` speculatively LIFTED, poisoning `db.captured_ref` for occurrences the
+           full-apply inline reused — so the `Some(Node nid)` payload lowered as a `Core::Captured` env-read
+           over the bare i64 newtype value (`box-int(get-int(arr-get nid 1))`), invalid wasm CDZ0910. Pins the
+           whole shape runs to `nid` unchanged.")
+  (input
+    (do
+      (type Sess (Sess Bytes))
+      (type Node (Node UInt64))
+      (type Msg
+        (Msg
+          (Record
+            (: to Sess)
+            (: contract String)
+            (: from (Option Sess))
+            (: payload Bytes)
+            (: on (Option Node)))))
+      (def (message (: to Sess) (: contract String))
+        (Msg #record((= to to) (= contract contract) (= from (None)) (= payload b"") (= on (None)))))
+      (def (on (: m Msg) (: node Node))
+        (match m ((Msg f) (Msg (Record.with f #"on" (Some node))))))
+      (def (unpack (: m Msg))
+        (match m
+          ((Msg f)
+            (match (. f on)
+              ((Some n) (match n ((Node v) v)))
+              ((None _) 0)))))
+      (def (main (: nid UInt64))
+        (let ((a (Sess b"s")))
+          (unpack (|> (|> a (message "msg")) (on (Node nid))))))
+      (export main)))
+  (call main (: 42 UInt64))
+  (output (: 42 UInt64)))
+
 (case
   "Record.project over a runtime record leaves no live heap objects"
   (doc
