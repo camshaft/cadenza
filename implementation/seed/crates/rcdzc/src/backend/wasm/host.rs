@@ -90,6 +90,15 @@ pub enum HostParam {
     /// / none=0. An `option<compound>` (bytes/record) top-level arg is a later increment (declined — the
     /// classifier only pushes this for a scalar payload, leaving `params` short otherwise).
     Option(Box<RecordFieldAbi>),
+    /// A bare `tuple<scalar…>` param (the top-level position, not nested in a record/list) — crosses as the
+    /// built-in WIT `tuple<T…>` type (structural, anonymous-allowed), referenced by a per-param structural
+    /// `CRef` (like [`List`](HostParam::List)/[`Option`](HostParam::Option)). Its core form flattens
+    /// POSITIONALLY INLINE — one scalar core slot per element, in element (= declaration = component) order,
+    /// no discriminant (unlike Option/Variant) — the SAME core shape as a `tuple<…>` record FIELD. Carries the
+    /// elements' scalar ABIs. The guest marshals it via `select::emit_tuple_reg_flatten` (`arr-get i` +
+    /// unbox per element). A `tuple` with a COMPOUND element (bytes/record/list) is a later increment
+    /// (declined — the classifier only pushes this for an ALL-SCALAR tuple, leaving `params` short otherwise).
+    Tuple(Vec<RecordFieldAbi>),
 }
 
 /// Whether a record-field ABI bottoms out at a `list<u8>` (`Bytes`) leaf — so a `list<T>` param carrying it
@@ -1225,6 +1234,23 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                         let pv = abi_val_type(&payload).unwrap();
                         params.push(HostParam::Option(Box::new(RecordFieldAbi::Scalar(pv))));
                     }
+                    // A top-level `tuple<scalar…>` arg crosses as the built-in WIT `tuple<T…>` — the guest
+                    // flattens the value-heap tuple POSITIONALLY (one scalar core slot per element, no disc).
+                    // SCOPED to an ALL-SCALAR tuple this increment: only push when EVERY element has an
+                    // `abi_val_type` — a tuple with a Bytes/compound element (which would need a mem cursor) is a
+                    // later increment (leaves `params` short → declined). Checked BEFORE the scalar `_` arm (a
+                    // tuple has no `abi_val_type`, so `_` would decline).
+                    Ty::Tuple(elems)
+                        if !peer_bound
+                            && !elems.is_empty()
+                            && elems.iter().all(|e| abi_val_type(e).is_some()) =>
+                    {
+                        let abis = elems
+                            .iter()
+                            .map(|e| RecordFieldAbi::Scalar(abi_val_type(e).unwrap()))
+                            .collect();
+                        params.push(HostParam::Tuple(abis));
+                    }
                     _ => {
                         let v = if peer_bound {
                             extern_abi_val_type(&at)
@@ -1736,6 +1762,13 @@ pub fn first_unrepresentable_host_op(
             let arg_is_boundary_option = allow_option_bytes
                 && !peer_bound
                 && option_payload_ty(db, &at).is_some_and(|p| abi_val_type(&p).is_some());
+            // A top-level `tuple<scalar…>` arg crosses NATIVELY as the built-in WIT `tuple<T…>` — the guest
+            // flattens the value-heap tuple positionally (`select::emit_tuple_reg_flatten`). Same reducer/
+            // host-fused gating; admitted only for an ALL-SCALAR tuple (a compound element needs a mem cursor,
+            // a later increment) — matching the classifier + the marshal, in lockstep.
+            let arg_is_boundary_tuple = allow_option_bytes
+                && !peer_bound
+                && matches!(at.strip_nominal(), Ty::Tuple(elems) if !elems.is_empty() && elems.iter().all(|e| abi_val_type(e).is_some()));
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
@@ -1744,6 +1777,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_list
                 && !arg_is_boundary_variant
                 && !arg_is_boundary_option
+                && !arg_is_boundary_tuple
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }

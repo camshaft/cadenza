@@ -535,6 +535,16 @@ pub(super) fn host_op_comp_functype(
                     .unwrap_or(crate::backend::wasm::wit_ctype::CRef::Idx(list_type_idx));
                 crate::backend::wasm::wit_ctype::encode_cref(&cref, &mut param_items);
             }
+            // A top-level `tuple<scalar…>` param references its built-in `(tuple <elem>…)` DEFINED type by the
+            // per-param `CRef` the caller computed — structural (anonymous-allowed), like `list`/`option`.
+            HostParam::Tuple(_) => {
+                let cref = list_param_crefs
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or(crate::backend::wasm::wit_ctype::CRef::Idx(list_type_idx));
+                crate::backend::wasm::wit_ctype::encode_cref(&cref, &mut param_items);
+            }
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
@@ -645,8 +655,10 @@ pub(super) fn build_host_result_types(
             // the WORLD's declared param WIT type (`(list <elem>)` / `(option <payload>)`) — `add_wit_type_
             // deduped` lays either into the shared table (deduped with results + each other) and the
             // export-aware remap below covers both (a structural type is anonymous-allowed, define-only).
-            if matches!(p, host::HostParam::List(_) | host::HostParam::Option(_))
-                && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
+            if matches!(
+                p,
+                host::HostParam::List(_) | host::HostParam::Option(_) | host::HostParam::Tuple(_)
+            ) && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
             {
                 per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
             }
@@ -1063,7 +1075,8 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::Enum(_)
         | host::HostParam::List(_)
         | host::HostParam::Variant(_)
-        | host::HostParam::Option(_) => None,
+        | host::HostParam::Option(_)
+        | host::HostParam::Tuple(_) => None,
     }
 }
 
