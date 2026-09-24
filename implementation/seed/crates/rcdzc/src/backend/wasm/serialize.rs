@@ -1200,6 +1200,15 @@ fn core_module_impl(
             || matches!(w.result, ResultLower::CopyBytes)
             // A TOP-LEVEL memory-bearing leaf param (String/Bytes) reads its bytes out of linear memory too.
             || w.mem_leaf_params.iter().any(Option::is_some)
+            // A TOP-LEVEL sum param whose selected arm reads linear memory: a `Bytes` (list<u8>) arm copies
+            // bytes out, and a `list<scalar>` arm loads each element (option<bytes>/option<list<…>>).
+            || w.sum_params.iter().flatten().any(|(rebuild, _)| {
+                let arm_reads_memory = |a: &SumArgArm| {
+                    matches!(a.payload, SumArmPayload::Bytes | SumArmPayload::List(_))
+                        || matches!(&a.payload, SumArmPayload::Compound(fs) if fs.iter().any(FieldRebuild::has_bytes_leaf))
+                };
+                arm_reads_memory(&rebuild.arm_true) || arm_reads_memory(&rebuild.arm_false)
+            })
     });
     // A host op with a COMPOUND result also needs the SHARED linear memory (imported `"mem"`.`"mem"`) — the
     // host writes the spilled result there and the guest lift reads it. (Same `import_realloc` condition; the
@@ -1554,12 +1563,14 @@ fn core_module_impl(
                 || wrap.mem_leaf_params.iter().any(Option::is_some)
                 // A TOP-LEVEL sum param whose selected arm carries a `list<u8>` payload (Bytes, or a compound
                 // with a bytes leaf) copies bytes out of memory in its arm build — it needs the scratch too.
+                // A `list<scalar>` arm (option<list<…>>) likewise reuses the scratch as its vec accumulator +
+                // element cursor.
                 || wrap.sum_params.iter().flatten().any(|(rebuild, _)| {
-                    let arm_bytes = |a: &SumArgArm| {
-                        matches!(a.payload, SumArmPayload::Bytes)
+                    let arm_needs_scratch = |a: &SumArgArm| {
+                        matches!(a.payload, SumArmPayload::Bytes | SumArmPayload::List(_))
                             || matches!(&a.payload, SumArmPayload::Compound(fs) if fs.iter().any(FieldRebuild::has_bytes_leaf))
                     };
-                    arm_bytes(&rebuild.arm_true) || arm_bytes(&rebuild.arm_false)
+                    arm_needs_scratch(&rebuild.arm_true) || arm_needs_scratch(&rebuild.arm_false)
                 });
             let scratch = if has_bytes { Some((p, p + 1)) } else { None };
             let mut next_local = p + if has_bytes { 2 } else { 0 };
@@ -3250,6 +3261,12 @@ impl SumArgArm {
             }
             // An enum payload builds the inner all-nullary cell via `sum-new`.
             SumArmPayload::Enum => out("sum-new"),
+            // A list<scalar> payload builds a value-heap vec (per-element read/box/push).
+            SumArmPayload::List(elem) => {
+                out("vec-empty");
+                out("vec-push");
+                out(elem.box_op);
+            }
         }
     }
 }
@@ -3288,6 +3305,13 @@ pub enum SumArmPayload {
     /// order, so the boundary disc IS the guest decl disc: the arm reads the disc leaf and builds the inner
     /// cell `sum-new(disc, IMM_UNIT)` (no per-case branch) as this arm's payload. One leaf.
     Enum,
+    /// A `list<scalar>` payload (an `option<list<Int64>>` Some arm — eop2). The list flattened to `(ptr, len)`
+    /// — TWO consecutive leaves at the payload base; the arm builds a value-heap vec by reading + boxing each
+    /// element (exactly like a top-level [`MemLeafKind::List`] lift), leaving the vec handle as this arm's
+    /// payload. The [`ListElem`] carries the scalar leaf's read/box; only a FLAT list (`nest_lists == 0`) is
+    /// admitted here (a nested list-in-option is a later slice). Reuses the wrapper's scratch locals as the
+    /// vec accumulator + cursor (like the `Bytes` arm reuses them for the byte copy).
+    List(ListElem),
 }
 
 /// How a closure `call` reassembles ONE flattened fixed-shape SUM argument (an `Option`/`Result` — a
@@ -3332,8 +3356,9 @@ impl SumArgRebuild {
                 SumArmPayload::Compound(fields) => {
                     fields.iter().map(FieldRebuild::leaf_count).sum()
                 }
-                // A `list<u8>` payload flattens to `(ptr, len)` — two leaves; an enum to one disc leaf.
-                SumArmPayload::Bytes => 2,
+                // A `list<u8>` (Bytes) or `list<scalar>` payload flattens to `(ptr, len)` — two leaves; an
+                // enum to one disc leaf.
+                SumArmPayload::Bytes | SumArmPayload::List(_) => 2,
                 SumArmPayload::Enum => 1,
             }
         };
@@ -3414,6 +3439,20 @@ fn emit_sum_arm(
             ); // [disc, enum-disc, unit]
             out.push(op::CALL);
             uleb128(imp("sum-new"), out); // [disc, enum-cell]
+        }
+        SumArmPayload::List(elem) => {
+            // The `list<scalar>` payload crossed as `(ptr, len)` at the payload base; build a value-heap vec
+            // (exactly like a top-level `MemLeafKind::List` lift), leaving the vec handle as this arm's payload.
+            // Reuse the wrapper's scratch pair as the vec accumulator + element cursor (like the Bytes arm).
+            let (buf, ctr) = scratch.expect("a list sum arm needs the wrapper's scratch locals");
+            // A FLAT list (`nest_lists == 0`) allocates no extra locals, so a throwaway `next_local` suffices;
+            // the classifier admits only flat lists here (a nested list-in-option is a later slice).
+            debug_assert_eq!(
+                elem.nest_lists, 0,
+                "only a flat list payload is admitted in a sum arm"
+            );
+            let mut nl = 0u32;
+            emit_list_leaf_lift(elem, payload_param, buf, ctr, &mut nl, imp, out); // [disc, vec-handle]
         }
     }
     out.push(op::CALL);

@@ -6994,6 +6994,84 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
     })
 }
 
+/// Classify an `option<list<scalar>>` ENTRY param (eop2) for the bare-export route: a two-variant Option
+/// (one nullary + one single-payload) whose payload is a FLAT `list<scalar>`. It crosses as a native
+/// `option<list<T>>` — the canonical ABI flattens it to `(disc: i32, ptr: i32, len: i32)`: the disc, then
+/// the list's `(ptr, len)`. Returns the payload core valtypes (the list's `(ptr, len)` = two i32s) and the
+/// [`serialize::SumArgRebuild`] whose Some arm is a [`SumArmPayload::List`] (build the vec) and None arm is
+/// nullary. `None` unless the shape is exactly a flat-list-payload Option (a scalar/tuple payload is the
+/// [`arg_boundary::fixed_shape_option_scalar_arg`] path; a nested-list payload is a later slice). Bare-route
+/// local: the WIT type is synthesized as `option<list<T>>` (structural) at the call site, so this returns no
+/// `ArgSlot` (the shared closure/typed-route classifier + minting are untouched).
+fn option_list_arg(
+    db: &mut Db,
+    gty: &crate::ty::Ty,
+) -> Option<(
+    Vec<crate::backend::wasm::lir::ValType>,
+    crate::backend::wasm::serialize::SumArgRebuild,
+)> {
+    use crate::backend::wasm::lir::ValType;
+    use crate::backend::wasm::serialize::{SumArgArm, SumArgRebuild, SumArmPayload};
+    use crate::ty::Ty;
+    let Ty::Sum { decl, args, .. } = gty.strip_nominal() else {
+        return None;
+    };
+    let args = args.clone();
+    // Snapshot the decl's params + per-variant payload occurrences (so the `db.ast` reads below don't overlap
+    // the decl-ref borrow) — the same shape probe `fixed_shape_option_scalar_arg` uses.
+    let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
+        let dr = db.type_decl_by_occ(*decl)?;
+        if dr.variants.len() != 2 {
+            return None;
+        }
+        (
+            dr.params.clone(),
+            dr.variants.iter().map(|v| v.payloads.clone()).collect(),
+        )
+    };
+    let counts: Vec<usize> = variant_payloads.iter().map(|p| p.len()).collect();
+    // OPTION shape: exactly one nullary + one single-payload variant.
+    let (payload_i, nullary_i) = match counts.as_slice() {
+        [1, 0] => (0u32, 1u32),
+        [0, 1] => (1u32, 0u32),
+        _ => return None,
+    };
+    // The instantiated payload type: the payload occurrence must be a bare generic param `a` → `args[pi]`.
+    let payload_occ = variant_payloads[payload_i as usize][0];
+    let pname = db
+        .ast
+        .head_name(payload_occ)
+        .or_else(|| db.ast.as_name(payload_occ))?
+        .to_string();
+    let pi = params.iter().position(|p| *p == pname)?;
+    let payload_ty = args.get(pi)?.clone();
+    // The payload must be a FLAT `list<scalar>` (a nested list-in-option is a later slice).
+    let Ty::List(elem) = payload_ty.strip_nominal() else {
+        return None;
+    };
+    let le = list_scalar_elem(elem)?;
+    if le.nest_lists != 0 {
+        return None;
+    }
+    // Canonical `option<list<T>>` flattening: `(disc: i32, ptr: i32, len: i32)`. The Some arm builds the vec;
+    // the None arm is nullary. Component `option<T>` sends Some = boundary disc 1.
+    Some((
+        vec![ValType::I32, ValType::I32],
+        SumArgRebuild {
+            base_param: 1,
+            boundary_true_disc: 1,
+            arm_true: SumArgArm {
+                decl_disc: payload_i,
+                payload: SumArmPayload::List(le),
+            },
+            arm_false: SumArgArm {
+                decl_disc: nullary_i,
+                payload: SumArmPayload::Nullary,
+            },
+        },
+    ))
+}
+
 /// The PLAIN-EXPORT ENTRY-PARAM emit (entry-param declines slice 1): a SINGLE bare exported def whose param
 /// is a memory-bearing `String`/`Bytes` (crossing as `string`/`list<u8>`) gets a guest LIFT WRAPPER — the
 /// wrapper copies the incoming `(ptr, len)` bytes out of linear memory into a value-heap `Bytes` (a `String`
@@ -7038,6 +7116,33 @@ fn try_bare_entry_param_component(
     let mut cell_escaped_fields: Vec<Option<Vec<Vec<usize>>>> = Vec::new();
     let mut wit_params: Vec<(String, crate::wit_world::WitType)> = Vec::new();
     for (i, (binder, gty)) in params.iter().enumerate() {
+        // An `option<list<scalar>>` entry param (eop2): a flat list payload the scalar/tuple sum classifier
+        // does not cover. Crosses as `option<list<T>>`, flattened to `(disc, ptr, len)`; the Some arm builds
+        // the vec via `SumArmPayload::List`. The WIT is synthesized as `option<list<T>>` (structural). Tried
+        // FIRST because `fixed_shape_option_scalar_arg` returns None for a list payload (not scalar/tuple).
+        if let Some((vts, rebuild)) = option_list_arg(db, gty) {
+            let inner = crate::wit_world::ty_natural_wit(&match gty.strip_nominal() {
+                Ty::Sum { args, .. } => args.first().cloned()?,
+                _ => return None,
+            })?;
+            let wit = crate::wit_world::WitType::Option(Box::new(inner));
+            // Canonical `option<list<T>>` flattening: `(disc: i32, ptr: i32, len: i32)`.
+            param_vts.push(ValType::I32.byte());
+            for vt in &vts {
+                param_vts.push(vt.byte());
+            }
+            // BORROW-only (this slice): the def matches the Some to read `List.len`/element, then the wrapper
+            // reclaims the built sum shell (which deep-drops the inner vec) after the call.
+            let _ = body;
+            mem_leaf_params.push(None);
+            sum_params.push(Some((rebuild, true)));
+            cell_params.push(None);
+            cell_slots.push(None);
+            cell_drop_after.push(false);
+            cell_escaped_fields.push(None);
+            wit_params.push((format!("p{i}"), wit));
+            continue;
+        }
         // A two-variant sum (`option<T>` / `result<ok,err>`) entry param crosses as a native component sum,
         // flattened to `(disc, payload…)`. Build it DIRECTLY as the def arg via the closure-arg classifier's
         // `SumArgRebuild` (branch on the boundary disc → `sum-new`); the def owns the built cell. `ty_natural_wit`
