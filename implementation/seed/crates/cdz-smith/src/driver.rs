@@ -81,7 +81,10 @@ pub enum GenMode {
     /// safe; the exclusion-partner of the heap-field head, which must NOT be scalar-admitted), and the
     /// mutual-recursive-SCC caller-ownership UAF guard (the FIRST 2-fn call-graph SCC: a go<->helper mutual
     /// recursion borrows a caller's list that the caller reuses after the SCC call -> the group-exit drop
-    /// must DECLINE or re-free the caller's reused borrow, the CAESAR-class double-free)). Densifies
+    /// must DECLINE or re-free the caller's reused borrow, the CAESAR-class double-free), and a CDZ0910
+    /// nested-newtype const-fold WIDTH fence (a record-newtype whose field is a scalar-newtype, unwrapped
+    /// through both nominal boxes as a compile-time constant -> fold_sum_path must descend the box to its
+    /// payload at the inner scalar's declared width or emit invalid wasm, #9623)). Densifies
     /// value-observable coverage of the reclaim-PRECISION churn (#9362/#9369/#9373 …): a leak is invisible
     /// to a value oracle, but an over-aggressive reclaim freeing a still-live cell corrupts the returned
     /// value — caught by `differential --reclaim` / `opt-differential --reclaim` / `determinism --reclaim`.
