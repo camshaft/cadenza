@@ -4956,3 +4956,33 @@ cases
   (host-calls (call cadenza:platform/probe.spell))
   (output (: "ok" String))
   (live-objects 0))
+
+(case
+  "a plain (non-reducer) guest passes an all-nullary ENUM host-op ARGUMENT via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 96 — an all-nullary ENUM host-op ARGUMENT (probe.tag : func(enum{red,green,blue}) -> s64) on a
+           PURE-IMPORT custom wit-world with a PLAIN top-level export — the enum arm of the v-wit-boundary B3
+           compound host-ARGUMENT support, and the un-park of the tick-18 enum-arg gap. On HEAD the enum arg
+           REACHES the plain path: the perform lowers to `Core::HostCall` (is_world_import_op TRUE, NO reify),
+           the component imports `cadenza:platform/probe`, and the enum arg crosses as a properly-cased WIT
+           `enum{red,green,blue}` (verified via wit-dump); the tick-18 resource-escape reification is no longer
+           reproducible. The guest flattens the value-heap nullary enum to the op's single core i32 disc slot.
+           run() builds Col.Green, performs probe.tag, returns the stubbed result. A VALID component that runs is
+           the pin (the enum-arg twin of the RECORD arg SHAPE 92 / VARIANT arg SHAPE 93 / list<s64> arg SHAPE
+           94). KNOWN RESIDUE (cosmetic, does not affect run/validation): the reflected enum arg type is named by
+           the generic `host-record-p<n>` scheme, so it emits as `enum host-record-p0 {red,green,blue}` — a real
+           WIT enum with the right cases (structural WIT match at link is by case-set), only the type NAME is a
+           misnomer. Stub tag -> 55.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member tag (func (param c (enum red green blue)) (result (s64)))))))
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (effect probe (op tag (-> Col Int64)))
+      (def (run) (host (probe) (probe.tag (Col.Green))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.tag (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.tag))
+  (output 55)
+  (live-objects 0))
