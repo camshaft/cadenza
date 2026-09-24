@@ -308,7 +308,9 @@ fi
 # the cron continuously guards it; counts/caps SMALL to fit the tick slack. `determinism --effect` is
 # compile-only (always runs); `opt-differential --effect` (value + per-level validity) runs when the store
 # resolves. Findings file into the SAME fleet queue (`determinism-*` / `opt-invariance-*`, tagged `effect`).
-EFFECT_COUNT="${CDZ_SMITH_EFFECT_COUNT:-100}"
+# NOTE: scale with generate_effect's form count (variant(N)); 120 ~= 7 forms x ~17 as of the 7-form generator
+# (added the #9606 discarded-call DCE form). Bump when a new effect form lands.
+EFFECT_COUNT="${CDZ_SMITH_EFFECT_COUNT:-120}"
 if [ "$EFFECT_COUNT" -gt 0 ]; then
   EF_BIN="$CRATE_DIR/target/release/cdz-smith"
   if [ -x "$EF_BIN" ] || ( cd "$CRATE_DIR" && cargo build -q --release --features differential 2>/dev/null ); then

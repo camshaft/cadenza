@@ -507,8 +507,16 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
 /// each of which is well-formed + terminating + computes a deterministic Int64.
 pub fn generate_effect(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
+    let form = c.variant(7);
+    // Form 6 needs a TOP-LEVEL performing helper (a local `def` that performs an effect DECLINES CDZ0401),
+    // so it emits the FULL program itself rather than a main-body wrapped below. See gen_effect_discarded_call_program.
+    if form == 6 {
+        let mut src = String::new();
+        gen_effect_discarded_call_program(&mut c, &mut src);
+        return Program { source: src };
+    }
     let mut body = String::new();
-    match c.variant(6) {
+    match form {
         // Single-handler perform/resume/abort (continuation drop vs resume).
         0 => gen_effect_body(&mut c, &mut body),
         // Two effects, the inner handle NESTED in the outer — multi-frame handler-stack resolution.
@@ -3274,6 +3282,38 @@ fn gen_effect_cfjoin_body<C: Choice>(c: &mut C, out: &mut String) {
     .ok();
 }
 
+/// The #9606 DCE-DROPS-A-DISCARDED-OBSERVABLE-EFFECT witness — a value-observable regression tripwire for
+/// the core-optimizer's dead-code-elimination. #9606 fixed a MISCOMPILE where DCE dropped a NON-TAIL
+/// DISCARDED statement (or unused let-init) whenever it did not SYNTACTICALLY reach a host call — dropping
+/// it even when the effect was reached only THROUGH A CALL BOUNDARY (the W2/W3 "call-boundary loss": a
+/// `Core::Call` whose callee performs a latent effect the caller cannot see). The effect silently vanished
+/// (hollow-green across the MembrainHivemind conformance suite). This emits the call-boundary-loss shape:
+/// `bump` is a TOP-LEVEL helper that INTERNALLY performs `E.o` (so the discard site sees only a
+/// `Core::Call (bump a)`, NOT a syntactic perform), placed as a DISCARDED non-tail statement `(do (bump a)
+/// (E.o b))` inside the handler body. `bump`'s perform threads the handler state (`s -> s+a`); the KEPT
+/// tail `(E.o b)` then reads that state. So the discarded call's latent effect is OBSERVED in the return:
+/// value = `s0 + a` (state after bump's perform, read by the tail perform); if a regression re-drops the
+/// discarded `(bump a)`, the state stays `s0` and the tail perform returns `s0` — a wrong value. Caught by
+/// opt-differential (DCE is an On optimization: O0 keeps the discarded call -> s0+a, an opt-gated re-drop
+/// at On -> s0 -> O0 != On divergence). `a` is bounded `1..=9` so the discarded effect ALWAYS shifts the
+/// value (a=0 would make bug==correct — a hollow guard). MUST be a top-level helper: a LOCAL `def` that
+/// performs declines CDZ0401, so this form emits the full program (not a main-body). First effect form with
+/// a DISCARDED-statement perform (forms 0-5 all USE their perform results) and the first exercising the
+/// DCE / observable-effect interaction. Deterministic Int64 (`s0 + a`).
+fn gen_effect_discarded_call_program<C: Choice>(c: &mut C, out: &mut String) {
+    let s0 = c.int_bounded(0, 9);
+    let a = c.int_bounded(1, 9); // >=1 so the discarded effect always shifts the value (never hollow)
+    let b = c.int_bounded(0, 9);
+    write!(
+        out,
+        "(do (effect E (op o (-> Int64 Int64))) \
+         (def (bump (: x Int64)) (E.o x)) \
+         (def (main) (handle E {s0} ((o (p) s (resume s (+ s p)))) (do (bump {a}) (E.o {b})))) \
+         (export main))"
+    )
+    .ok();
+}
+
 /// A `Map.lookup` body: `(match (Map.lookup <2-entry-const-map> <key>) ((Some v) v) (None <dflt>))` —
 /// the keyed map read yielding `Option V`, consumed to an Int64 by matching Some/None. Half the time
 /// the key is PRESENT (→ `Some` → the stored value), half DEFINITELY-ABSENT (→ `None` → the default),
@@ -5292,17 +5332,18 @@ mod tests {
 
     /// [`generate_effect`] — the Effect generator behind `--effect` (value-observable coverage of the
     /// effects lowering) — must keep its two load-bearing invariants: (1) EVERY generated program COMPILES
-    /// (an effect body that declines exercises no lowering); and (2) ALL FOUR forms stay reachable across
-    /// varied entropy (single-handler, nested-handler, effect+collection, multi-op) — a wiring edit that
-    /// drops a form would silently stop fuzzing that slice of the effects lowering.
+    /// (an effect body that declines exercises no lowering); and (2) ALL SEVEN forms stay reachable across
+    /// varied entropy (single-handler, nested-handler, effect+collection, multi-op, mapstate, cfjoin,
+    /// discarded-call DCE) — a wiring edit that drops a form would silently stop fuzzing that slice.
     #[test]
     fn generate_effect_reaches_all_forms_and_compiles() {
         // Distinctive, mutually-exclusive markers (see `generate_effect`): nested = two effects E1/E2;
         // multiop = one effect E with two ops o1/o2; collection = a `List`; mapstate = effect T / op bump
         // threading a Map handler-state; cfjoin = op tick (control-flow-join nested-tuple new-state);
-        // single = the plain one-op form.
-        let mut reached = [false; 6];
-        for seed in 0u64..336 {
+        // discarded-call = a top-level `(def (bump (: x Int64)) …)` performing helper (checked BEFORE the
+        // single-handler marker, which form 6 ALSO contains); single = the plain one-op form.
+        let mut reached = [false; 7];
+        for seed in 0u64..392 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(97);
             let mut bytes = Vec::new();
             for _ in 0..24 {
@@ -5315,7 +5356,9 @@ mod tests {
                 matches!(compile_catching(&src), Verdict::Compiled { .. }),
                 "every effect program must COMPILE: {src}"
             );
-            if src.contains("(effect E1 ") {
+            if src.contains("(def (bump (: x Int64)) (E.o x))") {
+                reached[6] = true; // discarded-call DCE (contains `(effect E (op o ` too — check first)
+            } else if src.contains("(effect E1 ") {
                 reached[1] = true; // nested-handler
             } else if src.contains("(effect E (op o1 ") {
                 reached[3] = true; // multi-op
@@ -5331,7 +5374,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all six effect forms must be reachable across seeds: reached={reached:?}"
+            "all seven effect forms must be reachable across seeds: reached={reached:?}"
         );
     }
 
@@ -6216,6 +6259,38 @@ mod tests {
         assert!(
             saw_cfjoin,
             "should build a nested-tuple state machine with a control-flow-join (if) resume new-state"
+        );
+    }
+
+    /// `gen_effect_discarded_call_program` emits a well-formed #9606 DCE tripwire (a DISCARDED non-tail call
+    /// to a top-level `bump` helper that internally performs `E.o`, whose latent effect threads the handler
+    /// state read by the KEPT tail perform) — the call-boundary-loss shape the buggy DCE dropped. Emits the
+    /// FULL program (a local performing `def` declines CDZ0401), so it is NOT main-body-wrapped. Every
+    /// program COMPILES; asserts the discarded-call structure + confirms the KNOWN value `s0 + a` is
+    /// value-observable (a>=1 so the discarded effect always shifts the value — never a hollow guard).
+    #[test]
+    fn gen_effect_discarded_call_program_is_well_formed_and_compiles() {
+        let mut saw_discarded = false;
+        for seed in 0u64..512 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(4099);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut src = String::new();
+            gen_effect_discarded_call_program(&mut ByteCursorChoice::new(&bytes), &mut src);
+            saw_discarded |=
+                src.contains("(def (bump (: x Int64)) (E.o x))") && src.contains("(do (bump ");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "discarded-call DCE program must COMPILE: {src}"
+            );
+        }
+        assert!(
+            saw_discarded,
+            "should emit a top-level performing `bump` helper called in discarded non-tail position"
         );
     }
 
