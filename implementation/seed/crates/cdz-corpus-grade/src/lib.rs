@@ -4222,8 +4222,9 @@ mod tests {
     }
 
     /// `decode_test_run` reads a `(live-objects <N>)` form into `TestRun.live_objects` (and the
-    /// `(live-objects known-leak <N>)` marker form into `live_objects_known_leak` + the count); a
-    /// test-run with no clause leaves the count `None` and the flag `false`.
+    /// `(live-objects known-leak <N>)` marker form into `live_objects_known_leak` + the count, plus the
+    /// `(live-objects <N> cadenza-tolerate)` facet marker into `live_objects_cadenza_tolerate`); a
+    /// test-run with no clause leaves the count `None` and the flags `false`.
     #[test]
     fn decode_reads_live_objects() {
         use cadenza_syntax::ast::{Builder, Leaf};
@@ -4276,10 +4277,29 @@ mod tests {
         assert_eq!(tr.live_objects, Some(3));
         assert_eq!(tr.live_objects_per_call, Some(vec![3, 13, 0]));
         assert!(tr.live_objects_known_leak);
+        // cadenza-tolerate facet: the exact 09-functions:712 form `(live-objects 2 cadenza-tolerate)` →
+        // count kept + facet flag set, NOT known-leak, no per-call list.
+        let tr = decode_test_run(&build(Some(&["2", "cadenza-tolerate"]))).unwrap();
+        assert_eq!(tr.live_objects, Some(2));
+        assert!(tr.live_objects_cadenza_tolerate);
+        assert!(!tr.live_objects_known_leak);
+        assert_eq!(tr.live_objects_per_call, None);
+        // The marker is stripped from ANY position (leading form also parses).
+        let tr = decode_test_run(&build(Some(&["cadenza-tolerate", "2"]))).unwrap();
+        assert_eq!(tr.live_objects, Some(2));
+        assert!(tr.live_objects_cadenza_tolerate);
+        assert_eq!(tr.live_objects_per_call, None);
+        // cadenza-tolerate + PER-CALL positional: facet flag set, first count + whole list preserved.
+        let tr = decode_test_run(&build(Some(&["cadenza-tolerate", "2", "3"]))).unwrap();
+        assert_eq!(tr.live_objects, Some(2));
+        assert_eq!(tr.live_objects_per_call, Some(vec![2, 3]));
+        assert!(tr.live_objects_cadenza_tolerate);
+        assert!(!tr.live_objects_known_leak);
         // No clause.
         let tr = decode_test_run(&build(None)).unwrap();
         assert_eq!(tr.live_objects, None);
         assert!(!tr.live_objects_known_leak);
+        assert!(!tr.live_objects_cadenza_tolerate);
         assert_eq!(tr.live_objects_per_call, None);
     }
 
