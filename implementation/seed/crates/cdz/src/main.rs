@@ -217,6 +217,19 @@ enum Cmd {
     /// Compile binary-AST artifacts to one or more backend targets (wasm/rust). The `rcdzc` surface.
     Compile(compile_args::CompileArgs),
 
+    // ── WIT-world artifact (cdz-world-artifact) ───────────────────────────────────────────────────
+    /// Turn a WIT world declaration into its `KIND_WIT_WORLD` binary-AST artifact — the input a Cadenza
+    /// reducer guest is compiled against via `cdz compile guest.cdz wit-world:<world>=<world>.bin`. Reads a
+    /// `.wit` FILE and writes the world's binary artifact to `-o <OUT.bin>` (a FILE, or `-` for stdout),
+    /// callable exactly like `cdz compile`. With one declared world, `--world` is optional (that world is
+    /// emitted); with several, name one with `--world <NAME>`. `--dep <dep.wit>` (repeatable) names a `.wit`
+    /// in ANOTHER package the document imports, parsed into the same resolve first so a cross-package import
+    /// binds. Folded in from the standalone `cdz-world-artifact` bin so the Cadenza-ML conformance runner
+    /// reaches it through the single `cdz` toolchain (no real nix on PATH). Reuses the `cdz-world-artifact`
+    /// library's `Worlds` — the ONE place the WIT→`world_schema_tree` logic lives.
+    #[cfg(feature = "world-artifact")]
+    WorldArtifact(WorldArtifactArgs),
+
     // ── run (cdz-run) ───────────────────────────────────────────────────────────────────────────
     /// Run a finished wasm component: link it (resolving its value-heap runtime by content address from
     /// the store), call an export (the sole function export by default), and print the rendered result.
@@ -592,6 +605,10 @@ fn main() -> ExitCode {
         // SOURCE file directly — parsing it in-process to the `ast` artifact, and (for a debug target)
         // the `spans` artifact too — rather than requiring a pre-built binary AST.
         Cmd::Compile(a) => run_compile(a),
+        // `cdz world-artifact` — WIT world → KIND_WIT_WORLD binary-AST artifact, reusing the
+        // `cdz-world-artifact` library (folded in so the conformance pipeline reaches it via the one `cdz`).
+        #[cfg(feature = "world-artifact")]
+        Cmd::WorldArtifact(a) => run_world_artifact(&a),
         // `cdz run` — mounted from the `cdz-run` lib; the same code the standalone `cdz-run` bin runs.
         // When the `component` arg is a PROJECT (a `Project.cdz` or a directory holding one), `cdz`
         // BUILDS the manifest's entry first (the `cargo run` analogue), then runs the produced component;
@@ -697,6 +714,224 @@ struct RunMlArgs {
     /// The corpus program SOURCE file (s-expr / ml surface). OMITTED → read the program from stdin. The
     /// `cargo xtask gate` `cadenza-ml` target passes each `spec/semantics/*.sexp` case's program here.
     file: Option<String>,
+}
+
+/// `cdz world-artifact` args — the WIT-world → `KIND_WIT_WORLD` artifact form, shaped like `cdz compile`
+/// (a source FILE in, `-o <OUT>` out). Feature-gated with the subcommand so the lean seedCompiler sheds it.
+#[cfg(feature = "world-artifact")]
+#[derive(clap::Args)]
+struct WorldArtifactArgs {
+    /// The WIT document declaring the world(s) (`.wit`), parsed with `wit-parser`.
+    wit: PathBuf,
+    /// Where to write the world's `KIND_WIT_WORLD` binary-AST artifact. `-` writes it to stdout (parity
+    /// with `cdz compile -o -`); otherwise the exact output file path.
+    #[arg(long, short, value_name = "OUT")]
+    out: PathBuf,
+    /// Which declared world to emit. OPTIONAL when the document declares exactly ONE world (that one is
+    /// used); when it declares more than one, name the one you want (the others are not written).
+    #[arg(long, value_name = "NAME")]
+    world: Option<String>,
+    /// A `.wit` file in ANOTHER package that the document imports (repeatable) — parsed into the same
+    /// resolve BEFORE the main file so a cross-package import (e.g. `import cadenza:platform/reducer`)
+    /// binds. Same as the standalone `cdz-world-artifact` bin's `--dep`.
+    #[arg(long = "dep", value_name = "DEP.wit")]
+    deps: Vec<PathBuf>,
+}
+
+/// Read a WIT document (plus any `--dep` packages), select the world to emit, build its `KIND_WIT_WORLD`
+/// binary artifact via the `cdz-world-artifact` library's [`cdz_world_artifact::Worlds`], and write it to
+/// `-o`. This only WIRES the CLI to the library (the WIT→`world_schema_tree` logic + its unit tests live in
+/// the crate); errors are surfaced with the `cdz` prefix and a non-zero exit, like every other subcommand.
+#[cfg(feature = "world-artifact")]
+fn run_world_artifact(args: &WorldArtifactArgs) -> ExitCode {
+    use std::io::Write;
+
+    // Read each cross-package dep's source (pushed into the resolve first so the main file's import binds).
+    let mut deps: Vec<(String, String)> = Vec::with_capacity(args.deps.len());
+    for p in &args.deps {
+        match std::fs::read_to_string(p) {
+            Ok(src) => deps.push((p.display().to_string(), src)),
+            Err(e) => {
+                eprintln!("{PROG}: world-artifact: reading dep {}: {e}", p.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let wit_src = match std::fs::read_to_string(&args.wit) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "{PROG}: world-artifact: reading {}: {e}",
+                args.wit.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let doc = match cdz_world_artifact::Worlds::parse_with_deps(
+        &deps,
+        &args.wit.display().to_string(),
+        &wit_src,
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{PROG}: world-artifact: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Select the world: `--world` if given, else the sole declared world; none/ambiguous is a clear error.
+    let world = match &args.world {
+        Some(w) => w.clone(),
+        None => {
+            let names = doc.names();
+            match names.as_slice() {
+                [only] => only.clone(),
+                [] => {
+                    eprintln!(
+                        "{PROG}: world-artifact: {} declares no world",
+                        args.wit.display()
+                    );
+                    return ExitCode::FAILURE;
+                }
+                many => {
+                    eprintln!(
+                        "{PROG}: world-artifact: {} declares {} worlds ({}) — name one with `--world <NAME>`",
+                        args.wit.display(),
+                        many.len(),
+                        many.join(", ")
+                    );
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    };
+
+    let bytes = match doc.artifact(&world) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{PROG}: world-artifact: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // `-o -` streams the artifact to stdout (parity with `cdz compile`); otherwise write the named file.
+    let to_stdout = args.out.as_os_str() == "-";
+    let write_result = if to_stdout {
+        std::io::stdout().write_all(&bytes)
+    } else {
+        std::fs::write(&args.out, &bytes)
+    };
+    if let Err(e) = write_result {
+        let dest = if to_stdout {
+            "<stdout>".to_string()
+        } else {
+            args.out.display().to_string()
+        };
+        eprintln!("{PROG}: world-artifact: writing {dest}: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+/// Tests for the `cdz world-artifact` DISPATCHER wiring (the WIT→`world_schema_tree` bytes + their decode
+/// correctness are covered by the `cdz-world-artifact` crate's own unit tests). `ExitCode` is not `PartialEq`,
+/// so success/failure is asserted by the side effect: a success writes the `-o` file, a failure writes nothing.
+#[cfg(all(test, feature = "world-artifact"))]
+mod world_artifact_tests {
+    use super::*;
+
+    /// A two-world fixture so "sole world defaults" and "ambiguous requires --world" are distinguishable.
+    const FIXTURE_TWO: &str = r#"
+        package cadenza:fixture;
+        interface a { foo: func() -> u32; }
+        interface b { bar: func(x: list<u8>) -> option<list<u8>>; }
+        world one { export a; }
+        world two { import b; export a; }
+    "#;
+    const FIXTURE_ONE: &str = r#"
+        package cadenza:fixture;
+        interface a { foo: func() -> u32; }
+        world only { export a; }
+    "#;
+
+    fn tmp(sub: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("cdz-wa-cli-{}-{sub}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn write_wit(dir: &Path, src: &str) -> PathBuf {
+        let p = dir.join("world.wit");
+        std::fs::write(&p, src).unwrap();
+        p
+    }
+
+    #[test]
+    fn sole_world_needs_no_name_and_writes_the_artifact() {
+        let dir = tmp("sole");
+        let wit = write_wit(&dir, FIXTURE_ONE);
+        let out = dir.join("only.bin");
+        run_world_artifact(&WorldArtifactArgs {
+            wit,
+            out: out.clone(),
+            world: None,
+            deps: vec![],
+        });
+        assert!(out.exists(), "the sole world's artifact was written");
+        assert!(
+            !std::fs::read(&out).unwrap().is_empty(),
+            "artifact is non-empty"
+        );
+    }
+
+    #[test]
+    fn a_named_world_is_selected_among_several() {
+        let dir = tmp("named");
+        let wit = write_wit(&dir, FIXTURE_TWO);
+        let out = dir.join("two.bin");
+        run_world_artifact(&WorldArtifactArgs {
+            wit,
+            out: out.clone(),
+            world: Some("two".into()),
+            deps: vec![],
+        });
+        assert!(out.exists(), "the named world's artifact was written");
+    }
+
+    #[test]
+    fn ambiguous_world_without_a_name_writes_nothing() {
+        let dir = tmp("ambig");
+        let wit = write_wit(&dir, FIXTURE_TWO);
+        let out = dir.join("nope.bin");
+        run_world_artifact(&WorldArtifactArgs {
+            wit,
+            out: out.clone(),
+            world: None,
+            deps: vec![],
+        });
+        assert!(
+            !out.exists(),
+            "an ambiguous document (>1 world, no --world) errors, writing no artifact"
+        );
+    }
+
+    #[test]
+    fn a_missing_wit_writes_nothing() {
+        let dir = tmp("missing");
+        let out = dir.join("nope.bin");
+        run_world_artifact(&WorldArtifactArgs {
+            wit: dir.join("does-not-exist.wit"),
+            out: out.clone(),
+            world: None,
+            deps: vec![],
+        });
+        assert!(
+            !out.exists(),
+            "an unreadable .wit errors, writing no artifact"
+        );
+    }
 }
 
 #[derive(clap::Args)]

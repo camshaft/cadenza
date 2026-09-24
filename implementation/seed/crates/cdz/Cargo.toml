@@ -58,6 +58,16 @@ cdz-run = { path = "../cdz-run", optional = true }
 # cdz-corpus from that build's closure. That breaks the seedCompiler→corpus edge so a corpus-only MR no
 # longer needlessly re-runs the ~28min spine (v-nix's over-trigger fix); a Core/rcdzc MR still busts it.
 cdz-corpus = { path = "../cdz-corpus", optional = true }
+# The WIT-world → KIND_WIT_WORLD binary-AST utility LIBRARY, mounted as `cdz world-artifact`. The Cadenza-ML
+# conformance runner (v-hivemind, MembrainHivemind) turns `wit/conformance.wit` into the KIND_WIT_WORLD binary
+# that `cdz compile` links a guest against (`wit-world:conformance=WORLD.bin`), shelling ONLY the single `cdz`
+# toolchain (no real nix on PATH) — so the WIT→artifact logic that was a standalone flake bin (`nix build
+# .#world-artifact`) is folded in here as a subcommand. OPTIONAL behind the default-on `world-artifact` feature
+# (same pattern as `corpus`/`lsp`/`watch`): the shipped/dev `cdz` (default features, incl. the release build's
+# `--features jemalloc`) carries it, while the lean `--no-default-features` seedCompiler stays free of the extra
+# `wit-parser` dep (closure-neutral for the seed's huge fanout). Reuses the crate's `Worlds` library — the ONE
+# place the WIT→`world_schema_tree` logic lives — so the subcommand only WIRES to it (no reimplementation).
+cdz-world-artifact = { path = "../cdz-world-artifact", optional = true }
 # `cdz calc` (the calculator REPL) is a PASSTHROUGH to the standalone `cdz-calc` binary (exec-not-link, like
 # `cdz run`/`smith`/`cad`), NOT a linked dep — because `cdz-calc` pulls `cdz-run` (→ wasmtime) in-process to
 # run compiled exprs, and the thin-`cdz` goal keeps that runner weight off `cdz`'s graph. So there is no
@@ -120,8 +130,14 @@ tikv-jemallocator = { version = "0.6", optional = true }
 # `cdz test` path is corpus-INDEPENDENT (cdz_corpus is referenced only by the `corpus` subcommand), so
 # dropping it removes cdz-corpus from that build's closure and breaks the seedCompiler→corpus dep edge —
 # a corpus-only MR no longer needlessly re-runs the ~28min spine. A normal `cdz` keeps `corpus` (default).
-default = ["corpus", "standalone", "lsp", "watch", "completions"]
+default = ["corpus", "standalone", "lsp", "watch", "completions", "world-artifact"]
 corpus = ["dep:cdz-corpus"]
+# `world-artifact` (ON by default) mounts `cdz world-artifact <WORLD.wit> -o <WORLD.bin>` — the WIT-world →
+# KIND_WIT_WORLD binary-AST utility, folded in from the standalone `cdz-world-artifact` bin so the conformance
+# pipeline reaches it through the ONE `cdz` toolchain. Gated (same rationale as `corpus`) so a
+# `--no-default-features` seedCompiler build sheds `cdz-world-artifact` (→ `wit-parser`) — the sole user is the
+# `world-artifact` subcommand, so dropping the feature removes it from that lean build's closure entirely.
+world-artifact = ["dep:cdz-world-artifact"]
 # `jemalloc` installs `tikv_jemallocator::Jemalloc` as the `#[global_allocator]` (see the dep note). NOT
 # in `default`: the RELEASE build enables it explicitly (`build.yml` → `--features jemalloc`), so only the
 # shipped binary links jemalloc. It stays OUT of default because tikv-jemalloc-sys's C build fails in the
