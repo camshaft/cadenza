@@ -629,9 +629,10 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A string escapes as the canonical binary value form via the resource `encode()` path, like a
         // list/record/sum — no primitive boundary valtype. (Constant string escape is a later increment.)
         Ty::String => None,
-        // A char has no boundary valtype this increment — a constant char folds and never crosses; a char
-        // value crossing the boundary is a later increment (declines cleanly until then).
-        Ty::Char => None,
+        // A char crosses the component boundary as the WIT `char` primitive — a Unicode scalar value that
+        // canonically flattens to one `i32` code point (the same core rep as the value-heap Char). So a Char
+        // export param crosses as `char` (spx2); the runtime Char rep and the boundary rep coincide (both i32).
+        Ty::Char => Some(wasm_abi::COMP_CHAR),
         // A symbol has no primitive boundary valtype — it would cross as the canonical value form via the
         // resource `encode()` path, like a String. (Constant symbol escape is a later increment; for now
         // a Symbol crossing the boundary declines cleanly.)

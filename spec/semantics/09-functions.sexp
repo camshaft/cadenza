@@ -13020,9 +13020,10 @@
   (output (: 6 Int64)))
 
 ; -- breaker batch 486 (2026-08-27): the scalar entry-param matrix completed. Bool, UInt64, and
-; the narrow widths (Int8/Int16, sign-extending correctly) all cross the boundary; Char declines
-; with an honest precise message (names the type, lists what crosses, notes an annotation cannot
-; fix it) — the Char family's param-side rung, joining the char-walk/ckr1 runtime declines.
+; the narrow widths (Int8/Int16, sign-extending correctly) all cross the boundary. A Char crosses as
+; the WIT `char` primitive — one `i32` Unicode code point, the same core slot the runtime Char uses —
+; so a Char entry param AND a Char result both lift/lower at the boundary (spx2, spx2b); this is the
+; Char family's param-side rung, alongside the char-walk/ckr1 runtime cases.
 (case
   "spx1 a Bool entry param selects a branch"
   (input (do (def (main (: b Bool)) (if b 7 3)) (export main)))
@@ -13030,10 +13031,16 @@
   (output (: 7 Int64)))
 
 (case
-  "spx2 a Char entry param declines pending a boundary representation"
+  "spx2 a Char entry param crosses as the WIT char primitive"
   (input (do (def (main (: c Char)) (Char.to-int c)) (export main)))
   (call main (: #\a Char))
   (output (: 97 Int64)))
+
+(case
+  "spx2b a Char result crosses as the WIT char primitive"
+  (input (do (def (main (: c Char)) c) (export main)))
+  (call main (: #\a Char))
+  (output (: #\a Char)))
 
 (case
   "spx3 a UInt64 entry param increments in its own width"

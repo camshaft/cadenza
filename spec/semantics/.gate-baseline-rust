@@ -11101,7 +11101,8 @@ todo	sp4 SCALAR param + bare option result
 todo	sp5 SCALAR param + list result
 todo	sp6 TWO scalar params + 2-field record result (multi-scalar face)
 todo	sp7 SCALAR param + variant-with-payload result (sum face of the same gate)
-todo	spx2 a Char entry param declines pending a boundary representation
+pass	spx2 a Char entry param crosses as the WIT char primitive
+pass	spx2b a Char result crosses as the WIT char primitive
 todo	srm2 a NESTED set-rest re-match peels two residual layers (should-work: the residual is a first-class set)
 todo	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
 todo	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)
