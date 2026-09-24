@@ -839,7 +839,13 @@ pub(super) fn lower_value_decode(db: &mut Db, id: StructId, b: StructId) -> Core
         // function type) is genuinely unsupported. The old message ("no binary-AST value-form descriptor")
         // fired for BOTH and misled the free-var case into looking like an unsupported type. `has_free_var`
         // splits them so the common "you forgot the annotation" case gets the honest fix.
-        None if target_ty.has_free_var() => Core::Poison(Reject::decline(
+        // An UNDETERMINED target (`a` still a free `Ty::Var`) is a type-resolution failure the user fixes by
+        // ANNOTATING — a coded CDZ0203 `TypeMismatch`, not a codeless decline. Typing does not always ground
+        // the target (a decode whose type is only implied by downstream match-arm patterns reaches lowering
+        // with a free var), so the code is attached here. Message unchanged (it already names the fix); the
+        // code is what a corpus `(error CDZ0203)` pin matches.
+        None if target_ty.has_free_var() => Core::Poison(Reject::coded(
+            crate::diag::Code::TypeMismatch,
             "Value.decode target type is unsolved — annotate the decode with its expected type, e.g. \
              (: (Value.decode bs) (Option T)) or a typed let-binder (let (((: p (Option T)) …)) …)",
         )),

@@ -11226,7 +11226,7 @@ todo	a `..` spread in a MAP construction entry names the pattern-only rule, not 
 todo	a `..` spread in a RECORD construction entry names the pattern-only rule, not a malformed key-value entry
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but the bare envelope declines it on wasm
-todo	a bare Value.decode with no grounding annotation is rejected CDZ0203 (unsolved target type — annotate it)
+pass	a bare Value.decode with no grounding annotation is rejected CDZ0203 (unsolved target type — annotate it)
 todo	a bin pattern over a Bytes scrutinee is NOT a type error (declines only on the non-scalar param boundary)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a closure returning Unit crosses the boundary — unit is a zero-result (should-work)
