@@ -7,6 +7,7 @@
 //! preserving move: private items become `pub(super)` and reach the rest of the tree via `use super::*`.
 
 use super::*;
+use crate::ty::Ty;
 
 /// Whether the node at `id` lowers to a compile-time CONSTANT value — a constant scalar/string/float/
 /// unit, or a constant compound (`SumNew`/`Tuple`/`Record`/`ListNew`/`MapNew`) all of whose parts are
@@ -1346,11 +1347,44 @@ pub(super) fn all_match(db: &mut Db, pats: &[StructId], vals: &[CVal]) -> Option
     Some(true)
 }
 
-/// Materialize a constant value to a `Core` constant — the bridge from the evaluator's value domain back to
-/// the lowering's. A list becomes a `Core::ListNew` whose elements are freshly-synthesized literal AST nodes
-/// (so `core_is_const_value` / the backend see an ordinary constant list). `None` for a value with no
-/// literal AST form this stage synthesizes (e.g. a `Unit` inside a list).
-pub(super) fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
+/// Per-payload EXPECTED types for a `CVal::Sum`'s `disc` variant at `expected`'s instantiation — the type
+/// threading needs these because a `CVal::Sum` carries no owning decl, so a payload's `Ty` (in particular a
+/// nested `Ty::Sum`/`Ty::Nominal` a backend must name) can only come from the parent. Mirrors the backend's
+/// `variant_payload_ty_at`, kept LOCAL to avoid a lowering→backend dependency. Falls back to `n` × `Ty::Any`
+/// (the historical permissive default) whenever `expected` is not the matching sum, the decl/ctor is not
+/// found, or the payload arity/shape does not line up — so a wrong type is NEVER stamped.
+fn cval_sum_payload_tys(db: &mut Db, expected: &Ty, disc: u32, n: usize) -> Vec<Ty> {
+    let any_n = || vec![Ty::Any; n];
+    let stripped = expected.strip_nominal().clone();
+    let Ty::Sum { decl, .. } = &stripped else {
+        return any_n();
+    };
+    let Some(ctor) = db
+        .type_decl_by_occ(*decl)
+        .and_then(|td| td.variants.get(disc as usize).and_then(|vr| vr.ctor))
+    else {
+        return any_n();
+    };
+    let Some(payload_ty) = crate::infer::payload_ty_at_instantiation(db, ctor, &stripped) else {
+        return any_n();
+    };
+    if n == 1 {
+        vec![payload_ty]
+    } else if let Ty::Tuple(ts) = payload_ty.strip_nominal()
+        && ts.len() == n
+    {
+        ts.to_vec()
+    } else {
+        any_n()
+    }
+}
+
+/// Like [`cval_to_core`] but THREADS an expected `Ty` down onto every synthesized child node (see
+/// [`cval_to_ast_ty`]). `expected` is the type of the whole constant (the inferred type of the top-level
+/// folded node); it decomposes in lockstep with the `CVal` tree (record fields, sum payloads, tuple/list
+/// elements), so a reified `Core::SumNew`/`Record`/… node carries its TRUE type instead of `Ty::Any`. Any
+/// mismatch degrades gracefully to `Ty::Any` (the historical behaviour).
+pub(super) fn cval_to_core_ty(db: &mut Db, v: &CVal, expected: &Ty) -> Option<Core> {
     Some(match v {
         CVal::Int(x) => Core::ConstInt(x.clone()),
         CVal::Bool(b) => Core::ConstBool(*b),
@@ -1370,23 +1404,42 @@ pub(super) fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
         CVal::Map(_) => return None,
         CVal::Set(_) => return None,
         // A compound (list / sum / record / tuple) materializes to the corresponding `Core` DIRECTLY, its
-        // element/payload nodes synthesized via `cval_to_ast` (each a `synth_core` node whose memoized core IS
-        // the element's constant). No constructor head, no AST re-parse, no resolution — so a value with no
-        // syntactic constructor (a reflected `Ast.module` form, a `List.at` Option) materializes exactly like
-        // a syntactically-built one.
+        // element/payload nodes synthesized via `cval_to_ast_ty` (each a `synth_core` node whose memoized
+        // core IS the element's constant, carrying the element's threaded type). No constructor head, no AST
+        // re-parse, no resolution — so a value with no syntactic constructor (a reflected `Ast.module` form,
+        // a `List.at` Option) materializes exactly like a syntactically-built one.
         CVal::List(xs) => {
+            let elem_ty = match expected.strip_nominal() {
+                Ty::List(e) => (**e).clone(),
+                _ => Ty::Any,
+            };
             let mut elems = Vec::with_capacity(xs.len());
             for x in xs {
-                elems.push(cval_to_ast(db, x)?);
+                elems.push(cval_to_ast_ty(db, x, &elem_ty)?);
             }
             Core::ListNew {
                 elems: elems.into(),
             }
         }
         CVal::Sum { disc, payloads } => {
+            // A NOMINAL NEWTYPE (`expected` is `Ty::Nominal` — a single-variant single-payload sum, erased at
+            // run time) is lowered by NORMAL lowering as its payload core DIRECTLY — there is no `Core::SumNew`
+            // for it. The const-eval reification MUST match: a const-hoisted newtype reified as `Core::SumNew`
+            // is routed by the rust backend to `sum_variant_path` (which requires a real `Ty::Sum`, but a
+            // newtype strips to its payload type) → "sum construction node is not a sum type"; and it diverges
+            // from the byte-identical erasure the non-const path emits. So reify the single payload DIRECTLY
+            // under the nominal's INNER type, erasing the box exactly as lowering does. (A real multi-variant
+            // sum is `Ty::Sum`, not `Ty::Nominal`, so it keeps the `Core::SumNew` below; an unresolved `Any`
+            // parent also falls through — no worse than before.)
+            if let Ty::Nominal { inner, .. } = expected
+                && payloads.len() == 1
+            {
+                return cval_to_core_ty(db, &payloads[0], inner);
+            }
+            let payload_tys = cval_sum_payload_tys(db, expected, *disc, payloads.len());
             let mut ps = Vec::with_capacity(payloads.len());
-            for p in payloads {
-                ps.push(cval_to_ast(db, p)?);
+            for (p, pty) in payloads.iter().zip(payload_tys.iter()) {
+                ps.push(cval_to_ast_ty(db, p, pty)?);
             }
             Core::SumNew {
                 disc: *disc,
@@ -1394,18 +1447,31 @@ pub(super) fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
             }
         }
         CVal::Tuple(xs) => {
+            let elem_tys: Vec<Ty> = match expected.strip_nominal() {
+                Ty::Tuple(ts) if ts.len() == xs.len() => ts.to_vec(),
+                _ => vec![Ty::Any; xs.len()],
+            };
             let mut elems = Vec::with_capacity(xs.len());
-            for x in xs {
-                elems.push(cval_to_ast(db, x)?);
+            for (x, ety) in xs.iter().zip(elem_tys.iter()) {
+                elems.push(cval_to_ast_ty(db, x, ety)?);
             }
             Core::Tuple {
                 elems: elems.into(),
             }
         }
         CVal::Record(m) => {
+            let field_tys = match expected.strip_nominal() {
+                Ty::Record(fs) => Some(fs.clone()),
+                _ => None,
+            };
             let mut fields = std::collections::BTreeMap::new();
             for (k, val) in m {
-                fields.insert(k.clone(), cval_to_ast(db, val)?);
+                let fty = field_tys
+                    .as_ref()
+                    .and_then(|fs| fs.get(k))
+                    .cloned()
+                    .unwrap_or(Ty::Any);
+                fields.insert(k.clone(), cval_to_ast_ty(db, val, &fty)?);
             }
             Core::Record {
                 fields: std::rc::Rc::new(fields),
@@ -1419,6 +1485,16 @@ pub(super) fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
 /// constant, no resolution needed). Used for the element/payload/field occurrences a materialized
 /// `Core::ListNew`/`SumNew`/`Record`/`Tuple` references.
 pub(super) fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
+    cval_to_ast_ty(db, v, &crate::ty::Ty::Any)
+}
+
+/// Like [`cval_to_ast`] but stamps `expected` (the value's threaded type) onto the synthesized compound node
+/// instead of `Ty::Any`. Load-bearing for a const-HOISTED compound: a reified `Core::SumNew`/`Record` node
+/// whose `type_of` reads `Ty::Any` breaks the backends that need the concrete type — the wasm boxing width
+/// (`box_op` box-int's a live i32 handle → "expected i64 found i32", CDZ0910) and the rust `sum_variant_path`
+/// ("sum construction node is not a sum type"). A scalar atom already types by its leaf, so only the compound
+/// arm threads. A degraded `Ty::Any` (unresolved parent) is still accepted — no worse than before.
+pub(super) fn cval_to_ast_ty(db: &mut Db, v: &CVal, expected: &Ty) -> Option<StructId> {
     Some(match v {
         CVal::Int(x) => db.push_atom(crate::ast::Leaf::Int {
             value: x.clone(),
@@ -1431,10 +1507,11 @@ pub(super) fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
         CVal::Bytes(b) => db.push_atom(crate::ast::Leaf::Bytes(b.clone())),
         CVal::Unit => synth_core(db, Core::Unit, crate::ty::Ty::Unit),
         CVal::List(_) | CVal::Sum { .. } | CVal::Record(_) | CVal::Tuple(_) => {
-            let core = cval_to_core(db, v)?;
-            // The type is not read on the const-fold / encode path (those read the memoized `Core`), so a
-            // permissive `Any` is sufficient — the authoritative fact is the core.
-            synth_core(db, core, crate::ty::Ty::Any)
+            let core = cval_to_core_ty(db, v, expected)?;
+            // Stamp the THREADED type (the authoritative core is still the memoized fact). A well-resolved
+            // `expected` gives the node its true `Ty`; an unresolved parent degrades this to `Ty::Any`,
+            // exactly the pre-threading behaviour.
+            synth_core(db, core, expected.clone())
         }
         // A trap is not a materializable element — it propagates (via `ce!`) before any compound is built, so
         // this is unreachable in practice; decline defensively rather than synthesize a bogus node.

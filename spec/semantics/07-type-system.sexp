@@ -4181,6 +4181,28 @@
       (export main)))
   (output (: 42 UInt64)))
 
+; A CONSTANT record FIELD holding a `List` of a NOMINAL newtype (a record-wrapping newtype), projected and
+; consumed. When the whole value is a compile-time constant it is const-EVALUATED and re-materialized: the
+; const-eval reifier (`cval_to_core`) must lower a nominal-newtype construction the SAME way ordinary
+; lowering does — ERASED to its payload core, NOT as a `Core::SumNew`. A reified `Core::SumNew` for the
+; erased `SC.SC(record)` mis-lowered on BOTH backends: wasm box-int'd the live i32 payload handle (its
+; hoisted node typed `Ty::Any`) → "expected i64 found i32"; rust routed it to `sum_variant_path`, which
+; needs a real `Ty::Sum` (a newtype strips to its payload type) → "sum construction node is not a sum type".
+; The reifier now threads the value's inferred type onto every synthesized node AND erases a `Ty::Nominal`
+; single-payload construction to its payload, so the const-hoisted list-of-nominal in a record field
+; matches the non-const emit on both backends. `(List.len (. cfg items))` = 2. (v-hivemind conformance
+; blocker: `base_1x1 = { storage: List(StorageConfig), … }` with `StorageConfig` a record-newtype.)
+(case
+  "a constant record field holding a List of a record-newtype projects and counts on both backends"
+  (input
+    (do
+      (type SC (SC (Record (: name String))))
+      (def (main)
+        (let ((cfg #record((= items #list((SC.SC #record((= name "a"))) (SC.SC #record((= name "b"))))))))
+          (List.len (. cfg items))))
+      (export main)))
+  (output (: 2 Int64)))
+
 ; --- A chained generic instantiated at a MAP type. ---
 (case
   "a chained generic instantiates at a MAP type and both tuple slots share the CHAMP"
