@@ -11033,7 +11033,7 @@ todo	cr03c host call INSIDE the handled body
 todo	cr03d combination with s64 host result (no Int64.of) — nested
 todo	cvp1 a variant host RESULT with a LIST payload lifts and is measured
 todo	cvp2 a variant host RESULT with a RECORD payload lifts and projects
-todo	equality on a TUPLE containing a closure is rejected CDZ0216 (NotEquatable — the fn leaf poisons the compound walk)
+pass	equality on a TUPLE containing a closure is rejected CDZ0216 (NotEquatable — the fn leaf poisons the compound walk)
 todo	expect traps on the absent case of a runtime optional
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
 todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)
