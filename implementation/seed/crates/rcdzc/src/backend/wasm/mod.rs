@@ -6926,81 +6926,71 @@ fn record_fields_rebuild(
     Some((rebuild, slots))
 }
 
-/// The per-element read+box descriptor for a `list<scalar>` entry param — the load op / natural-align /
-/// canonical stride / narrow-int extend / box op for one element of a list of Int8/16/32/64, UInt*,
-/// Float32/64, or Bool. `None` for a nested or compound element (list<list>, list<record>) — a later slice.
+/// The per-element read+box descriptor for a `list<scalar>` (or NESTED `list<list<…<scalar>>>`) entry param
+/// — the load op / natural-align / canonical stride / narrow-int extend / box op of the SCALAR LEAF, plus the
+/// `nest_lists` depth of enclosing list levels (0 = flat `list<scalar>`; k>0 = the element is a `(ptr,len)`
+/// sub-list recursively lifted k levels to the scalar — el8/eln). `None` for a compound leaf (list<record>,
+/// list<tuple>) — a later slice.
 fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serialize::ListElem> {
     use crate::backend::wasm::serialize::ListElem;
     use crate::backend::wasm::wasm_abi::op;
     use crate::ty::Ty;
-    Some(match elem.strip_nominal() {
-        Ty::Int(it) => {
-            let signed = it.ground_signed();
-            match it.ground_width() {
-                64 => ListElem {
-                    load_op: op::I64_LOAD,
-                    load_align: 3,
-                    stride: 8,
-                    extend: None,
-                    box_op: "box-int",
-                },
-                32 => ListElem {
-                    load_op: op::I32_LOAD,
-                    load_align: 2,
-                    stride: 4,
-                    extend: Some(signed),
-                    box_op: "box-int",
-                },
-                16 => ListElem {
-                    load_op: if signed {
-                        op::I32_LOAD16_S
-                    } else {
-                        op::I32_LOAD16_U
-                    },
-                    load_align: 1,
-                    stride: 2,
-                    extend: Some(signed),
-                    box_op: "box-int",
-                },
-                8 => ListElem {
-                    load_op: if signed {
-                        op::I32_LOAD8_S
-                    } else {
-                        op::I32_LOAD8_U
-                    },
-                    load_align: 0,
-                    stride: 1,
-                    extend: Some(signed),
-                    box_op: "box-int",
-                },
-                _ => return None,
+    // Descend nested list levels: a `list<list<…<scalar>>>` element is `nest` list-levels then a scalar leaf.
+    // Every intermediate `list<T>` has the SAME `(ptr,len)` boundary rep, so the nesting is a uniform depth.
+    let mut nest = 0u32;
+    let mut leaf = elem.strip_nominal().clone();
+    while let Ty::List(inner) = &leaf {
+        nest += 1;
+        leaf = inner.strip_nominal().clone();
+    }
+    // The scalar leaf's read+box: (load_op, natural-align, stride, narrow-extend, box_op).
+    let (load_op, load_align, stride, extend, box_op): (u8, u32, u32, Option<bool>, &'static str) =
+        match &leaf {
+            Ty::Int(it) => {
+                let signed = it.ground_signed();
+                match it.ground_width() {
+                    64 => (op::I64_LOAD, 3, 8, None, "box-int"),
+                    32 => (op::I32_LOAD, 2, 4, Some(signed), "box-int"),
+                    16 => (
+                        if signed {
+                            op::I32_LOAD16_S
+                        } else {
+                            op::I32_LOAD16_U
+                        },
+                        1,
+                        2,
+                        Some(signed),
+                        "box-int",
+                    ),
+                    8 => (
+                        if signed {
+                            op::I32_LOAD8_S
+                        } else {
+                            op::I32_LOAD8_U
+                        },
+                        0,
+                        1,
+                        Some(signed),
+                        "box-int",
+                    ),
+                    _ => return None,
+                }
             }
-        }
-        Ty::Bool => ListElem {
-            load_op: op::I32_LOAD8_U,
-            load_align: 0,
-            stride: 1,
-            extend: None,
-            box_op: "box-bool",
-        },
-        Ty::Float(ft) => match ft.ground_width() {
-            64 => ListElem {
-                load_op: op::F64_LOAD,
-                load_align: 3,
-                stride: 8,
-                extend: None,
-                box_op: "box-float",
+            Ty::Bool => (op::I32_LOAD8_U, 0, 1, None, "box-bool"),
+            Ty::Float(ft) => match ft.ground_width() {
+                64 => (op::F64_LOAD, 3, 8, None, "box-float"),
+                32 => (op::F32_LOAD, 2, 4, None, "box-float32"),
+                _ => return None,
             },
-            32 => ListElem {
-                load_op: op::F32_LOAD,
-                load_align: 2,
-                stride: 4,
-                extend: None,
-                box_op: "box-float32",
-            },
-            _ => return None,
-        },
-        _ => return None, // a nested list / compound element — a later slice
+            _ => return None, // a compound leaf (list<record>/list<tuple>) — a later slice
+        };
+    Some(ListElem {
+        load_op,
+        load_align,
+        stride,
+        extend,
+        box_op,
+        nest_lists: nest,
     })
 }
 
