@@ -7246,6 +7246,26 @@ fn reissue_agent_loop(fleet: &Fleet, name: &str) {
         );
         std::process::exit(1);
     }
+    // PANE-CHECK GATE (2026-09-24): the /loop re-issue is a ~600-char paste (paste-buffering-prone) — pasting
+    // it into a pane that is NOT a clean idle prompt (mid-turn/burst, backgrounded, unknown) mangles it into a
+    // partial turn that arms NO cron, AND could disrupt work in flight. That is the rung-2 failure the
+    // concierge hit re-issuing v-compiler-primitives (a tiny +0.9k turn, cron still dead). Confirm the pane is
+    // genuinely IDLE via two read-only captures before pasting; anything else → SKIP + tell the caller to
+    // retry when idle. (A working agent's cron isn't the problem, so skipping it is correct.)
+    let p1 = capture_pane(&session, name);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let verdict = match (p1.as_deref(), capture_pane(&session, name).as_deref()) {
+        (Some(a), Some(b)) => pane_liveness_verdict(a, b),
+        _ => PaneVerdict::Unknown,
+    };
+    if !pane_verdict_allows_reissue(&verdict) {
+        eprintln!(
+            "fleet reissue-loop: '{name}' pane is {verdict:?}, not a clean idle prompt — SKIPPING the /loop \
+             re-issue (pasting ~600 chars into a non-idle pane mangles it + arms no cron, and never paste \
+             into work-in-flight). Retry once `cargo xtask fleet pane-check {name}` reports IDLE."
+        );
+        std::process::exit(1);
+    }
     let prompt = watchdog_tick_prompt(fleet, &agent);
     if reissue_loop(&session, name, &agent.interval, &prompt) {
         println!(
@@ -11478,6 +11498,16 @@ fn pane_liveness_verdict(p1: &str, p2: &str) -> PaneVerdict {
     } else {
         PaneVerdict::Unknown
     }
+}
+
+/// May a `/loop` re-issue safely paste into a pane with this verdict? ONLY when the pane is a clean IDLE
+/// prompt: the ~600-char `/loop` line is paste-buffering-prone, so pasting it into a WORKING / backgrounded
+/// / unknown pane mangles it → a partial turn that arms NO cron (the rung-2 reissue failure the concierge
+/// hit on v-compiler-primitives, 2026-09-24), AND could disrupt work in flight. Pure so the invariant is
+/// pinned. (A dead cron on a genuinely-idle agent is exactly the re-issue's target; a working agent's cron
+/// is not the problem, so skipping it is correct, not a miss.)
+fn pane_verdict_allows_reissue(v: &PaneVerdict) -> bool {
+    matches!(v, PaneVerdict::IdlePrompt)
 }
 
 /// `cargo xtask fleet pane-check <agent>` — READ-ONLY liveness check (see the `PaneCheck` CLI doc).
@@ -21999,6 +22029,18 @@ mod tests {
         // Unclassifiable content → Unknown (never restart on this alone).
         let blank = "\n\n";
         assert_eq!(pane_liveness_verdict(blank, blank), Unknown);
+    }
+
+    #[test]
+    fn reissue_loop_pastes_only_into_a_clean_idle_prompt() {
+        use PaneVerdict::*;
+        // ONLY a clean idle prompt may receive the ~600-char /loop paste (else it mangles → arms no cron,
+        // the rung-2 reissue failure). Every other verdict must SKIP the re-issue.
+        assert!(pane_verdict_allows_reissue(&IdlePrompt));
+        assert!(!pane_verdict_allows_reissue(&Working));
+        assert!(!pane_verdict_allows_reissue(&BackgroundedWaitProgressing));
+        assert!(!pane_verdict_allows_reissue(&BackgroundedWaitFrozen));
+        assert!(!pane_verdict_allows_reissue(&Unknown));
     }
 
     #[test]
