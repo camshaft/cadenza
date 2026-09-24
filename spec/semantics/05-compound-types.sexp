@@ -26732,19 +26732,21 @@
   (error CDZ0201 (message "exactly one binder after"))
   (no-diagnostic "unused match binding"))
 
-; A `..` spread marker is a PATTERN-only form: using it in a map/record CONSTRUCTION entry (not a pattern) is
-; a CDZ0201 that names the pattern-only rule — and must NOT be misdiagnosed as a malformed `(key value)` entry
-; ("add the leading `=`"). (Migrated from rcdzc a_spread_in_a_map_or_record_construction_entry_names_the_pattern_only_dotdot_rule.)
+; A `..` construction spread is a LEGAL form now (DESIGN-collection-spread-construction.md; prelude MapSpread) — it splices
+; a BOUND map/record operand into a construction (both positions compile). When the spread OPERAND is UNBOUND, the only
+; fault is the unbound name (CDZ0101); it must NOT be misdiagnosed as a malformed `(key value)` entry ("add the leading
+; `=`"). (Migrated from rcdzc a_spread_in_a_map_or_record_construction_entry_names_the_pattern_only_dotdot_rule; re-pinned
+; CDZ0201->CDZ0101 once construction-spread landed, 2026-09-24 — the pattern-only premise was stale.)
 (case
-  "a `..` spread in a MAP construction entry names the pattern-only rule, not a malformed key-value entry"
+  "a `..` construction spread of an unbound operand in a MAP reports the unbound name (CDZ0101), construction spread being legal"
   (input (do (def (main) #map((.. m) (= 3 4))) (export main)))
-  (error CDZ0201 (message "`..` is a rest/spread marker"))
+  (error CDZ0101)
   (no-diagnostic "add the leading `=`"))
 
 (case
-  "a `..` spread in a RECORD construction entry names the pattern-only rule, not a malformed key-value entry"
+  "a `..` construction spread of an unbound operand in a RECORD reports the unbound name (CDZ0101), construction spread being legal"
   (input (do (def (main) #record((.. r) (= b 2))) (export main)))
-  (error CDZ0201 (message "`..` is a rest/spread marker"))
+  (error CDZ0101)
   (no-diagnostic "add the leading `=`"))
 
 ; A SET is matched by ELEMENT-MEMBERSHIP patterns (`core-semantics.md` §A Set Is Matched By Element-Membership
