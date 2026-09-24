@@ -124,6 +124,41 @@
   (live-objects 0))
 
 (case
+  "a discarded diverging (trap-body) closure over an empty recursive HOF grounds to its declared result inside a handler"
+  (doc
+    "Regression pin for the CASE-1 closure-result grounding fix (#9616), now inside an EFFECTFUL context. An
+           unconditionally-diverging closure `(fn (_x) (trap …))` has result type `∀a. String → a`; passed to a
+           recursive HOF `walk` whose EMPTY base case never calls it, that result var stays UNGROUND (a free
+           `Ty::Var`, NOT `Ty::Any`), so before #9616 closure-lowering declined `a closure's result type has no
+           machine representation`. #9616 grounds it to the closure's DECLARED result (`walk`'s `f : Int64 -> Unit`
+           → `Unit`) at the lowering site (`lower/call_lower.rs` ret_ty fallback, the closure-result analog of the
+           #9612 perform-arg grounding). This pins that the grounding STILL holds when the discarded HOF call sits
+           inside a `handle` body — the effect fold must not re-derive the closure result and drop the grounding.
+           The empty-`walk` is a no-op so the handler's nullary `get` resumes 5 unaffected; the discarded
+           capture-free closure reclaims (live-objects 0). The call is kept (not DCE'd) by the #9606/#9621 DCE
+           §283-override — an explicit-divergence body is preserved even when unreached, which is what forces the
+           closure to be lowered at all.")
+  (input
+    (do
+      (effect E (op get (-> Int64)))
+      (def
+        (walk (: xs (List Int64)) (: f (-> Int64 Unit)))
+        (match xs
+          (#list() unit)
+          (#list(h (.. t)) (let ((_ (f h))) (walk t f)))))
+      (def
+        (main)
+        (handle
+          E
+          0
+          ((get () s (resume 5 s)))
+          (let ((_ (walk #list() (fn (_x) (trap "empty should never call f"))))) (E.get))))
+      (export main)))
+  (call main)
+  (output (: 5 Int64))
+  (live-objects 0))
+
+(case
   "a handler consumes its string-rope state TWICE per resume — once for the resume value, once for the new state"
   (doc
     "The resume-boundary companion of the bare-string-rope state case above, and the effects analog

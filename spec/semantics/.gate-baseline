@@ -2994,6 +2994,7 @@ pass	a handler arm that resumes NON-tail folds when the perform is in an and lhs
 pass	a handler arm that resumes NON-tail folds when the perform is in an if condition
 pass	a handler arm that resumes NON-tail folds when the perform is the whole body
 pass	a handler arm with two lookup-matches and a computed perform key emits valid wasm (checked-arith scratch slot-width partition)
+pass	a discarded diverging (trap-body) closure over an empty recursive HOF grounds to its declared result inside a handler
 pass	a handler consumes its string-rope state TWICE per resume — once for the resume value, once for the new state
 pass	a handler distributes into a match on a pure scrutinee whose selected arm performs
 pass	a handler distributes into an if whose BOTH branches perform
