@@ -11467,7 +11467,11 @@ fn pane_liveness_verdict(p1: &str, p2: &str) -> PaneVerdict {
         } else {
             PaneVerdict::BackgroundedWaitFrozen
         }
-    } else if pane_shows_working(p2) {
+    } else if pane_shows_working(p2) || progressing {
+        // A CHANGING token count is definitive liveness (the concierge's discriminator) and OVERRIDES a
+        // bare-`❯` capture: a genuinely idle prompt has a STATIC leftover count, so an ADVANCING count means
+        // a turn is generating and the idle-prompt line was a transient/racy read (observed live on
+        // v-hivemind: pane showed `❯` yet the meter went 37.6k→38.3k across the captures — alive, not hung).
         PaneVerdict::Working
     } else if pane_shows_idle_prompt(p2) {
         PaneVerdict::IdlePrompt
@@ -21983,9 +21987,15 @@ mod tests {
             pane_liveness_verdict(wait_a, wait_a),
             BackgroundedWaitFrozen
         );
-        // A bare idle prompt → IdlePrompt (a wake/nudge target, not a blind restart).
+        // A bare idle prompt with a STATIC token count → IdlePrompt (a wake/nudge target, not a blind restart).
         let idle = "previous output scrolled up\n❯\n";
         assert_eq!(pane_liveness_verdict(idle, idle), IdlePrompt);
+        // A bare `❯` prompt BUT an ADVANCING token count → Working, not IdlePrompt: a changing count is
+        // definitive liveness and overrides a transient idle-prompt capture (observed live on v-hivemind,
+        // 2026-09-24: pane showed `❯` yet the meter went 37.6k→38.3k — alive, must not be waked/restarted).
+        let idle_but_gen1 = "❯\n↓ 37.6k tokens\n";
+        let idle_but_gen2 = "❯\n↓ 38.3k tokens\n";
+        assert_eq!(pane_liveness_verdict(idle_but_gen1, idle_but_gen2), Working);
         // Unclassifiable content → Unknown (never restart on this alone).
         let blank = "\n\n";
         assert_eq!(pane_liveness_verdict(blank, blank), Unknown);
