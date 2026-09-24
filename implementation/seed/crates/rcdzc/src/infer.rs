@@ -71,6 +71,11 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     // already-ground type; takes `t` so it never re-enters `type_of(id)` (grounding self-recursion is
     // bounded by `GROUNDING_ARMS`).
     let t = crate::effects::ground_seed_if_handle_init(db, id, t);
+    // Perform-arg twin of the seed grounding: ground a PERFORM ARGUMENT's under-constrained type against the
+    // operation's DECLARED parameter type, so a bare `(None)`/`#list()` arg does not memoize an unground
+    // `(Option _)`/`(List _)` that the host-boundary `abi_val_type` guard drops → stack imbalance (CDZ0910,
+    // SHAPE 103/104). No-op for a non-perform-arg node or an already-ground type.
+    let t = crate::effects::ground_perform_arg_ty(db, id, t);
     db.descent_depth -= 1;
     trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(&db.name_ctx()), "solved type");
     // Do NOT memoize a provisional `Any`, OR a type that still CONTAINS A FREE VARIABLE: a node typed
