@@ -93,11 +93,28 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
             .copied()
             .filter(|&f| db.ast.head_name(f) != Some("def"))
             .collect();
-        // The do-block's VALUE (before value-def keeping): a `Core::Seq` if a non-final statement is an
-        // observable host call, else just the tail (the ordinary `Ref{last}` fold).
+        // The do-block's VALUE (before value-def keeping): a `Core::Seq` keeping every non-final statement
+        // that must be EVALUATED FOR ITS EFFECT — one with an OBSERVABLE EFFECT or EXPLICIT DIVERGENCE
+        // (`discarded_stmt_has_observable_effect`: reaches a host call, a `Core::Call`/`CallClosure`, or an
+        // explicit `Core::Trap`). OPERATOR §283 OVERRIDE (concierge ask #083499 + WIDEN #083505, "fix asap"):
+        // dropping a REACHABLE discarded statement that performs an effect or explicitly diverges is a
+        // miscompile — the effect/trap silently vanishes (hollow-green across the conformance suite: every
+        // driver asserts via a non-tail assert). Keeping a discarded CALL preserves a latent host/divergent
+        // effect reached only THROUGH the call boundary (shapes W2/W3 — the callee returns Unit, the caller
+        // discards it, and caller-side analysis cannot see the callee's latent effect) WITHOUT any caller-side
+        // propagation. A discarded PURE-SCALAR IMPLICIT arith trap (`(/ 100 d)`) stays elidable per the §283
+        // dead-init ruling (concierge #622465) — the predicate excludes it. Kept statements that do NOT
+        // themselves reach a host call are MARKED in `db.strict_force_eval` so the backend Seq emit
+        // force-evaluates them (it §283-elides a non-host statement UNLESS marked) and drops the discarded
+        // value (Unit → nothing, scalar → drop, owned-heap producer → OP_DROP — the emit.rs:6475 contract).
+        for &s in &non_def_stmts {
+            if !subtree_reaches_host_call(db, s) && discarded_stmt_has_observable_effect(db, s) {
+                db.strict_force_eval.insert(s);
+            }
+        }
         let needs_seq = non_def_stmts
             .iter()
-            .any(|&s| subtree_reaches_host_call(db, s));
+            .any(|&s| discarded_stmt_has_observable_effect(db, s));
         let do_value_node = if needs_seq {
             let seq_ty = crate::infer::type_of(db, tail);
             synth_core(

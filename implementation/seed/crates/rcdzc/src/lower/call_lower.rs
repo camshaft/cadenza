@@ -2275,6 +2275,18 @@ pub(crate) struct BindingUses {
     escapes_in_def_init: crate::fxhash::FxHashSet<StructId>,
 }
 
+impl BindingUses {
+    /// Total in-region references to the binding whose value node is `init` (0 = genuinely unused/discarded).
+    /// Read by `lower_let`'s erase path to distinguish a DISCARDED binding (0 refs → force-evaluate a
+    /// divergent/effectful init for its effect, the §283 override) from a SINGLE-USE binding (≥1 ref →
+    /// copy-propagated/inlined into the body, so its effect already happens at the inline site; force-
+    /// evaluating it too would DOUBLE-emit the computation — the `a_single_use_runtime_binding_is_inlined`
+    /// invariant).
+    pub(crate) fn ref_count(&self, init: StructId) -> u32 {
+        self.count.get(&init).copied().unwrap_or(0)
+    }
+}
+
 /// Walk `node` once, recording into `out` a use (and, unless `proj_operand`, a whole-value escape) for
 /// every `Resolved::Ref { value }` — and a use for every `SumPayload`/`BinField`/`MapField` reading `init`
 /// directly. `proj_operand` marks that `node` sits in a PROJECTION-operand position (`(. □ i)`): a bare ref
