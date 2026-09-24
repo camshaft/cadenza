@@ -1013,10 +1013,12 @@ pub enum MemLeafKind {
     /// A `String` param: the copied-out UTF-8 byte-leaf IS the String (a Cadenza String is a byte-leaf; no
     /// decode — a WIT `string` param is valid UTF-8). Same lift as `Bytes`; distinct only for the WIT type.
     Str,
-    /// A `list<scalar>` param: build a value-heap vec (`vec-empty` + per-element read/box/`vec-push`) from the
-    /// canonical `(ptr, len)` layout, rather than a raw byte copy. The [`ListElem`] carries the element's
-    /// read+box (Int8/16/32/64, UInt*, Float32/64, Bool). A `list<u8>` here is a genuine `List UInt8` value
-    /// (a vec of boxed u8s), NOT `Bytes` (a packed byte-leaf) — distinct value reps behind the same WIT type.
+    /// A `list<scalar>` (or NESTED `list<list<…<scalar>>>`) param: build a value-heap vec (`vec-empty` +
+    /// per-element read/box/`vec-push`) from the canonical `(ptr, len)` layout, rather than a raw byte copy.
+    /// The [`ListElem`] carries the scalar leaf's read+box (Int8/16/32/64, UInt*, Float32/64, Bool) plus a
+    /// `nest_lists` depth: `0` = a flat `list<scalar>`; `k>0` = a nested list whose elements are `(ptr,len)`
+    /// sub-lists recursively lifted `k` levels to the scalar (el8/eln). A `list<u8>` here is a genuine
+    /// `List UInt8` value (a vec of boxed u8s), NOT `Bytes` (a packed byte-leaf) — distinct value reps.
     List(ListElem),
 }
 
@@ -1038,6 +1040,13 @@ pub struct ListElem {
     /// The box op that wraps the loaded scalar into a value-heap handle (`box-int`/`box-float`/`box-float32`/
     /// `box-bool`).
     pub box_op: &'static str,
+    /// The number of enclosing `list<…>` levels between the outer list's element position and this scalar
+    /// leaf — `0` for a flat `list<scalar>` (each element is the scalar itself), `k>0` for a nested
+    /// `list<list<…<scalar>>>` (each element is a `(ptr, len)` sub-list at canonical stride 8, recursively
+    /// lifted `k` levels down to the scalar). Uniform per level because every `list<T>` has the same
+    /// `(ptr: i32, len: i32)` boundary rep regardless of `T`, so the nesting is a depth COUNT, not a tree
+    /// (el8/eln1-3). `emit_list_leaf_lift` recurses on this count.
+    pub nest_lists: u32,
 }
 
 /// How a boundary wrapper produces its result from the value the compiled def returns.
@@ -1584,9 +1593,18 @@ fn core_module_impl(
                                 &mut inner,
                             ); // → [buf]
                         }
-                        // list<scalar>: build a value-heap vec by reading + boxing each element per its width.
+                        // list<scalar> (or nested list<list<…>>): build a value-heap vec by reading + boxing
+                        // each element per its width, recursing on `nest_lists` for sub-lists.
                         MemLeafKind::List(elem) => {
-                            emit_list_leaf_lift(&elem, leaf, buf, ctr, &imp, &mut inner); // → [vec]
+                            emit_list_leaf_lift(
+                                &elem,
+                                leaf,
+                                buf,
+                                ctr,
+                                &mut next_local,
+                                &imp,
+                                &mut inner,
+                            ); // → [vec]
                         }
                     }
                     leaf += 2; // the string/list flattened to (ptr, len)
@@ -3669,11 +3687,57 @@ fn emit_list_leaf_lift(
     ptr_leaf: u32,
     buf: u32,
     ctr: u32,
+    next_local: &mut u32,
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
 ) {
     use crate::backend::wasm::wasm_abi::op;
-    let len_leaf = ptr_leaf + 1;
+    // Build the outer list at boundary leaves (ptr_leaf, ptr_leaf+1) into `buf`, descending `nest_lists`
+    // sub-list levels; then leave the outer vec handle on the stack for the def call.
+    emit_list_level(
+        elem,
+        elem.nest_lists,
+        ptr_leaf,
+        ptr_leaf + 1,
+        buf,
+        ctr,
+        next_local,
+        imp,
+        out,
+    );
+    out.push(op::LOCAL_GET);
+    uleb128(buf as u64, out);
+}
+
+/// Build ONE list level into `buf` from the `(ptr_local, len_local)` descriptor, leaving the stack balanced
+/// (the result is left in `buf`, NOT on the stack — the caller reads `buf`). `levels` = remaining nested
+/// list depth: `0` → each element is the scalar leaf (load + box + push); `k>0` → each element is a
+/// `(ptr, len)` sub-list at canonical stride 8 (load its ptr/len into fresh locals, recursively build it into
+/// a fresh inner `buf`, then push that vec handle). `next_local` hands each nested level its own scratch
+/// locals so no level clobbers another's cursor/accumulator.
+#[allow(clippy::too_many_arguments)]
+fn emit_list_level(
+    elem: &ListElem,
+    levels: u32,
+    ptr_local: u32,
+    len_local: u32,
+    buf: u32,
+    ctr: u32,
+    next_local: &mut u32,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    // A nested element is a `(ptr,len)` sub-list = 8 canonical bytes; a scalar leaf uses its own stride.
+    let stride: u32 = if levels > 0 { 8 } else { elem.stride };
+    // For a nested level, pre-allocate this level's per-element scratch (inner ptr/len + inner vec/cursor).
+    let (inner_ptr, inner_len, inner_buf, inner_ctr) = if levels > 0 {
+        let base = *next_local;
+        *next_local += 4;
+        (base, base + 1, base + 2, base + 3)
+    } else {
+        (0, 0, 0, 0)
+    };
     // buf = vec-empty()
     out.push(op::CALL);
     uleb128(imp("vec-empty"), out);
@@ -3684,7 +3748,7 @@ fn emit_list_leaf_lift(
     crate::backend::wasm::encode::sleb128(0, out);
     out.push(op::LOCAL_SET);
     uleb128(ctr as u64, out);
-    // block { loop { if ctr >= len br 1; buf = vec-push(buf, box(load(ptr + ctr*stride))); ctr += 1; br 0 } }
+    // block { loop { if ctr >= len br 1; <build+push element>; ctr += 1; br 0 } }
     out.push(op::BLOCK);
     out.push(crate::backend::wasm::wasm_abi::BLOCK_EMPTY);
     out.push(op::LOOP);
@@ -3693,38 +3757,77 @@ fn emit_list_leaf_lift(
     out.push(op::LOCAL_GET);
     uleb128(ctr as u64, out);
     out.push(op::LOCAL_GET);
-    uleb128(len_leaf as u64, out);
+    uleb128(len_local as u64, out);
     out.push(op::I32_GE_U);
     out.push(op::BR_IF);
     uleb128(1, out);
-    // buf = vec-push(buf, box(load(ptr + ctr*stride)))
-    out.push(op::LOCAL_GET);
-    uleb128(buf as u64, out); // [buf]
-    // addr = ptr + ctr*stride
-    out.push(op::LOCAL_GET);
-    uleb128(ptr_leaf as u64, out);
-    out.push(op::LOCAL_GET);
-    uleb128(ctr as u64, out);
-    out.push(op::I32_CONST);
-    crate::backend::wasm::encode::sleb128(elem.stride as i64, out);
-    out.push(op::I32_MUL);
-    out.push(op::I32_ADD); // [buf, addr]
-    out.push(elem.load_op);
-    uleb128(elem.load_align as u64, out);
-    uleb128(0, out); // offset 0 → [buf, elem]
-    if let Some(signed) = elem.extend {
-        out.push(if signed {
-            op::I64_EXTEND_I32_S
-        } else {
-            op::I64_EXTEND_I32_U
-        });
+    // addr = ptr + ctr*stride  (helper: pushes the element address onto the stack)
+    let emit_addr = |out: &mut Vec<u8>| {
+        out.push(op::LOCAL_GET);
+        uleb128(ptr_local as u64, out);
+        out.push(op::LOCAL_GET);
+        uleb128(ctr as u64, out);
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(stride as i64, out);
+        out.push(op::I32_MUL);
+        out.push(op::I32_ADD);
+    };
+    if levels == 0 {
+        // buf = vec-push(buf, box(load(addr)))
+        out.push(op::LOCAL_GET);
+        uleb128(buf as u64, out); // [buf]
+        emit_addr(out); // [buf, addr]
+        out.push(elem.load_op);
+        uleb128(elem.load_align as u64, out);
+        uleb128(0, out); // offset 0 → [buf, elem]
+        if let Some(signed) = elem.extend {
+            out.push(if signed {
+                op::I64_EXTEND_I32_S
+            } else {
+                op::I64_EXTEND_I32_U
+            });
+        }
+        out.push(op::CALL);
+        uleb128(imp(elem.box_op), out); // [buf, boxed]
+        out.push(op::CALL);
+        uleb128(imp("vec-push"), out); // [buf']
+        out.push(op::LOCAL_SET);
+        uleb128(buf as u64, out);
+    } else {
+        // inner_ptr = i32.load(addr + 0); inner_len = i32.load(addr + 4) — the canonical list descriptor.
+        emit_addr(out);
+        out.push(op::I32_LOAD);
+        uleb128(2, out); // align log2(4)
+        uleb128(0, out); // offset 0 (ptr)
+        out.push(op::LOCAL_SET);
+        uleb128(inner_ptr as u64, out);
+        emit_addr(out);
+        out.push(op::I32_LOAD);
+        uleb128(2, out);
+        uleb128(4, out); // offset 4 (len)
+        out.push(op::LOCAL_SET);
+        uleb128(inner_len as u64, out);
+        // Recursively build the inner list into inner_buf (leaves the stack balanced), then push its handle.
+        emit_list_level(
+            elem,
+            levels - 1,
+            inner_ptr,
+            inner_len,
+            inner_buf,
+            inner_ctr,
+            next_local,
+            imp,
+            out,
+        );
+        out.push(op::LOCAL_GET);
+        uleb128(buf as u64, out); // [buf]
+        out.push(op::LOCAL_GET);
+        uleb128(inner_buf as u64, out); // [buf, inner-vec]
+        out.push(op::CALL);
+        uleb128(imp("vec-push"), out); // [buf']
+        out.push(op::LOCAL_SET);
+        uleb128(buf as u64, out);
     }
-    out.push(op::CALL);
-    uleb128(imp(elem.box_op), out); // [buf, boxed]
-    out.push(op::CALL);
-    uleb128(imp("vec-push"), out); // [buf']
-    out.push(op::LOCAL_SET);
-    uleb128(buf as u64, out);
     // ctr += 1
     out.push(op::LOCAL_GET);
     uleb128(ctr as u64, out);
@@ -3737,9 +3840,6 @@ fn emit_list_leaf_lift(
     uleb128(0, out);
     out.push(op::END); // end loop
     out.push(op::END); // end block
-    // leave the vec handle on the stack for the def call
-    out.push(op::LOCAL_GET);
-    uleb128(buf as u64, out);
 }
 
 /// Emit the RESULT-SPILL for a wrapper whose def returns a value-heap compound HANDLE: store the handle
