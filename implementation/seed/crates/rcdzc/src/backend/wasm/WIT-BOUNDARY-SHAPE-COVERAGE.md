@@ -101,6 +101,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   string+record, multi-record) still declines INSIDE it — decline-don't-miscompile preserved. The no-world
   bare-effect branch keeps the flat scalar/string/`list<u8>`-arg path (the top guard declined compound args
   there since `allow_option_bytes` is false without a world). The RESULT side was already DONE (B1).
+  Verified end-to-end on the plain path (import `cadenza:platform/probe` + bare `run: func()` export, host
+  stub matched): RECORD arg (SHAPE 92), scalar-payload bare-VARIANT arg (SHAPE 93), `list<s64>` arg
+  (SHAPE 94). **KNOWN GAP — a payloadless (all-nullary) ENUM host-op ARG on this shape does NOT reach the
+  plain path:** the program emits NO host import and instead compiles to the effect-reification form
+  (exports `cadenza:run/run`, returns a `{correlation,kind:"effect/probe",payload,schema_descriptor}`
+  reflection envelope), so the scripted host-response never matches. record/variant/list/scalar args all
+  take the plain host-import path; only the all-nullary enum arg reifies. Root: something upstream of the
+  mod.rs:1509 plain path (host-import collection / reducer detection) routes an all-nullary-enum-arg effect
+  to reification — NOT yet diagnosed; the enum-arg corpus case is PARKED until it is.
 - **[emit, RESULT] a payloadless ENUM host-op RESULT crossing BY VALUE on the plain host-delegating
   envelope — ✅ DONE (SHAPE 90).** Rides the SAME `result_crefs[i]` path as a spilled compound:
   `build_host_result_types` already maps `enum_result` to the enum's nominal `enum` DEFINED+EXPORTED type
