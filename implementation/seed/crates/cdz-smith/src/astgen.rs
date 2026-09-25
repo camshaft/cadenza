@@ -183,9 +183,15 @@ pub struct ExportParam {
 /// cross-backend divergence (wasm CDZ0910 fixed by #9633; rust E0282 fixed by #9680) so it stayed OUT until
 /// BOTH sides agreed; now that #9680 landed it is a live value guard (a regression that re-mislowers the
 /// unboxed-i64 scalar-newtype option field as an i32 aggregate handle corrupts the round-tripped nid).
+/// Shape 10 is the #9684 list-element SIBLING of #9586: a record with a const `(List (Option Int64))` field
+/// PROJECTED AWAY while a sibling scalar `n` (= the param) is read — the bare nullary-variant list element
+/// (`(list (Option.None …))`) was rust E0282 until #9684 threaded the solved element type; a regression
+/// re-introducing it surfaces as a rust ArtifactError (build-blocking) → mismatch. (Set/Map-of-Option const
+/// fields are deliberately NOT generated — they still DECLINE on the rust backend today, coverage-not-yet,
+/// so they'd read as rust-declined, not a value mismatch, until that lands.)
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(10);
+    let shape = c.variant(11);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -263,10 +269,20 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //     (identity through the record-Option-newtype round-trip). Verbatim from the 15-rows corpus repro
         //     (the MembrainHivemind `send` bisect). Was a known divergence (wasm CDZ0910 #9633 / rust E0282
         //     #9680); both backends now agree, so a re-mislower of the unboxed-i64 option field corrupts nid.
-        _ => (
+        9 => (
             "(do (type Sess (Sess Bytes)) (type Node (Node UInt64)) (type Msg (Msg (Record (: to Sess) (: contract String) (: from (Option Sess)) (: payload Bytes) (: on (Option Node))))) (def (message (: to Sess) (: contract String)) (: (Msg.Msg #record((= to to) (= contract contract) (= from (Option.None unit)) (= payload b\"\") (= on (Option.None unit)))) Msg)) (def (on (: m Msg) (: node Node)) (: (let (((Msg.Msg f) m)) (Msg.Msg (Record.with f #\"on\" (Option.Some node)))) Msg)) (def (unpack (: m Msg)) (: (let (((Msg.Msg f) m)) (match f.on ((Option.Some n) (let (((Node.Node v) n)) v)) ((Option.None _) 0))) UInt64)) (def (run (: nid UInt64)) (: (let ((a (Sess.Sess b\"s\"))) (let ((msg (|> (|> a (message \"msg\")) (on (Node.Node nid))))) (unpack msg))) UInt64)) (export run))"
                 .to_string(),
             vec![u.to_string()],
+        ),
+        // 10 — #9684 list-element sibling of #9586: a record with a CONST `(list (Option.None …) …)` field
+        //      `tags` typed `(List (Option Int64))` PROJECTED AWAY while the sibling scalar `n` (= the param)
+        //      is read. The bare nullary-variant list element was rust E0282 (untyped `vec![Option::None]`
+        //      when the field is projected away) until #9684 threaded the solved element type; returns the
+        //      param. A regression reintroducing E0282 shows as a rust ArtifactError → mismatch.
+        _ => (
+            "(do (def (run (: k Int64)) (: (let ((rec #record((= tags (list (Option.None unit) (Option.Some 3))) (= n k)))) (. rec n)) Int64)) (export run))"
+                .to_string(),
+            vec![a.to_string()],
         ),
     };
     ExportParam { source, args }
@@ -5589,14 +5605,15 @@ mod tests {
 
     #[test]
     fn generate_export_param_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the ten export-param shapes (see
+        // Distinctive, mutually-exclusive markers for the eleven export-param shapes (see
         // `generate_export_param`): double/add/idn/u(UInt64)/f(3-arg)/sgn + three (List Int64) entry-param
-        // shapes lhd/top(helper)/suml(recursive-walk) + the #9586 record-Option-newtype `run`.
-        let mut reached = [false; 10];
-        for seed in 0u64..600 {
+        // shapes lhd/top(helper)/suml(recursive-walk) + the #9586 record-Option-newtype `run` + the #9684
+        // const-list-of-Option-field sibling.
+        let mut reached = [false; 11];
+        for seed in 0u64..660 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(10) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // variant(11) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
             // shape selector AND every arg literal on live entropy.
             for _ in 0..64 {
                 x ^= x >> 30;
@@ -5637,11 +5654,13 @@ mod tests {
                 reached[8] = true; // shape 8 = recursive index-walk `suml`
             } else if ep.source.contains("(def (run (: nid UInt64))") {
                 reached[9] = true; // shape 9 = #9586 record-Option-newtype `run`
+            } else if ep.source.contains("(= tags (list") {
+                reached[10] = true; // shape 10 = #9684 const-list-of-Option-field sibling
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all ten export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all eleven export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
