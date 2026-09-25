@@ -8704,8 +8704,39 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                     .map(|(_, age)| *age >= SAT_NOTIFY_GRACE)
                     .unwrap_or(true);
             if notify || permission_notify {
+                // LIVENESS GATE (concierge 2026-09-25, same token-delta family as the wedge-rung #9660 /
+                // reissue-loop #9632): a persistent-drain-stall escalation FALSE-FIRES on an agent that is
+                // alive + WORKING and merely HOLDING an actionable message as an open TODO — or caught in an
+                // idle SNAPSHOT between turns (it fluctuates idle<->working). Confirm with a 2-capture
+                // token-delta verdict; if the pane is WORKING (or a progressing backgrounded wait) it is not
+                // stalled → SKIP the escalation. The PERMISSION-DIALOG wedge is EXEMPT: a Yes/No selector is a
+                // genuine human-needed block that a working-pane heuristic would wrongly clear.
+                let alive_working = !permission_wedge && {
+                    let p1 = capture_pane(&session, &a.name);
+                    std::thread::sleep(std::time::Duration::from_secs(
+                        DRAIN_STALL_CONFIRM_DELAY_SECS,
+                    ));
+                    match (p1.as_deref(), capture_pane(&session, &a.name).as_deref()) {
+                        (Some(x), Some(y)) => {
+                            drain_stall_alive_by_verdict(&pane_liveness_verdict(x, y))
+                        }
+                        _ => false, // can't read the pane → don't suppress a possibly-genuine stall
+                    }
+                };
                 let flagged = flagged_id.as_deref().unwrap_or("?");
-                if dry_run {
+                if alive_working {
+                    if dry_run {
+                        println!(
+                            "  DRY-RUN would SKIP drain-stall escalation for '{}' (pane WORKING/progressing — alive + holding an actionable as an open TODO, not a stall)",
+                            a.name
+                        );
+                    } else {
+                        eprintln!(
+                            "  · skipped drain-stall escalation for '{}' — pane confirms WORKING (alive, not stalled)",
+                            a.name
+                        );
+                    }
+                } else if dry_run {
                     println!(
                         "  DRY-RUN would escalate '{}' {} to concierge",
                         a.name,
@@ -11659,6 +11690,20 @@ fn pane_liveness_verdict(p1: &str, p2: &str) -> PaneVerdict {
 /// is not the problem, so skipping it is correct, not a miss.)
 fn pane_verdict_allows_reissue(v: &PaneVerdict) -> bool {
     matches!(v, PaneVerdict::IdlePrompt)
+}
+
+/// True if a persistent-drain-stall escalation should be SUPPRESSED because the 2-capture verdict shows the
+/// agent is ALIVE — WORKING (a turn in flight) or a PROGRESSING backgrounded wait. Such an agent is not
+/// stalled: it is holding an actionable message as an open TODO, or was caught in an idle SNAPSHOT between
+/// turns (it fluctuates idle<->working). Mirrors [`pane_verdict_allows_reissue`]'s discipline for the
+/// escalation-to-concierge line (concierge 2026-09-25 false-positive on wasm-boundary-marshal). A genuinely
+/// IdlePrompt / frozen-backgrounded-wait / Unknown verdict is NOT suppressed — a real stall still escalates.
+/// Pure so the gate is unit-tested off tmux.
+fn drain_stall_alive_by_verdict(v: &PaneVerdict) -> bool {
+    matches!(
+        v,
+        PaneVerdict::Working | PaneVerdict::BackgroundedWaitProgressing
+    )
 }
 
 /// `cargo xtask fleet pane-check <agent>` — READ-ONLY liveness check (see the `PaneCheck` CLI doc).
@@ -22226,6 +22271,20 @@ mod tests {
         assert!(!pane_verdict_allows_reissue(&BackgroundedWaitProgressing));
         assert!(!pane_verdict_allows_reissue(&BackgroundedWaitFrozen));
         assert!(!pane_verdict_allows_reissue(&Unknown));
+    }
+
+    #[test]
+    fn drain_stall_escalation_is_suppressed_only_for_a_live_working_pane() {
+        use PaneVerdict::*;
+        // SUPPRESS the drain-stall escalation when the agent is demonstrably alive: a turn in flight, or a
+        // progressing backgrounded wait (it is holding an actionable as a TODO / between turns, not stalled).
+        assert!(drain_stall_alive_by_verdict(&Working));
+        assert!(drain_stall_alive_by_verdict(&BackgroundedWaitProgressing));
+        // Do NOT suppress a genuine stall: a bare idle prompt, a FROZEN backgrounded wait, or an unreadable
+        // pane all still escalate (a real not-draining agent must not be silenced).
+        assert!(!drain_stall_alive_by_verdict(&IdlePrompt));
+        assert!(!drain_stall_alive_by_verdict(&BackgroundedWaitFrozen));
+        assert!(!drain_stall_alive_by_verdict(&Unknown));
     }
 
     #[test]
