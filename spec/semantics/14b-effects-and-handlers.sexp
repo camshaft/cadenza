@@ -729,18 +729,17 @@
   (output (: 34 Int64)))
 
 (case
-  "a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)"
+  "a DIRECT branch perform in a NESTED handler-arm resume-value threads the outer advance (adv-69 a3-direct)"
   (doc
     "The DIRECT-conditional twin of the a3 case: `(resume (if true (St.get) 99) t)` — a branch-performing
            conditional DIRECTLY (no block wrapper) in a nested handler's arm resume-value, performing the OUTER
-           op. Unlike the let-init face — where a DIRECT init is lifted by Site 4 and folds — a `resume`-value
-           is never hoisted (it lives inside the inner `Up` handle's arm, which the outer `St` reduction does
-           not rewrite), so the direct conditional here ALSO drops the outer `St.get`'s advance: seeded 3 it ran
-           33, correct is 34. The a3 guard's `Resume{value}` scanner declines this via its direct-conditional
-           disjunct (verified: dropping that disjunct makes this miscompile to 33, not fold to 34 — so the
-           disjunct is load-bearing, not an over-decline). Pins that the resume-value drop is NOT block-wrapper-
-           specific (contrast the let-init face). Grades TODO on all backends; flips to 34 PASS on the
-           through-block fold.")
+           op. The through-block fold now threads the outer `St.get`'s advance through the direct conditional
+           correctly: seeded 3, `(Up.ask)` resumes `(if true (St.get) 99)` = St.get reads 3 (St→4), so `(* 10
+           3)` = 30, then the trailing `(St.get)` reads 4 → `(+ 30 4)` = 34. Was a safe decline (the a3 guard's
+           direct-conditional disjunct floored it against the historical dropped-advance 33); that disjunct is
+           REMOVED now the direct-conditional resume-value threads correctly (block-WRAPPED resume-values —
+           `(let (…) (if …))` — still decline pending the binder-scope-reconstructing through-block fold, the
+           a3 block-wrapped twin above). Value-equivalent O0..O3.")
   (input
     (do
       (effect St (op get (-> Unit Int64)))

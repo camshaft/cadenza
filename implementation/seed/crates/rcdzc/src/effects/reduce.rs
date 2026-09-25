@@ -3469,13 +3469,18 @@ pub(crate) fn body_has_nested_arm_resume_value_block_wrapped_branch_perform(
     node: StructId,
     ctx: &HandlerCtx,
 ) -> bool {
-    // A `Resume` whose VALUE is a branch perform of THIS handler's op — direct (`conditional_branch_performs`)
-    // OR block-wrapped (`block_wrapped_branch_performs`) — is the a3 drop; both forms revert the out-state at
-    // this position. (A `Resume` reached while scanning the outer handle's BODY belongs to a nested handle's
-    // arm — the outer body itself has no bare resume; the outer handler's own arms are not in `body`.)
+    // A `Resume` whose VALUE is a BLOCK-WRAPPED branch perform of THIS handler's op (`(let (…) (if … (St.get)
+    // …))`) still drops the out-state at this position (the `let`/block wrapper's binder orphans when the
+    // resume value is threaded → a CDZ0101 / dropped-advance), so it stays declined pending the full
+    // through-block fold. The DIRECT-conditional disjunct (`conditional_branch_performs`, `(resume (if …
+    // (St.get) …) t)`) was REMOVED (v-effects 2026-09-25): the through-block threading now folds a DIRECT
+    // conditional resume-value correctly (11216 → 34, verified value-equivalent O0..O3 by the opt-sweep, not
+    // the historical dropped-advance 33), so the disjunct became a stale over-decline. Only the block-wrapped
+    // form — whose binder scoping the fold does not yet reconstruct — remains guarded. (A `Resume` reached
+    // while scanning the outer handle's BODY belongs to a nested handle's arm — the outer body itself has no
+    // bare resume; the outer handler's own arms are not in `body`.)
     if let Resolved::Resume { value, .. } = resolved_of(db, node)
-        && (conditional_branch_performs(db, value, ctx)
-            || block_wrapped_branch_performs(db, value, ctx))
+        && block_wrapped_branch_performs(db, value, ctx)
     {
         return true;
     }
