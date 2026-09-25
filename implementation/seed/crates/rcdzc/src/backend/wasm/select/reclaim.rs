@@ -287,6 +287,87 @@ pub(crate) fn callee_reads_param_via_str_view(
     flow(db, body, binder, &mut path, &mut explored)
 }
 
+/// TRANSITIVE variant of the select-lane strict `looped_invariant_param_caller_owned`, used ONLY by the
+/// per-read `String.at` self-loop MatchSum drop-marking (the `strat_selfloop_scrut_drop` gate). Identical to
+/// the strict check EXCEPT: when a direct call-site arg is a BORROWED bare-`Param` FORWARD of the caller's OWN
+/// param `p` (a wrapper `run` threading its param into the loop callee — 13-strings:500's
+/// `run s = (scan s 0 (String.scalar-len s) 0)`, where the extra `scalar-len s` use makes the forwarded
+/// occurrence Borrowed), the ownership TRANSITS: the site counts as owned iff the caller's `p` is itself
+/// transitively invariant-caller-owned. ADMITS an owned rope built in `main` and threaded through a borrowing
+/// wrapper into the scan self-loop (main passes a FRESH construction — `Owned` — so the recursion bottoms at a
+/// base-Owned site); a GENUINELY boundary-borrowed rope (a wrapper forwarding an EXPORT/entry param, or any
+/// chain bottoming at a non-owned/funcref/lifted boundary) still DECLINES → stays leak, never a speculative
+/// per-read drop (leak-over-UAF). Cycle-guarded; default-deny. Lives in this select submodule (not select.rs)
+/// to keep that file under the 512 KiB source-size mandate.
+pub(super) fn looped_invariant_param_caller_owned_transitive(
+    db: &mut Db,
+    self_d: usize,
+    self_body: StructId,
+    binder: StructId,
+) -> bool {
+    fn rec(
+        db: &mut Db,
+        self_d: usize,
+        self_body: StructId,
+        binder: StructId,
+        visited: &mut HashSet<usize>,
+    ) -> bool {
+        if !visited.insert(self_d) {
+            return false; // a caller cycle can't PROVE ownership → decline (leak-safe).
+        }
+        if db.exports.iter().any(|e| e.def == Some(self_d)) {
+            return false; // an export entry's boundary param is host-owned — never transit through it.
+        }
+        if super::def_funcref_taken(db, self_body)
+            || super::callee_called_from_lifted_body(db, self_d)
+        {
+            return false;
+        }
+        let dparams = crate::layout::def_params(db, self_d);
+        let Some(param_index) = dparams.iter().position(|(b, _)| *b == binder) else {
+            return false;
+        };
+        let sites = crate::infer::callee_call_site_args_with_caller(db, self_d);
+        let mut saw_external = false;
+        for (caller_body, args) in sites {
+            if caller_body == self_body {
+                continue; // self back-edge: owned-by-flow.
+            }
+            saw_external = true;
+            let Some(&arg) = args.get(param_index) else {
+                return false;
+            };
+            if matches!(
+                super::heap_operand_ownership(db, arg),
+                Ok(super::HandleOwnership::Owned)
+            ) {
+                continue; // base case: an owned value (a fresh construction / owned local).
+            }
+            // TRANSITIVE fallback: a BORROWED bare-`Param` forward of the caller's OWN param `p` → recurse.
+            let Core::Param { binder: p } = core_of(db, arg) else {
+                return false;
+            };
+            debug_assert!(
+                db.defs
+                    .iter()
+                    .filter(|d| d.body == Some(caller_body))
+                    .count()
+                    <= 1,
+                "body -> def must be unique for the caller-owned transit lookup",
+            );
+            let Some(caller_def) = db.defs.iter().position(|d| d.body == Some(caller_body)) else {
+                return false;
+            };
+            if !rec(db, caller_def, caller_body, p, visited) {
+                return false;
+            }
+        }
+        saw_external // no external call site proves ownership → decline (leak-safe).
+    }
+    let mut visited = HashSet::new();
+    rec(db, self_d, self_body, binder, &mut visited)
+}
+
 /// The POSITIVE consume WHITELIST (v-core-opt-recommended, leak-over-UAF-safe by construction): whether
 /// EVERY occurrence of the escaping entry param `binder` in `body` is either (a) a DIRECT binder arg
 /// relayed into a `Core::Call` (followed into the callee's param — a non-recursive helper chain), or (b) a

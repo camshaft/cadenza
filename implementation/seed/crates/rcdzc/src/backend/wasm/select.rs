@@ -3725,7 +3725,12 @@ fn emit_tail(
                 && let Some(fb) = out.fn_body
                 && let Some(self_d) = out.self_def
                 && param_only_borrowed_or_backedge(db, fb, binder, t.members, t.param_slots, slots)
-                && looped_invariant_param_caller_owned(db, self_d, fb, binder)
+                // TRANSITIVE caller-owned (13-strings:500): admits an owned rope built in `main` and threaded
+                // through a borrowing wrapper (`run s = (scan s 0 (String.scalar-len s) 0)`) into this scan
+                // self-loop, where the wrapper's extra `scalar-len s` use makes the forwarded arg Borrowed at
+                // scan's direct call site. A genuinely boundary-borrowed rope (chain bottoms at an export/
+                // entry param) still declines → stays leak (leak-over-UAF).
+                && reclaim::looped_invariant_param_caller_owned_transitive(db, self_d, fb, binder)
             {
                 out.strat_selfloop_scrut_drop.insert(scrutinee);
             }
