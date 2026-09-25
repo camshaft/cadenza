@@ -6505,22 +6505,22 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
         nest += 1;
         leaf = inner.strip_nominal().clone();
     }
-    // A `String`/`Bytes` leaf: a FLAT `list<string>`/`list<bytes>` element crosses as a `(ptr, len)`
-    // descriptor (canonical stride 8, like a nested sub-list) and lifts by copying its bytes out of linear
-    // memory 0 into a value-heap byte-leaf (`bytes-alloc`/`bytes-set`), not a scalar load+box. Only `nest ==
-    // 0` is admitted (a nested `list<list<string>>` is a later slice). The scalar read/box fields are unused
-    // for a byte-leaf, so they carry inert placeholders.
+    // A `String`/`Bytes` leaf: a `list<string>`/`list<bytes>` element crosses as a `(ptr, len)` descriptor
+    // (canonical stride 8, like a nested sub-list) and lifts by copying its bytes out of linear memory 0 into a
+    // value-heap byte-leaf (`bytes-alloc`/`bytes-set`), not a scalar load+box. `nest_lists` carries the
+    // enclosing list depth (0 = a flat `list<string>`; k>0 = a `list<list<…<string>>>` whose elements are
+    // `(ptr,len)` sub-lists recursively descended k levels to the byte-leaf copy-in) — the byte-leaf twin of
+    // the nested-scalar `list<list<…<scalar>>>` recursion; `emit_list_level` descends `levels` then fires the
+    // byte-leaf branch at level 0, allocating fresh copy-in scratch at each level via `next_local`. The scalar
+    // read/box fields are unused for a byte-leaf, so they carry inert placeholders.
     if matches!(leaf, Ty::String | Ty::Bytes) {
-        if nest != 0 {
-            return None;
-        }
         return Some(ListElem {
             load_op: 0,
             load_align: 0,
             stride: 8,
             extend: None,
             box_op: "",
-            nest_lists: 0,
+            nest_lists: nest,
             byte_leaf: Some(matches!(leaf, Ty::String)),
             compound: None,
         });
