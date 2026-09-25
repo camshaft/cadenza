@@ -695,20 +695,20 @@
   (output (: 11 Int64)))
 
 (case
-  "a BLOCK-wrapped branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3 sub-face)"
+  "a BLOCK-wrapped branch perform in a NESTED handler-arm resume-value threads the outer advance via pure-let inlining (adv-69 a3)"
   (doc
-    "adv-69 a3 (breaker probe-a3, block-outstate battery): the SAME block-boundary out-state drop as the
-           let-init floor above, but at a DIFFERENT position — a block-wrapped branch-performing conditional in
-           a NESTED handler's arm RESUME-VALUE, performing the OUTER handler's op. The outer `St` handler threads
-           its state through the inner `Up` handle, but the block boundary inside the inner arm's resume-VALUE
-           `(resume (let ((b true)) (if b (St.get) 99)) t)` dropped the outer `St.get`'s advance: seeded 3 it ran
-           33, correct is 34 (= 10*(St.get resumes 3, state→4 seen by trailing get) ... trailing `(St.get)` reads
-           4). The let-init scanner stops at a nested `handle` (an inner handle's lets are its own reduction), so
-           this position escaped that floor. A targeted guard keyed PRECISELY on the `Resume{value}` position
-           (not a position-agnostic block-wrapped-perform scan, which over-declines working threaded positions)
-           declines this residual shape → a clean Todo, never the silent 33. Grades TODO on all backends; its 34
-           becomes a PASS when the full through-block fold lands (same deferred commuting conversion as the
-           let-init face).")
+    "adv-69 a3 (breaker probe-a3, block-outstate battery): the SAME block-boundary out-state position as the
+           let-init floor above, but at a DIFFERENT site — a block-wrapped branch-performing conditional in a
+           NESTED handler's arm RESUME-VALUE, performing the OUTER handler's op. The outer `St` handler threads
+           its state through the inner `Up` handle; the block boundary inside the inner arm's resume-VALUE
+           `(resume (let ((b true)) (if b (St.get) 99)) t)` used to DROP the outer `St.get`'s advance (seeded 3
+           it ran 33; correct is 34). Now the effect specializer NORMALIZES the arm/body by inlining simple-pure
+           (atom/name) `let` bindings — `(let ((b true)) (if b (St.get) 99))` becomes the DIRECT `(if true
+           (St.get) 99)` — turning this into the a3-DIRECT twin below, whose through-block fold threads the outer
+           advance correctly: seeded 3, `(Up.ask)` resumes `(if true (St.get) 99)` = St.get reads 3 (St->4), so
+           `(* 10 3)` = 30, then trailing `(St.get)` reads 4 -> `(+ 30 4)` = 34. An IMPURE-block resume-value
+           (a `(let ((b (do (Log.add 1) true))) ...)` whose init is effectful) is NOT inlined — its `let`
+           survives and the case still declines cleanly. Value-equivalent O0..O3.")
   (input
     (do
       (effect St (op get (-> Unit Int64)))

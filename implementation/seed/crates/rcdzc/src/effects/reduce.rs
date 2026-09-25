@@ -87,6 +87,126 @@ fn expand_call_splats_in_subtree(db: &mut Db, node: StructId) -> StructId {
     node
 }
 
+/// Inline a `let` binding whose init is a SIMPLE PURE value — a bare name or an atom leaf (a constant like
+/// `true`/`0`, or a re-binding of another name) — by substituting it into the `let` body (via `beta_reduce`,
+/// which respects binder scope: a shadow of the same name in the body is copied structurally, never
+/// substituted) and DROPPING that binding. A pure value duplicated at N uses is the same value N times (no
+/// effect, no reorder), and atom/name inits are cheap so there is no blow-up. This NORMALIZES a block-wrapped
+/// conditional resume-value `(let ((b true)) (if b (St.get) 99))` to the DIRECT form `(if true (St.get) 99)`
+/// the through-block fold already threads (adv-69 a3, 11211) — so the block-wrapped nested-arm resume-value
+/// FOLDS instead of the `let` binder orphaning (CDZ0101) when the fold rebuilds the inner conditional against
+/// the threaded state. Bottom-up (children first). A binding with a NON-simple / EFFECTFUL init is kept (the
+/// `let` survives with only its non-inlinable bindings), so an impure-block resume-value still declines.
+fn inline_pure_lets(db: &mut Db, node: StructId) -> StructId {
+    let children = match db.ast.get(node) {
+        Struct::List(children) => children.clone(),
+        _ => return node,
+    };
+    // Bottom-up: normalize children first, so a `let` nested inside another `let`'s body is inlined before
+    // its parent is examined.
+    let new_children: Vec<StructId> = children.iter().map(|&c| inline_pure_lets(db, c)).collect();
+    let node = if new_children != children {
+        let rebuilt = db.push_list(new_children);
+        crate::resolve::resolve_subtree(db, rebuilt);
+        rebuilt
+    } else {
+        node
+    };
+    // A `(let (bindings) body)` — 2-tail (the single-body shape; a multi-form `let` body is left untouched,
+    // its intermediates may be effectful).
+    let Some(tail) = db.ast.as_form(node, "let").map(<[StructId]>::to_vec) else {
+        return node;
+    };
+    if tail.len() != 2 {
+        return node;
+    }
+    let Struct::List(pairs) = db.ast.get(tail[0]).clone() else {
+        return node;
+    };
+    // Partition bindings: a `(name init)` with a simple-pure init is INLINED (a bare-name `let` binding
+    // `(b true)` resolves a body reference `b` to `Ref { value: init }` — the INIT occurrence `kv[1]`, NOT
+    // the name slot — so `beta_reduce` is keyed on `kv[1]` to reach those references). Any other binding is
+    // KEPT verbatim.
+    let mut subst: HashMap<StructId, StructId> = HashMap::default();
+    let mut kept: Vec<StructId> = Vec::new();
+    for &pair in &pairs {
+        let Struct::List(kv) = db.ast.get(pair).clone() else {
+            kept.push(pair);
+            continue;
+        };
+        if kv.len() == 2 && db.ast.as_name(kv[0]).is_some() && arg_is_simple_pure(db, kv[1]) {
+            let init_copy = crate::eval::copy_structural_pub(db, kv[1], &[], &HashMap::default());
+            subst.insert(kv[1], init_copy);
+        } else {
+            kept.push(pair);
+        }
+    }
+    if subst.is_empty() {
+        return node;
+    }
+    let new_body = crate::eval::beta_reduce(db, tail[1], &subst);
+    let result = if kept.is_empty() {
+        // Every binding inlined — the `let` is gone, leaving the direct body.
+        new_body
+    } else {
+        // A kept (impure) init may reference an inlined pure name — substitute there too, then rebuild the
+        // `let` over only the surviving bindings.
+        let let_head = children[0];
+        let kept2: Vec<StructId> = kept
+            .iter()
+            .map(|&p| crate::eval::beta_reduce(db, p, &subst))
+            .collect();
+        let bindings = db.push_list(kept2);
+        db.push_list(vec![let_head, bindings, new_body])
+    };
+    crate::resolve::resolve_subtree(db, result);
+    result
+}
+
+/// Apply [`inline_pure_lets`] ONLY within `resume` VALUES — the a3 position (`(resume (let ((b true)) (if b
+/// (St.get) 99)) t)`) whose block-wrapped pure-let wrapper the through-block fold needs stripped to the
+/// direct conditional it threads (11211). SCOPED to resume values so the normalization does NOT touch a pure
+/// `let` the fold RELIES ON elsewhere — a `let`-INIT block wrapper the Site-6 commuting conversion floats
+/// (`(let ((v (let ((b true)) (if b (St.get) 99)))) …)`), or a ctl-arm continuation body that reads an
+/// enclosing param through a `let` — positions a whole-body inline broke. Recurses into nested handles (a
+/// nested arm's resume lives in this handle's body), so the outer scan reaches it before the a3 guard runs.
+fn inline_pure_lets_in_resume_values(db: &mut Db, node: StructId) -> StructId {
+    let children = match db.ast.get(node) {
+        Struct::List(children) => children.clone(),
+        _ => return node,
+    };
+    // Recurse into children first (nested resumes / nested handles), rebuilding on change.
+    let new_children: Vec<StructId> = children
+        .iter()
+        .map(|&c| inline_pure_lets_in_resume_values(db, c))
+        .collect();
+    let node = if new_children != children {
+        let rebuilt = db.push_list(new_children);
+        crate::resolve::resolve_subtree(db, rebuilt);
+        rebuilt
+    } else {
+        node
+    };
+    // If THIS node is a `resume`, inline the simple-pure `let` bindings in its VALUE (only). The `value` is a
+    // direct child occurrence of the resume node — rebuild replacing it if the inline changed anything.
+    if let Resolved::Resume { value, .. } = resolved_of(db, node) {
+        let inlined = inline_pure_lets(db, value);
+        if inlined != value {
+            let Struct::List(cur) = db.ast.get(node).clone() else {
+                return node;
+            };
+            let rebuilt_children: Vec<StructId> = cur
+                .iter()
+                .map(|&c| if c == value { inlined } else { c })
+                .collect();
+            let rebuilt = db.push_list(rebuilt_children);
+            crate::resolve::resolve_subtree(db, rebuilt);
+            return rebuilt;
+        }
+    }
+    node
+}
+
 /// are the resolved handle's children.
 pub fn reduce_handle(
     db: &mut Db,
@@ -130,6 +250,16 @@ pub fn reduce_handle(
     // the creation-time capture into a per-application perform (silent 170). No-op unless the exact narrow
     // shape is present (see `bind_once_performing_factory`).
     let body = bind_once_performing_factory(db, body);
+    // Normalize `resume` VALUES in the body by INLINING simple-pure (atom/name) `let` bindings (see
+    // `inline_pure_lets_in_resume_values`): a block-wrapped conditional resume-value `(resume (let ((b true))
+    // (if b (St.get) 99)) t)` becomes the DIRECT `(resume (if true (St.get) 99) t)` the through-block fold
+    // already threads (adv-69 a3, 11211). The resume sits inside a NESTED handler's arm which lives in THIS
+    // handle's BODY (the a3 guard that would decline it scans this body before the inner handle's own
+    // `reduce_handle` runs), so the body must be normalized here. SCOPED to resume values — a pure `let` the
+    // fold relies on ELSEWHERE (a Site-6 `let`-init block wrapper, a ctl-arm continuation reading an enclosing
+    // param) is untouched. Sound (a pure value duplicated is the same value) and a no-op unless a resume value
+    // actually wraps a pure `let`; an impure-block resume-value keeps its `let` and still declines.
+    let body = inline_pure_lets_in_resume_values(db, body);
     // Build the operation→arm map, keyed by each arm's operation identity (read off the arm's op
     // projection's `(meta effect-op)`). An arm whose op is not an effect operation (a malformed arm) or
     // whose op the effect does not declare (CDZ0403 — reported elsewhere) makes the fold decline.

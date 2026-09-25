@@ -1542,6 +1542,8 @@ pass	a `(const …)` map lookup folds to the associated value
 pass	a `(const …)` set contains after insert folds
 pass	a `(const …)` set contains of an ABSENT member folds to false
 pass	a `(const …)` set membership + dedup-len fold
+pass	a `..` construction spread of an unbound operand in a MAP reports the unbound name (CDZ0101), construction spread being legal
+pass	a `..` construction spread of an unbound operand in a RECORD reports the unbound name (CDZ0101), construction spread being legal
 pass	a `?` in a CALLED (inlined, non-exported) helper finds its boundary
 pass	a `?` in a GENERIC function monomorphizes correctly at two element types
 pass	a `?` in an anonymous LAMBDA body resolves the lambda as its boundary (happy path)
@@ -1589,6 +1591,7 @@ pass	a bare Set constructor in a parameter type names the missing element argume
 pass	a bare TUPLE of quantities renders each element scaled to its reference (mixed inner types)
 pass	a bare UInt width-constructor names the sized default with a replace fix
 pass	a bare UInt8 literal-match (no newtype) is the width template
+pass	a bare Value.decode with no grounding annotation is rejected CDZ0203 (unsolved target type — annotate it)
 pass	a bare `=` on two identical TYPE values is refused with a guided CDZ0203 — type equality is Type.eq
 pass	a bare `?` NOT in head position stays an ordinary unbound name with no try hint
 pass	a bare arithmetic keyword is rejected, not a crash
@@ -6128,6 +6131,7 @@ pass	an Ast.Bytes nested in an Ast.List round-trips through encode and decode
 pass	an Ast.Bytes node constructs and deconstructs by pattern matching
 pass	an Ast.Bytes node round-trips through encode and decode
 pass	an Ast.Char node round-trips through encode and decode
+pass	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 pass	an Ast.Int carries a BEYOND-64-bit literal losslessly through quote
 pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	an Ast.List handler STATE accumulates a node per perform and each resume reads the prior length
@@ -6491,6 +6495,7 @@ pass	an erased-newtype's list payload split across empty and rest arms dispatche
 pass	an escaped performing closure dispatches to the CALL-site handler, not its creation-site one
 pass	an escaped performing closure re-homes per application across two sequential handlers
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
+pass	an escaping captured continuation is refused, not miscompiled
 pass	an escaping closure captures two values and takes three arguments
 pass	an escaping closure whose body binds a multi-variable let
 pass	an escaping closure whose body is a match hits the literal arm
@@ -7903,6 +7908,7 @@ pass	el5 a List-of-UInt8 entry param measures and reads an element
 pass	el6 a List-of-Int32 entry param measures and reads an element
 pass	el7 a List-of-Float64 entry param measures and compares an element
 pass	el8 a nested List-of-List entry param measures both levels
+pass	elb1 a list<bytes> entry param reads an element's byte-length
 pass	elc1 a local closure captures the lifted List entry param and is invoked twice
 pass	elc2 a Map keyed by the lifted List entry param answers its value on lookup
 pass	elc4 List.concat consumes two lifted List entry params into one measured list
@@ -7915,15 +7921,8 @@ pass	ele3 the lifted List entry param SEEDS the handler state
 pass	eln1 an EMPTY nested-list entry param has outer length zero
 pass	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length
 pass	eln3 a THREE-level nested-list entry param reads a leaf through two descents
-pass	els1 a list<string> entry param reads an element's byte-length
-pass	elb1 a list<bytes> entry param reads an element's byte-length
 pass	elns1 a nested list<list<string>> entry param reads a leaf string's byte-length
-pass	lpt1 a list<tuple> entry param reads two elements' fields
-pass	lpr1 a list<record> entry param reads two elements' fields by name
-pass	lft1 a Record entry param with a list<tuple> field reads a nested element
-pass	lfr1 a Record entry param with a list<record> field reads a nested element by name
-pass	lpo1 a list<option<scalar>> entry param reads two elements' Some/None
-pass	lpo2 a list<option<i32>> narrow-payload entry param sign-extends its Some payload
+pass	els1 a list<string> entry param reads an element's byte-length
 pass	ema1 an INTEGER EMA state — each dispatch blends (3*ema + 100*v)/4 at 100x scale, convergence toward the fed value from both sides
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
@@ -7935,18 +7934,18 @@ pass	end-to-end: a property run finds a failing input, then the shrinker converg
 pass	eo1 an Option entry param delivers its Some payload
 pass	eo2 an Option entry param takes the None arm
 pass	eo3 an Option param BETWEEN scalars keeps positions
-pass	eos1 an option<string> entry param delivers its Some payload's byte-length
 pass	eob1 an option<bytes> entry param delivers its Some payload's byte-length
 pass	eoc1 an Option entry param captured by a local closure applied twice
 pass	eoc2 an Option entry param relayed to a helper def and unwrapped there (owned sum, unlike the borrowed list)
 pass	eoc3 an Option entry param matched twice reclaims (the repeat-unwrap family needs a heap payload)
-pass	eot1 an Option entry param with a compound tuple payload sums the active arm
-pass	eor1 an Option entry param with a compound record payload sums the active arm
 pass	eoi1 TWO Option entry params thread the flattened-leaf cursor independently
 pass	eoi2 a String (mem-leaf) param and an Option (sum) param interleave in one signature
 pass	eoi3 an Option<Int8> entry param's narrow Some payload widens correctly
 pass	eop1 an Option entry param read inside a handle body composes with the fold
 pass	eop2 an Option-of-list entry param measures its Some payload
+pass	eor1 an Option entry param with a compound record payload sums the active arm
+pass	eos1 an option<string> entry param delivers its Some payload's byte-length
+pass	eot1 an Option entry param with a compound tuple payload sums the active arm
 pass	ep1 TWO String entry params concat in declaration order
 pass	ep2 a String param BETWEEN two scalars keeps positional correctness
 pass	ep3 one String param used TWICE (byte-len and content compare)
@@ -7969,6 +7968,7 @@ pass	equality of an integer and a float is rejected, not silently promoted
 pass	equality of an integer and a string is a type error
 pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
+pass	equality on a TUPLE containing a closure is rejected CDZ0216 (NotEquatable — the fn leaf poisons the compound walk)
 pass	equality on an unusual signed width holds for two equal sign-extended values
 pass	equality over a Rational carried in a SUM payload respects normalization
 pass	equality over a compound mixing a float and a Bytes leaf walks both
@@ -7977,14 +7977,14 @@ pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	equality over an int/float mix gets the retype fix too, not just ordering
 pass	equality with zero selects eqz and computes correctly for both operand orders
 pass	er1 a Rational entry param in exact arithmetic
-pass	erp1 a Result entry param delivers its Ok payload
-pass	erp2 a Result entry param with two scalar payloads crosses and matches the active arm
-pass	erp3 a Result entry param with two String payloads measures the active arm
-pass	erp4 a Result entry param with a String Ok and a Bytes Err measures the active arm
 pass	erc1 a Result entry param with a compound Ok tuple sums the active arm
 pass	erc2 a Result entry param with a compound Err tuple multiplies the active arm
 pass	erc3 a Result entry param with compound tuples on both arms folds the active arm
 pass	erc4 a Result entry param with a compound record Ok arm sums the active arm
+pass	erp1 a Result entry param delivers its Ok payload
+pass	erp2 a Result entry param with two scalar payloads crosses and matches the active arm
+pass	erp3 a Result entry param with two String payloads measures the active arm
+pass	erp4 a Result entry param with a String Ok and a Bytes Err measures the active arm
 pass	esc1 an ESCROW protocol — hold moves funds from balance to escrow only when covered, rollback returns the whole escrow to balance, and the over-balance hold bounces without touching either slot
 pass	eva1 eval of a hand-built Ast.List reconstructs and executes it identically to a quoted form
 pass	eva2 eval of a nested quoted form reconstructs the compound and folds
@@ -8510,7 +8510,9 @@ pass	lf2 a PERFORMING recursive walk — each element visit draws, pairing eleme
 pass	lf3 the arm pushes TWO elements per dispatch (both lengths read from the PRE-push list) — the third draw reads length 5
 pass	lf4 a per-element dispatch comparing each element against the RISING state — amplify-or-pass per visit
 pass	lf5 TWO lists walked in LOCKSTEP with a per-pair 2-arg dispatch — length-guarded via projection helpers
+pass	lfr1 a Record entry param with a list<record> field reads a nested element by name
 pass	lfs1 an EIGHT-BIT Fibonacci LFSR — step shifts right injecting the XOR of taps zero and two as the new high bit answering the register, peek masks the low nibble, and the two seeds fall into DIFFERENT orbits (one decays toward the injected-bit ladder, the other rings the high bits immediately)
+pass	lft1 a Record entry param with a list<tuple> field reads a nested element
 pass	lft1 an ELEVATOR load limiter — board adds the passenger's weight answering the load or REFUSING with the negated overage when the seed-shaped capacity would be exceeded (the load untouched), alight subtracts clamped at empty, trips counts refusals, and the same boarding sequence is refused ONCE on the roomy car and TWICE on the tight one with different overage readings
 pass	lgt1 a TRAFFIC light with a demand sensor — tick counts down green-three yellow-one red-seed cycling on zero (answers pack color-times-ten plus remaining), demand during a LONG red shortens the remainder to one answering a hundred plus the old value (otherwise it just reads), and the seed-shaped red length changes both the red row and the demand's rebate
 pass	lhn1 a LUHN checksum accumulator — feed doubles every second digit by POSITION PARITY subtracting nine from two-digit doubles, chk answers 1 on a multiple of ten else the residue, and the seed-fed digit doubles on both runs but only one crosses the subtract-nine threshold
@@ -8570,8 +8572,12 @@ pass	looking up an absent key yields None
 pass	lp1 a LIST handler state — each feed pushes and returns the pre-push length, a summing walk reads the final list
 pass	lp1 multi-length LIST arms with a head-pair rest binder — decision-tree dispatch through the hop
 pass	lpc1 a LAMPORT CLOCK — local events tick the counter, receives jump it to max(local,remote)+1; the stale remote (already-past timestamp) still ticks by one through the max
+pass	lpo1 a list<option<scalar>> entry param reads two elements' Some/None
+pass	lpo2 a list<option<i32>> narrow-payload entry param sign-extends its Some payload
+pass	lpr1 a list<record> entry param reads two elements' fields by name
 pass	lps1 a non-matching literal payload falls through to the same-variant binder
 pass	lps2 a literal-only sum arm with no binder fall-through is non-exhaustive
+pass	lpt1 a list<tuple> entry param reads two elements' fields
 pass	lru1 a CAPACITY-2 LRU cache — put inserts as most-recent and answers the evicted key or 0, get answers the value refreshing recency or -1 on miss, and the SEED collides the computed key with a literal so one run UPDATES where the other EVICTS
 pass	lrx1 a runtime List.push extends and its length counts
 pass	lrx2 a shared list binding consumed then re-read is retained, not mutated
@@ -9390,6 +9396,7 @@ pass	read normalizes numeric token spellings to canonical float values
 pass	read of a bare b token is an Ast.Name, not a byte-literal
 pass	read of a leading-'+' BEYOND-i64 integer token is an Ast.Name too (both sides of the boundary)
 pass	read of a leading-'+' integer token is an Ast.Name, not an Ast.Int (within i64)
+pass	read of malformed text is a coded reject, not a wrong value
 pass	read of text that is not a well-formed s-expression rejects with CDZ0201
 pass	read of text with trailing content after the first s-expression rejects with CDZ0201
 pass	read of the empty string rejects with CDZ0201 (no s-expression, coded like its malformed siblings)
@@ -9537,6 +9544,15 @@ pass	rpc1 a RIPPLE-CARRY counter — inc answers the number of bits FLIPPED by t
 pass	rpl1 an OP-LOG REPLAY state — apply advances the value and logs its delta, replay re-applies the WHOLE log to the current value keeping the log intact, so a second replay after more logging compounds
 pass	rpn1 an RPN EVALUATOR — pushes stack operands, the operator ops pop two and push the result; the (n+3)*2 program evaluates through five dispatches with stack depths and intermediates exposed
 pass	rpp1 a scalar-fielded Record entry param projects both fields
+pass	rpp10 a Record entry param with String, Bytes, list and scalar fields measures all four
+pass	rpp10 a Tuple entry param with a nested Record element projects through both levels
+pass	rpp11 a Record entry param with a nested Record field projects through both levels
+pass	rpp11 a Tuple entry param with a String, a list and a scalar element measures all three
+pass	rpp12 a Record entry param whose declaration order differs from name-lex order routes fields by name
+pass	rpp13 a Record nested two tuple levels deep in an entry param projects through all levels
+pass	rpp14 a Record entry param with an option field projects both the scalar and the Some payload
+pass	rpp15 a Record entry param with a result field projects both the scalar and the Ok payload
+pass	rpp16 a Tuple entry param with an option element projects both the scalar and the Some payload
 pass	rpp2 an open-row helper projects a field of the boundary Record param
 pass	rpp3 a Record entry param with a heap list field measures both
 pass	rpp4 a scalar Tuple entry param projects both positions
@@ -9545,15 +9561,6 @@ pass	rpp6 a Tuple entry param with a String element measures both
 pass	rpp7 a Record entry param with a String field measures both
 pass	rpp8 a nested Tuple entry param projects through both levels
 pass	rpp9 a Record entry param with a nested Tuple field measures both
-pass	rpp10 a Tuple entry param with a nested Record element projects through both levels
-pass	rpp11 a Record entry param with a nested Record field projects through both levels
-pass	rpp12 a Record entry param whose declaration order differs from name-lex order routes fields by name
-pass	rpp13 a Record nested two tuple levels deep in an entry param projects through all levels
-pass	rpp14 a Record entry param with an option field projects both the scalar and the Some payload
-pass	rpp15 a Record entry param with a result field projects both the scalar and the Ok payload
-pass	rpp16 a Tuple entry param with an option element projects both the scalar and the Some payload
-pass	rpp10 a Record entry param with String, Bytes, list and scalar fields measures all four
-pass	rpp11 a Tuple entry param with a String, a list and a scalar element measures all three
 pass	rps2 the RPS judge with the opponent move HOISTED through match binders — the LCG advance and the mod-3 move bind once per dispatch instead of recomputing per branch, same protocol and answers
 pass	rq1 a RATIONAL handler state — three exact fractional adds (1/2 + 1/3 + 1/6) land on a WHOLE value — the canonical n/1 render pinned
 pass	rq2 floor/ceil/numerator/denominator READ a rational state — canonicalization (8/4 to 2/1) and negative rounding both pinned
@@ -9840,6 +9847,8 @@ pass	spr1 a SPRINKLER scheduler on a depleting tank — water runs a zone for th
 pass	spr1 a sum payload heap child consumed while the scrutinee is live is retained
 pass	spr2 a threaded sum's payload consumed per-iteration is retained (no drift)
 pass	spx1 a Bool entry param selects a branch
+pass	spx2 a Char entry param crosses as the WIT char primitive
+pass	spx2b a Char result crosses as the WIT char primitive
 pass	spx3 a UInt64 entry param increments in its own width
 pass	spx4 Int8 and Int16 entry params sign-extend and sum
 pass	sq1 two SEQUENTIAL handles of the SAME inner effect, each seeded by a fresh outer draw — independent inner threads, one advancing outer thread
@@ -10861,12 +10870,9 @@ todo	a MODULE-exported closure that performs a delegated effect cannot cross the
 todo	a SCALAR-param export returning a RECORD lifts the result (not a raw handle) (via an imposed WIT world)
 todo	a String argument handle passed to a peer stays live for a later local read (borrow not move)
 todo	a Value.encode/Value.decode round-trip of a NULLARY single-ctor newtype is Some(unit)
-pass	a `..` construction spread of an unbound operand in a MAP reports the unbound name (CDZ0101), construction spread being legal
-pass	a `..` construction spread of an unbound operand in a RECORD reports the unbound name (CDZ0101), construction spread being legal
 todo	a bakeable nullary type-value export crosses the boundary (the control)
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a bare TUPLE export result crosses as a typed WIT tuple (declared world)
-pass	a bare Value.decode with no grounding annotation is rejected CDZ0203 (unsolved target type — annotate it)
 todo	a bare enum RESULT member of a typed export interface crosses (payloadless-enum disc passthrough)
 todo	a bare list<scalar>/List PARAM member of a typed export interface crosses (mem_leaf List-arm coverage)
 todo	a bare list<u8>/Bytes PARAM member of a typed export interface crosses (multi-export list<u8> param — operator §2 decode-check half)
@@ -10887,8 +10893,8 @@ todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a consumer bound to two distinct peer interfaces combines their results
 todo	a consumer bound to two scalar peer interfaces runs with no runtime
 todo	a consumer calls a scalar op across a source peer provider
-todo	a cross-function performing-arg call folds by inlining the effect-reaching helper
 todo	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
+todo	a cross-function performing-arg call folds by inlining the effect-reaching helper
 todo	a declared-world enum EXPORT whose guest case order MISMATCHES the WIT remaps by case NAME to the declared order
 todo	a delegated perform with no recorded host response traps
 todo	a dependent utf8 size from an arithmetic expression over a byte binder decodes
@@ -10932,6 +10938,10 @@ todo	a peer op type mismatch is rejected at compose time (same arity, different 
 todo	a peer result handle passes straight through to another peer's arg without local inspection
 todo	a peer string result is consumed in-program via equality and byte-len
 todo	a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered
+todo	a plain (non-reducer) guest passes a RECORD host-op ARGUMENT via a pure-IMPORT custom wit-world
+todo	a plain (non-reducer) guest passes a list<s64> host-op ARGUMENT via a pure-IMPORT custom wit-world
+todo	a plain (non-reducer) guest passes a scalar-payload VARIANT host-op ARGUMENT via a pure-IMPORT custom wit-world
+todo	a plain guest matches a scalar-payload VARIANT host-import result via a pure-IMPORT custom wit-world
 todo	a plain guest matches an ENUM host-import result via a pure-IMPORT custom wit-world
 todo	a plain guest matches an option<record> host-import result via a pure-IMPORT custom wit-world
 todo	a plain guest matches an option<s64> host-import result via a pure-IMPORT custom wit-world
@@ -11029,12 +11039,10 @@ todo	a versioned interface name agrees across both sides and runs
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
 todo	aeq1 bare equality over two runtime Ast.encode results
 todo	aeq3 arena Bytes laundered through fn params bare-compare equal
-pass	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an effect bound to a peer routes a two-argument op to the boundary
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 todo	an effectful-operand splat inside a handle body performs exactly once
 todo	an enum PARAM member whose guest case order MISMATCHES the WIT remaps the disc by case NAME — the param twin of SHAPE 64
-pass	an escaping captured continuation is refused, not miscompiled
 todo	an option<s64> param field is read and rebuilt by the wrapper on both arms (via an imposed WIT world)
 todo	bk1 two runtime Blake3 digests of the same bytes bare-compare equal
 todo	bk2 one-byte-different inputs bare-compare unequal digests
@@ -11066,7 +11074,6 @@ todo	cr03c host call INSIDE the handled body
 todo	cr03d combination with s64 host result (no Int64.of) — nested
 todo	cvp1 a variant host RESULT with a LIST payload lifts and is measured
 todo	cvp2 a variant host RESULT with a RECORD payload lifts and projects
-pass	equality on a TUPLE containing a closure is rejected CDZ0216 (NotEquatable — the fn leaf poisons the compound walk)
 todo	expect traps on the absent case of a runtime optional
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
 todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)
@@ -11117,7 +11124,6 @@ todo	prr1 a RUNTIME print-then-read Ast round-trip declines pending runtime Ast.
 todo	psc1 chained peer String ops flow a result into an arg then the second result escapes
 todo	pse1 the full (-> String String) converse crosses a peer and its String result escapes main
 todo	ptr1 a peer compound (tuple) result escapes the entrypoint via the fused envelope
-pass	read of malformed text is a coded reject, not a wrong value
 todo	reclaim across a nested-compound projection from a peer result
 todo	runtime Ast.encode of a nested Ast.List serializes via the recursive walk
 todo	runtime Ast.encode of an Ast.Int serializes via the ast-encode heap op, canonical length
@@ -11134,8 +11140,6 @@ todo	sp4 SCALAR param + bare option result
 todo	sp5 SCALAR param + list result
 todo	sp6 TWO scalar params + 2-field record result (multi-scalar face)
 todo	sp7 SCALAR param + variant-with-payload result (sum face of the same gate)
-pass	spx2 a Char entry param crosses as the WIT char primitive
-pass	spx2b a Char result crosses as the WIT char primitive
 todo	srm2 a NESTED set-rest re-match peels two residual layers (should-work: the residual is a first-class set)
 todo	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
 todo	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)
@@ -11160,7 +11164,3 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
-todo	a plain guest matches a scalar-payload VARIANT host-import result via a pure-IMPORT custom wit-world
-todo	a plain (non-reducer) guest passes a RECORD host-op ARGUMENT via a pure-IMPORT custom wit-world
-todo	a plain (non-reducer) guest passes a scalar-payload VARIANT host-op ARGUMENT via a pure-IMPORT custom wit-world
-todo	a plain (non-reducer) guest passes a list<s64> host-op ARGUMENT via a pure-IMPORT custom wit-world
