@@ -1053,7 +1053,7 @@ fn emit_enum_disc_remap(map: &[u32], src_local: u32, inner: &mut Vec<u8>) {
 /// value-heap handle lifted straight from the boundary `(ptr, len)`, or a `String` built from those bytes
 /// (`str-from-bytes`). Both copy the bytes out of linear memory 0 (the `bytes-alloc`/`bytes-set` loop the
 /// `list<u8>`-leaf import marshal already uses); a `Str` appends one `str-from-bytes` call.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum MemLeafKind {
     /// A `Bytes` param: the copied-out `list<u8>` handle IS the def arg.
     Bytes,
@@ -1080,7 +1080,7 @@ pub enum MemLeafKind {
 
 /// How ONE scalar element of a `list<scalar>` param is read out of linear memory and boxed into the value
 /// heap, for [`emit_list_leaf_lift`]. The canonical layout lays element `j` at `ptr + j*stride`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ListElem {
     /// The wasm load opcode (`i64.load`/`i32.load`/`i32.load8_u`/`f64.load`/…) reading the element at its
     /// computed address.
@@ -1112,6 +1112,26 @@ pub struct ListElem {
     /// param-level `MemLeafKind::Str`/`Bytes` split; the lift is identical). Only a FLAT `list<string>` /
     /// `list<bytes>` (`nest_lists == 0`) is admitted here — a nested `list<list<string>>` is a later slice.
     pub byte_leaf: Option<bool>,
+    /// `None` for a SCALAR / byte-leaf / nested-list element. `Some(fields)` for a COMPOUND element — a
+    /// scalar-fielded `tuple<…>`/`record<…>` — where each element occupies `stride` (= the element's
+    /// `canonical_size`) contiguous bytes and lifts by reading each field at its canonical offset, boxing it,
+    /// and `arr-set`ting it into a fresh value-heap cell (`arr-alloc`), then pushing the cell. The fields are
+    /// in cell-SLOT order (a record's name-lex order — the same order `record_field_offsets` over the sorted
+    /// WIT fields yields, so offset order == slot order). Only a FLAT (`nest_lists == 0`) element whose fields
+    /// are all aliased-width SCALARS is admitted; a nested-compound / byte-leaf / sum field is a later slice.
+    pub compound: Option<Vec<CompoundListField>>,
+}
+
+/// One scalar field of a COMPOUND list element (see [`ListElem::compound`]): read it at `offset` bytes from
+/// the element base with `load_op`/`load_align`, i32→i64 `extend` if a narrow int, then `box_op` it into a
+/// value-heap handle for the parent cell's `arr-set`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CompoundListField {
+    pub offset: u32,
+    pub load_op: u8,
+    pub load_align: u32,
+    pub extend: Option<bool>,
+    pub box_op: &'static str,
 }
 
 /// How a boundary wrapper produces its result from the value the compiled def returns.
@@ -1677,7 +1697,7 @@ fn core_module_impl(
                 // copied buffer is already a canonical String handle — no `str-from-bytes` decode (a WIT
                 // `string` param is guaranteed valid UTF-8, and that op would re-wrap it). Only the boundary
                 // TYPE differs (`string` vs `list<u8>`), fixed at the routing site via `ty_natural_wit`.
-                if let Some((kind, drop_after)) = wrap.mem_leaf_params.get(pi).copied().flatten() {
+                if let Some((kind, drop_after)) = wrap.mem_leaf_params.get(pi).cloned().flatten() {
                     let (buf, ctr) =
                         scratch.expect("a memory-bearing leaf param needs the scratch locals");
                     // SPILLED (wfp3): the (ptr, len) for this mem-leaf param live in the memory-indirect spill
@@ -4206,6 +4226,42 @@ fn emit_list_level(
         out.push(op::LOCAL_GET);
         uleb128(buf as u64, out); // [buf]
         emit_bytes_leaf_copy_in(inner_ptr, false, inner_buf, inner_ctr, false, imp, out); // [buf, handle]
+        out.push(op::CALL);
+        uleb128(imp("vec-push"), out); // [buf']
+        out.push(op::LOCAL_SET);
+        uleb128(buf as u64, out);
+    } else if levels == 0 && elem.compound.is_some() {
+        // COMPOUND element (`list<tuple>`/`list<record>` of scalars): the element at `addr` occupies `stride`
+        // (= its canonical_size) contiguous bytes. Build a fresh value-heap cell (`arr-alloc`), read each
+        // field at its canonical offset from `addr`, box it, and `arr-set` it at its slot; then push the cell.
+        // The stack threads `[buf, arr]` across the field loop (exactly `emit_cell_rebuild`'s convention),
+        // then `vec-push(buf, arr)`.
+        let fields = elem.compound.as_ref().unwrap();
+        out.push(op::LOCAL_GET);
+        uleb128(buf as u64, out); // [buf]
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(fields.len() as i64, out);
+        out.push(op::CALL);
+        uleb128(imp("arr-alloc"), out); // [buf, arr]
+        for (i, f) in fields.iter().enumerate() {
+            out.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(i as i64, out); // [buf, arr, slot]
+            emit_addr(out); // [buf, arr, slot, base]
+            out.push(f.load_op);
+            uleb128(f.load_align as u64, out);
+            uleb128(f.offset as u64, out); // [buf, arr, slot, raw] (load at base + offset)
+            if let Some(signed) = f.extend {
+                out.push(if signed {
+                    op::I64_EXTEND_I32_S
+                } else {
+                    op::I64_EXTEND_I32_U
+                });
+            }
+            out.push(op::CALL);
+            uleb128(imp(f.box_op), out); // [buf, arr, slot, boxed]
+            out.push(op::CALL);
+            uleb128(imp("arr-set"), out); // [buf, arr]
+        }
         out.push(op::CALL);
         uleb128(imp("vec-push"), out); // [buf']
         out.push(op::LOCAL_SET);

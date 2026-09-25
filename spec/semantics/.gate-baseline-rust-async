@@ -7911,6 +7911,8 @@ pass	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero
 pass	eln3 a THREE-level nested-list entry param reads a leaf through two descents
 pass	els1 a list<string> entry param reads an element's byte-length
 pass	elb1 a list<bytes> entry param reads an element's byte-length
+pass	lpt1 a list<tuple> entry param reads two elements' fields
+pass	lpr1 a list<record> entry param reads two elements' fields by name
 pass	ema1 an INTEGER EMA state — each dispatch blends (3*ema + 100*v)/4 at 100x scale, convergence toward the fed value from both sides
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value

@@ -11281,6 +11281,8 @@ pass	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero
 pass	eln3 a THREE-level nested-list entry param reads a leaf through two descents
 pass	els1 a list<string> entry param reads an element's byte-length
 pass	elb1 a list<bytes> entry param reads an element's byte-length
+pass	lpt1 a list<tuple> entry param reads two elements' fields
+pass	lpr1 a list<record> entry param reads two elements' fields by name
 pass	eop2 an Option-of-list entry param measures its Some payload
 pass	ep1 TWO String entry params concat in declaration order
 pass	equality on a TUPLE containing a closure is rejected CDZ0216 (NotEquatable — the fn leaf poisons the compound walk)
