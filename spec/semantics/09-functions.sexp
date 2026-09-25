@@ -13753,6 +13753,59 @@
   (call main (: #tuple(5 (Some 8)) (Tuple Int64 (Option Int64))))
   (output (: 508 Int64)))
 
+; rpp17-20 widen the sum-payload FIELD (rpp14-16 covered a scalar payload) to a COMPOUND payload and a
+; BYTE-LEAF payload. rpp17 = option<tuple> field, rpp18 = option<record> field: the Some payload is a
+; fixed-shape product, flattened after the option disc and rebuilt as a value-heap cell; the nominal record
+; crosses structurally (structuralize_wit). rpp19 = option<bytes> field, rpp20 = option<string> field: the
+; Some payload is a memory-bearing byte-leaf, flattened `(disc, ptr, len)` and copied into a guest byte-leaf
+; (a Cadenza String IS a flat UTF-8 byte-leaf built by the same copy-in as Bytes — the sum-payload classifier
+; treats String like Bytes, matching param_field_rebuild's field-level String|Bytes unification). 507 =
+; 100*5 + (3+4); 503 = 100*5 + byte-length 3 — each discriminates correct Some-payload routing. Pass on
+; wasm + rust + rust-async.
+(case
+  "rpp17 a Record entry param with an option-of-tuple field projects the Some payload"
+  (input
+    (do
+      (def
+        (main (: rec (Record (: n Int64) (: o (Option (Tuple Int64 Int64))))))
+        (+ (* 100 rec.n) (match rec.o ((Option.Some p) (+ (. p 0) (. p 1))) ((Option.None) 0))))
+      (export main)))
+  (call main (: #record((= n 5) (= o (Some #tuple(3 4)))) (Record (: n Int64) (: o (Option (Tuple Int64 Int64))))))
+  (output (: 507 Int64)))
+
+(case
+  "rpp18 a Record entry param with an option-of-record field projects the Some payload"
+  (input
+    (do
+      (def
+        (main (: rec (Record (: n Int64) (: o (Option (Record (: a Int64) (: b Int64)))))))
+        (+ (* 100 rec.n) (match rec.o ((Option.Some q) (+ q.a q.b)) ((Option.None) 0))))
+      (export main)))
+  (call main (: #record((= n 5) (= o (Some #record((= a 3) (= b 4))))) (Record (: n Int64) (: o (Option (Record (: a Int64) (: b Int64)))))))
+  (output (: 507 Int64)))
+
+(case
+  "rpp19 a Record entry param with an option-of-bytes field measures the Some payload byte-length"
+  (input
+    (do
+      (def
+        (main (: rec (Record (: n Int64) (: b (Option Bytes)))))
+        (+ (* 100 rec.n) (match rec.b ((Option.Some x) (Bytes.len x)) ((Option.None) 0))))
+      (export main)))
+  (call main (: #record((= n 5) (= b (Some #bytes(1 2 3)))) (Record (: n Int64) (: b (Option Bytes)))))
+  (output (: 503 Int64)))
+
+(case
+  "rpp20 a Record entry param with an option-of-string field measures the Some payload byte-length"
+  (input
+    (do
+      (def
+        (main (: rec (Record (: n Int64) (: s (Option String)))))
+        (+ (* 100 rec.n) (match rec.s ((Option.Some x) (String.byte-len x)) ((Option.None) 0))))
+      (export main)))
+  (call main (: #record((= n 5) (= s (Some "abc"))) (Record (: n Int64) (: s (Option String)))))
+  (output (: 503 Int64)))
+
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
   (doc

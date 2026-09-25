@@ -9553,6 +9553,10 @@ pass	rpp13 a Record nested two tuple levels deep in an entry param projects thro
 pass	rpp14 a Record entry param with an option field projects both the scalar and the Some payload
 pass	rpp15 a Record entry param with a result field projects both the scalar and the Ok payload
 pass	rpp16 a Tuple entry param with an option element projects both the scalar and the Some payload
+pass	rpp17 a Record entry param with an option-of-tuple field projects the Some payload
+pass	rpp18 a Record entry param with an option-of-record field projects the Some payload
+pass	rpp19 a Record entry param with an option-of-bytes field measures the Some payload byte-length
+pass	rpp20 a Record entry param with an option-of-string field measures the Some payload byte-length
 pass	rpp2 an open-row helper projects a field of the boundary Record param
 pass	rpp3 a Record entry param with a heap list field measures both
 pass	rpp4 a scalar Tuple entry param projects both positions
