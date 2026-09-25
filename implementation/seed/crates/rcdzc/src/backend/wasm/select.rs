@@ -7836,22 +7836,16 @@ fn call_arg_caller_drops(
     if param_escapes_body(db, body, param_binder) {
         return false; // (4)
     }
-    // (6) INC1 approach B — YIELD to the callee's own non-tail-spine shell-reclaim. `def_inc1_reclaims_param`
-    // queries the SAME selection the callee's shell-drop uses (single source of truth), so caller-drop XOR
-    // INC1-reclaim is exactly complementary. Guarded by the SAME `inc1_wholly_excluded` (not-export +
-    // not-capturing) as :1204's selection, so this fires ONLY where INC1 actually reclaims (else a suppressed
-    // caller-drop for a non-reclaimed param would LEAK). Callee-reclaim wins: it covers every recursion frame;
-    // the caller-drop covers only the top.
+    // (6) INC1 approach B — YIELD to the callee's own non-tail-spine shell-reclaim; `def_inc1_reclaims_param`
+    // is the single source of truth (caller-drop XOR reclaim, exactly complementary). node#3 (b): the blunt
+    // `!body_is_capturing_lifted` conjunct is DROPPED (subsumed by def_inc1_reclaims_param — see its doc).
     if !layout.exports.iter().any(|e| e.body == body)
-        && !body_is_capturing_lifted(db, body)
         && def_inc1_reclaims_param(db, body, param_binder)
     {
         return false; // (6)
     }
-    // (6b) blx1 — YIELD to the callee's NON-LOOPED epilogue self-drop (the non-looped twin of (6), same
-    // single-source-of-truth complementarity): if the callee reclaims THIS param via its fn-exit op_drop,
-    // the caller must not also drop it. `def_nonlooped_reclaims_param` does NOT query `call_arg_caller_drops`,
-    // so there is no cycle.
+    // (6b) blx1 — non-looped twin of (6): if the callee reclaims THIS param via its fn-exit op_drop, the
+    // caller must not also drop it. `def_nonlooped_reclaims_param` doesn't query us → no cycle.
     if def_nonlooped_reclaims_param(db, callee, param_index, layout) {
         return false; // (6b)
     }

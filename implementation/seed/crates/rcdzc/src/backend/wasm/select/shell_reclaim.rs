@@ -332,6 +332,188 @@ pub(crate) fn expr_escapes_view(
     }
 }
 
+/// Whether the COMPOUND PAYLOAD of `scrutinee` (a boxed-sum PARAM matched once — the [`is_nontail_spine_param`]
+/// node#3 case) can ESCAPE the match as a live heap handle THROUGH some arm's TERMINAL RESULT — the scrutinee
+/// returned WHOLE, a payload CHILD returned directly, or a child EMBEDDED as a heap component of a returned
+/// constructor / retaining collection builder / captured closure. This is the COMPLETE escape walk the
+/// [`is_nontail_spine_param`] capturing relax needs: the load-bearing capturing exclusion there guards against
+/// a self-recursive capturing fold whose arm REBUILDS a ctor embedding a param-payload CHILD (subst/rename:
+/// `(Term.Abs w body)` where `body` is a payload of the scrutinee) — self-reclaiming the shell would free the
+/// still-referenced escaped child → UAF. `!sum_payload_escapes_as_result` is the predicate that PROVES no such
+/// escape, so the relax admits ONLY the non-escaping capturing folds (min-reclaim `walk`) and keeps the
+/// ctor-embed escapers (the 4 tr3 traps + `Term.Abs`) DECLINED.
+///
+/// SOUNDNESS — this is the SEPARATE compound-payload twin of [`expr_escapes_view`], NOT a reuse: the byte-view
+/// floor is `_ => false` (a `String.at` view is byte-COPIED by every builder — `bytes-concat`/`str-slice`
+/// ALLOCATE fresh, retaining nothing — so an unhandled node is proven non-escaping). A COMPOUND payload is the
+/// OPPOSITE: a persistent-collection builder (`List.push`/`Map.insert`/`Set.insert`/…) RETAINS its element by
+/// REFERENCE, so the floor here is DEFAULT-ESCAPE (`_ => true`) — an unmodelled heap-returning node could
+/// retain the payload → escape (leak-over-UAF). The carve-out that admits `walk` is the SCALAR-TYPE
+/// short-circuit: a node whose RESULT TYPE is non-heap (a scalar) copies a scalar out and CANNOT carry a
+/// compound handle — the SAME soundness principle as [`sum_cont_result_all_scalar`] (a scalar arm result is
+/// shell-reclaimable). `walk`'s `#tuple((+ (.r3 0) (.r4 0)) (.r4 0))` arm reclaims because the `+` is
+/// scalar-typed and the `.r4`/`.r3` projections root at the recursive-call RESULTS, not at `scrutinee`.
+///
+/// UAF-CRITICAL: an INCOMPLETE walk here wrongly ADMITS a capturing escaper → UAF. It MUST NOT land alone —
+/// the +0-dup capturing emit means the admitted shell reclaim double-drops the consumed child (the n=2 trap);
+/// it is lockstep-atomic with v-mem's emit dup-lockstep (b) (`emit.rs` prefix-fast-path emits `OP_DUP` when
+/// `dup_sites.contains(&id)`). v-mem co-verifies the admitted faces reclaim to 0 with no double-free.
+pub(crate) fn sum_payload_escapes_as_result(
+    db: &mut Db,
+    scrutinee: StructId,
+    root: &crate::core::SumCont,
+) -> bool {
+    let mut seen = HashSet::new();
+    sum_cont_result_escapes_sum_payload(db, root, scrutinee, &mut seen)
+}
+
+/// Per-arm terminal-result walk for [`sum_payload_escapes_as_result`] — the payload escapes iff it escapes
+/// through ANY arm's result continuation. Mirrors [`sum_cont_result_escapes_view`].
+pub(crate) fn sum_cont_result_escapes_sum_payload(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    scrut: StructId,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => expr_escapes_sum_payload(db, *body, scrut, seen),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            expr_escapes_sum_payload(db, *body, scrut, seen)
+                || sum_cont_result_escapes_sum_payload(db, els, scrut, seen)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_result_escapes_sum_payload(db, then_, scrut, seen)
+                || sum_cont_result_escapes_sum_payload(db, els, scrut, seen)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_result_escapes_sum_payload(db, &a.cont, scrut, seen)),
+    }
+}
+
+/// Whether the compound payload of `scrut` (the whole scrutinee, or a `SumPayload`/`Proj`/`SumExpect` child of
+/// it) escapes THROUGH the result expression `id`. See [`sum_payload_escapes_as_result`] for the soundness
+/// argument (DEFAULT-ESCAPE floor + scalar-type short-circuit + retaining-builder arms). Node-id `seen` dedups
+/// the shared-`StructId` DAG re-walk (Core is acyclic; the escape value propagates on first visit).
+pub(crate) fn expr_escapes_sum_payload(
+    db: &mut Db,
+    id: StructId,
+    scrut: StructId,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    // The scrutinee returned WHOLE, or a payload CHILD (a `SumPayload`/`Proj`/`SumExpect` chain rooted at it)
+    // returned as a heap handle = ESCAPE. A SCALAR leaf (`get_op` Some — a byte/int/char COPIED out, no handle
+    // survives) does not escape (e.g. `walk`'s scalar field read).
+    if payload_proj_chain_roots_at_node(db, id, scrut) {
+        return !matches!(get_op(db, id), Ok(Some(_)));
+    }
+    // SCALAR-TYPED RESULT: cannot carry a compound handle out (it copies a scalar), regardless of what it
+    // reads. This is the carve-out that admits `walk`'s `(+ …)` / non-scrut-rooted projection arm — the same
+    // soundness principle as `sum_cont_result_all_scalar`. A payload-chain rooted at scrut was already
+    // returned above; here `id` roots elsewhere (a recursive-call result, a fresh value), so a scalar result
+    // holds no handle to `scrut`'s payload.
+    if !is_heap_type(&type_of(db, id)) {
+        return false;
+    }
+    match core_of(db, id) {
+        // RETAINING constructors: each stores its operand refs INTO the returned value → escape iff any
+        // operand (recursively) carries the payload out. This is the ctor-EMBED escape the existing gates
+        // (`sum_cont_arm_returns_scrutinee`/`interior_view`) MISS — `(Term.Abs w body)` embeds a payload child.
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::SetOf { elems, .. } => elems
+            .iter()
+            .any(|&e| expr_escapes_sum_payload(db, e, scrut, seen)),
+        Core::SumNew { payloads, .. } => payloads
+            .iter()
+            .any(|&e| expr_escapes_sum_payload(db, e, scrut, seen)),
+        Core::Record { fields } => fields
+            .values()
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .any(|e| expr_escapes_sum_payload(db, e, scrut, seen)),
+        Core::MapNew { entries, .. } => entries.iter().any(|&(k, v)| {
+            expr_escapes_sum_payload(db, k, scrut, seen)
+                || expr_escapes_sum_payload(db, v, scrut, seen)
+        }),
+        // RETAINING PERSISTENT-COLLECTION BUILDERS — the compound-payload completeness delta over the
+        // byte-view floor: each RETAINS its element/operand BY REFERENCE into the returned structure (a copied
+        // COW node reuses the same child cells), so a payload flowing in as an element escapes. `List.at`-style
+        // fallible interior reads are NOT here (they read a child OUT — the `interior_view` gate's lane).
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
+            expr_escapes_sum_payload(db, list, scrut, seen)
+                || expr_escapes_sum_payload(db, elem, scrut, seen)
+        }
+        Core::ListConcat { lhs, rhs } | Core::MapMerge { lhs, rhs } => {
+            expr_escapes_sum_payload(db, lhs, scrut, seen)
+                || expr_escapes_sum_payload(db, rhs, scrut, seen)
+        }
+        Core::ListUpdate { list, elem, .. } => {
+            expr_escapes_sum_payload(db, list, scrut, seen)
+                || expr_escapes_sum_payload(db, elem, scrut, seen)
+        }
+        Core::MapInsert { map, key, val, .. } => {
+            expr_escapes_sum_payload(db, map, scrut, seen)
+                || expr_escapes_sum_payload(db, key, scrut, seen)
+                || expr_escapes_sum_payload(db, val, scrut, seen)
+        }
+        // `Map.remove`/`Set.remove` RETAIN the surviving structure (the operand handle) AND BORROW-DROP the
+        // boxed key/elem after the op. Recurse BOTH: if the payload flows in as the key/elem, the op's
+        // borrow-drop plus the shell-reclaim cascade would DOUBLE-FREE it — so a payload key/elem is an escape-
+        // relevant hazard, not a safe borrow (leak-over-UAF: worst case over-declines a remove-of-payload).
+        Core::MapRemove { map, key, .. } => {
+            expr_escapes_sum_payload(db, map, scrut, seen)
+                || expr_escapes_sum_payload(db, key, scrut, seen)
+        }
+        Core::SetInsert { set, elem, .. } => {
+            expr_escapes_sum_payload(db, set, scrut, seen)
+                || expr_escapes_sum_payload(db, elem, scrut, seen)
+        }
+        Core::SetRemove { set, elem, .. } => {
+            expr_escapes_sum_payload(db, set, scrut, seen)
+                || expr_escapes_sum_payload(db, elem, scrut, seen)
+        }
+        Core::SetAlgebra { lhs, rhs, .. } => {
+            expr_escapes_sum_payload(db, lhs, scrut, seen)
+                || expr_escapes_sum_payload(db, rhs, scrut, seen)
+        }
+        // A payload CAPTURED into a returned closure ESCAPES via the closure cell (the capturing-fold escape
+        // route this whole predicate exists to catch): escape iff any capture carries the payload out.
+        Core::Closure { captures, .. } => captures
+            .iter()
+            .any(|&c| expr_escapes_sum_payload(db, c, scrut, seen)),
+        // HANDLE-ALIASING reinterprets: MAY return the SAME heap handle as their operand → transparent.
+        Core::NfcNormalize { string } | Core::StrToBytes { string } => {
+            expr_escapes_sum_payload(db, string, scrut, seen)
+        }
+        Core::StrFromBytes { bytes, .. } => expr_escapes_sum_payload(db, bytes, scrut, seen),
+        // TRANSPARENT control flow: the arm result is whichever tail is taken → recurse each tail.
+        Core::Let { body, .. } => expr_escapes_sum_payload(db, body, scrut, seen),
+        Core::If { then_, else_, .. } => {
+            expr_escapes_sum_payload(db, then_, scrut, seen)
+                || expr_escapes_sum_payload(db, else_, scrut, seen)
+        }
+        Core::MatchSum { root, .. } => sum_cont_result_escapes_sum_payload(db, &root, scrut, seen),
+        // OPAQUE calls: the callee may RETURN or capture an argument, so a payload flowing IN as an arg (or the
+        // closure env) may flow OUT as the (heap) result → escape if any operand carries the payload out.
+        Core::Call { args, .. } => args
+            .iter()
+            .any(|&a| expr_escapes_sum_payload(db, a, scrut, seen)),
+        Core::CallClosure { closure, args } => {
+            expr_escapes_sum_payload(db, closure, scrut, seen)
+                || args
+                    .iter()
+                    .any(|&a| expr_escapes_sum_payload(db, a, scrut, seen))
+        }
+        // DEFAULT-ESCAPE floor (the polarity FLIP vs the byte-view `_ => false`): a heap-returning node we do
+        // NOT model as fresh-copy/borrow could RETAIN the payload → conservatively ESCAPE (leak-over-UAF).
+        // Scalar-returning nodes were already admitted by the `is_heap_type` short-circuit above.
+        _ => true,
+    }
+}
+
 /// Whether the expression subtree `id` contains a compound CONSTRUCTOR node (see
 /// [`sum_cont_arm_constructs_compound`]). Node-id `seen` set guards the shared-`StructId` DAG re-walk.
 pub(crate) fn expr_constructs_compound_seen(

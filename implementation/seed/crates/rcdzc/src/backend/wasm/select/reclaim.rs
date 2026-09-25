@@ -5569,18 +5569,23 @@ pub(super) fn is_nontail_spine_param(
         && !ty_is_enum_disc(db, &scrut_ty)
         && !sum_has_only_scalar_payloads(db, &scrut_ty);
     compound_boxed
-        // A capturing-lifted body stays EXCLUDED from the COMPOUND non-tail-spine reclaim. tr3 CAUTION
-        // (v-mem corpus-wide guarded-all, 2026-09-03): do NOT relax this to admit a self-recursive capturing
-        // body here. A capturing self-recursive fold whose arm REBUILDS a ctor embedding a param-payload CHILD
-        // (subst/rename: `(Term.Abs w body)` — `body` is a payload of the scrutinee) would self-reclaim the
-        // shell and free the still-referenced escaped child → UAF (4 traps caught corpus-wide; the compound
-        // escape gates `sum_cont_payload_in_result`/`arm_returns_scrutinee`/`interior_view` all MISS a
-        // ctor-EMBED escape, and the dup-lockstep does not net for the capturing case). The SCALAR-returning
-        // capturing self-recursive folds (depth/max/balance) are instead reclaimed via the SCALAR path
-        // (`nontail_param_payload_ok`), admitted through `nontail_match_reclaim_binders` by the select.rs
-        // self-recursive relax; that path excludes ctor-rebuild arms (`!sum_cont_arm_constructs_compound`) by
-        // construction, so this compound path needs no capturing relax.
-        && !body_is_capturing_lifted(db, top_body)
+        // A capturing-lifted body is EXCLUDED from the COMPOUND non-tail-spine reclaim UNLESS its payload
+        // PROVABLY does not escape (`!sum_payload_escapes_as_result`). tr3 CAUTION (v-mem corpus-wide
+        // guarded-all, 2026-09-03): a capturing self-recursive fold whose arm REBUILDS a ctor embedding a
+        // param-payload CHILD (subst/rename: `(Term.Abs w body)` — `body` is a payload of the scrutinee) would
+        // self-reclaim the shell and free the still-referenced escaped child → UAF (4 traps caught corpus-wide).
+        // The OLDER compound escape gates (`sum_cont_payload_in_result`/`arm_returns_scrutinee`/`interior_view`)
+        // all MISS that ctor-EMBED escape, which is why the bare `!body_is_capturing_lifted` fence was needed.
+        // `sum_payload_escapes_as_result` is the COMPLETE escape walk that DOES catch the ctor-embed (SumNew/
+        // Record/Tuple/collection-builder/closure-capture recursion into the payload chain) — so the ctor-embed
+        // escapers (the 4 tr3 traps + `Term.Abs`) STAY declined while the PROVEN-non-escaping capturing fold
+        // (min-reclaim `walk`, whose scalar-`+`/non-scrut-rooted-projection arm carries no payload out) is now
+        // admitted. LOCKSTEP-ATOMIC with v-mem's emit (b): the capturing emit's +0-dup means admitting the
+        // shell reclaim ALONE double-drops the consumed child (the n=2 trap) — this relax MUST land together
+        // with the emit dup-lockstep that emits `OP_DUP` for the consumed child. (The SCALAR-returning
+        // capturing self-recursive folds depth/max/balance stay on the SCALAR path `nontail_param_payload_ok`.)
+        && (!body_is_capturing_lifted(db, top_body)
+            || !super::sum_payload_escapes_as_result(db, scrutinee, root))
         && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder } if {
             let mut seen2 = HashSet::new();
             let mut total = 0usize;
