@@ -210,10 +210,14 @@ pub struct ExportParam {
 /// Int64) (: xs (List Int64)))` param whose field is a HEAP `(List Int64)` — read the scalar tag + the first
 /// list element (value = tag + xs[0]). Distinct from shape 14 (all-scalar Record → structural tuple): here
 /// the record carries a heap list that must cross intact, so a mis-marshal of the in-record heap field
-/// corrupts the value.
+/// corrupts the value. Shape 16 is the #9707 wfp1 >16-FLAT-scalar export: a SEVENTEEN-Int64-param entry
+/// summing all params — >16 flat params exceed the direct wasm param limit, so the whole set crosses via the
+/// MEMORY-INDIRECT ABI (params spilled to linear memory), a fundamentally different param-passing regime than
+/// the ≤3-param shapes above. A mis-offset / mis-index in the memory-indirect spill corrupts the sum. Args mix
+/// 7 entropy-driven values + 10 fixed so the value varies without extra entropy reads.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(16);
+    let shape = c.variant(17);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -356,11 +360,27 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      param whose `xs` field is a HEAP list — read the scalar tag + xs[0] (value = tag + first
         //      element). Distinct from shape 14's all-scalar Record: the in-record heap list must cross
         //      intact, so a mis-marshal of the heap field corrupts the value.
-        _ => (
+        15 => (
             "(do (def (rsum (: r (Record (: tag Int64) (: xs (List Int64))))) (+ (. r tag) (match (List.at (. r xs) 0) ((Some v) v) (None 0)))) (export rsum))"
                 .to_string(),
             vec![record_list_arg],
         ),
+        // 16 — #9707 wfp1 >16-FLAT-scalar export: 17 Int64 params summed. Exceeding the 16-flat-param wasm
+        //      limit forces the MEMORY-INDIRECT ABI (params spilled to linear memory) — a distinct passing
+        //      regime; a mis-offset in the spill corrupts the sum. Args = 7 entropy-driven + 10 fixed. The
+        //      program is built programmatically so the 17-param list + right-nested `(+ …)` always balance.
+        _ => {
+            let params: String = (0..17).map(|i| format!("(: p{i} Int64) ")).collect();
+            let mut sum = "p16".to_string();
+            for i in (0..16).rev() {
+                sum = format!("(+ p{i} {sum})");
+            }
+            let src = format!("(do (def (big {}) {sum}) (export big))", params.trim_end());
+            let mut wfp1_args: Vec<String> =
+                [a, b, m, u, e0, e1, e2].iter().map(|v| v.to_string()).collect();
+            wfp1_args.extend((1..=10).map(|v: i64| v.to_string()));
+            (src, wfp1_args)
+        }
     };
     ExportParam { source, args }
 }
@@ -5687,12 +5707,12 @@ mod tests {
         // shapes lhd/top(helper)/suml(recursive-walk) + the #9586 record-Option-newtype `run` + the #9684
         // const-list-of-Option-field sibling + the #9687 payload-variant field + the #9689 consuming-slice `cat`
         // + the #9694 String-consume `catlen` + the #9699 scalar-fielded Record `addpt` + the #9701 rpp3
-        // heap-carrying Record `rsum`.
-        let mut reached = [false; 16];
-        for seed in 0u64..960 {
+        // heap-carrying Record `rsum` + the #9707 wfp1 >16-flat-scalar `big`.
+        let mut reached = [false; 17];
+        for seed in 0u64..1020 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(16) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // variant(17) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
             // shape selector AND every arg literal on live entropy.
             for _ in 0..64 {
                 x ^= x >> 30;
@@ -5745,11 +5765,13 @@ mod tests {
                 reached[14] = true; // shape 14 = #9699 scalar-fielded Record `addpt`
             } else if ep.source.contains("(def (rsum ") {
                 reached[15] = true; // shape 15 = #9701 rpp3 heap-carrying Record `rsum`
+            } else if ep.source.contains("(def (big ") {
+                reached[16] = true; // shape 16 = #9707 wfp1 >16-flat-scalar `big`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all sixteen export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all seventeen export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
