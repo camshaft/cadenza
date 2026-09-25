@@ -11224,7 +11224,7 @@ todo	a String-typed @param accessor crosses once the world-driven result path la
 pass	a Symbol entry parameter compares to an interned constant
 pass	a `..` construction spread of an unbound operand in a MAP reports the unbound name (CDZ0101), construction spread being legal
 pass	a `..` construction spread of an unbound operand in a RECORD reports the unbound name (CDZ0101), construction spread being legal
-todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
+pass	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but the bare envelope declines it on wasm
 pass	a bare Value.decode with no grounding annotation is rejected CDZ0203 (unsolved target type — annotate it)
 todo	a bin pattern over a Bytes scrutinee is NOT a type error (declines only on the non-scalar param boundary)
@@ -11233,7 +11233,7 @@ todo	a closure returning Unit crosses the boundary — unit is a zero-result (sh
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 pass	a cross-function performing-arg call folds by inlining the effect-reaching helper
 todo	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
-todo	a delegated perform with no recorded host response traps
+pass	a delegated perform with no recorded host response traps
 todo	a dependent utf8 size from an arithmetic expression over a byte binder decodes
 pass	a do-def-bound perform inside a recursive fn called under a handle folds by inlining the single-use perform
 todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)
