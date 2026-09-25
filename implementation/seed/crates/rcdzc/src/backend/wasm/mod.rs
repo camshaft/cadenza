@@ -1062,16 +1062,20 @@ pub fn emit(
         && host_imports.is_empty()
         && extern_imports.is_empty()
         && layout.exports.iter().any(|e| {
-            e.params.iter().any(|(_, t)| {
-                // A memory-bearing leaf (String/Bytes/list) OR a two-variant sum (option/result) OR a
-                // scalar-fielded tuple/record param — the cheap pre-filter. A shape the entry path cannot
-                // classify still declines INSIDE (`ty_natural_wit` → None, or the rebuild helper → None), so
-                // widening the filter is safe (it just gives the entry path a chance to classify — rpp4). A
-                // `Record` crosses STRUCTURALLY as an anonymous `tuple<…>` (rpp1) — identical canonical ABI, no
-                // nominal defined-type declaration — so it enters the entry path like a tuple.
-                matches!(
-                    t,
-                    crate::ty::Ty::String
+            // A scalar-only export whose params SPILL (over the flat cap) enters the entry path too: it needs
+            // the memory-indirect wrapper (wfp1). Scalar params do not match the compound filter below, so
+            // this arity check is what routes an all-scalar spilling export in.
+            e.params.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS
+                || e.params.iter().any(|(_, t)| {
+                    // A memory-bearing leaf (String/Bytes/list) OR a two-variant sum (option/result) OR a
+                    // scalar-fielded tuple/record param — the cheap pre-filter. A shape the entry path cannot
+                    // classify still declines INSIDE (`ty_natural_wit` → None, or the rebuild helper → None), so
+                    // widening the filter is safe (it just gives the entry path a chance to classify — rpp4). A
+                    // `Record` crosses STRUCTURALLY as an anonymous `tuple<…>` (rpp1) — identical canonical ABI, no
+                    // nominal defined-type declaration — so it enters the entry path like a tuple.
+                    matches!(
+                        t,
+                        crate::ty::Ty::String
                         | crate::ty::Ty::Bytes
                         | crate::ty::Ty::List(_)
                         | crate::ty::Ty::Sum { .. }
@@ -1083,8 +1087,8 @@ pub fn emit(
                         | crate::ty::Ty::BigInt
                         | crate::ty::Ty::Rational
                         | crate::ty::Ty::Symbol
-                )
-            })
+                    )
+                })
         })
         && let Some(result) = try_bare_entry_param_component(db, layout, &funcs, &imports)
     {
@@ -7574,19 +7578,29 @@ fn try_bare_entry_param_component(
         }
         wit_params.push((format!("p{i}"), wit));
     }
-    // Require at least one memory-bearing leaf OR sum OR record/tuple-cell param (a scalar-only export is the
-    // existing bare path, untouched — it falls through to the boundary loop).
+    // Require at least one memory-bearing leaf OR sum OR record/tuple-cell param — OR a scalar-only export
+    // whose flattened params SPILL (over MAX_FLAT_PARAMS core values), which this path now emits
+    // memory-indirect (wfp1: 17 scalar params). A scalar-only export UNDER the flat cap is the existing bare
+    // path, untouched — it falls through to the boundary loop's direct canon-lift.
     if !mem_leaf_params.iter().any(Option::is_some)
         && !sum_params.iter().any(Option::is_some)
         && !cell_params.iter().any(Option::is_some)
+        && param_vts.len() <= crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS
     {
         return None;
     }
-    // MAX-FLAT-PARAMS GUARD (mirror of the boundary-loop guard): a String/Bytes/list param flattens to two
-    // core values (ptr, len), so past 8 such params (or fewer, mixed with scalars) the flattened arity
-    // exceeds the canonical-ABI limit (16) and needs the memory-indirect convention this path does not emit.
-    // Decline rather than produce an invalid component.
-    if param_vts.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS {
+    // MAX-FLAT-PARAMS: over the canonical flat cap (16 core values) the params cross MEMORY-INDIRECT — the
+    // caller writes them to linear memory and passes ONE i32 pointer, which the wrapper reads back (the
+    // spilled-param reader, emitted by `core_module_impl` when `wrapper_params_spill`). This path emits that
+    // reader ONLY for an ALL-SCALAR param list (wfp1: each param a plain aligned load from the spill area). A
+    // spilled list that ALSO carries a memory-bearing leaf / sum / cell param (wfp3 + mixed) is a later slice
+    // — its per-param lift out of the spill area is not yet emitted — so decline rather than emit a
+    // half-spilled wrapper.
+    if param_vts.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS
+        && (mem_leaf_params.iter().any(Option::is_some)
+            || sum_params.iter().any(Option::is_some)
+            || cell_params.iter().any(Option::is_some))
+    {
         return None;
     }
     // A BORROWED memory-bearing param (drop_after=true) is reclaimed by the wrapper (its owner) after the
