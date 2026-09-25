@@ -8860,6 +8860,9 @@ fn export_make_params(
     // params; each compound slot's rebuild reads its own run (a leaf cursor threaded across slots at emit).
     let mut leaf_vts = Vec::new();
     let mut slots: Vec<MakeSlot> = Vec::new();
+    // Shape-descriptor bytes for each value-form (`BigInt`/`Rational`/`Symbol`) make param, indexed by the
+    // `MemLeafKind::ValueForm(u32)` — the make-body twin of `WrapperDesc::value_form_descs`.
+    let mut value_form_descs: Vec<Vec<u8>> = Vec::new();
     // The export body — used to prove a compound param's rebuilt cell is a dead owned temporary the make
     // wrapper must reclaim after the call (`record_cell_param_droppable`, the same dup-aware gate the typed-
     // interface-member route uses at `record_interface_export`). `None` (body unavailable) → no drop (leak,
@@ -8899,31 +8902,88 @@ fn export_make_params(
                     drop_after,
                 });
             }
-            _ => match (
-                crate::backend::wasm::lir::valtype_of(t),
-                closure_boundary_byte(t),
-            ) {
-                (Some(vt), Some(byte)) => {
+            _ => {
+                use crate::backend::wasm::lir::ValType;
+                use crate::backend::wasm::serialize::MemLeafKind;
+                let gty = t.strip_nominal();
+                // A genuine SCALAR (Int/Bool/Float/Char) — one flattened leaf forwarded directly.
+                if let (Some(vt), Some(byte)) = (
+                    crate::backend::wasm::lir::valtype_of(t),
+                    closure_boundary_byte(t),
+                ) {
                     leaf_vts.push(vt);
                     slots.push(MakeSlot::Scalar(byte));
+                    continue;
                 }
-                _ => {
-                    // A HARD gate (`Err`) that already declines the compile — so tagging with the catalogued
-                    // DeclineId is a pure id-tag (code None→CDZ0900 via `declined`, no gating change; contrast
-                    // the closure NO_REPR soft-poisons, which are non-gating codeless and would false-gate).
-                    return Err(Reject::declined(
-                        crate::diag::DeclineId::WasmHeapReturnParamNoBoundaryRep,
-                        format!(
-                            "a parameterized heap-return export forwards scalar params and fixed-shape scalar \
-                             tuple/record params only; parameter of type `{}` has no boundary representation",
-                            t.render_name(&db.name_ctx())
-                        ),
-                    ));
+                // A MEMORY-BEARING / VALUE-FORM leaf — `String`/`Bytes`/`list<scalar>` (crosses as
+                // `string`/`list<u8>`) or a `BigInt`/`Rational`/`Symbol` value-form (crosses as `list<u8>`).
+                // All flatten to `(ptr, len)` and lift in the make body via the SAME shared emitters the typed-
+                // interface wrapper uses (`emit_bytes_leaf_copy_in` / `emit_list_leaf_lift` /
+                // `emit_value_form_lift`). This FIRST slice forwards only a BORROWED such param (the def reads
+                // it, e.g. `(+ a a)` / `(* a …)`); an ESCAPING (consumed / moved-to-result) value-form/mem-leaf
+                // param declines to a later slice (the make wrapper reclaim gate would need the consuming-slice
+                // proof the entry path has). `param_borrow_aware_escapes` = it escapes; `drop_after` = it does
+                // not, so the wrapper (owner of the lifted handle) reclaims it after the borrowing call.
+                let borrowed = export_body.is_some_and(|body| {
+                    !crate::backend::wasm::select::param_borrow_aware_escapes(db, body, *binder)
+                });
+                let mem_kind: Option<MemLeafKind> = if matches!(
+                    gty,
+                    crate::ty::Ty::BigInt | crate::ty::Ty::Rational | crate::ty::Ty::Symbol
+                ) {
+                    // A value-form param: bake the shape descriptor (the same bytes `Value.encode`/`decode`
+                    // use); a type whose descriptor cannot be computed declines below.
+                    match crate::lower::value_form_param_descriptor(db, gty) {
+                        Some(desc) => {
+                            let idx = value_form_descs.len() as u32;
+                            value_form_descs.push(desc);
+                            Some(MemLeafKind::ValueForm(idx))
+                        }
+                        None => None,
+                    }
+                } else {
+                    match gty {
+                        crate::ty::Ty::String => Some(MemLeafKind::Str),
+                        crate::ty::Ty::Bytes => Some(MemLeafKind::Bytes),
+                        // A `list<scalar>` param (phr1/phr2) needs `emit_list_leaf_lift`'s dynamic scratch —
+                        // deferred to a later slice; declines below for now (R1/R2/R3 are String/BigInt/Rational).
+                        _ => None,
+                    }
+                };
+                match mem_kind {
+                    Some(kind) if borrowed => {
+                        leaf_vts.push(ValType::I32); // ptr
+                        leaf_vts.push(ValType::I32); // len
+                        slots.push(MakeSlot::MemLeaf {
+                            kind,
+                            drop_after: true,
+                        });
+                    }
+                    _ => {
+                        // A HARD gate (`Err`) that already declines the compile — so tagging with the
+                        // catalogued DeclineId is a pure id-tag (code None→CDZ0900 via `declined`).
+                        // This arm covers both an ESCAPING mem-leaf/value-form param (owned across the
+                        // make call, so a borrow-forward is unsound) and a param whose type has no
+                        // boundary shape at all; the escaping-param lift is tracked as follow-on work.
+                        return Err(Reject::declined(
+                            crate::diag::DeclineId::WasmHeapReturnParamNoBoundaryRep,
+                            format!(
+                                "a parameterized heap-return export forwards scalar, fixed-shape scalar \
+                                 tuple/record, and BORROWED String/Bytes/list/value-form params; a parameter \
+                                 of type `{}` has no boundary representation on this path",
+                                t.render_name(&db.name_ctx())
+                            ),
+                        ));
+                    }
                 }
-            },
+            }
         }
     }
-    Ok(MakeParams { leaf_vts, slots })
+    Ok(MakeParams {
+        leaf_vts,
+        slots,
+        value_form_descs,
+    })
 }
 
 /// The `make`-forwarded parameter plan for a heap-returning export's resource escape: the flattened CORE
@@ -8936,12 +8996,19 @@ struct MakeParams {
     leaf_vts: Vec<crate::backend::wasm::lir::ValType>,
     /// One entry per PARAMETER, in order: a scalar leaf (forwarded) or a compound (rebuilt from its leaves).
     slots: Vec<MakeSlot>,
+    /// Shape-descriptor bytes for each [`MakeSlot::MemLeaf`] carrying a [`serialize::MemLeafKind::ValueForm`]
+    /// (`BigInt`/`Rational`/`Symbol` param), indexed by the variant's `u32` — the make-body twin of
+    /// [`serialize::WrapperDesc::value_form_descs`]. Empty when no value-form param is forwarded.
+    value_form_descs: Vec<Vec<u8>>,
 }
 
-/// One `make` parameter: a scalar leaf (its component boundary byte) or a fixed-shape tuple/record — its
+/// One `make` parameter: a scalar leaf (its component boundary byte), a fixed-shape tuple/record (its
 /// (possibly NESTED) `TupleFieldShape` tree the envelope mints the `tuple<…>` type(s) from, and the
-/// recursive per-field rebuild the core cell build uses. The count of flattened leaves a slot consumes is
-/// 1 for a scalar, else the depth-first leaf count of the shape/rebuild.
+/// recursive per-field rebuild the core cell build uses), or a MEMORY-BEARING / VALUE-FORM leaf
+/// (`String`/`Bytes`/`list<scalar>` or a `BigInt`/`Rational`/`Symbol` value-form) the make body lifts from
+/// its boundary `(ptr, len)` via the same shared emitters the typed-interface wrapper uses
+/// ([`serialize::MemLeafKind`]). The count of flattened leaves a slot consumes is 1 for a scalar, 2 for a
+/// mem-leaf (`ptr, len`), else the depth-first leaf count of the shape/rebuild.
 enum MakeSlot {
     Scalar(u8),
     Tuple {
@@ -8952,6 +9019,15 @@ enum MakeSlot {
         /// moved-out field, or an unproven shape) so the drop never double-frees a live child.
         drop_after: bool,
     },
+    /// A memory-bearing (`String`/`Bytes`/`list<scalar>`) or value-form (`BigInt`/`Rational`/`Symbol`) leaf
+    /// param, crossing as its natural WIT (`string`/`list<u8>`) flattened to `(ptr, len)`. The make body
+    /// lifts it via the shared [`serialize`] emitters (copy-in / `value-decode`) exactly as the typed-
+    /// interface wrapper does, and reclaims the lifted handle after the export call iff `drop_after` (the def
+    /// only BORROWS it). A `ValueForm` kind indexes [`MakeParams::value_form_descs`] for its shape descriptor.
+    MemLeaf {
+        kind: crate::backend::wasm::serialize::MemLeafKind,
+        drop_after: bool,
+    },
 }
 
 impl MakeParams {
@@ -8960,7 +9036,7 @@ impl MakeParams {
     fn any_compound(&self) -> bool {
         self.slots
             .iter()
-            .any(|s| matches!(s, MakeSlot::Tuple { .. }))
+            .any(|s| matches!(s, MakeSlot::Tuple { .. } | MakeSlot::MemLeaf { .. }))
     }
 
     /// The (core leaf valtypes, inline scalar boundary bytes) for an ALL-SCALAR param set — declines if any
@@ -8979,7 +9055,9 @@ impl MakeParams {
             .iter()
             .map(|s| match s {
                 MakeSlot::Scalar(b) => *b,
-                MakeSlot::Tuple { .. } => unreachable!("guarded by any_compound above"),
+                MakeSlot::Tuple { .. } | MakeSlot::MemLeaf { .. } => {
+                    unreachable!("guarded by any_compound above")
+                }
             })
             .collect();
         Ok((self.leaf_vts, bytes))
@@ -8990,28 +9068,63 @@ impl MakeParams {
     /// `make_functype_slots`).
     fn boundary_slots(&self) -> Vec<crate::backend::wasm::envelope::ArgSlot> {
         use crate::backend::wasm::envelope::ArgSlot;
+        use crate::backend::wasm::serialize::MemLeafKind;
         self.slots
             .iter()
             .map(|s| match s {
                 MakeSlot::Scalar(b) => ArgSlot::Scalar(*b),
                 MakeSlot::Tuple { shape, .. } => ArgSlot::Tuple(shape.clone()),
+                // A mem-leaf/value-form param crosses as its natural WIT: a `String` as `string`, every other
+                // kind (`Bytes`/`list<scalar>`/value-form) as `list<u8>`. The envelope mints the type + reads
+                // the canonical `(ptr, len)` the make body lifts.
+                MakeSlot::MemLeaf { kind, .. } => ArgSlot::MemLeaf {
+                    is_string: matches!(kind, MemLeafKind::Str),
+                },
             })
             .collect()
     }
 
     /// Feed each runtime op a COMPOUND param's cell rebuild references (`arr-alloc`/`arr-set` + a box op
-    /// per scalar leaf) into `out`, so the emitter imports them. A no-op when every param is a scalar.
+    /// per scalar leaf) — and each mem-leaf/value-form param's lift ops (the copy-in / `value-decode` ops the
+    /// make body emits) — into `out`, so the emitter imports them. A no-op when every param is a scalar.
     fn collect_rebuild_ops(&self, out: &mut impl FnMut(&'static str)) {
-        let mut any = false;
+        use crate::backend::wasm::serialize::MemLeafKind;
+        let mut any_tuple = false;
         for s in &self.slots {
-            if let MakeSlot::Tuple { rebuild, .. } = s {
-                any = true;
-                for f in rebuild {
-                    f.collect_box_ops(out);
+            match s {
+                MakeSlot::Tuple { rebuild, .. } => {
+                    any_tuple = true;
+                    for f in rebuild {
+                        f.collect_box_ops(out);
+                    }
                 }
+                // The make body lifts a mem-leaf/value-form param via the PER-BYTE copy-in (bulk_bytes=false):
+                // `bytes-alloc` + `bytes-set` for a String/Bytes/value-form; `value-decode` for a value-form;
+                // `vec-empty`/`vec-push`/box for a `list<scalar>`; `drop` reclaims the borrowed lifted handle
+                // (and, for a value-form, the intermediate bytes/desc temporaries) after the export call.
+                MakeSlot::MemLeaf { kind, .. } => {
+                    out("drop");
+                    match kind {
+                        MemLeafKind::Str | MemLeafKind::Bytes => {
+                            out("bytes-alloc");
+                            out("bytes-set");
+                        }
+                        MemLeafKind::ValueForm(_) => {
+                            out("bytes-alloc");
+                            out("bytes-set");
+                            out("value-decode");
+                        }
+                        MemLeafKind::List(elem) => {
+                            out("vec-empty");
+                            out("vec-push");
+                            out(elem.box_op);
+                        }
+                    }
+                }
+                MakeSlot::Scalar(_) => {}
             }
         }
-        if any {
+        if any_tuple {
             out("arr-alloc");
             out("arr-set");
         }
@@ -9020,7 +9133,7 @@ impl MakeParams {
     /// The per-parameter cell rebuilds `make`'s core body threads (one per param; a scalar contributes an
     /// empty rebuild it forwards directly). Paired with [`Self::boundary_slots`] positionally.
     fn core_slots(&self) -> Vec<crate::backend::wasm::serialize::MakeCoreSlot> {
-        use crate::backend::wasm::serialize::MakeCoreSlot;
+        use crate::backend::wasm::serialize::{MakeCoreSlot, MemLeafKind};
         self.slots
             .iter()
             .map(|s| match s {
@@ -9030,6 +9143,19 @@ impl MakeParams {
                     drop_after,
                     ..
                 } => MakeCoreSlot::Tuple(rebuild.clone(), *drop_after),
+                // A mem-leaf/value-form param: carry the kind + reclaim flag + (for a value-form) the resolved
+                // shape-descriptor bytes inline, so the make-body emit needs no separate descs vec.
+                MakeSlot::MemLeaf { kind, drop_after } => {
+                    let desc = match kind {
+                        MemLeafKind::ValueForm(idx) => self.value_form_descs[*idx as usize].clone(),
+                        _ => Vec::new(),
+                    };
+                    MakeCoreSlot::MemLeaf {
+                        kind: *kind,
+                        drop_after: *drop_after,
+                        desc,
+                    }
+                }
             })
             .collect()
     }

@@ -2793,11 +2793,46 @@ pub fn runtime_resource_core_module_form_ex2(
                 .iter()
                 .filter(|s| matches!(s, MakeCoreSlot::Tuple(..)))
                 .count();
-            let mut inner = if n_cell_locals == 0 {
+            // MEM-LEAF/VALUE-FORM params need extra i32 scratch: two SHARED locals (`buf`, `ctr`) for the
+            // per-byte copy-in loop when any mem-leaf param is present, plus per-param locals — a value-form
+            // needs two (`desc`, `res`), and every borrowed mem-leaf needs one to stash its lifted handle for
+            // the post-call reclaim. All i32.
+            let n_memleaf = make_core_slots
+                .iter()
+                .filter(|s| matches!(s, MakeCoreSlot::MemLeaf { .. }))
+                .count();
+            let n_scratch = if n_memleaf > 0 { 2 } else { 0 };
+            let n_vf_locals: usize = make_core_slots
+                .iter()
+                .filter(|s| {
+                    matches!(
+                        s,
+                        MakeCoreSlot::MemLeaf {
+                            kind: MemLeafKind::ValueForm(_),
+                            ..
+                        }
+                    )
+                })
+                .count()
+                * 2;
+            let n_drop_locals = make_core_slots
+                .iter()
+                .filter(|s| {
+                    matches!(
+                        s,
+                        MakeCoreSlot::MemLeaf {
+                            drop_after: true,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            let n_locals = n_cell_locals + n_scratch + n_vf_locals + n_drop_locals;
+            let mut inner = if n_locals == 0 {
                 uleb_bytes(0) // no locals — scalar params are forwarded directly
             } else {
                 let mut l = uleb_bytes(1); // one local group…
-                uleb128(n_cell_locals as u64, &mut l); // …of `n_cell_locals` i32s
+                uleb128(n_locals as u64, &mut l); // …of `n_locals` i32s
                 l.push(wasm_abi::CORE_I32);
                 l
             };
@@ -2807,7 +2842,13 @@ pub fn runtime_resource_core_module_form_ex2(
             // scalar + compound, and multiple compounds, compose: leaves run left-to-right, each compound
             // reads its own contiguous run.
             let mut leaf_cursor = 0u32;
-            let mut cell_local = make_param_vts.len() as u32;
+            let l_params = make_param_vts.len() as u32;
+            let mut cell_local = l_params;
+            // Mem-leaf scratch: `buf`/`ctr` are the two SHARED copy-in locals (right after the tuple cells);
+            // per-param value-form `desc`/`res` and per-param reclaim locals are handed out from `next_extra`.
+            let buf = l_params + n_cell_locals as u32;
+            let ctr = buf + 1;
+            let mut next_extra = l_params + n_cell_locals as u32 + n_scratch as u32;
             // The cell-locals of the compound params the export only BORROWS — deep-dropped after the call
             // (the make wrapper owns the freshly-rebuilt cell; `emit_tuple_rebuild` tee'd it into the local
             // exactly "for the post-dispatch drop"). A non-droppable slot (a moved-out field) is omitted, so
@@ -2833,6 +2874,63 @@ pub fn runtime_resource_core_module_form_ex2(
                             drop_cells.push(cell_local);
                         }
                         cell_local += 1;
+                    }
+                    // A memory-bearing / value-form leaf: lift the `(ptr, len)` at `leaf_cursor` via the SAME
+                    // shared emitters the typed-interface wrapper uses (per-byte path, `bulk_bytes=false` — no
+                    // shared-allocator dependency), leaving the lifted value-heap handle on the stack as the def
+                    // arg. A borrowed param is stashed into a reclaim local and dropped after the export call.
+                    MakeCoreSlot::MemLeaf {
+                        kind,
+                        drop_after,
+                        desc,
+                    } => {
+                        match kind {
+                            MemLeafKind::Str | MemLeafKind::Bytes => {
+                                emit_bytes_leaf_copy_in(
+                                    leaf_cursor,
+                                    false, // a top-level string/bytes ptr is i32 (no variant-join widening)
+                                    buf,
+                                    ctr,
+                                    false, // per-byte copy-in (no shared allocator on the resource make path)
+                                    &imp,
+                                    &mut inner,
+                                ); // → [handle]
+                            }
+                            MemLeafKind::ValueForm(_) => {
+                                let desc_local = next_extra;
+                                let res_local = next_extra + 1;
+                                next_extra += 2;
+                                emit_value_form_lift(
+                                    desc,
+                                    leaf_cursor,
+                                    buf,
+                                    ctr,
+                                    desc_local,
+                                    res_local,
+                                    false, // per-byte copy-in
+                                    &imp,
+                                    &mut inner,
+                                ); // → [handle]
+                            }
+                            // `list<scalar>` params are deferred (classified out in `export_make_params`); this
+                            // arm is unreachable on the make path today.
+                            MemLeafKind::List(_) => {
+                                return Err(
+                                    "a list<scalar> make param is not yet lifted on the resource path"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        leaf_cursor += 2; // the string/value-form flattened to (ptr, len)
+                        if *drop_after {
+                            // Stash the lifted handle (it stays on the stack as the def arg) for the post-call
+                            // reclaim — the make wrapper owns it and the def only BORROWS it.
+                            let dl = next_extra;
+                            next_extra += 1;
+                            inner.push(op::LOCAL_TEE);
+                            uleb128(dl as u64, &mut inner);
+                            drop_cells.push(dl);
+                        }
                     }
                 }
             }
@@ -3136,6 +3234,17 @@ pub enum MakeCoreSlot {
     /// per `record_cell_param_droppable`); `false` keeps the cell (a moved-out field / unproven shape) so the
     /// drop never double-frees a live child.
     Tuple(Vec<FieldRebuild>, bool),
+    /// A memory-bearing (`String`/`Bytes`/`list<scalar>`) or value-form (`BigInt`/`Rational`/`Symbol`) leaf
+    /// parameter — consumes TWO flattened leaves (the canonical `(ptr, len)`) and lifts them in the make body
+    /// via the SAME shared emitters the typed-interface wrapper uses (`emit_bytes_leaf_copy_in` /
+    /// `emit_list_leaf_lift` / `emit_value_form_lift`, per-byte path). `desc` is the baked shape-descriptor
+    /// bytes for a [`MemLeafKind::ValueForm`] (empty otherwise). `drop_after` = the make wrapper reclaims the
+    /// lifted handle after the (borrowing) export call.
+    MemLeaf {
+        kind: MemLeafKind,
+        drop_after: bool,
+        desc: Vec<u8>,
+    },
 }
 
 #[derive(Clone)]

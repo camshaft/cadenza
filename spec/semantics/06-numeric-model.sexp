@@ -13631,9 +13631,11 @@
   (live-objects 0))
 
 ; The boundary escapes above are all RESULT-side (a Rational crosses OUT to the host). The ENTRY-arg
-; direction — a Rational boundary PARAMETER marshaled IN by the driver — is realized on the rust targets
-; only (wasm declines the heap-typed entry arg, the same sound todo as the String/BigInt entry args).
-; Per-target baselined like the String-entry family in 13-strings.
+; direction — a Rational boundary PARAMETER marshaled IN by the driver — runs on the rust targets, and now
+; CROSSES on wasm too: a Rational entry param has no scalar boundary rep, so it crosses as the canonical
+; `list<u8>` value-form and the heap-return make wrapper reconstructs it via `value-decode` before the export
+; dispatch (the value-form twin of the String/BigInt entry family). Build-graded on wasm ((wasm-build-only))
+; since the harness cannot marshal a value-form CLI arg; per-target baselined like the String-entry family.
 (case
   "a Rational ENTRY parameter crosses the boundary and reduces per call"
   (doc
@@ -13641,16 +13643,19 @@
            driver marshals each as an owned Rational and one compiled multiply reduces per call —
            3/4 · 2/3 = 1/2 (cross-cancel), -3/2 · 2/3 = -1/1 (sign through reduction to a whole), and
            0/1 · 2/3 = 0/1 (the zero absorbs, canonical 0/1 render). The entry-arg twin of the
-           result-side runtime-Rational escape above. (wasm declines the Rational entry arg — sound todo,
-           same as the String entry family; rust and rust-async compute. A BARE-INT Rational argument
-           spelling `(: 0 Rational)` does not marshal — write `n/d`.)")
+           result-side runtime-Rational escape above. wasm now CROSSES the Rational entry arg as the `list<u8>`
+           value-form (`value-decode`, er1) AND returns the Rational value-form RESULT via the heap-return
+           make-path; build-graded (`(wasm-build-only)`) since the harness cannot marshal a value-form CLI arg
+           (cdz-run value-form-arg marshalling is a v-corpus-harness follow-on). rust and rust-async run the
+           real trial. A BARE-INT Rational argument spelling `(: 0 Rational)` does not marshal — write `n/d`.)")
   (input (do (def (main (: a Rational)) (* a (Rational.of 2 3))) (export main)))
   (call main (: 3/4 Rational))
   (output (: 1/2 Rational))
   (call main (: -3/2 Rational))
   (output (: -1/1 Rational))
   (call main (: 0/1 Rational))
-  (output (: 0/1 Rational)))
+  (output (: 0/1 Rational))
+  (wasm-build-only))
 
 (case
   "a Rational is usable as a map key, matched by its exact value"

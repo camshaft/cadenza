@@ -10515,13 +10515,17 @@
            it but the emitted rust driver marshaled the arg with a type that did not match the fn signature.
            The rust gate driver now reads the emitted fn's param types and marshals the bare-decimal arg as an
            owned `cdz_num::Big` (the BigInt twin of the String `.to_string()` marshal), so main(5)=5000000 and
-           main(-3)=-3000000 build + run. wasm declines the BigInt entry arg (a sound todo, like the case
-           above).")
+           main(-3)=-3000000 build + run. wasm now CROSSES the BigInt entry arg as the `list<u8>` value-form
+           (`value-decode`, eb1) AND returns the BigInt value-form RESULT via the heap-return make-path (the
+           make wrapper lifts the borrowed value-form param before the export dispatch); build-graded
+           (`(wasm-build-only)`) since the harness cannot marshal a value-form CLI arg (cdz-run value-form-arg
+           marshalling is a v-corpus-harness follow-on that upgrades this to a full run).")
   (input (do (def (main (: a BigInt)) (* a (BigInt.of 1000000))) (export main)))
   (call main (: 5 BigInt))
   (output (: 5000000 BigInt))
   (call main (: -3 BigInt))
-  (output (: -3000000 BigInt)))
+  (output (: -3000000 BigInt))
+  (wasm-build-only))
 
 (case
   "a BigInt entry parameter added to a beyond-i64 annotated literal"
@@ -10530,10 +10534,13 @@
            `(def (main (: a BigInt)) (+ a (: 100000000000000000000 BigInt)))` (10^20 > i64::MAX). Verified
            that the entry-arg marshal fix (c8457fbf5) covers this too: the beyond-i64 body literal is lowered
            through the same owned-BigInt path, so main(1) = 100000000000000000001 builds + runs on rust. wasm
-           declines the BigInt entry arg (sound todo).")
+           now CROSSES the BigInt entry arg as the `list<u8>` value-form (`value-decode`, eb1) AND returns the
+           BigInt value-form RESULT via the heap-return make-path; build-graded (`(wasm-build-only)`) since the
+           harness cannot marshal a value-form CLI arg.")
   (input (do (def (main (: a BigInt)) (+ a (: 100000000000000000000 BigInt))) (export main)))
   (call main (: 1 BigInt))
-  (output (: 100000000000000000001 BigInt)))
+  (output (: 100000000000000000001 BigInt))
+  (wasm-build-only))
 
 (case
   "a Rational entry argument is marshalled through Rational::new"
