@@ -195,9 +195,13 @@ pub struct ExportParam {
 /// Option) exercise these SAME arms recursively and are deliberately NOT added as near-duplicates. (Set/Map-
 /// of-Option const fields are ALSO not generated — they still DECLINE on the rust backend today,
 /// coverage-not-yet, so they'd read as rust-declined, not a value mismatch, until that lands.)
+/// Shape 12 is the #9689 CONSUMING-slice List entry param: a `(List Int64)` param CONSUMED by `List.concat`
+/// (ownership-transfer lift, elc4/grx1) — a DISTINCT marshal path from shapes 6-8's el1 read-only borrow. The
+/// param is concatenated then an element of the result read, so a mis-marshal / mis-transfer of the consumed
+/// list corrupts the returned element.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(12);
+    let shape = c.variant(13);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -295,10 +299,19 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      PROJECTED AWAY while sibling scalar `n` (= the param) is read via a let-destructure. Was rust
         //      E0282 (`Ok(1): Result<i64,_>`, Err free) until #9687 ascribed the solved slot type; returns
         //      the param. A regression reintroducing E0282 shows as a rust ArtifactError → mismatch.
-        _ => (
+        11 => (
             "(do (type R (R (Record (: res (Result Int64 String)) (: n Int64)))) (def (run (: k Int64)) (: (let (((R.R f) (R.R #record((= res (Result.Ok 1)) (= n k))))) (. f n)) Int64)) (export run))"
                 .to_string(),
             vec![b.to_string()],
+        ),
+        // 12 — #9689 CONSUMING-slice: a (List Int64) entry param CONSUMED by List.concat (ownership-transfer
+        //      lift, elc4/grx1 — DISTINCT from shapes 6-8's el1 read-only borrow), then element 0 of the
+        //      concatenated result is read (= the first marshaled element). A mis-marshal or mis-transfer of
+        //      the consumed list corrupts that element.
+        _ => (
+            "(do (def (cat (: xs (List Int64))) (match (List.at (List.concat xs (list 100)) 0) ((Some v) v) (None 0))) (export cat))"
+                .to_string(),
+            vec![list_arg],
         ),
     };
     ExportParam { source, args }
@@ -5621,15 +5634,15 @@ mod tests {
 
     #[test]
     fn generate_export_param_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the twelve export-param shapes (see
+        // Distinctive, mutually-exclusive markers for the thirteen export-param shapes (see
         // `generate_export_param`): double/add/idn/u(UInt64)/f(3-arg)/sgn + three (List Int64) entry-param
         // shapes lhd/top(helper)/suml(recursive-walk) + the #9586 record-Option-newtype `run` + the #9684
-        // const-list-of-Option-field sibling + the #9687 payload-variant (Result Int64 String) field.
-        let mut reached = [false; 12];
-        for seed in 0u64..720 {
+        // const-list-of-Option-field sibling + the #9687 payload-variant field + the #9689 consuming-slice `cat`.
+        let mut reached = [false; 13];
+        for seed in 0u64..780 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(12) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // variant(13) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
             // shape selector AND every arg literal on live entropy.
             for _ in 0..64 {
                 x ^= x >> 30;
@@ -5674,11 +5687,13 @@ mod tests {
                 reached[10] = true; // shape 10 = #9684 const-list-of-Option-field sibling
             } else if ep.source.contains("(: res (Result Int64 String))") {
                 reached[11] = true; // shape 11 = #9687 payload-variant const-sum-field
+            } else if ep.source.contains("(List.concat xs") {
+                reached[12] = true; // shape 12 = #9689 consuming-slice `cat`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twelve export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all thirteen export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
