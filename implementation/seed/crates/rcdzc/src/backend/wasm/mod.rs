@@ -7440,7 +7440,9 @@ fn try_bare_entry_param_component(
         // A memory-bearing leaf param (String/Bytes/list<Int64>) all flatten to (ptr, len) and lift via
         // mem_leaf_params. The def OWNS the arg (callee-owns-args), but a param it only BORROWS (byte-len /
         // List.len / compare) is reclaimed by the OWNER — here the wrapper — so `drop_after` = the param does
-        // not escape (a consuming/escaping param declines below, a later slice).
+        // not escape. An escaping (consumed) param sets `drop_after = false`; the escape gate below admits it
+        // only for the verified consuming slice (a `List` consumed by `List.concat`, acyclic, whitelisted —
+        // the def reclaims via Perceus), else declines.
         let mem_kind = match gty {
             Ty::String => Some(serialize::MemLeafKind::Str),
             Ty::Bytes => Some(serialize::MemLeafKind::Bytes),
@@ -7453,8 +7455,10 @@ fn try_bare_entry_param_component(
             (Some(kind), _) => {
                 // BORROW-aware: the wrapper (owner of the lifted value) reclaims the param after the call iff
                 // it does not escape — treating a DIRECT binder arg threaded read-only into a helper/recursive
-                // walk as a borrow (el1: a List param summed via a recursive `List.at` indexed walk). A param
-                // consumed / moved to the result still escapes → declines (the borrowed-only gate below).
+                // walk as a borrow (el1: a List param summed via a recursive `List.at` indexed walk). An
+                // escaping param sets `drop_after = false`: the escape gate below admits a `List` consumed by
+                // `List.concat` (acyclic, whitelisted — ownership transfers to the def) and declines the rest
+                // (a Map/Set-key consume, a cycle, a moved-to-result, a Str/Bytes escape).
                 let drop_after =
                     !crate::backend::wasm::select::param_borrow_aware_escapes(db, body, *binder);
                 param_vts.push(ValType::I32.byte());
