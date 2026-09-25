@@ -11307,6 +11307,8 @@ pass	rpp4 a scalar Tuple entry param projects both positions
 pass	rpp5 a Tuple entry param with a heap list element measures both
 pass	rpp6 a Tuple entry param with a String element measures both
 pass	rpp7 a Record entry param with a String field measures both
+pass	rpp8 a nested Tuple entry param projects through both levels
+pass	rpp9 a Record entry param with a nested Tuple field measures both
 todo	sbn2 a runtime utf8 CONSTRUCTION segment declines pending the encode increment (utf8 is pattern-only)
 pass	spx2 a Char entry param crosses as the WIT char primitive
 pass	spx2b a Char result crosses as the WIT char primitive
