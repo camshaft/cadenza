@@ -7204,16 +7204,29 @@ fn result_scalar_string_arg(
     ))
 }
 
-/// The PLAIN-EXPORT ENTRY-PARAM emit (entry-param declines slice 1): a SINGLE bare exported def whose param
-/// is a memory-bearing `String`/`Bytes` (crossing as `string`/`list<u8>`) gets a guest LIFT WRAPPER — the
-/// wrapper copies the incoming `(ptr, len)` bytes out of linear memory into a value-heap `Bytes` (a `String`
-/// then via `str-from-bytes`) and calls the def; the component types the param as `string`/`list<u8>` with a
-/// Memory/Realloc canon-lift ([`envelope::assemble_bare_typed_with_runtime`]). This is the host→guest MIRROR
-/// of the host-op String/Bytes ARG marshal already emitted on the import side.
+/// The PLAIN-EXPORT ENTRY-PARAM emit: a SINGLE bare exported def (no wit-world, no host effect) whose
+/// parameters cross the component boundary via a guest LIFT WRAPPER that reassembles each param into the
+/// value-heap handle / scalar the def body expects, then calls the def. The component types each param by
+/// its natural WIT form and lifts it with a Memory/Realloc canon-lift
+/// ([`envelope::assemble_bare_typed_with_runtime`]) — the host→guest MIRROR of the host-op arg marshal on
+/// the import side.
 ///
-/// Returns `None` (fall through to the boundary loop's honest decline) for any shape outside this slice:
-/// more than one export, a compound param other than String/Bytes, a unit param, or a non-scalar/unit
-/// result. Widened to List/Option/BigInt/Rational/Symbol (and multi-export) in later slices.
+/// Per-param shapes handled (each classified in the loop below):
+///   • an aliased-width SCALAR (`Int*`/`UInt*`/`Bool`/`Char`/`Float*`) — passthrough native primitive;
+///   • a memory-bearing `String`/`Bytes` — copy the `(ptr, len)` bytes into a value-heap byte-leaf handle
+///     (a `String` IS the same UTF-8 byte-leaf as `Bytes`, copied verbatim — NO `str-from-bytes` decode,
+///     since a WIT `string` is already valid UTF-8);
+///   • a `list<scalar>`, incl. NESTED `list<list<…>>` — build a value-heap vec (`MemLeafKind::List`);
+///   • a scalar-fielded `tuple<…>` — build a value-heap cell (rpp4);
+///   • an `option<scalar>` / `option<list<scalar>>`, and a `result<ok,err>` (both-scalar, or one scalar +
+///     one `String` arm via the widening canonical join) — build the guest sum cell (eop2/erp1/erp2).
+/// The def gets a BORROWED handle; the wrapper reclaims it after the call.
+///
+/// Returns `None` (fall through to the boundary loop's honest decline) for a shape outside the above:
+/// more than one export; a `record<…>` param (a nominal WIT type — needs instance-scoping, rpp1); a
+/// `BigInt`/`Rational`/`Symbol` param (crosses via the list-u8 value-form once that lift lands, eb1/er1/ey1);
+/// a param that ESCAPES its borrow (recursive / consumed / moved-to-result — el1/grx/phr, the reclaim lane);
+/// or a compound result the bare route does not yet emit.
 fn try_bare_entry_param_component(
     db: &mut Db,
     layout: &Layout,
