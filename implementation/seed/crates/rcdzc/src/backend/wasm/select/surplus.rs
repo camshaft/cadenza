@@ -205,8 +205,14 @@ pub(super) fn collect_surplus_skippable_dups(
             let mut all_dead_after = owned_fold;
             if owned_fold {
                 for &n in &heap_leading_nodes {
-                    let escapes =
-                        binding_escapes_dup_aware(db, body, EscapeTarget::Node(n), true, None);
+                    let escapes = binding_escapes_dup_aware(
+                        db,
+                        body,
+                        EscapeTarget::Node(n),
+                        true,
+                        None,
+                        false,
+                    );
                     let mut cons = HashSet::new();
                     collect_consuming_payload_sites_expr(db, body, n, true, &mut cons);
                     // REFINE(A) (v-core-opt-committed): the coarse `consuming>=1` conjunct is a PROXY for "no

@@ -1220,14 +1220,21 @@ fn map_lookup_project_escape_is_monotone_in_dup_sites_rules_out_the_4405_gate() 
     let mut binders = Vec::new();
     collect_retain_candidate_binders(&mut db, body, &mut binders);
     collect_dup_sites(&mut db, body, &binders, &mut dup_sites);
-    let plain =
-        binding_escapes_dup_aware(&mut db, body, EscapeTarget::Binder(m_binder), false, None);
+    let plain = binding_escapes_dup_aware(
+        &mut db,
+        body,
+        EscapeTarget::Binder(m_binder),
+        false,
+        None,
+        false,
+    );
     let dup_aware = binding_escapes_dup_aware(
         &mut db,
         body,
         EscapeTarget::Binder(m_binder),
         false,
         Some(&dup_sites),
+        false,
     );
     assert!(
         !plain,

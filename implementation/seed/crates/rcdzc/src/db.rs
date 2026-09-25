@@ -1690,7 +1690,16 @@ pub struct Db {
     /// caches an artifact (v-mem: adding an in_progress that returns for a back-edge is what WOULD create the
     /// cycle-artifact risk, so it is deliberately omitted).
     pub(crate) escape_verdict_memo: crate::fxhash::FxHashMap<
-        (StructId, crate::backend::wasm::select::EscapeTarget, bool),
+        // Key: (id, target, tail_borrowed, borrow_aware_calls). The last flag is the entry-wrapper
+        // borrow-aware-Call mode (a direct-binder arg to a callee that only BORROWS its param k is not an
+        // escape) — it MUST be in the key so a borrow-aware verdict never poisons the default (dup-aware /
+        // droppable) query's cache (v-core-opt guardrail 3, el1 escape-lane).
+        (
+            StructId,
+            crate::backend::wasm::select::EscapeTarget,
+            bool,
+            bool,
+        ),
         bool,
     >,
     /// Memo of `select::reclaim::collect_consuming_payload_sites_expr` — each subtree's OWN complete set of

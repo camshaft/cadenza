@@ -86,7 +86,7 @@ pub(super) fn arm_consumes_binder_grandchild_seen(
             // frees, so skipping the preservation dup cannot dangle it. An escaping un-dup'd grandchild (move /
             // non-dup-backed thread) is NOT excused → fires → dup kept (leak-over-UAF). `None` = K1 unchanged.
             let excused = matches!(excuse, Some((scope, dup_sites))
-                if !binding_escapes_dup_aware(db, scope, EscapeTarget::Node(id), true, Some(dup_sites)));
+                if !binding_escapes_dup_aware(db, scope, EscapeTarget::Node(id), true, Some(dup_sites), false));
             if !excused {
                 return true;
             }

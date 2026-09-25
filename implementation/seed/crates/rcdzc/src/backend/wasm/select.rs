@@ -50,7 +50,8 @@ mod reclaim;
 pub use reclaim::core_child_ids;
 use reclaim::*;
 pub(crate) use reclaim::{
-    EscapeTarget, escaped_field_projections, param_escapes_body, record_cell_param_droppable,
+    EscapeTarget, escaped_field_projections, param_borrow_aware_escapes, param_escapes_body,
+    record_cell_param_droppable,
 };
 mod used_ops;
 use used_ops::*;
@@ -1835,6 +1836,7 @@ fn plan_nontail_selfrec_borrow_param_arm_drops(
             EscapeTarget::Binder(*binder),
             false,
             Some(&dup_sites),
+            false,
         ) {
             continue; // escapes verbatim → a drop here would double-free.
         }
@@ -1978,6 +1980,7 @@ fn nontail_selfrec_owned_closure_param_drops(
             EscapeTarget::Binder(*binder),
             false,
             Some(&dup_sites),
+            false,
         ) {
             continue; // (3) escapes verbatim (ctor-embed / return) → a frame-exit drop would double-free.
         }
@@ -3379,6 +3382,7 @@ fn emit_tail(
                         EscapeTarget::Binder(*binder),
                         false,
                         Some(&dup_sites),
+                        false,
                     )
             });
             if any_drop {
@@ -4603,7 +4607,7 @@ fn emit_loop_iteration(
                     EscapeTarget::Binder(binder),
                     false,
                     Some(&dup_snapshot),
-                ) && (rebind_produces_fresh(db, args[i]) || dup_snapshot.contains(&args[i]))
+                    false,                ) && (rebind_produces_fresh(db, args[i]) || dup_snapshot.contains(&args[i]))
             });
             borrow_not_consumed || dup_forced_old_survives || drop_old_threaded_prev
         })

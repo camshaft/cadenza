@@ -11268,7 +11268,7 @@ todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
 pass	eb1 a BigInt entry param in beyond-i64 arithmetic
-todo	el1 a List entry param summed by an indexed walk
+pass	el1 a List entry param summed by an indexed walk
 pass	el8 a nested List-of-List entry param measures both levels
 todo	elc2 a Map keyed by the lifted List entry param answers its value on lookup
 todo	elc4 List.concat consumes two lifted List entry params into one measured list
