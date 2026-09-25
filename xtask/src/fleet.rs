@@ -4124,6 +4124,18 @@ fn parse_last_run_rc(last_line: &str) -> Option<u64> {
         .find_map(|tok| tok.strip_prefix("rc=").and_then(|n| n.parse::<u64>().ok()))
 }
 
+/// Parse the `uncovered-stale-scratch=<n>` field the `prune-tmp-inodes` cron stamps into its `.last-run`
+/// (#9693): the count of own-user, days-STALE, arbitrary-named `/tmp` scratch dirs the reaper's Class A–E
+/// allowlist demonstrably CANNOT match (agent compiler-debug scratch). Surfaced on the `fleet status` INODE
+/// line so the dominant pressure class is visible at the board — the reaper's own 0-reclaimed passes hide it.
+/// Returns `None` when the field is absent (an older stamp) or unparseable. Pure so the tokenizer is tested.
+fn parse_uncovered_stale_scratch(last_line: &str) -> Option<u64> {
+    last_line.split_whitespace().find_map(|tok| {
+        tok.strip_prefix("uncovered-stale-scratch=")
+            .and_then(|n| n.parse::<u64>().ok())
+    })
+}
+
 /// Collect ERRORING fleet crons: every `<hub>/*.last-run` stamp whose last non-empty line reports a NONZERO
 /// `rc=` — a wrapper cron that FIRED but whose command FAILED (e.g. compact-nudge's `cargo: command not found`
 /// rc=127, 2026-09-15, which silently broke the concierge self-heal until a manual `.last-run` audit caught
@@ -4519,16 +4531,30 @@ const TMP_INODE_HIGH_PCT: u64 = 92;
 /// [`parse_df_inode_pct`]) so it's unit-testable without a filesystem. `None` only when df didn't parse
 /// (never a false signal). Flags ⚠WARN at [`TMP_INODE_WARN_PCT`], ⚠HIGH at [`TMP_INODE_HIGH_PCT`]; at HIGH
 /// it points at the likely cause — a NEW un-allowlisted scratch shape the (lsof-guarded, allowlisted)
-/// `prune-tmp-inodes` reaper doesn't yet match (the recurring wedge class), so the operator/owner extends
-/// its Class C rather than chasing a blanket sweep.
-fn tmp_inode_pressure_line(pct: Option<u64>) -> Option<String> {
+/// `prune-tmp-inodes` reaper AND the 90% gc-hook sweep both can't match (the recurring wedge class). When the
+/// prune stamp reports a nonzero `uncovered-stale-scratch` count ([`parse_uncovered_stale_scratch`], #9693)
+/// that count is surfaced from WARN on up — it is the dominant pressure class the reaper's own 0-reclaimed
+/// passes otherwise hide, and the exact number the operator needs to weigh the self-clean-vs-reaper remedy.
+fn tmp_inode_pressure_line(
+    pct: Option<u64>,
+    uncovered_stale_scratch: Option<u64>,
+) -> Option<String> {
     let pct = pct?;
+    // The uncovered-scratch clause, when the prune stamp reports a nonzero count (shown from WARN on up).
+    let uncov = match uncovered_stale_scratch {
+        Some(n) if n > 0 => format!(
+            " [last prune: {n} uncovered stale scratch dir(s) the reaper allowlist can't match — \
+             arbitrary-named agent debug scratch; agents self-clean their own per AGENTS-fleet.md, or an \
+             operator-blessed reaper extension is needed for the un-allowlistable class]"
+        ),
+        _ => String::new(),
+    };
     let (flag, hint) = if pct >= TMP_INODE_HIGH_PCT {
         (
             " ⚠HIGH",
             " — near the ENOSPC wedge (a tmpfs wedges on INODES at low BYTES); the */15 prune-tmp-inodes \
-             reaper is lsof-guarded + allowlisted, so a climb it can't clear means a NEW un-allowlisted \
-             scratch shape — check the top /tmp inode consumers and extend prune-tmp-inodes Class C",
+             reaper AND the 90% gc-hook sweep are both lsof-guarded + allowlisted, so a climb they can't \
+             clear means an un-allowlisted scratch shape — check the top /tmp inode consumers",
         )
     } else if pct >= TMP_INODE_WARN_PCT {
         (" ⚠WARN", "")
@@ -4536,7 +4562,7 @@ fn tmp_inode_pressure_line(pct: Option<u64>) -> Option<String> {
         ("", "")
     };
     Some(format!(
-        "  /tmp inodes: {pct}% used (inode-guard warn={TMP_INODE_WARN_PCT}% high={TMP_INODE_HIGH_PCT}%){flag}{hint}"
+        "  /tmp inodes: {pct}% used (inode-guard warn={TMP_INODE_WARN_PCT}% high={TMP_INODE_HIGH_PCT}%){flag}{hint}{uncov}"
     ))
 }
 
@@ -4691,11 +4717,24 @@ fn status(fleet: &Fleet) {
     // the bytes-only disk-guard line MISSES. Surface it continuously with the same warn/high scheme so a
     // climb the (lsof-guarded, allowlisted) prune-tmp-inodes reaper can't clear — a new un-allowlisted
     // scratch shape — is visible BEFORE ENOSPC. Silent only if df -i is unavailable/unparseable.
-    if let Ok(out) = Command::new("df").args(["-i", "/tmp"]).output()
-        && let Some(line) =
-            tmp_inode_pressure_line(parse_df_inode_pct(&String::from_utf8_lossy(&out.stdout)))
-    {
-        println!("{line}");
+    if let Ok(out) = Command::new("df").args(["-i", "/tmp"]).output() {
+        // The dominant pressure class (arbitrary-named agent debug scratch the reaper can't allowlist) is
+        // invisible in the reaper's own 0-reclaimed passes — read the count it stamps into its `.last-run`
+        // (#9693) so the board shows it. Fail-safe: a missing/unparseable stamp → None → the pct-only line.
+        let uncovered = std::fs::read_to_string(fleet.root.join("prune-tmp-inodes.last-run"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .and_then(parse_uncovered_stale_scratch)
+            });
+        if let Some(line) = tmp_inode_pressure_line(
+            parse_df_inode_pct(&String::from_utf8_lossy(&out.stdout)),
+            uncovered,
+        ) {
+            println!("{line}");
+        }
     }
 
     // HARNESS bg-low-mem GUARDIAN risk — surface when MemFree is low enough to trip Claude Code's guardian
@@ -23419,34 +23458,75 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     #[test]
     fn tmp_inode_pressure_line_flags_warn_and_high_and_is_silent_on_unknown() {
         // Healthy (the post-fix 71% state): line still prints (continuous board signal) but NO flag.
-        let healthy = tmp_inode_pressure_line(Some(71)).expect("parseable → a line");
+        let healthy = tmp_inode_pressure_line(Some(71), None).expect("parseable → a line");
         assert!(
             healthy.contains("71%") && !healthy.contains("⚠"),
             "healthy → no flag: {healthy}"
         );
         // WARN band (>=85, below the 90% gc-hook sweep) → ⚠WARN, early heads-up, no HIGH hint yet.
-        let warn = tmp_inode_pressure_line(Some(85)).expect("line");
+        let warn = tmp_inode_pressure_line(Some(85), None).expect("line");
         assert!(
             warn.contains("⚠WARN") && !warn.contains("ENOSPC"),
             "got: {warn}"
         );
-        // HIGH band (>=92, near the wedge) → ⚠HIGH + the new-un-allowlisted-shape hint pointing at Class C.
-        let high = tmp_inode_pressure_line(Some(100)).expect("line");
+        // HIGH band (>=92, near the wedge) → ⚠HIGH + the un-allowlisted-shape hint (reaper AND gc-hook).
+        let high = tmp_inode_pressure_line(Some(100), None).expect("line");
         assert!(
-            high.contains("⚠HIGH")
-                && high.contains("ENOSPC")
-                && high.contains("prune-tmp-inodes Class C"),
-            "HIGH names the wedge + the extend-allowlist action: {high}"
+            high.contains("⚠HIGH") && high.contains("ENOSPC") && high.contains("gc-hook"),
+            "HIGH names the wedge + that BOTH backstops are allowlisted: {high}"
         );
         // Just below WARN → no flag (89 is below the WARN 85? no — 84 is). 84 → no flag.
         assert!(
-            !tmp_inode_pressure_line(Some(84))
+            !tmp_inode_pressure_line(Some(84), None)
                 .expect("line")
                 .contains("⚠"),
             "84% is below WARN 85 → no flag"
         );
+        // #9693: a nonzero uncovered-scratch count is surfaced from WARN on up (the dominant class the
+        // reaper's 0-reclaimed passes otherwise hide); zero/None adds no clause (no noise when clean).
+        let warn_uncov = tmp_inode_pressure_line(Some(88), Some(6748)).expect("line");
+        assert!(
+            warn_uncov.contains("6748 uncovered") && warn_uncov.contains("AGENTS-fleet.md"),
+            "WARN surfaces the count + the self-clean remedy: {warn_uncov}"
+        );
+        assert!(
+            !tmp_inode_pressure_line(Some(88), Some(0))
+                .expect("line")
+                .contains("uncovered"),
+            "zero uncovered → no clause (no noise)"
+        );
+        assert!(
+            !tmp_inode_pressure_line(Some(88), None)
+                .expect("line")
+                .contains("uncovered"),
+            "absent count (old stamp) → no clause"
+        );
         // df unparseable → None (fail-safe, never a false reading — matches the disk: line discipline).
-        assert!(tmp_inode_pressure_line(None).is_none(), "unknown → no line");
+        assert!(
+            tmp_inode_pressure_line(None, None).is_none(),
+            "unknown → no line"
+        );
+    }
+
+    #[test]
+    fn parse_uncovered_stale_scratch_reads_the_prune_stamp_field() {
+        // The exact stamp shape prune-tmp-inodes writes (#9693).
+        assert_eq!(
+            parse_uncovered_stale_scratch(
+                "2026-09-25T12:30:02+00:00 apply=1 inode-use=90% uncovered-stale-scratch=6748"
+            ),
+            Some(6748)
+        );
+        // Older stamp without the field → None (not a false 0).
+        assert_eq!(
+            parse_uncovered_stale_scratch("2026-09-25T00:00:00+00:00 apply=1 inode-use=80%"),
+            None
+        );
+        // Unparseable value → None.
+        assert_eq!(
+            parse_uncovered_stale_scratch("... uncovered-stale-scratch=?"),
+            None
+        );
     }
 
     #[test]
