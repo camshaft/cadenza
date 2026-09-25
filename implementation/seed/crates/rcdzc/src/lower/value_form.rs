@@ -448,6 +448,29 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
     }
 }
 
+/// The value-form shape descriptor for a top-level ENTRY-PARAM leaf that has no scalar boundary rep — a
+/// `BigInt`/`Rational`/`Symbol` param the wasm bare-export route crosses as `list<u8>` and reconstructs via
+/// `value-decode(bytes, desc)` (the wasm-boundary-marshal eb1/er1/ey1 lift). It delegates to
+/// [`sum_shape_descriptor`] for `BigInt`/`Rational` and ADDS the `Symbol` leaf (a variable-length UTF-8
+/// byte-leaf that crosses as the render-only `ShapeNode::Symbol`, tag 20 — the same value-form escape). It
+/// is kept SEPARATE from `sum_shape_descriptor` on purpose: that shared function's `Symbol → None` contract
+/// is relied on by the result-side heap-return / `Value.encode`/`Value.decode` callers (a bare-`Symbol`
+/// RESULT/target still declines there), so widening it would perturb those paths. Only the entry-param
+/// classifier calls this. Returns `None` for any non-value-form-leaf type.
+pub fn value_form_param_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
+    match ty {
+        crate::ty::Ty::BigInt | crate::ty::Ty::Rational => sum_shape_descriptor(db, ty),
+        // A SYMBOL: `shape_of` renders it as `ShapeNode::Symbol` (tag 20); encode that bare leaf as the
+        // value-form descriptor `value-decode` reconstructs from (the same bytes `Value.encode` produces).
+        crate::ty::Ty::Symbol => {
+            let mut builder = ShapeTableBuilder::default();
+            let inner = builder.shape_of(db, ty)?;
+            Some(builder.encode(inner))
+        }
+        _ => None,
+    }
+}
+
 /// Append `v` to `out` as an unsigned LEB128 varint — the count/length/index encoding the shape-table
 /// descriptor wire format uses throughout (see `ShapeTableBuilder::encode`). Kept local to the shape
 /// descriptor here rather than shared with the wasm backend's `encode::uleb128`, which the backend

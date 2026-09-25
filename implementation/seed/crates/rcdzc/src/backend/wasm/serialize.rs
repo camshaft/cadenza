@@ -926,6 +926,12 @@ pub struct WrapperDesc {
     /// ownership and sets this false so the wrapper does not double-free). `None` = a scalar/`record` param
     /// (handled via `params`). Reuses the two `list<u8>` scratch locals + memory 0 (`wrapper_needs_memory`).
     pub mem_leaf_params: Vec<Option<(MemLeafKind, bool)>>,
+    /// The shape-descriptor bytes for each [`MemLeafKind::ValueForm`] param, indexed by the variant's `u32`.
+    /// A value-form param (`BigInt`/`Rational`/`Symbol`) crosses as `list<u8>` and is reconstructed by
+    /// `value-decode(bytes, desc)`; `desc` is baked from these bytes (the same descriptor `Value.encode`/
+    /// `Value.decode` compute — via `value_form_param_descriptor`). Empty when no param is a value-form leaf
+    /// (every other route leaves this untouched — a byte-neutral passthrough).
+    pub value_form_descs: Vec<Vec<u8>>,
     /// Parallel to `params`: for a TOP-LEVEL `option`/`result` param (a two-variant sum crossing the boundary
     /// as a native `option<T>`/`result<ok,err>`, flattened to `(disc, payload…)`), `Some(rebuild)` says to
     /// branch on the boundary disc and build the guest sum cell (`sum-new`) — leaving the handle DIRECTLY as
@@ -1020,6 +1026,15 @@ pub enum MemLeafKind {
     /// sub-lists recursively lifted `k` levels to the scalar (el8/eln). A `list<u8>` here is a genuine
     /// `List UInt8` value (a vec of boxed u8s), NOT `Bytes` (a packed byte-leaf) — distinct value reps.
     List(ListElem),
+    /// A value-form leaf param (`BigInt`/`Rational`/`Symbol`) that has NO scalar boundary rep: it crosses as
+    /// the canonical `list<u8>` value-form (the same bytes `Value.encode`/`Value.decode` use), flattened to
+    /// `(ptr, len)`. The wrapper copies those bytes out of linear memory, bakes the type's SHAPE DESCRIPTOR
+    /// (indexed into [`WrapperDesc::value_form_descs`] by this `u32`), and calls `value-decode(bytes, desc)`
+    /// to reconstruct the value-heap handle passed DIRECTLY as the def arg — the param twin of the R2
+    /// `Core::ValueDecode` lift (eb1/er1/ey1). The `bytes`/`desc` are BORROWED by `value-decode`; the wrapper
+    /// (their owner) drops both inside the lift. The decoded handle is a FRESH OWNED value reclaimed after the
+    /// call like any other borrowed mem-leaf param (`drop_after`).
+    ValueForm(u32),
 }
 
 /// How ONE scalar element of a `list<scalar>` param is read out of linear memory and boxed into the value
@@ -1617,6 +1632,26 @@ fn core_module_impl(
                                 &imp,
                                 &mut inner,
                             ); // → [vec]
+                        }
+                        // BigInt/Rational/Symbol: copy the `(ptr, len)` value-form bytes out of linear memory,
+                        // bake the type's shape descriptor, and `value-decode(bytes, desc)` → the value-heap
+                        // handle (eb1/er1/ey1). Needs two fresh locals (desc handle, decoded-result stash).
+                        MemLeafKind::ValueForm(idx) => {
+                            let desc = &wrap.value_form_descs[idx as usize];
+                            let desc_local = next_local;
+                            let res_local = next_local + 1;
+                            next_local += 2;
+                            emit_value_form_lift(
+                                desc,
+                                leaf,
+                                buf,
+                                ctr,
+                                desc_local,
+                                res_local,
+                                import_realloc,
+                                &imp,
+                                &mut inner,
+                            ); // → [handle]
                         }
                     }
                     leaf += 2; // the string/list flattened to (ptr, len)
@@ -3728,6 +3763,75 @@ fn emit_bytes_leaf_copy_in(
     // leave buf on the stack for the caller's arr-set
     out.push(op::LOCAL_GET);
     uleb128(buf as u64, out);
+}
+
+/// Emit the lift for one top-level VALUE-FORM leaf param (`BigInt`/`Rational`/`Symbol`) — a type with no
+/// scalar boundary rep that crosses as the canonical `list<u8>` value-form at flattened core params
+/// `ptr_leaf` / `ptr_leaf + 1`. Copies those bytes out of linear memory 0 into a value-heap byte-leaf, bakes
+/// the type's shape `desc` into a second byte-leaf, then `value-decode(bytes, desc)` reconstructs the
+/// value-heap handle (the PARAM twin of `Core::ValueDecode`, R2). `value-decode` BORROWS both leaves, so the
+/// wrapper (their owner) drops both here; the decoded handle is left on the stack as the def arg (`[]->[h]`).
+/// `buf`/`ctr` are the two reusable byte-copy scratch locals; `desc_local`/`res_local` are two fresh i32
+/// locals (the baked descriptor handle + the decoded-result stash). A NULL decode (a host contract
+/// violation — a non-`Option` param's bytes are a valid encoding by contract) is left as-is; the borrowed
+/// slice's post-call reclaim drops it like any handle.
+#[allow(clippy::too_many_arguments)]
+fn emit_value_form_lift(
+    desc: &[u8],
+    ptr_leaf: u32,
+    buf: u32,
+    ctr: u32,
+    desc_local: u32,
+    res_local: u32,
+    bulk_bytes: bool,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    // 1. Bake the descriptor into `desc_local` first (clean stack for the operand copy). `desc-buf =
+    //    bytes-alloc(len)`, then thread it through one `bytes-set(buf, j, byte)` per descriptor byte (each
+    //    returns the — possibly reallocated — handle, left on the stack for the next).
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(desc.len() as i64, out);
+    out.push(op::CALL);
+    uleb128(imp("bytes-alloc"), out); // [desc-buf]
+    for (j, &byte) in desc.iter().enumerate() {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(j as i64, out);
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(byte as i64, out);
+        out.push(op::CALL);
+        uleb128(imp("bytes-set"), out); // [desc-buf]
+    }
+    out.push(op::LOCAL_SET);
+    uleb128(desc_local as u64, out); // [] descriptor stored
+    // 2. Copy the boundary `(ptr, len)` value-form bytes into a value-heap byte-leaf; normalize into `buf`
+    //    (the per-byte path already leaves it there, the bulk `bytes-new` path leaves it only on the stack).
+    emit_bytes_leaf_copy_in(ptr_leaf, false, buf, ctr, bulk_bytes, imp, out); // → [bytes]
+    out.push(op::LOCAL_SET);
+    uleb128(buf as u64, out); // [] bytes stored in buf
+    // 3. handle = value-decode(bytes, desc) — borrows both; stash the result (NULL on a mismatch).
+    out.push(op::LOCAL_GET);
+    uleb128(buf as u64, out); // [bytes]
+    out.push(op::LOCAL_GET);
+    uleb128(desc_local as u64, out); // [bytes, desc]
+    out.push(op::CALL);
+    uleb128(imp("value-decode"), out); // [handle-or-null]
+    out.push(op::LOCAL_SET);
+    uleb128(res_local as u64, out); // [] handle stashed
+    // 4. Drop the borrowed-only temporaries (the copied bytes + the baked descriptor). The decoded value in
+    //    `res_local` is independent of both, so this is safe before leaving it as the def arg.
+    out.push(op::LOCAL_GET);
+    uleb128(buf as u64, out);
+    out.push(op::CALL);
+    uleb128(imp("drop"), out);
+    out.push(op::LOCAL_GET);
+    uleb128(desc_local as u64, out);
+    out.push(op::CALL);
+    uleb128(imp("drop"), out);
+    // 5. Leave the decoded handle on the stack as the def arg.
+    out.push(op::LOCAL_GET);
+    uleb128(res_local as u64, out); // [handle]
 }
 
 /// Emit the lift for one top-level `list<scalar>` param: the list crossed the boundary as `(ptr, len)` at
