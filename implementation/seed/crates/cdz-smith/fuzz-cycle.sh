@@ -201,11 +201,11 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
       # differential structurally cannot reach. Small count (it shells `cdz` per program, like the sweep
       # above) under its own cap, reusing the already-resolved cdz + store. A KILL at the cap is SAFE
       # (findings stream to disk per program); the count sizes the SLOWEST (cdz-shelling) pass to fit.
-      # Scale EP_COUNT with generate_export_param's `variant(N)` (11 shapes x ~20 as of the 11-shape generator:
-      # 6 scalar + 3 List-entry-param + #9586 record-Option-newtype + #9684 const-list-of-Option-field). A KILL
-      # at the cap is safe (findings stream); raise EP_CAP if the cdz-shelling pass outgrows it, don't drop count.
-      EP_COUNT="${CDZ_SMITH_EXPORT_PARAM_COUNT:-220}"
-      EP_CAP="${CDZ_SMITH_EXPORT_PARAM_CAP:-70}"
+      # Scale EP_COUNT with generate_export_param's `variant(N)` (12 shapes x ~20 as of the 12-shape generator:
+      # 6 scalar + 3 List-entry-param + the const-sum-field E0282 family #9586/#9684/#9687). A KILL at the cap
+      # is safe (findings stream); raise EP_CAP if the cdz-shelling pass outgrows it, don't drop the count.
+      EP_COUNT="${CDZ_SMITH_EXPORT_PARAM_COUNT:-240}"
+      EP_CAP="${CDZ_SMITH_EXPORT_PARAM_CAP:-75}"
       if [ "$EP_COUNT" -gt 0 ]; then
         log "export-param differential mini-pass | count $EP_COUNT | cdz $DIFF_CDZ | store $DIFF_STORE | cap ${EP_CAP}s"
         CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$EP_CAP" \
