@@ -6309,6 +6309,37 @@ fn canon_write_ops(
     }
 }
 
+/// Recursively rewrite a WIT type so no nominal `record<…>` remains: each `record` becomes the STRUCTURAL
+/// `tuple<…>` of its field types (in the record's declaration order, which for a bare entry param is
+/// `ty_natural_wit`'s sorted order — the same order the value-heap cell stores the fields), recursing through
+/// every compound former so a record nested at any depth is flattened. This is BARE-PATH ONLY: the bare
+/// assembler (`assemble_bare_typed_with_runtime`) cannot declare a nominal `record<…>` defined type, so a
+/// nominal record (top-level OR nested inside a crossing tuple/record) emits an INVALID component (CDZ0910);
+/// the structural tuple carries the byte-identical wire and needs no declaration. The TYPED interface path
+/// keeps nominal records (declarable there) and MUST NOT call this.
+fn structuralize_wit(wt: &crate::wit_world::WitType) -> crate::wit_world::WitType {
+    use crate::wit_world::WitType;
+    match wt {
+        WitType::Record(fields) => {
+            WitType::Tuple(fields.iter().map(|(_n, t)| structuralize_wit(t)).collect())
+        }
+        WitType::Tuple(ts) => WitType::Tuple(ts.iter().map(structuralize_wit).collect()),
+        WitType::List(inner) => WitType::List(Box::new(structuralize_wit(inner))),
+        WitType::Option(inner) => WitType::Option(Box::new(structuralize_wit(inner))),
+        WitType::Result { ok, err } => WitType::Result {
+            ok: ok.as_ref().map(|t| Box::new(structuralize_wit(t))),
+            err: err.as_ref().map(|t| Box::new(structuralize_wit(t))),
+        },
+        WitType::Variant(cases) => WitType::Variant(
+            cases
+                .iter()
+                .map(|(n, p)| (n.clone(), p.as_ref().map(structuralize_wit)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// Build the [`serialize::FieldRebuild`] for ONE record field (recursively), appending its flattened core
 /// valtypes to `param_vts` in field order. A scalar boxes one flattened leaf; a `list<u8>`/`Bytes` leaf
 /// crosses as `(ptr, len)` and copies out of memory (`BytesLeaf`, two i32); a FLAT `list<scalar>` field
@@ -7176,6 +7207,11 @@ fn try_bare_entry_param_component(
                 for (gt, wt) in gtys.iter().zip(wtys) {
                     rebuild.push(param_field_rebuild(db, gt, wt, &mut param_vts)?);
                 }
+                // Structuralize the emitted WIT so a nested record ELEMENT (a tuple-of-record entry param)
+                // crosses as `tuple<…, tuple<…>>` rather than a nominal `record<…>` the bare assembler cannot
+                // declare → INVALID component (CDZ0910). The rebuild above lifts the nested record structurally
+                // regardless; this only rewrites the WIT spelling. A scalar tuple is unchanged (no records).
+                wit = structuralize_wit(&wit);
                 // Positional slots: element i lands in cell slot i (a tuple has no name-lex order).
                 let slots: Vec<u32> = (0..gtys.len() as u32).collect();
                 cell_params.push(Some(rebuild));
@@ -7214,7 +7250,11 @@ fn try_bare_entry_param_component(
                 let mut tuple_wtys = Vec::with_capacity(fields.len());
                 for ((_fname, gt), (_wname, wt)) in fields.iter().zip(field_wits) {
                     rebuild.push(param_field_rebuild(db, gt, wt, &mut param_vts)?);
-                    tuple_wtys.push(wt.clone());
+                    // `structuralize_wit` recursively drops any NESTED nominal record too (a record-of-record
+                    // field): its WIT would otherwise stay `record<…>` inside this tuple and the bare assembler
+                    // could not declare it → INVALID component (CDZ0910). The rebuild above is structure-driven,
+                    // so it lifts the nested record correctly regardless of the WIT's nominal/structural spelling.
+                    tuple_wtys.push(structuralize_wit(wt));
                 }
                 // Re-declare the param's WIT as the STRUCTURAL tuple of the (sorted) field types — dropping the
                 // nominal record name the bare assembler cannot declare, keeping the identical wire.

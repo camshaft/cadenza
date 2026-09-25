@@ -13395,9 +13395,13 @@
 
 ; rpp8/rpp9 extend the compound-entry-param cluster to a NESTED compound FIELD. A `Tuple` field crosses as a
 ; STRUCTURAL `tuple<…>` (no defined-type declaration) and rebuilds a positional sub-cell recursively, so a
-; Tuple nested in a Tuple (rpp8) or a Tuple field of a Record (rpp9) crosses. (A nested nominal `record<…>`
-; field is NOT yet admitted — the bare structural assembler cannot declare it; that structural-record
-; flattening is a shared-lowering slice.)
+; Tuple nested in a Tuple (rpp8) or a Tuple field of a Record (rpp9) crosses. rpp10/rpp11 extend this to a
+; NESTED nominal `record<…>` field: the bare structural assembler cannot declare a nominal record, so the
+; emitted WIT recursively STRUCTURALIZES every nested record to the `tuple<…>` of its (name-lex-sorted) field
+; types (`structuralize_wit`) while the rebuild lifts the record cell unchanged — a record nested in a Tuple
+; (rpp10) or a Record field of a Record (rpp11) crosses as `tuple<…>`, byte-identical wire. (A record nested
+; inside a NESTED tuple — a deeper level below the top param — still declines cleanly at the per-element
+; rebuild guard until that guard is relaxed.)
 (case
   "rpp8 a nested Tuple entry param projects through both levels"
   (input
@@ -13445,6 +13449,34 @@
       (export main)))
   (call main (: #tuple("abc" #list(1 2) 10) (Tuple String (List Int64) Int64)))
   (output (: 15 Int64)))
+
+(case
+  "rpp10 a Tuple entry param with a nested Record element projects through both levels"
+  (input
+    (do
+      (def
+        (main (: t (Tuple Int64 (Record (: a Int64) (: b Int64)))))
+        (+ (* 100 (. t 0)) (+ (* 10 (. (. t 1) a)) (. (. t 1) b))))
+      (export main)))
+  (call
+    main
+    (: #tuple(5 #record((= a 3) (= b 4))) (Tuple Int64 (Record (: a Int64) (: b Int64)))))
+  (output (: 534 Int64)))
+
+(case
+  "rpp11 a Record entry param with a nested Record field projects through both levels"
+  (input
+    (do
+      (def
+        (main (: r (Record (: inner (Record (: a Int64) (: b Int64))) (: n Int64))))
+        (+ (+ (* 100 r.inner.a) (* 10 r.inner.b)) r.n))
+      (export main)))
+  (call
+    main
+    (:
+      #record((= inner #record((= a 1) (= b 2))) (= n 3))
+      (Record (: inner (Record (: a Int64) (: b Int64))) (: n Int64))))
+  (output (: 123 Int64)))
 
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
