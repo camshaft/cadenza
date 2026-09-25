@@ -1821,6 +1821,23 @@ fn emit_elem_grounding_empty_list(
     {
         return Ok(format!("{{ let __v: {rt} = {a}; __v }}"));
     }
+    // The SOLVED-slot twin of the free-var case above: a NULLARY generic variant (`(Option.None …)`) whose
+    // OWN `type_of` lost its arg during const-materialization (a const-folded record field reaches emit as a
+    // fresh `SumNew` typed `Option<?>`) emits a BARE `Option::None` — `nullary_variant_path` can't turbofish
+    // an unsolved arg. When the field/element is then PROJECTED AWAY (`(. rec i)` reads a SIBLING field), the
+    // bare `None`'s `Option<T>` is never constrained → E0282 "type annotations needed" (the #9586
+    // const-materialized-record `from`-field case; wasm carries the field type at its value-encode boundary,
+    // so it never hits this). The `target` IS the record/tuple declaration's SOLVED field type, so ascribe it.
+    // Gated on a BARE (un-turbofished) nullary variant + a representable generic-sum target, so a payload ctor
+    // (`Some(x)`) or an already-turbofished nullary is byte-identical.
+    if let Some(t) = target
+        && matches!(core_of(db, id), Core::SumNew { payloads, .. } if payloads.is_empty())
+        && matches!(t.strip_nominal(), Ty::Sum { args, .. } if !args.is_empty())
+        && !a.contains("::<")
+        && let Some(rt) = types::rust_type(&db.name_ctx(), &types::ground_open_vars(t))
+    {
+        return Ok(format!("{{ let __v: {rt} = {a}; __v }}"));
+    }
     Ok(a)
 }
 
