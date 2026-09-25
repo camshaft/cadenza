@@ -6859,8 +6859,10 @@ fn canon_write_ops(
 
 /// Build the [`serialize::FieldRebuild`] for ONE record field (recursively), appending its flattened core
 /// valtypes to `param_vts` in field order. A scalar boxes one flattened leaf; a `list<u8>`/`Bytes` leaf
-/// crosses as `(ptr, len)` and copies out of memory (`BytesLeaf`, two i32); a NESTED record builds a `Nested`
-/// rebuild over its own fields (the message's `sender` shape). Declines any other compound field.
+/// crosses as `(ptr, len)` and copies out of memory (`BytesLeaf`, two i32); a FLAT `list<scalar>` field
+/// likewise crosses as `(ptr, len)` and lifts into a value-heap vec (`ListLeaf`, rpp3); a NESTED record builds
+/// a `Nested` rebuild over its own fields (the message's `sender` shape). Declines any other compound field
+/// (a nested `list<list<…>>` field, a `Map`/`Set` field — later slices).
 fn param_field_rebuild(
     db: &mut Db,
     gty: &crate::ty::Ty,
@@ -6901,6 +6903,19 @@ fn param_field_rebuild(
             }
             // `list<u8>` (Bytes) / all-nullary enum payload arms — appends the disc + join vts itself.
             fixed_shape_sum_param_arg(db, gty, param_vts)
+        }
+        // A `list<scalar>` field (rpp3's `xs: list<s64>`): crosses as `(ptr, len)` and lifts into a value-heap
+        // vec (`FieldRebuild::ListLeaf`), mirroring the top-level `MemLeafKind::List` param lift. Only a FLAT
+        // list is admitted — `list_scalar_elem` returns the scalar element's read/box descriptor + its
+        // `nest_lists`, which must be 0; a nested `list<list<…>>` field is a later slice.
+        Ty::List(elem) => {
+            let le = list_scalar_elem(elem)?;
+            if le.nest_lists != 0 {
+                return None;
+            }
+            param_vts.push(ValType::I32.byte());
+            param_vts.push(ValType::I32.byte());
+            Some(FieldRebuild::ListLeaf(le))
         }
         _ => {
             let fr = scalar_field_rebuild(gty)?;
