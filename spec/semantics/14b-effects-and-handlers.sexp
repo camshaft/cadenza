@@ -6943,19 +6943,21 @@
   (output (: 200 Int64)))
 
 (case
-  "a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)"
+  "a do-def-bound perform inside a recursive fn called under a handle folds by inlining the single-use perform"
   (doc
     "SAFE FLOOR (v-effects, 0d2afb083). A recursive function whose body do-def-binds a performed
            operation — `(do (def scaled (Env.scale i)) (check-all (- i 1) …))` — used to fail CDZ0201
            `check-all#eff2 has no body`: the effect specializer RESERVED a body:None spec def and memoized
            the mangled name before threading the body, and on the do-def-bound-perform body the thread
            returned None (unthreadable) leaving the reserved bodyless def + memo, so the recursive self-call
-           resolved to it and leaked the internal `#eff` name. The fix declines UNCODED naming the base fn
-           ('the recursive function check-all performs a discharged operation in a form the effect
-           specializer does not yet handle') — a clean not-yet-reducible floor, not a mangled CDZ0201.
-           Computing the value (110) needs a later body-clone specialization increment. The inline-
-           expression twin `(check-all (- i 1) (+ bad (Env.scale i)))` already compiles; this is the
-           do-def-bound-perform-in-a-recursive-fn seam, distinct from the straight-line do-def and F1 seams.")
+           resolved to it and leaked the internal `#eff` name. It was then made a clean not-yet-reducible
+           floor (CDZ0900 naming the base fn), never a mangled CDZ0201. NOW IT FOLDS: the recursive-fn
+           specializer PRE-NORMALIZES the body by inlining a SINGLE-USE, UNCONDITIONALLY-evaluated,
+           PERFORMING do-def binding into its one use — `(do (def scaled (Env.scale i)) (check-all (- i 1)
+           (+ bad scaled)))` → `(check-all (- i 1) (+ bad (Env.scale i)))`, the inline-expression twin that
+           already threads — so it computes 110. Semantics-preserving: an exactly-once, non-control-nested
+           use fires the perform once, in order (a MULTI-use or `if`/`match`/`fn`-nested do-def perform is
+           NOT inlined — it would duplicate or make-conditional the effect — and stays the safe decline).")
   (input
     (do
       (effect Env (op scale (-> Int64 Int64)))

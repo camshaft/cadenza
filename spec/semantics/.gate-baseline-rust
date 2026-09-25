@@ -10861,7 +10861,7 @@ todo	a delegated perform with no recorded host response traps
 todo	a dependent utf8 size from an arithmetic expression over a byte binder decodes
 todo	a diamond peer graph shares one provider across two middle peers
 todo	a distinct-signature per-group call-g is repeatable on one make-<name> handle
-todo	a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)
+todo	a do-def-bound perform inside a recursive fn called under a handle folds by inlining the single-use perform
 todo	a fallible Result peer op result crosses and its Err arm matches
 todo	a fallible Result peer op result crosses and its Ok arm matches
 todo	a flat single-scalar-field record EXPORT result crosses (returned directly, not by pointer)

@@ -11235,7 +11235,7 @@ todo	a continuation call whose body ITSELF performs is not effect-free and decli
 todo	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
 todo	a delegated perform with no recorded host response traps
 todo	a dependent utf8 size from an arithmetic expression over a byte binder decodes
-todo	a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)
+pass	a do-def-bound perform inside a recursive fn called under a handle folds by inlining the single-use perform
 todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)
 todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
 todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
