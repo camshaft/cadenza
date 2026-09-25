@@ -7967,7 +7967,7 @@ pass	equality over an int/float mix gets the retype fix too, not just ordering
 pass	equality with zero selects eqz and computes correctly for both operand orders
 pass	er1 a Rational entry param in exact arithmetic
 pass	erp1 a Result entry param delivers its Ok payload
-pass	erp2 a Result entry param with two scalar payloads declines pending the Result lift
+pass	erp2 a Result entry param with two scalar payloads crosses and matches the active arm
 pass	erp3 a Result entry param with two String payloads measures the active arm
 pass	erp4 a Result entry param with a String Ok and a Bytes Err measures the active arm
 pass	erc1 a Result entry param with a compound Ok tuple sums the active arm

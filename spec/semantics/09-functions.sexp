@@ -13130,7 +13130,7 @@
 ; flips BOTH payload shapes and any regression to invalid-wasm hits a row. Coverage lesson: probe
 ; a type family's payload MATRIX, not one representative.
 (case
-  "erp2 a Result entry param with two scalar payloads declines pending the Result lift"
+  "erp2 a Result entry param with two scalar payloads crosses and matches the active arm"
   (input
     (do
       (def (main (: r (Result Int64 Int64))) (match r ((Ok v) (* v 2)) ((Err e) (- 0 e))))
