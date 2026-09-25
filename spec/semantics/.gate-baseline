@@ -11271,7 +11271,7 @@ pass	eb1 a BigInt entry param in beyond-i64 arithmetic
 pass	el1 a List entry param summed by an indexed walk
 pass	el8 a nested List-of-List entry param measures both levels
 todo	elc2 a Map keyed by the lifted List entry param answers its value on lookup
-todo	elc4 List.concat consumes two lifted List entry params into one measured list
+pass	elc4 List.concat consumes two lifted List entry params into one measured list
 pass	eln1 an EMPTY nested-list entry param has outer length zero
 pass	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length
 pass	eln3 a THREE-level nested-list entry param reads a leaf through two descents
@@ -11285,7 +11285,7 @@ todo	expect traps on the absent case of a runtime optional
 pass	ey1 a Symbol entry param keys a Map
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
 todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)
-todo	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
+pass	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 pass	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
