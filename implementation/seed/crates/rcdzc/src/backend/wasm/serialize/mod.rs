@@ -861,6 +861,40 @@ pub fn wrappers_use_bytes(wrappers: &[WrapperDesc]) -> bool {
     })
 }
 
+/// Whether a wrapper's flattened boundary params SPILL to a memory-indirect single-pointer core param: the
+/// canonical ABI passes MORE than [`crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS`] flat core values by
+/// having the caller write them to linear memory and pass ONE `i32` pointer, which the wrapper reads back
+/// (wfp1: 17 scalar params). Keyed off the flattened core param count — the same threshold
+/// [`crate::backend::wasm::wit_ctype::sig_needs_memory`] uses, so the envelope assembler (which binds the
+/// canon-lift Memory+Realloc off `sig_needs_memory`) and this core-side reader agree.
+pub(crate) fn wrapper_params_spill(param_vts: &[u8]) -> bool {
+    param_vts.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS
+}
+
+/// The canonical spilled-param-area layout for a wrapper whose params spill: each flattened core param laid
+/// out at its NATURALLY-ALIGNED byte offset (the canonical memory layout of a tuple of the flattened params —
+/// `i32`/`f32` are 4-byte 4-aligned, `i64`/`f64` are 8-byte 8-aligned). Returns, per flat leaf in order, the
+/// `(offset, load_op, align_log2)` the wrapper reads it with (`local.get 0` = the spill pointer, then this
+/// load). Parallel to `param_vts`.
+fn spilled_param_layout(param_vts: &[u8]) -> Vec<(u32, u8, u32)> {
+    use crate::backend::wasm::wasm_abi::{CORE_F32, CORE_F64, CORE_I64, op};
+    let mut out = Vec::with_capacity(param_vts.len());
+    let mut off = 0u32;
+    for &vt in param_vts {
+        let (size, load, align) = match vt {
+            CORE_I64 => (8u32, op::I64_LOAD, 3u32),
+            CORE_F32 => (4, op::F32_LOAD, 2),
+            CORE_F64 => (8, op::F64_LOAD, 3),
+            // CORE_I32 and any other single-slot value read as i32.
+            _ => (4, op::I32_LOAD, 2),
+        };
+        off = off.next_multiple_of(size); // natural alignment == the value's own size here
+        out.push((off, load, align));
+        off += size;
+    }
+    out
+}
+
 /// [`core_module`] with a leading CROSS-COMPONENT extern-import set (X4b): `extern_fns` are peer ops
 /// imported from module `"peer"`, laid FIRST (core-func indices `0..e`; the extern-first order), so a
 /// `Lir::CallExternImport(i)` resolves to `i`. This entry is the extern-ONLY program (`host_fns` and
@@ -1212,11 +1246,13 @@ fn core_module_impl(
     // Memory is needed when a wrapper reads a `list<u8>` leaf out of it (a bytes param) OR writes a spilled
     // record RESULT into it (a `SpillScalarRecord` — the wrapper allocates a return area via `cabi_realloc`).
     let wrapper_needs_memory = wrappers.iter().any(|w| {
-        w.params
-            .iter()
-            .flatten()
-            .flatten()
-            .any(FieldRebuild::has_bytes_leaf)
+        // A wrapper whose params SPILL reads each param out of the memory-indirect spill area (memory 0).
+        wrapper_params_spill(&w.param_vts)
+            || w.params
+                .iter()
+                .flatten()
+                .flatten()
+                .any(FieldRebuild::has_bytes_leaf)
             || matches!(w.result, ResultLower::SpillRecord { .. })
             // A `list<u8>`/Bytes result member allocates its buffer + retarea via `cabi_realloc` too.
             || matches!(w.result, ResultLower::CopyBytes)
@@ -1306,7 +1342,14 @@ fn core_module_impl(
     // `(param_vts) -> (result_vts)`. Empty for a program with no wrappers → byte-identical to before.
     for w in wrappers {
         let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
-        ft.extend_from_slice(&wasm_vec(w.param_vts.len(), &w.param_vts));
+        if wrapper_params_spill(&w.param_vts) {
+            // MEMORY-INDIRECT spill: the flattened params exceed the canonical flat-param cap, so the core
+            // func takes a SINGLE `i32` pointer to the spilled param area (the canon lift, with its
+            // Memory+Realloc options, writes the params there). The wrapper body reads each back.
+            ft.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        } else {
+            ft.extend_from_slice(&wasm_vec(w.param_vts.len(), &w.param_vts));
+        }
         ft.extend_from_slice(&wasm_vec(w.result_vts.len(), &w.result_vts));
         type_seqs.push(ft);
     }
@@ -1574,7 +1617,21 @@ fn core_module_impl(
             // index for the canonical writer). The body is emitted into `inner` with `next_local` tracking the
             // high-water local index, then the local-decl group prepends the final count — so an arbitrarily
             // deep result writer declares exactly the locals it used. No scratch → zero locals, byte-identical.
-            let p = wrap.param_vts.len() as u32;
+            // MEMORY-INDIRECT spill: the core func has ONE `i32` param (the spill pointer at local 0); each
+            // logical param is READ from the spill area (`local.get 0` + a naturally-aligned load) rather than
+            // a flat param local. So `p` (the first scratch local index) is 1, and `spill_layout` gives each
+            // flat leaf's `(offset, load_op, align)`.
+            let spilled = wrapper_params_spill(&wrap.param_vts);
+            let spill_layout = if spilled {
+                spilled_param_layout(&wrap.param_vts)
+            } else {
+                Vec::new()
+            };
+            let p = if spilled {
+                1u32
+            } else {
+                wrap.param_vts.len() as u32
+            };
             let has_bytes = wrap
                 .params
                 .iter()
@@ -1710,8 +1767,19 @@ fn core_module_impl(
                 }
                 match pp {
                     None => {
-                        inner.push(op::LOCAL_GET);
-                        uleb128(leaf as u64, &mut inner);
+                        if spilled {
+                            // Read the scalar from the spill area: `local.get 0` (the spill pointer) then a
+                            // naturally-aligned load at this leaf's canonical offset.
+                            let (offset, load_op, align) = spill_layout[leaf as usize];
+                            inner.push(op::LOCAL_GET);
+                            uleb128(0, &mut inner);
+                            inner.push(load_op);
+                            uleb128(align as u64, &mut inner);
+                            uleb128(offset as u64, &mut inner);
+                        } else {
+                            inner.push(op::LOCAL_GET);
+                            uleb128(leaf as u64, &mut inner);
+                        }
                         leaf += 1;
                     }
                     Some(fields) => {

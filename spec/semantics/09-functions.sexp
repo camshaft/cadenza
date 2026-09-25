@@ -12389,7 +12389,7 @@
 ; reclaims. wfp3 = NINE list params = 18 flat — declines (currently via the generic width message
 ; from the lift-wrapper path, not the flat-param message; diagnostic nit noted to v-rust-backend).
 (case
-  "wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention"
+  "wfp1 SEVENTEEN scalar entry params cross memory-indirect (spilled to a single pointer)"
   (input
     (do
       (def
