@@ -11304,6 +11304,7 @@ pass	rpp1 a scalar-fielded Record entry param projects both fields
 pass	rpp2 an open-row helper projects a field of the boundary Record param
 pass	rpp3 a Record entry param with a heap list field measures both
 pass	rpp4 a scalar Tuple entry param projects both positions
+pass	rpp5 a Tuple entry param with a heap list element measures both
 todo	sbn2 a runtime utf8 CONSTRUCTION segment declines pending the encode increment (utf8 is pattern-only)
 pass	spx2 a Char entry param crosses as the WIT char primitive
 pass	spx2b a Char result crosses as the WIT char primitive

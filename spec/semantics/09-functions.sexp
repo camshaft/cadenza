@@ -13179,15 +13179,14 @@
   (call main (: #list(5 6 7 8) Bytes))
   (output (: 2 Int64)))
 
-; -- breaker batch 496→499 (2026-08-27): RECORD/TUPLE entry params — all decline (rungs standing).
-; The original diagnostic was DOUBLY wrong (result-phrased for a param; "multi-export" for one
-; export — the shared export_result_valtype error surfaced in the param loop); FIXED in #4031 to
-; the truthful param message ("parameter … has no scalar boundary representation — a non-scalar
-; entry parameter is not yet emitted on this export path"). Admission is a deferred feature —
-; v-rust-backend's admit attempt itself emitted an INVALID component (the envelope does not
-; flatten a record param), vindicating the decline. Rungs: scalar record (rpp1), an open-row
-; helper over the boundary record (rpp2), record with a heap field (rpp3), scalar tuple (rpp4);
-; all rust-pass, auto-flip when the flatten slice lands.
+; -- RECORD/TUPLE entry params (breaker batch 496→499, 2026-08-27; admitted #9699/#9701, 2026-09-25).
+; A scalar-fielded record/tuple entry param, and a record/tuple with a FLAT list<scalar> field, now CROSS
+; the wasm boundary. A record crosses STRUCTURALLY as an anonymous tuple<…> (identical canonical ABI, no
+; nominal defined-type declaration); a list field lifts into a value-heap vec via FieldRebuild::ListLeaf
+; (the top-level MemLeafKind::List lift, reused per-field). The borrowed cell is reclaimed after the call
+; (deep-dropping any list field). Rungs: scalar record (rpp1), an open-row helper over the boundary record
+; (rpp2), record with a heap list field (rpp3), scalar tuple (rpp4), tuple with a heap list element (rpp5).
+; A record/tuple with a NESTED-list / Map / Set field still declines (a later slice).
 (case
   "rpp1 a scalar-fielded Record entry param projects both fields"
   (input (do (def (main (: r (Record (: x Int64) (: y Int64)))) (+ (* 100 r.x) r.y)) (export main)))
@@ -13218,6 +13217,15 @@
   (input (do (def (main (: t (Tuple Int64 Int64))) (+ (* 100 (. t 0)) (. t 1))) (export main)))
   (call main (: #tuple(5 7) (Tuple Int64 Int64)))
   (output (: 507 Int64)))
+
+(case
+  "rpp5 a Tuple entry param with a heap list element measures both"
+  (input
+    (do
+      (def (main (: t (Tuple Int64 (List Int64)))) (+ (. t 0) (List.len (. t 1))))
+      (export main)))
+  (call main (: #tuple(5 #list(1 2 3)) (Tuple Int64 (List Int64))))
+  (output (: 8 Int64)))
 
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
