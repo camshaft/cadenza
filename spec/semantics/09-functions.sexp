@@ -11938,6 +11938,25 @@
   (call main (: #list(b"\x01\x02\x03\x04") (List Bytes)))
   (output (: 4 Int64)))
 
+; elns1 combines the two list nestings: a `list<list<string>>` entry param — a nested list (el8/eln) whose
+; LEAF is a byte-leaf (els1). Each outer element is a `(ptr,len)` sub-list descended one level; each inner
+; element is a `(ptr,len)` byte-leaf copied into a value-heap String. `emit_list_level` descends `nest_lists`
+; levels then fires the byte-leaf copy-in at level 0, allocating fresh copy-in scratch at each level. Reads
+; xs[0][1] = "bcd" → byte-length 3 (a two-index descent through both list levels to a leaf string).
+(case
+  "elns1 a nested list<list<string>> entry param reads a leaf string's byte-length"
+  (input
+    (do
+      (def
+        (main (: xs (List (List String))))
+        (match (List.at xs 0)
+          ((Option.Some inner)
+            (match (List.at inner 1) ((Option.Some s) (String.byte-len s)) ((Option.None) -1)))
+          ((Option.None) -2)))
+      (export main)))
+  (call main (: #list(#list("a" "bcd") #list("e")) (List (List String))))
+  (output (: 3 Int64)))
+
 ; lpt1/lpr1 extend the list entry param to a COMPOUND element — a scalar-fielded `tuple<…>` (lpt1) or
 ; `record<…>` (lpr1). Each element occupies its canonical_size contiguous bytes in the list's linear-memory
 ; buffer; the lift reads each field at its canonical offset, boxes it, and builds a value-heap cell per
