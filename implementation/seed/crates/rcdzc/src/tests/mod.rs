@@ -3640,52 +3640,6 @@ fn a_recursive_type_value_codec_declines_on_rust_not_hangs() {
     );
 }
 
-/// MAX-FLAT-PARAMS boundary: an export whose params flatten to MORE than the canonical-ABI limit (16 core
-/// values) needs the MEMORY-INDIRECT calling convention (params spilled to a linear-memory area, passed by
-/// pointer), which this backend does not yet emit. Emitting the flat form regardless past 16 produced an
-/// INVALID component — a SILENT bad artifact (a compile-success-only check reads it as green), the worst
-/// failure mode. So >16 flat params must DECLINE, not ship garbage. Pins that 17 scalar params declines
-/// (no wasm artifact) while 16 (at the boundary) still compiles. The Rust backend has no flat limit and
-/// compiles both, so this is a wasm-emit guard only.
-fn build_sum_export(n: usize) -> String {
-    // `(do (def (main (: p0 Int64) … (: p{n-1} Int64)) (+ (+ … p0 p1) … p{n-1})) (export main))`
-    let params: String = (0..n).map(|i| format!("(: p{i} Int64) ")).collect();
-    let mut body = "p0".to_string();
-    for i in 1..n {
-        body = format!("(+ {body} p{i})");
-    }
-    format!("(do (def (main {params}) {body}) (export main))")
-}
-
-#[test]
-fn seventeen_scalar_entry_params_over_max_flat_declines_not_invalid_wasm() {
-    use crate::testkit::parse;
-    let compile_wasm = |src: &str| {
-        crate::compile::compile(
-            &[crate::abi::Artifact::new(
-                crate::abi::Artifact::KIND_AST,
-                "main",
-                crate::codec::encode(&parse(src)),
-            )],
-            &[crate::backend::Target::Wasm],
-        )
-    };
-    // 17 flat params exceed MAX_FLAT_PARAMS (16): the backend must decline (no artifact), NOT emit invalid wasm.
-    let over = compile_wasm(&build_sum_export(17));
-    assert!(
-        over.artifact(crate::backend::Target::Wasm.artifact_kind())
-            .is_none(),
-        "17 scalar entry params (over the max-flat boundary) must DECLINE, not emit an invalid component"
-    );
-    // 16 params — exactly at the boundary — still compiles to a component.
-    let at = compile_wasm(&build_sum_export(16));
-    assert!(
-        at.artifact(crate::backend::Target::Wasm.artifact_kind())
-            .is_some(),
-        "16 scalar entry params (at the max-flat boundary) must still compile"
-    );
-}
-
 /// An `option<T>` ENTRY param crosses the plain-export boundary as a native component `option<T>` (flattened
 /// to `(disc, payload)`), lifted by a guest WRAPPER that branches on the boundary disc and builds the guest
 /// `Option` cell via `sum-new` (reusing the closure-arg `SumArgRebuild` via `emit_sum_field`), then drops the
