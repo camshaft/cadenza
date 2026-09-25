@@ -8243,6 +8243,8 @@ pass	eob1 an option<bytes> entry param delivers its Some payload's byte-length
 pass	eoc1 an Option entry param captured by a local closure applied twice
 pass	eoc2 an Option entry param relayed to a helper def and unwrapped there (owned sum, unlike the borrowed list)
 pass	eoc3 an Option entry param matched twice reclaims (the repeat-unwrap family needs a heap payload)
+pass	eot1 an Option entry param with a compound tuple payload sums the active arm
+pass	eor1 an Option entry param with a compound record payload sums the active arm
 pass	eoi1 TWO Option entry params thread the flattened-leaf cursor independently
 pass	eoi2 a String (mem-leaf) param and an Option (sum) param interleave in one signature
 pass	eoi3 an Option<Int8> entry param's narrow Some payload widens correctly
@@ -11290,6 +11292,7 @@ pass	erp4 a Result entry param with a String Ok and a Bytes Err measures the act
 pass	erc1 a Result entry param with a compound Ok tuple sums the active arm
 pass	erc2 a Result entry param with a compound Err tuple multiplies the active arm
 pass	erc3 a Result entry param with compound tuples on both arms folds the active arm
+pass	erc4 a Result entry param with a compound record Ok arm sums the active arm
 todo	expect traps on the absent case of a runtime optional
 pass	ey1 a Symbol entry param keys a Map
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
