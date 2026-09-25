@@ -6351,25 +6351,20 @@
 ; handles, never a plain `string`), so `f(s) = s ++ "!"` is well-formed semantics, not an extension. The
 ; read-only crossing above (byte-len / = / scalar-len) is a borrow-VIEW OPTIMIZATION, NOT a semantic ceiling;
 ; an owning consumer must trigger materialization of the boundary borrow into an owned value-heap String.
-; CURRENT STATUS (breaker-confirmed empirically): the two backends DIVERGE — on RUST it already PASSES
-; (value 3: rust materializes the entry string into an owned String, per v-rust-backend), while on WASM it
-; declines CDZ0900 "parameter String has no scalar boundary representation" — the wasm entry-param
-; materialization gap ((A)-gated, operator low-pri; v-rust-backend owns it, coordinating with v-memory-safety).
-; So this is an idealistic-should-cross TODO: it grades `todo` on WASM (the .gate-baseline todo line) and PASS
-; on rust (no rust-baseline line needed), auto-flipping the wasm column to pass when the wasm materialization
-; lands — NOT a borrow-only-by-design contrast, which corpus policy forbids (never lock in an impl gap as
-; intended). `"hi" ++ "!"` = "hi!", byte-len 3. The recursive-String.at-walk entry-arg (the walk case above)
-; is the same wasm materialization todo.
+; STATUS: crosses on BOTH backends. RUST materializes the entry string into an owned String (per
+; v-rust-backend); WASM now does too — the entry-param materialization landed with ep1 (String.concat
+; consuming clean-transfer, #9694): the boundary borrow is copied into an owned value-heap String, the
+; concat runs, and the result crosses back with no leak. This was the idealistic-should-cross TODO that
+; auto-flipped the wasm column to pass when the materialization landed (NOT a borrow-only-by-design
+; contrast, which corpus policy forbids). `"hi" ++ "!"` = "hi!", byte-len 3.
 (case
   "an OWNING consumer of a String entry parameter (String.concat) should cross and return the owned result"
   (doc
-    "`(def (main (: s String)) (String.byte-len (String.concat s \"!\")))` called with \"hi\" → SHOULD be 3
-           (\"hi!\"): a WIT `string` param is an owned value, so concatenating it is well-formed. Already
-           PASSES on rust (materializes the entry String); still declines CDZ0900 on WASM (the entry-param
-           borrow is not yet materialized there) — an idealistic should-cross TODO per v-rust-backend that
-           grades todo on wasm and pass on rust, auto-flipping the wasm column when the materialization lands,
-           distinct from the read-only byte-len/=/scalar-len entry args above which already cross on wasm via
-           the borrow-view optimization.")
+    "`(def (main (: s String)) (String.byte-len (String.concat s \"!\")))` called with \"hi\" → 3
+           (\"hi!\"): a WIT `string` param is an owned value, so concatenating it is well-formed. Crosses on
+           BOTH backends — rust materializes the entry String, and wasm materializes the boundary borrow into
+           an owned value-heap String too (ep1, #9694), distinct from the read-only byte-len/=/scalar-len entry
+           args above which cross via the borrow-view optimization.")
   (input (do (def (main (: s String)) (String.byte-len (String.concat s "!"))) (export main)))
   (call main (: "hi" String))
   (output (: 3 Int64)))
