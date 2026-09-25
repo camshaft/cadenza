@@ -11302,7 +11302,7 @@ todo	prr1 a RUNTIME print-then-read Ast round-trip declines pending runtime Ast.
 pass	read of malformed text is a coded reject, not a wrong value
 pass	rpp1 a scalar-fielded Record entry param projects both fields
 pass	rpp2 an open-row helper projects a field of the boundary Record param
-todo	rpp3 a Record entry param with a heap list field measures both
+pass	rpp3 a Record entry param with a heap list field measures both
 pass	rpp4 a scalar Tuple entry param projects both positions
 todo	sbn2 a runtime utf8 CONSTRUCTION segment declines pending the encode increment (utf8 is pattern-only)
 pass	spx2 a Char entry param crosses as the WIT char primitive

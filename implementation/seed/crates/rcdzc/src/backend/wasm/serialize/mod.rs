@@ -3181,6 +3181,15 @@ pub enum FieldRebuild {
     /// (a `buf` handle + a copy counter) and the core module owning memory 0 + a `cabi_realloc`
     /// (`wrapper_needs_memory`) so the canon lift can lower the incoming list into that memory.
     BytesLeaf,
+    /// A `list<scalar>` leaf (rpp3's `xs: list<s64>`): the canon lift flattens it to `(ptr: i32, len: i32)` —
+    /// TWO consecutive flattened core params. The wrapper builds a value-heap vec by reading + boxing each
+    /// element out of linear memory 0 per its width (`emit_list_leaf_lift`, exactly like a top-level
+    /// [`MemLeafKind::List`] lift), and stores the resulting vec handle into the record slot AS-IS (no box op —
+    /// a vec handle, like `Nested`/`BytesLeaf`). Consumes TWO flattened leaf params. Needs the same two scratch
+    /// locals the wrapper reserves (a `buf` vec accumulator + an element cursor) and memory 0 (`has_bytes_leaf`
+    /// ⇒ true). Only a FLAT list (`nest_lists == 0`) is admitted — a nested `list<list<…>>` field is a later
+    /// slice — so the element lift needs no fresh locals and a throwaway `next_local` suffices.
+    ListLeaf(ListElem),
     /// A variant/`option`/`result` PARAM field (the response's `answer`): the canon lift flattens it to
     /// `(disc, payload…)`; the wrapper branches on the boundary disc and rebuilds the guest sum cell
     /// (`sum-new`), leaving its handle for the parent `arr-set`. Reuses the closure-arg [`SumArgRebuild`]
@@ -3198,6 +3207,8 @@ impl FieldRebuild {
             FieldRebuild::Nested(sub, _) => sub.iter().map(FieldRebuild::leaf_count).sum(),
             // A `list<u8>` flattens to `(ptr, len)` — two core params.
             FieldRebuild::BytesLeaf => 2,
+            // A `list<scalar>` likewise flattens to `(ptr, len)` — two core params.
+            FieldRebuild::ListLeaf(_) => 2,
             FieldRebuild::Sum(r) => r.flattened_param_count(),
         }
     }
@@ -3229,6 +3240,13 @@ impl FieldRebuild {
                     out("bytes-set");
                 }
             }
+            // The list copy-in loop (`emit_list_leaf_lift`): build the vec (`vec-empty`), then per element
+            // read + box (`elem.box_op`) + append (`vec-push`).
+            FieldRebuild::ListLeaf(elem) => {
+                out("vec-empty");
+                out("vec-push");
+                out(elem.box_op);
+            }
             FieldRebuild::Sum(r) => {
                 r.arm_true.collect_ops_gated(bulk_bytes, out);
                 r.arm_false.collect_ops_gated(bulk_bytes, out);
@@ -3237,13 +3255,16 @@ impl FieldRebuild {
         }
     }
 
-    /// Whether this field (recursively) contains a `list<u8>` leaf — the wrapper carrying it must reserve
-    /// the two scratch locals its copy-in loop uses, and the core module must own memory 0.
+    /// Whether this field (recursively) contains a memory-bearing leaf — a `list<u8>`/`Bytes` (`BytesLeaf`)
+    /// OR a `list<scalar>` (`ListLeaf`) — whose copy-in loop the wrapper carrying it must reserve the two
+    /// scratch locals for, and for which the core module must own memory 0.
     pub fn has_bytes_leaf(&self) -> bool {
         match self {
             FieldRebuild::Scalar { .. } => false,
             FieldRebuild::Nested(sub, _) => sub.iter().any(FieldRebuild::has_bytes_leaf),
             FieldRebuild::BytesLeaf => true,
+            // A `list<scalar>` field copies its elements out of memory 0 via the same scratch pair.
+            FieldRebuild::ListLeaf(_) => true,
             // A sum arm's `list<u8>` (Bytes) payload, or a Compound payload carrying a bytes leaf, needs the
             // scratch locals + memory 0; a scalar/nullary/enum arm does not.
             FieldRebuild::Sum(r) => [&r.arm_true, &r.arm_false]
@@ -3661,6 +3682,17 @@ fn emit_cell_rebuild(
             FieldRebuild::BytesLeaf => {
                 let (buf, ctr) = scratch.expect("a BytesLeaf needs the wrapper's scratch locals");
                 emit_bytes_leaf_copy_in(*cursor, false, buf, ctr, bulk_bytes, imp, out); // → [arr, i, buf]
+                *cursor += 2; // the list flattened to (ptr, len)
+            }
+            FieldRebuild::ListLeaf(elem) => {
+                // The `list<scalar>` field crossed as `(ptr, len)` at `*cursor`; build a value-heap vec into the
+                // wrapper's scratch pair (exactly like the sum-arm `SumArmPayload::List` lift), leaving the vec
+                // handle for the parent `arr-set`. A FLAT list allocates no fresh locals, so a throwaway
+                // `next_local` suffices (the classifier admits only `nest_lists == 0` here).
+                let (buf, ctr) = scratch.expect("a ListLeaf needs the wrapper's scratch locals");
+                debug_assert_eq!(elem.nest_lists, 0, "only a flat list field is admitted");
+                let mut nl = 0u32;
+                emit_list_leaf_lift(elem, *cursor, buf, ctr, &mut nl, imp, out); // → [arr, i, vec]
                 *cursor += 2; // the list flattened to (ptr, len)
             }
             FieldRebuild::Sum(rebuild) => {
