@@ -3122,6 +3122,87 @@ fn a_recursive_fn_with_a_single_use_do_def_perform_folds_by_inlining() {
 }
 
 #[test]
+fn a_cross_function_performing_arg_call_folds_by_inlining_the_helper() {
+    // 11234 (v-effects 2026-09-25): a handle body `(bad (Amb.flip))` whose helper `bad x = (+ x (Amb.flip))`
+    // ITSELF performs the handled op — so the continuation re-performs across a FUNCTION boundary. It used to
+    // decline CDZ0907 (cross-function second perform). It now FOLDS: `inline_performing_arg_helper_calls`
+    // inlines the non-recursive effect-reaching helper (ORDER-SAFE — the single performing argument binds a
+    // param used at the LEADING strict position, so `apply_lambda`'s substitution keeps it the first perform),
+    // exposing `(+ (Amb.flip) (Amb.flip))` to the two-hole refold that re-enters the handler for the second
+    // perform. Runtime value 22 is pinned by the 14-effects corpus case; here we assert it compiles cleanly.
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "m",
+            crate::codec::encode(&parse(
+                "(module m (effect Amb (op flip (-> Unit Int64))) \
+                     (def (bad (: x Int64)) (+ x (Amb.flip))) \
+                     (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (bad (Amb.flip)))) \
+                     (export main))",
+            )),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    let errors: Vec<&crate::abi::Diagnostic> = out
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == crate::abi::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a cross-function performing-arg call should FOLD (helper inlined), not decline: {:?}",
+        errors
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // ORDER-SAFETY GUARD (no reorder miscompile). A helper whose body performs BEFORE using the arg —
+    // `bad x = (- (St.next) x)` — must NOT be inlined by naive substitution (that would run the arg's perform
+    // AFTER the body's, reordering a STATEFUL effect: computed -1 where the correct value is 1). The inline is
+    // rejected (arg use is not the leading strict position); the case folds via the order-preserving path or
+    // declines cleanly — never emitting the reordered value. (Value 1 is pinned by the corpus.) A ZERO-USE arg
+    // (`bad x = (Amb.flip)`, x dropped) must also NOT inline — that would drop the argument's own perform.
+    for src in [
+        "(module m (effect St (op next (-> Unit Int64))) \
+             (def (bad (: x Int64)) (- (St.next) x)) \
+             (def (main) (handle St 0 ((next (u) s (resume s (+ s 1)))) (bad (St.next)))) \
+             (export main))",
+        "(module m (effect Amb (op flip (-> Unit Int64))) \
+             (def (bad (: x Int64)) (Amb.flip)) \
+             (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (bad (Amb.flip)))) \
+             (export main))",
+    ] {
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        // Never a hard coded reject / invalid module: any error must be the honest CDZ090x "not yet reducible"
+        // decline (the order-unsafe / dropped-effect shapes the guard refuses to fold).
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert!(
+            errors
+                .iter()
+                .all(|d| d.code.as_deref().is_some_and(|c| c.starts_with("CDZ090"))),
+            "an order-unsafe / dropped-effect performing-arg call must decline cleanly (CDZ090x), never a \
+             coded reject or invalid emit: {:?}",
+            errors
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
 fn a_width_mismatched_handler_state_declines_cleanly_never_invalid_wasm() {
     // F1 (corpus-bugfix/breaker 2026-07-28): a handler whose STATE slot infers to a narrow int (UInt8)
     // while the op RESULT is Int64 must NOT emit an invalid wasm module. `(next (u) s (resume s (+ s x)))`

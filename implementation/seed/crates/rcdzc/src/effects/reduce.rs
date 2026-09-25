@@ -615,6 +615,18 @@ pub fn reduce_handle(
     } else {
         body
     };
+    // CROSS-FUNCTION PERFORMING-ARG inline. `reduce_applied_lambdas` above inlines a performing helper call
+    // only when its ARGS are strongly pure (β-substitution would reorder/duplicate a performing arg). A call
+    // whose argument ITSELF performs — `(bad (Amb.flip))` with `bad x = (+ x (Amb.flip))`, the CDZ0907
+    // cross-function-second-perform case (11234) — is left opaque, so the leading-hole folds see a non-uniform
+    // call and decline. Bind each such argument once by a leading `def` (order + count preserving) and splice
+    // the callee body, reaching the do-def-perform inline (#9676) + the two-hole refold that folds the exposed
+    // performs. Gated so a body with no such call is untouched.
+    let body = if body_contains_performing_arg_helper_call(db, body, &ctx) {
+        inline_performing_arg_helper_calls(db, body, &ctx, 0)
+    } else {
+        body
+    };
     // RE-HOIST after inlining. `reduce_applied_lambdas` above β-reduces a performing helper CALL into its
     // body — surfacing a conditional that was HIDDEN behind the call (`(let ((a (demand 5 25))) cont)` →
     // `(let ((a (match (Db.get k) … (do (Db.put …) …)))) cont)`). The first `hoist_resumptive_conditional`
@@ -2322,6 +2334,215 @@ pub(crate) fn body_contains_applied_performing_lambda(
         Struct::List(children) => children
             .iter()
             .any(|&c| body_contains_applied_performing_lambda(db, c, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// The strict-evaluation-order classification of a callee body relative to one performing parameter: which is
+/// reached FIRST on the strict spine — a reference to the parameter, or a PERFORM.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum LeadingKind {
+    /// A reference to the parameter is reached before any perform — substituting a performing argument there
+    /// keeps it the LEADING perform, so the inline preserves evaluation order.
+    ParamFirst,
+    /// A perform is reached before (or without) the parameter reference — substituting a performing argument
+    /// at the (later) parameter use would move its effect AFTER this perform: a REORDER (reject).
+    PerformFirst,
+    /// Neither a parameter reference nor a perform is reached on the strict spine.
+    Pure,
+}
+
+/// Scan `node` in STRICT left-to-right evaluation order, reporting whether the first thing evaluated that is
+/// either a reference to parameter `param` or a PERFORM is the parameter reference or the perform. Used to
+/// admit a single-use performing-argument inline ONLY when substituting the argument keeps it the leading
+/// perform — `bad x = (+ x (E.op))` (x first) inlines; `bad x = (- (E.op) x)` (the body performs first) does
+/// not. CONSERVATIVE by construction: only bare atoms, `do`/`let`, and `Apply` calls/performs are modelled
+/// precisely (their strict eval order is unambiguous); ANY other form (`if`/`match`/`and`/`or` — a
+/// conditional continuation — a closure, an unrecognized shape) that reaches a perform OR references the param
+/// classifies as `PerformFirst` (reject), so a wrong value never folds.
+fn leading_strict_kind(
+    db: &mut Db,
+    node: StructId,
+    param: StructId,
+    ctx: &HandlerCtx,
+) -> LeadingKind {
+    // A bare name: the parameter itself (a `Param`/`Ref`-chain match) or an unrelated pure name.
+    if db.ast.as_name(node).is_some() {
+        return if count_param_refs(db, node, param) > 0 {
+            LeadingKind::ParamFirst
+        } else {
+            LeadingKind::Pure
+        };
+    }
+    // `(do a b c)` / `(let ((n v)…) body)`: evaluate the statements / inits then body, left to right.
+    if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
+        for it in items {
+            match leading_strict_kind(db, it, param, ctx) {
+                LeadingKind::Pure => {}
+                decided => return decided,
+            }
+        }
+        return LeadingKind::Pure;
+    }
+    if let Some(tail) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
+        && tail.len() == 2
+        && let Struct::List(pairs) = db.ast.get(tail[0]).clone()
+    {
+        for pair in pairs {
+            if let Struct::List(kv) = db.ast.get(pair).clone()
+                && kv.len() == 2
+            {
+                match leading_strict_kind(db, kv[1], param, ctx) {
+                    LeadingKind::Pure => {}
+                    decided => return decided,
+                }
+            }
+        }
+        return leading_strict_kind(db, tail[1], param, ctx);
+    }
+    // An application. A PERFORM evaluates its args first, then fires; a plain call/prim evaluates its args
+    // left-to-right, then the callee runs (which may itself perform, AFTER the args).
+    if let Resolved::Apply { head, args } = resolved_of(db, node) {
+        // Only model a call whose head is a plain name (a prim or a named def) — the strict left-to-right
+        // arg order is then unambiguous. A computed/higher-order head is left to the conservative arm.
+        if db.ast.as_name(head).is_some() {
+            let is_perf = is_perform(db, head, ctx).is_some();
+            for a in args.iter().copied().collect::<Vec<_>>() {
+                match leading_strict_kind(db, a, param, ctx) {
+                    LeadingKind::Pure => {}
+                    decided => return decided,
+                }
+            }
+            // Args are all pure and reference-free. A perform node fires here; a plain call fires a perform
+            // here iff the callee body reaches one.
+            if is_perf
+                || call_reaches_discharged_effect(db, head, ctx)
+                || reaches_any_perform(db, node)
+            {
+                return LeadingKind::PerformFirst;
+            }
+            return LeadingKind::Pure;
+        }
+    }
+    // Any other form (conditional, closure value, compound literal, computed-head call): CONSERVATIVE. If it
+    // references the param or reaches a perform, its strict order relative to the param is not modelled here —
+    // reject; otherwise it is pure and contributes nothing.
+    if count_param_refs(db, node, param) > 0 || reaches_any_perform(db, node) {
+        LeadingKind::PerformFirst
+    } else {
+        LeadingKind::Pure
+    }
+}
+
+/// Whether the call at `node` — `(helper arg1..argN)` — is eligible for the performing-argument helper inline:
+/// `helper` is a NON-RECURSIVE def/lambda whose body reaches a discharged perform, EXACTLY ONE argument is
+/// effectful (the rest strongly pure), exact arity, plain named params, AND the inline is provably
+/// EVALUATION-ORDER-SAFE. `apply_lambda` (which performs the actual β-reduction) either LET-BINDS the
+/// performing argument — when its parameter is used ≥2× its EVALUATE-ONCE path wraps `(let ((#a arg)) …)`, so
+/// the effect runs exactly once, first, and cannot be duplicated — or SUBSTITUTES it (a single use), which is
+/// order-safe only when the parameter's use is the LEADING strict position (`leading_strict_kind ==
+/// ParamFirst`), so the substituted argument stays the first perform. A used-zero-times parameter would DROP
+/// the argument's effect, and >1 effectful argument makes the inter-argument order ambiguous — both rejected.
+fn performing_arg_inline_eligible(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    let Resolved::Apply { head, args } = resolved_of(db, node) else {
+        return false;
+    };
+    // The head is not itself a perform, and the callee body reaches THIS handler's discharged op (the reason
+    // to inline — inlining exposes that perform to the leading-hole folds).
+    if is_perform(db, head, ctx).is_some() || !call_reaches_discharged_effect(db, head, ctx) {
+        return false;
+    }
+    // EXACTLY ONE effectful argument (the case `reduce_applied_lambdas`, strongly-pure args only, skips);
+    // more than one makes the inter-argument evaluation order ambiguous under substitution.
+    let perf: Vec<usize> = (0..args.len())
+        .filter(|&i| !strongly_pure(db, args[i], ctx))
+        .collect();
+    if perf.len() != 1 {
+        return false;
+    }
+    let Some((params, hbody)) = crate::eval::lambda_params_and_body(db, head) else {
+        return false;
+    };
+    if crate::eval::is_recursive(db, hbody)
+        || params.is_empty()
+        || params.len() != args.len()
+        // Every parameter must be a plain NAMED binder (bare name or `(: name T)`); a destructuring/rest param
+        // is left to `apply_lambda`.
+        || !params
+            .iter()
+            .all(|&p| db.ast.as_name(crate::eval::param_name_occ(db, p)).is_some())
+    {
+        return false;
+    }
+    // ORDER-SAFETY for the single effectful argument's parameter. Key the reference count/scan on the param's
+    // NAME OCCURRENCE (what a body reference resolves to — `count_param_refs`/`node_refs_binder` match on it),
+    // not the raw `(: name T)` binder node.
+    let param = crate::eval::param_name_occ(db, params[perf[0]]);
+    match count_param_refs(db, hbody, param) {
+        0 => false, // dropping the argument would drop its effect
+        1 => leading_strict_kind(db, hbody, param, ctx) == LeadingKind::ParamFirst,
+        _ => true, // used ≥2× → `apply_lambda`'s eval-once let-binds it (runs once, first)
+    }
+}
+
+/// Inline a call `(helper arg1..argN)` in the handle body where `helper` is a NON-RECURSIVE effect-reaching
+/// helper called with ONE effectful argument (see [`performing_arg_inline_eligible`] for the full, order-safe
+/// gate) — the CDZ0907 cross-function-second-perform case (11234). `reduce_applied_lambdas` declines it: it
+/// requires STRONGLY-PURE args, since β-substituting a performing arg could reorder or duplicate its effect.
+/// Here `apply_lambda` performs the β-reduction correctly (re-resolving the copied body, and LET-BINDING a
+/// multi-use performing arg via its evaluate-once path), and the eligibility gate proved the inline
+/// order-safe, so it reaches the exposed-perform folds without changing semantics. For 11234 `(bad (Amb.flip))`
+/// with `bad x = (+ x (Amb.flip))`: → `(+ (Amb.flip) (Amb.flip))` → (two-hole refold) `22`. Bottom-up; re-walks
+/// the inlined body so a nested such call expands too. A recursive (incl. MUTUALLY recursive) callee is
+/// excluded by `is_recursive` (a full transitive call-graph query), so the re-walk terminates — non-recursive
+/// callees form a DAG and each inline strictly reduces the call-node count.
+pub(crate) fn inline_performing_arg_helper_calls(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+    depth: u32,
+) -> StructId {
+    if depth <= 64
+        && performing_arg_inline_eligible(db, node, ctx)
+        && let Resolved::Apply { head, args } = resolved_of(db, node)
+    {
+        // Reduce each argument's own redexes first (uniform with `reduce_applied_lambdas`).
+        let rargs: Vec<StructId> = args
+            .iter()
+            .map(|&a| inline_performing_arg_helper_calls(db, a, ctx, depth + 1))
+            .collect();
+        if let Ok(Some(reduced)) = crate::eval::apply_lambda(db, head, &rargs) {
+            // Re-walk (the inlined body may expose a further such call). Bounded (see the doc comment).
+            return inline_performing_arg_helper_calls(db, reduced, ctx, depth + 1);
+        }
+    }
+    // Otherwise descend structurally, inlining any eligible call in a child.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let rebuilt: Vec<StructId> = children
+                .iter()
+                .map(|&c| inline_performing_arg_helper_calls(db, c, ctx, depth + 1))
+                .collect();
+            db.push_list(rebuilt)
+        }
+        Struct::Atom(_) => node,
+    }
+}
+
+/// Whether the handle body contains a call the [`inline_performing_arg_helper_calls`] pass would rewrite. The
+/// gate so a body with no such call skips the pass (the common case); shares the exact eligibility predicate.
+pub(crate) fn body_contains_performing_arg_helper_call(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+) -> bool {
+    if performing_arg_inline_eligible(db, node, ctx) {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_contains_performing_arg_helper_call(db, c, ctx)),
         Struct::Atom(_) => false,
     }
 }

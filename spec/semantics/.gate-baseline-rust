@@ -10854,7 +10854,7 @@ todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a consumer bound to two distinct peer interfaces combines their results
 todo	a consumer bound to two scalar peer interfaces runs with no runtime
 todo	a consumer calls a scalar op across a source peer provider
-todo	a continuation call whose body ITSELF performs is not effect-free and declines
+todo	a cross-function performing-arg call folds by inlining the effect-reaching helper
 todo	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
 todo	a declared-world enum EXPORT whose guest case order MISMATCHES the WIT remaps by case NAME to the declared order
 todo	a delegated perform with no recorded host response traps
