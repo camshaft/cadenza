@@ -664,6 +664,41 @@ fn a_depth_3_nested_op_chain_folds_via_n_way_merge_and_recursive_lift() {
 }
 
 #[test]
+fn a_direct_conditional_resume_value_performing_outer_threads_the_advance() {
+    // 11216 adv-69 a3-direct (v-effects 2026-09-25): a DIRECT branch-performing conditional in a nested
+    // handler's arm resume-value performing the OUTER op — `(resume (if true (St.get) 99) t)` — used to
+    // DECLINE (the a3 guard's direct-conditional disjunct floored it against a dropped-advance silent 33).
+    // The through-block threading now folds it correctly to 34 (St seeded 3: Up.ask resumes (if true (St.get)
+    // 99) = St.get reads 3 advancing St→4 = 3, (* 10 3)=30; trailing (St.get) reads 4; 30+4=34). The stale
+    // direct-conditional disjunct is removed; value 34 is pinned by the 14b corpus case (value-equiv O0..O3).
+    let direct = "(do (effect St (op get (-> Unit Int64))) (effect Up (op ask (-> Unit Int64))) \
+                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
+                     (handle Up 0 ((ask (u) t (resume (if true (St.get) 99) t))) \
+                       (+ (* 10 (Up.ask)) (St.get))))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(direct))).is_ok(),
+        "a DIRECT conditional resume-value performing the outer op should FOLD (through-block thread), not decline"
+    );
+
+    // The BLOCK-WRAPPED twin — `(resume (let ((b true)) (if b (St.get) 99)) t)` — STILL declines cleanly: the
+    // `let` binder's scope the fold does not yet reconstruct (lifting the resume value orphans `b` → CDZ0101),
+    // so the a3 block-wrapped disjunct KEEPS it a clean CDZ090x decline pending the binder-scope through-block
+    // fold. Assert it declines with a decline-band code, never a spurious unbound-name CDZ0101 or a mis-fold.
+    let wrapped = "(do (effect St (op get (-> Unit Int64))) (effect Up (op ask (-> Unit Int64))) \
+                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
+                     (handle Up 0 ((ask (u) t (resume (let ((b true)) (if b (St.get) 99)) t))) \
+                       (+ (* 10 (Up.ask)) (St.get))))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(wrapped)))
+        .expect_err("the block-wrapped resume-value twin still declines pending the binder-scope through-block fold");
+    assert!(
+        err.code.as_deref().is_some_and(|c| c.starts_with("CDZ090")),
+        "the block-wrapped twin must decline with a CDZ090x deferred code, not a spurious CDZ0101 / mis-fold: {:?} / {}",
+        err.code,
+        err.message
+    );
+}
+
+#[test]
 fn an_abortive_perform_in_a_connective_condition_folds() {
     // E4×connective (was a clean over-decline). An abortive perform inside a short-circuit connective
     // that is an `if` CONDITION — `(if (and b (> (Bail.bail 7) 0)) 100 200)` — used to decline: the
