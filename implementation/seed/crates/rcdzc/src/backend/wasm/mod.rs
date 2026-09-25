@@ -6417,11 +6417,10 @@ fn param_field_rebuild(
             if le.byte_leaf.is_some() {
                 return None;
             }
-            // A compound-element list (`list<tuple>`/`list<record>`) as a nested FIELD is a later slice — its
-            // per-element cell build is admitted only as a TOP-LEVEL param (`MemLeafKind::List`) for now.
-            if le.compound.is_some() {
-                return None;
-            }
+            // A compound-element list (`list<tuple>`/`list<record>`) as a nested FIELD lifts through the SAME
+            // `emit_list_leaf_lift` → `emit_list_level` compound branch as a top-level `list<tuple>` param: the
+            // per-element cell build allocates no fresh locals (it threads the wrapper's `(buf, ctr)` scratch
+            // pair the `ListLeaf` copy-in already reserves), so no extra scratch is needed here.
             param_vts.push(ValType::I32.byte());
             param_vts.push(ValType::I32.byte());
             Some(FieldRebuild::ListLeaf(le))
