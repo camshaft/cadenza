@@ -10720,11 +10720,31 @@ fn reap_check_leases(repo: &Path, now: u64) -> usize {
 /// doc). Runs the SAME `reap_check_leases` the watchdog does, but as its own command so leaked leases can
 /// be cleared even when the window-touching watchdog is disabled. Touches no tmux window; prints the count.
 fn reap_leases_cmd(fleet: &Fleet) {
-    let reaped = reap_check_leases(&fleet.repo, now_unix());
-    if reaped > 0 {
+    let now = now_unix();
+    let (prio, vert) = match check_lease_dir(&fleet.repo) {
+        Some(dir) => reap_leases_classified_in(&dir, now, check_lease_holder_alive),
+        None => (0, 0),
+    };
+    let total = prio + vert;
+    if total > 0 {
         println!(
-            "fleet reap-leases: reclaimed {reaped} leaked check-lease(s) (dead-PID / TTL-stale) — would have stalled the merge gate."
+            "fleet reap-leases: reclaimed {total} leaked check-lease(s) ({prio} priority, {vert} vertical; dead-PID / TTL-stale) — would have stalled the merge gate."
         );
+        // Durable APPEND-log of reap EVENTS so the leak-RATE trend is greppable (concierge 2026-09-25): a
+        // `<ts>\treaped=<n>\tpriority=<p>\tvertical=<v>` line per non-zero reap. Append-only + written ONLY
+        // when something was reaped (a clean run writes nothing — the log records leak EVENTS, matching
+        // watchdog.log's anomalies-only discipline), so `grep`ing it shows the leak rate over time and
+        // distinguishes a steady background leak from a contention climb — no more per-tick eyeballing. Fail
+        // -soft: a write error never fails the reap (the reclaim already happened; the log is observability).
+        let log = fleet.root.join("reap-leases.log");
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+        {
+            let _ = writeln!(f, "{now}\treaped={total}\tpriority={prio}\tvertical={vert}");
+        }
     } else {
         println!("fleet reap-leases: ok — no leaked check-leases to reclaim.");
     }
@@ -10740,6 +10760,51 @@ fn live_priority_leases(fleet: &Fleet) -> usize {
         return 0;
     };
     scan_check_leases(&dir, now_unix()).0
+}
+
+/// The leaked-lease reap PREDICATE — SINGLE SOURCE, shared by the acquire/watchdog scan
+/// ([`scan_check_leases_with`]) and the reap-leases classifier ([`reap_leases_classified_in`]) so the two
+/// can never drift. A lease is reapable if (PRIMARY) its holder pid is DEAD — a SIGKILL'd checker left the
+/// file with no `Drop` — or (BACKSTOP) it is older than [`CHECK_LEASE_TTL_SECS`] (a reused pid / non-Linux
+/// host still self-heals eventually). `alive` = the pid-liveness probe (`Some(false)` = dead; `None` =
+/// unknown → fall through to the TTL); `mtime_age_secs` = the lease file's age. Pure, unit-tested.
+fn lease_is_reapable(alive: Option<bool>, mtime_age_secs: Option<u64>) -> bool {
+    alive == Some(false) || mtime_age_secs.is_some_and(|a| a > CHECK_LEASE_TTL_SECS)
+}
+
+/// Reap leaked leases in `dir`, returning `(priority_reaped, vertical_reaped)` as FILE COUNTS (not the
+/// weight sum — the reap-leases append-log records how many leases leaked by class, and a leaked file is one
+/// file). Uses the SAME [`lease_is_reapable`] predicate as the acquire-path scan, so the cron reaper and the
+/// acquire reaper never diverge. Parameterized on the pid-liveness probe so it's unit-tested without `/proc`.
+/// The class split lets the concierge grep the leak-RATE trend + tell a leaked PRIORITY lease (stalls the
+/// whole gate) from a vertical one (concierge 2026-09-25).
+fn reap_leases_classified_in(
+    dir: &Path,
+    now: u64,
+    is_alive: impl Fn(&str) -> Option<bool>,
+) -> (usize, usize) {
+    let mut prio = 0usize;
+    let mut vert = 0usize;
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    for e in rd.filter_map(Result::ok) {
+        let p = e.path();
+        let name = match p.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.ends_with(".lease") => n.to_string(),
+            _ => continue,
+        };
+        let mtime_age = file_mtime_unix(&p).map(|m| now.saturating_sub(m));
+        if lease_is_reapable(is_alive(&name), mtime_age) {
+            let _ = std::fs::remove_file(&p);
+            if name.contains("-priority.lease") {
+                prio += 1;
+            } else {
+                vert += 1;
+            }
+        }
+    }
+    (prio, vert)
 }
 
 /// Reap leaked leases in an already-resolved lease `dir`, returning the count — the reap core split out
@@ -10770,17 +10835,11 @@ fn scan_check_leases_with(
             Some(n) if n.ends_with(".lease") => n.to_string(),
             _ => continue,
         };
-        // Reclaim a leaked lease. PRIMARY: the holder pid is dead (SIGKILL left the file behind) —
-        // reap NOW rather than waiting out the 45-min TTL, which would stall every vertical check (a
-        // leaked PRIORITY lease blocks ALL verticals). BACKSTOP: `None` (can't tell) falls through to
-        // the TTL so a reused pid or a non-Linux host still self-heals eventually. A dead-PID reap and
-        // a TTL reap BOTH count — the out-of-band watchdog sweep reports the total reclaimed.
-        if is_alive(&name) == Some(false) {
-            let _ = std::fs::remove_file(&p);
-            reaped += 1;
-            continue;
-        }
-        if file_mtime_unix(&p).is_some_and(|m| now.saturating_sub(m) > CHECK_LEASE_TTL_SECS) {
+        // Reclaim a leaked lease via the shared [`lease_is_reapable`] predicate (dead-PID PRIMARY + TTL
+        // BACKSTOP — see its doc). A dead-PID reap and a TTL reap both count; the out-of-band sweep reports
+        // the total reclaimed.
+        let mtime_age = file_mtime_unix(&p).map(|m| now.saturating_sub(m));
+        if lease_is_reapable(is_alive(&name), mtime_age) {
             let _ = std::fs::remove_file(&p);
             reaped += 1;
             continue;
@@ -29535,6 +29594,52 @@ branch refs/heads/fleet/trunk-tools
             "the live lease is kept"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lease_is_reapable_predicate() {
+        let ttl = CHECK_LEASE_TTL_SECS;
+        // PRIMARY: a dead holder is reapable regardless of age (fresh mtime).
+        assert!(lease_is_reapable(Some(false), Some(0)));
+        assert!(lease_is_reapable(Some(false), None));
+        // A LIVE holder is never reapable while fresh; the TTL is the only escape.
+        assert!(!lease_is_reapable(Some(true), Some(0)));
+        assert!(lease_is_reapable(Some(true), Some(ttl + 1))); // TTL backstop fires even for a "live" pid
+        // UNKNOWN liveness (None, e.g. non-Linux / race): NOT reaped while fresh, reaped past the TTL.
+        assert!(!lease_is_reapable(None, Some(ttl))); // exactly at the TTL is not past it (strict `>`)
+        assert!(lease_is_reapable(None, Some(ttl + 1)));
+        assert!(!lease_is_reapable(None, None)); // can't tell + no age → keep (fail safe)
+    }
+
+    #[test]
+    fn reap_leases_classified_in_splits_reaped_by_class() {
+        let dir = std::env::temp_dir().join(format!("cdz-reap-classified-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = 1_000_000u64; // fresh mtimes → only the pid-liveness path reaps (TTL would not)
+        std::fs::write(dir.join("111-priority.lease"), "x").unwrap(); // dead → reap (priority)
+        std::fs::write(dir.join("222-vertical.lease"), "x").unwrap(); // dead → reap (vertical)
+        std::fs::write(dir.join("555-gate.lease"), "x").unwrap(); // dead → reap (counts as vertical: a file)
+        std::fs::write(dir.join("333-vertical.lease"), "x").unwrap(); // live → kept
+        std::fs::write(dir.join("notes.txt"), "ignore").unwrap(); // non-.lease → ignored
+        let probe = |name: &str| match name.split('-').next() {
+            Some("333") => Some(true),
+            Some("111") | Some("222") | Some("555") => Some(false),
+            _ => None,
+        };
+        let (prio, vert) = reap_leases_classified_in(&dir, now, probe);
+        assert_eq!(
+            (prio, vert),
+            (1, 2),
+            "1 priority + 2 vertical (incl the gate lease as ONE file, not its weight) reaped by class"
+        );
+        assert!(!dir.join("111-priority.lease").exists());
+        assert!(
+            dir.join("333-vertical.lease").exists(),
+            "the live lease is kept"
+        );
+        assert!(dir.join("notes.txt").exists(), "non-.lease ignored");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
