@@ -2450,6 +2450,30 @@ pub fn select_function_of(
         list_scrut_divergent: false,
         returncall_shell_drop: None,
     });
+    // rp2 / 13-strings:7255 (SumExpect-shape self-loop `String.at` view-mint): the MatchSum-scrutinee StrAt
+    // marking (in the `Core::MatchSum` emit arm, select.rs ~3627) CANNOT reach the shape `(= (Option.expect
+    // (String.at s i)) X)` — there is NO `Core::MatchSum` node (the char is extracted by `SumExpect` and
+    // compared by `ValueEq`). PRE-mark such StrAt view-mints here so the emit per-read `str_slot` drop
+    // (`strat_selfloop_scrut_drop`, emit.rs ~2488) fires, balancing the +1/iter container-alias dup that a
+    // self-loop `String.at` scan orphans (v-mem rc-trace: node#52 106dup/54drop → leak; with the drop
+    // 106/107 → census 0). Gated (leak-over-UAF): `SumExpect(StrAt(Param/LocalRef s))` + the char CONSUMED
+    // IN-PLACE (F1 fence — `collect_consuming_payload_sites_expr` EMPTY: a scalar compare descends
+    // `consuming=false`, an escape into a ctor/return/Call is a site → an escaping char like the `last`
+    // return is NOT marked) + `s` borrow/back-edge-only (`param_only_borrowed_or_backedge`, via the StrAt
+    // borrow arm). UAF-safe: the char is `bytes-compact`'d to an independent leaf (emit.rs ~2452), so freeing
+    // the container never dangles it. Only runs for a self-tail-loop (`loops`). v-core-opt + v-mem-safety.
+    if loops {
+        let self_d = self_def.expect("a loop has a self_def");
+        mark_sumexpect_strat_selfloop_drops(
+            db,
+            body,
+            self_d,
+            &loop_members,
+            &param_slots,
+            &slot_of,
+            &mut code,
+        );
+    }
     // Initialize `which` to this function's OWN discriminant BEFORE the loop opens — it selects which
     // member body runs on the FIRST iteration (this function's own). A member cross-call updates `which`
     // for the next iteration; putting the init inside the loop would re-run it every iteration and
@@ -2940,6 +2964,67 @@ fn emit_returncall_shell_drop(tl: &Option<TailLoop>, out: &mut Emit) {
 enum TailPos<'a> {
     NonTail,
     Tail(Option<TailLoop<'a>>),
+}
+
+/// rp2 / 13-strings:7255 — PRE-mark `SumExpect(String.at param)` view-mints in a self-tail-loop body so the
+/// emit per-read `str_slot` drop (`strat_selfloop_scrut_drop`, emit.rs ~2488) balances the +1/iter
+/// container-alias dup. The `Core::MatchSum` emit arm's own StrAt marking (select.rs ~3627) covers the
+/// MATCH-scrutinee shape; this covers the SUMEXPECT shape `(= (Option.expect (String.at s i)) X)`, which has
+/// NO `Core::MatchSum` node (the char is extracted by `SumExpect`, compared by `ValueEq`). Marks a
+/// `StrAt(Param/LocalRef s)` iff its `SumExpect`'d char is CONSUMED-IN-PLACE (F1 fence:
+/// `collect_consuming_payload_sites_expr` EMPTY — a scalar compare descends `consuming=false`; an escape into
+/// a ctor/return/`Call` is a site, so a returned/threaded char like `last`'s is NOT marked) AND `s` is
+/// borrow/back-edge-only (`param_only_borrowed_or_backedge`, supplied by the `StrAt` borrow arm). Leak-over-
+/// UAF: an escaping char (F1 non-empty) or a consumed `s` (pobb false) is left unmarked = a leak, never a
+/// double-free; the drop's own UAF-safety is the `bytes-compact` independent-leaf fence (emit.rs ~2452).
+fn mark_sumexpect_strat_selfloop_drops(
+    db: &mut Db,
+    fb: StructId,
+    self_d: usize,
+    members: &[usize],
+    param_slots: &[u32],
+    slots: &HashMap<StructId, u32>,
+    code: &mut Emit,
+) {
+    // Collect every `SumExpect(StrAt(Param/LocalRef s))` occurrence in the body (mirrors the select.rs ~3627
+    // MatchSum-scrutinee shape check, but found anywhere — the SumExpect sits inside a recursive-call arg,
+    // not at a tail node).
+    let mut seen: HashSet<StructId> = HashSet::new();
+    let mut stack = vec![fb];
+    let mut cands: Vec<(StructId, StructId)> = Vec::new(); // (StrAt node, `s` binder)
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Core::SumExpect { scrutinee, .. } = core_of(db, id)
+            && let Core::StrAt { string, .. } = core_of(db, scrutinee)
+            && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, string)
+        {
+            cands.push((scrutinee, binder));
+        }
+        for c in core_child_ids(db, id) {
+            stack.push(c);
+        }
+    }
+    for (strat, binder) in cands {
+        // F1: the `SumExpect`'d char must be consumed IN PLACE (no escape site) — a scalar compare descends
+        // `consuming=false` (not a site); an escape into a ctor/return/`Call` IS a site.
+        let mut sites: HashSet<StructId> = HashSet::new();
+        collect_consuming_payload_sites_expr(db, fb, strat, true, &mut sites);
+        if !sites.is_empty() {
+            continue;
+        }
+        // (5) pobb: `s` is only borrowed / back-edge-threaded across the loop (the `StrAt` borrow arm supplies
+        // this for the `SumExpect(StrAt)` reach). (6) CALLER-OWNED (AXIS-A): mark only a CALLEE-OWNED param
+        // (a guest-built rope handed off, rp2); a BOUNDARY-OWNED entry-arg (the host owns the cell, the def
+        // borrows it) leaves a +1 residual under the per-read drop → decline (leak-over-UAF), same fence as
+        // looped_owned_param_drops + the MatchSum-marking arm.
+        if param_only_borrowed_or_backedge(db, fb, binder, members, param_slots, slots)
+            && looped_invariant_param_caller_owned(db, self_d, fb, binder)
+        {
+            code.strat_selfloop_scrut_drop.insert(strat);
+        }
+    }
 }
 
 /// Emit the node at `id` in TAIL position — the body's result, whose value becomes the function's
@@ -3624,12 +3709,23 @@ fn emit_tail(
                 _ => None,
             };
             // #9271-followup: PRE-mark a self-tail-loop `String.at` scrutinee the lowering would orphan.
+            // CALLER-OWNED gate (AXIS-A, rp2/6307): the per-read `str_slot` drop is sound+balanced only when
+            // the scanned param is CALLEE-OWNED (a guest-built rope handed off, e.g. rp2's cnt `s`). For a
+            // BOUNDARY-OWNED entry-arg (the host built the cell; the def only BORROWS it — 13-strings:6307's
+            // `walk s`, reached here now that the `StrAt` borrow arm makes `param_only_borrowed_or_backedge`
+            // true) the per-read drop leaves a +1 residual (the boundary ref the caller reclaims), so DECLINE
+            // the marking and leave it to its owner — exactly the `looped_invariant_param_caller_owned` fence
+            // `looped_owned_param_drops` uses at the loop-EXIT drop. Keeps rp2/600 (owned) marked, reverts
+            // 6307 (boundary entry-arg) to its unmarked/declined baseline. Leak-over-UAF: a wrong exclude only
+            // leaks.
             if let Core::StrAt { string, .. } = core_of(db, scrutinee)
                 && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, string)
                 && let Some(t) = tl
                 && sum_cont_has_member_tail_call(db, &root, t.members)
                 && let Some(fb) = out.fn_body
+                && let Some(self_d) = out.self_def
                 && param_only_borrowed_or_backedge(db, fb, binder, t.members, t.param_slots, slots)
+                && looped_invariant_param_caller_owned(db, self_d, fb, binder)
             {
                 out.strat_selfloop_scrut_drop.insert(scrutinee);
             }

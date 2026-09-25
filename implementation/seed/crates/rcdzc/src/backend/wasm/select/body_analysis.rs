@@ -707,13 +707,38 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         // handle `dup`, core.rs:500) — it BORROWS the buffer exactly like `BytesLen` and produces a SCALAR
         // that holds NO alias into it. So a `Bytes.at` over `binder` is an UNCONDITIONAL borrow → recurse the
         // buffer borrowed; the scalar element threaded into a back-edge arg does not escape `binder`. (Unlike
-        // `BytesSlice`/`StrAt`, which mint a byte-SLICE VIEW that aliases the container — a heap child that
-        // can escape; those stay unlisted here → `_ => false`, deny = leak, and are gated separately by the
-        // MatchSum arm's `collect_consuming_payload_sites` view-escape fence.) v-memory-safety: this is the
-        // `BytesLen`-vs-`Bytes.at` asymmetry that suppressed the invariant loop-param drop on a per-byte
-        // fold (`sum-bytes b i acc`) — `Bytes.len` had a borrow arm, `Bytes.at` did not, so the payload
-        // inlined as `SumExpect(BytesAt b i)` in the recursive-call arg fell to the deny fallback.
+        // `BytesSlice`/`StrAt`/`StrSlice`, which mint a byte/char-SLICE VIEW that ALIASES the container — a
+        // heap child that can escape; those are NOT an unconditional borrow — they get the POSITION-GATED
+        // view arm just below, which admits them only when the view is consumed IN PLACE.) v-memory-safety:
+        // this is the `BytesLen`-vs-`Bytes.at` asymmetry that suppressed the invariant loop-param drop on a
+        // per-byte fold (`sum-bytes b i acc`) — `Bytes.len` had a borrow arm, `Bytes.at` did not, so the
+        // payload inlined as `SumExpect(BytesAt b i)` in the recursive-call arg fell to the deny fallback.
         Core::BytesAt { bytes, .. } => recur(db, bytes, true),
+        // VIEW PRODUCERS (`String.at`/`String.slice`/`Bytes.slice`): unlike `Bytes.at`'s raw scalar byte,
+        // these mint a char/byte-SLICE VIEW that ALIASES the container `binder` (a live heap child). Reading
+        // `binder` through one is a BORROW *only when the minted view is CONSUMED IN PLACE* — never returned,
+        // stored in a ctor, nor aliased into an escaping compound. We gate that ESCAPE-PRECISELY on THIS
+        // node's threaded `borrowed` flag (the position of the view WRT its parent), NOT the whole-body
+        // `result_reaches_binder_or_heapchild` view-producer scan (which has no position filter → over-fences
+        // → would spuriously deny the in-place case). `borrowed == true` ⟺ this view occurrence is an operand
+        // of a read-not-consume parent that yields a SCALAR and threads its operands borrowed — a
+        // `ValueEq`/`StrCmp` char/string compare (rp2: `(= (String.at s i) "x")`), a `*Len`, a scalar probe —
+        // so the view dies at that node. `borrowed == false` ⟺ the view is in a RESULT/consume position
+        // (a `SumNew`/`Tuple`/`Record`/`ListNew` ctor child, a returned tail, a non-identity back-edge arg;
+        // every such arm recurses its children unborrowed) → the view ESCAPES → deny = leak (leak-over-UAF: a
+        // wrong admit here would let the caller/loop-base drop `binder` while the escaped view still aliases
+        // it → UAF). SOUND because the only `borrowed = true` arms that return an ALIAS rather than a scalar
+        // (`Proj`/`SumPayload`) cannot take a single-char String / slice VIEW as their operand (a view is not
+        // a projectable sum/tuple), so a view reached `borrowed = true` was genuinely read in place. This is
+        // the String/slice twin of the `Bytes.at`/`Set.contains`/`Map.lookup` borrow arms; the #4917
+        // view-producer class, position-gated instead of scalar-type-gated since the yield is always a view.
+        // v-core-opt + v-memory-safety (rp2 13:7255 self-loop invariant-String char-scan: `cnt s i acc` reads
+        // `s` via a per-seam `(= (String.at s i) …)` compare and identity-threads it → borrow-only → the
+        // looped epilogue `looped_owned_param_drops` reclaims the invariant owned rope; pcown=true = UAF-safe).
+        Core::StrAt { string, .. } | Core::StrSlice { string, .. } => {
+            borrowed && recur(db, string, true)
+        }
+        Core::BytesSlice { bytes, .. } => borrowed && recur(db, bytes, true),
         // SCALAR-returning collection PROBES borrow their container(s) and yield a SCALAR (a `Bool`/`Int64`)
         // that holds NO alias into the collection — exactly like `BytesLen`/`ListLen`. `Set.contains`/
         // `Set.len`/`Map.size` read without consuming (core.rs: the boxed key/elem is dropped after; the
