@@ -12979,6 +12979,39 @@
   (call main (: (Some 7) (Option Int64)))
   (output (: 77 Int64)))
 
+; eot1/eor1 extend the Option entry param to a COMPOUND payload — a scalar-fielded `tuple<…>` (eot1) or
+; `record<…>` (eor1). The compound-Option classifier (`fixed_shape_option_scalar_arg`) rebuilds the Some
+; arm's value-heap cell over the flattened `(disc, <leaves…>)`, exactly like the compound-Result arms
+; (erc1-3). A `tuple<…>` payload is a STRUCTURAL WIT former the bare assembler mints directly; a `record<…>`
+; payload's natural WIT is a NOMINAL `record<…>` the bare assembler cannot declare, so the sum arm
+; STRUCTURALIZES it (record<…> → the `tuple<…>` of its field types) — the byte-identical wire crosses as an
+; anonymous tuple (the #9717 field-path transform applied to the sum-payload arm). Both cross on wasm + rust.
+(case
+  "eot1 an Option entry param with a compound tuple payload sums the active arm"
+  (input
+    (do
+      (def
+        (main (: o (Option (Tuple Int64 Int64))))
+        (match o ((Option.Some t) (+ (. t 0) (. t 1))) ((Option.None) -1)))
+      (export main)))
+  (call main (: (Some (tuple 3 4)) (Option (Tuple Int64 Int64))))
+  (output (: 7 Int64))
+  (call main (: (None unit) (Option (Tuple Int64 Int64))))
+  (output (: -1 Int64)))
+
+(case
+  "eor1 an Option entry param with a compound record payload sums the active arm"
+  (input
+    (do
+      (def
+        (main (: o (Option (Record (: a Int64) (: b Int64)))))
+        (match o ((Option.Some r) (+ r.a r.b)) ((Option.None) -1)))
+      (export main)))
+  (call main (: (Some (record (a 5) (b 6))) (Option (Record (: a Int64) (: b Int64)))))
+  (output (: 11 Int64))
+  (call main (: (None unit) (Option (Record (: a Int64) (: b Int64)))))
+  (output (: -1 Int64)))
+
 ; -- v-rust-backend (2026-08-27): the #3923 Option-lift INTERLEAVE invariants (from a post-land safety
 ; sweep, 0 miscompiles found). eoi1 pins the flattened-leaf CURSOR threading across TWO consecutive sum
 ; params (each option flattens to `(disc, payload)`; the wrapper must advance the cursor by the full
@@ -13147,6 +13180,24 @@
   (output (: 7 Int64))
   (call main (: (Err (tuple 5 6)) (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
   (output (: 30 Int64)))
+
+; erc4 is the RECORD counterpart of erc1: a Result whose Ok arm is a scalar-fielded `record<…>`. The compound
+; classifier rebuilds the arm's cell identically to a tuple; a record's natural WIT is a NOMINAL `record<…>`
+; the bare assembler cannot declare, so the sum arm STRUCTURALIZES it (record<…> → the `tuple<…>` of its
+; field types) — the byte-identical wire crosses as an anonymous tuple (the #9717 field-path transform on the
+; sum-payload arm), not an invalid CDZ0910 component. Crosses on wasm + rust.
+(case
+  "erc4 a Result entry param with a compound record Ok arm sums the active arm"
+  (input
+    (do
+      (def
+        (main (: r (Result (Record (: a Int64) (: b Int64)) Int64)))
+        (match r ((Result.Ok rr) (+ rr.a rr.b)) ((Result.Err e) e)))
+      (export main)))
+  (call main (: (Ok (record (a 3) (b 4))) (Result (Record (: a Int64) (: b Int64)) Int64)))
+  (output (: 7 Int64))
+  (call main (: (Err 99) (Result (Record (: a Int64) (: b Int64)) Int64)))
+  (output (: 99 Int64)))
 
 ; -- breaker batch 485 (2026-08-27): String-param compositions (the eoc lenses on slice-1's String
 ; lift) + the borrow-relay cell that CORRECTS the eoc2 comment. All pass 0-leak: capture (ssc1),

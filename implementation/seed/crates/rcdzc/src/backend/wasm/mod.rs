@@ -7031,10 +7031,17 @@ fn try_bare_entry_param_component(
                 ),
                 _ => return None,
             };
-            let wit = crate::wit_world::WitType::Result {
+            // A COMPOUND arm may be a scalar-fielded RECORD (`nested_fixed_shape_tuple_arg` reads a `Ty::Record`
+            // too), whose natural WIT is a nominal `record<…>` the bare assembler cannot declare/export — an
+            // undeclared `record` emits an INVALID component (CDZ0910). Structuralize the arm's WIT (record<…> →
+            // the structural `tuple<…>` of its field types, recursively) so the payload crosses as a `tuple`
+            // the bare assembler mints directly; the `SumArgRebuild` lift is structure-driven (it reads the
+            // record's fields in the SAME sorted order `ty_natural_wit`/`structuralize_wit` use), so the wire is
+            // byte-identical (the #9717 field-path transform, applied to the sum-payload arm).
+            let wit = structuralize_wit(&crate::wit_world::WitType::Result {
                 ok: Some(Box::new(ok)),
                 err: Some(Box::new(err)),
-            };
+            });
             // Canonical `result<ok, err>` flattening: `(disc: i32, <joined payload slots…>)`.
             param_vts.push(ValType::I32.byte());
             for vt in &vts {
@@ -7091,6 +7098,12 @@ fn try_bare_entry_param_component(
                     w
                 }
             };
+            // A compound Option/Result payload may be a scalar-fielded RECORD, whose natural WIT is a nominal
+            // `record<…>` the bare assembler cannot declare/export → an INVALID component (CDZ0910). Structuralize
+            // it (record<…> → the structural `tuple<…>` of its field types, recursively) so the payload crosses
+            // as a `tuple` the bare assembler mints directly; the rebuild is structure-driven over the same
+            // sorted field order, so the wire is byte-identical (the #9717 field-path transform on the sum arm).
+            let wit = structuralize_wit(&wit);
             // The canonical flattening of `option<T>` is `(disc: i32, payload…)` — a leading disc then the
             // payload leaf/leaves (`vts`). `emit_sum_field` reads the disc at the running leaf cursor.
             param_vts.push(ValType::I32.byte());
