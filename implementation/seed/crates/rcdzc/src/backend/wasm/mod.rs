@@ -6878,7 +6878,13 @@ fn param_field_rebuild(
     use crate::ty::Ty;
     use crate::wit_world::WitType;
     match gty.strip_nominal() {
-        Ty::Bytes => {
+        // A `String` or `Bytes` field both cross as `(ptr: i32, len: i32)` and lift via the SAME byte-leaf
+        // copy-in (`FieldRebuild::BytesLeaf`): a Cadenza `String` value IS a flat UTF-8 byte-leaf, built
+        // exactly by the `bytes-alloc`/`bytes-set` loop, so the copied buffer is already a canonical String
+        // handle — no `str-from-bytes` decode (a WIT `string` field is guaranteed valid UTF-8). Only the
+        // field's WIT type differs (`string` vs `list<u8>`), synthesized from the guest field type by
+        // `ty_natural_wit` at the routing site. This mirrors the top-level `MemLeafKind::Str | Bytes` lift.
+        Ty::String | Ty::Bytes => {
             param_vts.push(ValType::I32.byte());
             param_vts.push(ValType::I32.byte());
             Some(FieldRebuild::BytesLeaf)
