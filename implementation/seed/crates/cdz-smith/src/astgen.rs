@@ -202,9 +202,14 @@ pub struct ExportParam {
 /// params CONSUMED by `String.concat` (= BytesConcat ownership-transfer lift), returning `String.byte-len` of
 /// the result (= the sum of the two args' byte-lengths). The result is a SCALAR, so it clears the String-VALUE
 /// boundary (rust has no String-RESULT support — S576); a mis-transfer of a consumed String corrupts the len.
+/// Shape 14 is the #9699 rpp1/rpp2 scalar-fielded RECORD entry param: a bare `(Record (: x Int64) (: y Int64))`
+/// param crossing as a STRUCTURAL TUPLE, whose two fields are summed (= the arg's two field values). The record
+/// `--arg` is the bare `#record((= x N) (= y M))` value-form (a NEWTYPE-wrapped record value-form does NOT
+/// marshal on rust — it errors — so the bare structural form is used). A mis-marshal of the record's field
+/// layout corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(14);
+    let shape = c.variant(15);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -222,6 +227,8 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let s0 = "x".repeat((e0 as usize).max(1));
     let s1 = "y".repeat((e1 as usize).max(1));
     let str_args = vec![format!("\"{s0}\""), format!("\"{s1}\"")];
+    // The bare scalar-fielded Record value-form for the #9699 rpp1/rpp2 shape (14); fields reuse e0/e1.
+    let record_arg = format!("#record((= x {e0}) (= y {e1}))");
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -325,10 +332,19 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      ownership-transfer lift, the String analog of shape 12), returning String.byte-len of the
         //      result (= sum of the two args' byte-lengths, a SCALAR — clears the String-RESULT boundary).
         //      A mis-transfer of a consumed String corrupts the length.
-        _ => (
+        13 => (
             "(do (def (catlen (: a String) (: b String)) (String.byte-len (String.concat a b))) (export catlen))"
                 .to_string(),
             str_args,
+        ),
+        // 14 — #9699 rpp1/rpp2 scalar-fielded RECORD entry param: a bare (Record (: x Int64) (: y Int64))
+        //      param crossing as a STRUCTURAL TUPLE, fields summed (= x+y of the arg). Bare `#record(…)`
+        //      value-form (a newtype-wrapped record arg errors on rust). A mis-marshal of the record field
+        //      layout corrupts the sum.
+        _ => (
+            "(do (def (addpt (: p (Record (: x Int64) (: y Int64)))) (+ (. p x) (. p y))) (export addpt))"
+                .to_string(),
+            vec![record_arg],
         ),
     };
     ExportParam { source, args }
@@ -5651,16 +5667,16 @@ mod tests {
 
     #[test]
     fn generate_export_param_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the fourteen export-param shapes (see
+        // Distinctive, mutually-exclusive markers for the fifteen export-param shapes (see
         // `generate_export_param`): double/add/idn/u(UInt64)/f(3-arg)/sgn + three (List Int64) entry-param
         // shapes lhd/top(helper)/suml(recursive-walk) + the #9586 record-Option-newtype `run` + the #9684
         // const-list-of-Option-field sibling + the #9687 payload-variant field + the #9689 consuming-slice `cat`
-        // + the #9694 String-consume `catlen`.
-        let mut reached = [false; 14];
-        for seed in 0u64..840 {
+        // + the #9694 String-consume `catlen` + the #9699 scalar-fielded Record `addpt`.
+        let mut reached = [false; 15];
+        for seed in 0u64..900 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(14) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // variant(15) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
             // shape selector AND every arg literal on live entropy.
             for _ in 0..64 {
                 x ^= x >> 30;
@@ -5709,11 +5725,13 @@ mod tests {
                 reached[12] = true; // shape 12 = #9689 consuming-slice `cat`
             } else if ep.source.contains("(String.concat a b)") {
                 reached[13] = true; // shape 13 = #9694 String-consume `catlen`
+            } else if ep.source.contains("(def (addpt ") {
+                reached[14] = true; // shape 14 = #9699 scalar-fielded Record `addpt`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all fourteen export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all fifteen export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
