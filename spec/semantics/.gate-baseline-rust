@@ -7943,6 +7943,7 @@ pass	eoi2 a String (mem-leaf) param and an Option (sum) param interleave in one 
 pass	eoi3 an Option<Int8> entry param's narrow Some payload widens correctly
 pass	eop1 an Option entry param read inside a handle body composes with the fold
 pass	eop2 an Option-of-list entry param measures its Some payload
+todo	eop3 an Option-of-list-of-string entry param measures its Some payload length
 pass	eor1 an Option entry param with a compound record payload sums the active arm
 pass	eos1 an option<string> entry param delivers its Some payload's byte-length
 pass	eot1 an Option entry param with a compound tuple payload sums the active arm
