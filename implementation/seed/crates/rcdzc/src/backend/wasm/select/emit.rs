@@ -3322,10 +3322,29 @@ pub(super) fn emit(
                     || out.sumexpect_shell_reclaim.contains(&operand));
 
             if reclaim {
-                let agg_slot = base;
+                // WIDTH-PARTITIONED CLAIM (14c-0571 HOP2 reservoir/LCG re-emit): `base` may ALREADY be typed
+                // at a DIFFERENT width by an enclosing/sibling construct (e.g. an i64 value sharing this arm's
+                // scratch floor). Blindly re-typing it i32 + teeing the i32 aggregate handle there re-declares
+                // the slot, invalidating the other width's `local.set`/`tee` (`expected i32, found i64`, the
+                // whole component invalid — same class the `Core::Let` claim at ~4510 and the None-case child
+                // float below already fence). Reuse `base` only when FREE or already i32; else spill to a
+                // fresh never-typed `*high`. Same-width reuse (the common case) is preserved — no local growth.
+                let agg_slot = match scratch_ty.get(&base) {
+                    Some(&w) if w != ValType::I32 => *high,
+                    _ => base,
+                };
                 *high = (*high).max(agg_slot + 1);
                 scratch_ty.insert(agg_slot, ValType::I32);
-                emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [handle]
+                emit(
+                    db,
+                    operand,
+                    slots,
+                    agg_slot + 1,
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                )?; // [handle]
                 out.push(Lir::LocalTee(agg_slot)); // [handle], agg_slot = the owned aggregate
                 out.push(Lir::ConstI32(index as i32)); // [handle, i]
                 out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle] (BORROWS the aggregate)
