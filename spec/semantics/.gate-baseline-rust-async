@@ -10698,7 +10698,7 @@ pass	wc1 the inner arm's resume value draws from TWO different outer effects —
 pass	wep1 SIXTEEN scalar entry params cross the boundary and sum (the max-flat-params edge)
 pass	wfp1 SEVENTEEN scalar entry params cross memory-indirect (spilled to a single pointer)
 pass	wfp2 EIGHT list entry params are sixteen flat values — the lifted boundary edge sums their lengths
-pass	wfp3 NINE list entry params are eighteen flat values and decline
+pass	wfp3 NINE list entry params are eighteen flat values and cross memory-indirect (each list materialized from the spill area)
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	wide unsigned runtime compare, divide and remainder order by magnitude
 pass	widening a runtime UInt8 to UInt64 zero-extends (total, emits)
