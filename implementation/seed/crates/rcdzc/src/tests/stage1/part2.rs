@@ -630,6 +630,40 @@ fn a_ctl_style_arm_binds_the_continuation_and_declines_cleanly_for_now() {
 }
 
 #[test]
+fn a_depth_3_nested_op_chain_folds_via_n_way_merge_and_recursive_lift() {
+    // 11215 (v-effects 2026-09-25): a DEPTH-3 nested-handler stack A(B(C(…))) whose recursive callee `loop`
+    // performs the innermost `C.hop`, C's arm resumes `(B.step)`, B's arm resumes `(A.tick)`, and a post-loop
+    // `(A.get)` OBSERVES A's advance. It used to DECLINE (the pairwise 2-slot merge could not see through
+    // `loop`'s `C.hop` to detect the transitive A-reach; a single-step lift would drop A's advance → silent
+    // 20). It now FOLDS to 21: `merged_nested_ctx` peels the FULL A/B/C stack into one 3-slot ctx, and the
+    // RECURSIVE `lift_inner_op_arm_outer_perform` chases `(C.hop)→(B.step)→(A.tick)`, leaving the deepest op
+    // `(A.tick)` a direct-body perform of A's slot so its advance threads. Value 21 is pinned by the 14b
+    // corpus case; here we assert it compiles clean.
+    let src = "(do (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64))) \
+                   (effect B (op step (-> Unit Int64))) (effect C (op hop (-> Unit Int64))) \
+                   (def (loop (: n Int64)) (if (= n 0) 0 (+ (C.hop) (loop (- n 1))))) \
+                   (def (main) (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s))) \
+                     (handle B 0 ((step (u) t (resume (A.tick) t))) \
+                       (handle C 0 ((hop (u) w (resume (B.step) w))) (+ (loop 1) (A.get)))))) \
+                   (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a depth-3 nested-op chain should FOLD (N-way merge + recursive lift), not decline"
+    );
+
+    // CYCLE GUARD (no hang, no mis-fold). A/B mutually-re-entering arms — A's arm resumes `(B.tb)`, B's arm
+    // resumes `(A.ta)` — form a CYCLIC chain with no deepest op. `chain_fully_liftable`'s depth bound refuses
+    // it (a cycle cannot flatten), so it DECLINES cleanly (a homing/decline diagnostic) rather than looping
+    // forever in the recursive lift. Assert it terminates with a clean error, never a fold or a hang.
+    let cyclic = "(do (effect A (op ta (-> Unit Int64))) (effect B (op tb (-> Unit Int64))) \
+                   (def (loop (: n Int64)) (if (= n 0) 0 (+ (A.ta) (loop (- n 1))))) \
+                   (def (main) (handle A 0 ((ta (u) s (resume (B.tb) s))) \
+                     (handle B 0 ((tb (u) t (resume (A.ta) t))) (loop 1)))) (export main))";
+    let _ = compile_component(&crate::codec::encode(&parse(cyclic)))
+        .expect_err("a cyclic nested-handler chain declines cleanly (no deepest op to flatten to)");
+}
+
+#[test]
 fn an_abortive_perform_in_a_connective_condition_folds() {
     // E4×connective (was a clean over-decline). An abortive perform inside a short-circuit connective
     // that is an `if` CONDITION — `(if (and b (> (Bail.bail 7) 0)) 100 200)` — used to decline: the

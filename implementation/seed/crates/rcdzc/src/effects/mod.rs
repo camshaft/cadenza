@@ -687,27 +687,20 @@ fn merged_nested_ctx(
     inner_arms: &[HandleArm],
     inner_body: StructId,
     outer: &HandlerCtx,
-) -> Option<HandlerCtx> {
-    // The single effect the inner handle discharges (all its arms share a decl).
-    let inner_decl = inner_arms
-        .first()
-        .and_then(|a| crate::eval::effect_op_of(db, a.op))
-        .map(|(d, _)| d.0)?;
-    // Re-entrant same-effect nesting (the inner effect is already an outer slot) is the inside-out shadow
-    // case — not a merge.
-    if outer.slot_of(inner_decl).is_some() {
-        return None;
-    }
-    // Build the candidate merged arm map (outer arms ∪ inner arms) and slots (outer slots ++ inner slot).
+) -> Option<MergedChain> {
+    // Build the candidate merged arm map (outer arms ∪ chain arms) and slots (outer slots ++ one per handle
+    // in the DIRECTLY-NESTED chain, outermost-first). PEELING THE FULL CHAIN (N-way merge, 2026-09-25): a
+    // depth-3+ nest `(handle A … (handle B … (handle C … body)))` whose recursive callee performs the inner
+    // op and reaches the OUTERMOST effect only THROUGH the arm chain (C.hop's arm resumes B.step, B.step's
+    // arm resumes A.tick) used to merge only PAIRWISE (2 slots) — so the outermost handler stayed un-merged,
+    // its op became a foreign perform, and the fold declined (11215). The reach probe (`callee_reaches_outer_
+    // effect`) can only follow an op's arm when that op is IN the candidate ctx, so a pairwise `[A,B]`
+    // candidate could not see through `loop`'s `C.hop` (C not in `[A,B]`). Peel every directly-nested handle
+    // in `inner_body` into ONE candidate ctx FIRST, so the reach probe has ALL arms and detects the transitive
+    // chain. Merge only when the callee reaches the outermost effect (the existing `inner_body_needs_merge`
+    // gate, now over the full ctx) — reaching the outermost implies traversing the whole arm chain, so every
+    // peeled slot is genuinely on the recursion's path (no over-merge of an unrelated sibling handler).
     let mut arms = outer.arms.clone();
-    for arm in inner_arms {
-        let (decl, idx) = crate::eval::effect_op_of(db, arm.op)?;
-        // A malformed resume-vs-result type declines, as in `reduce_handle`.
-        if !resume_result_type_ok(db, arm) {
-            return None;
-        }
-        arms.insert((decl.0, idx), arm.clone());
-    }
     let mut slots: Vec<StateSlot> = outer
         .slots
         .iter()
@@ -716,32 +709,76 @@ fn merged_nested_ctx(
             state_ty: s.state_ty.clone(),
         })
         .collect();
-    // The inner slot's state type — seeded by the inner handle's INIT type and joined with each arm's
-    // resume next-state type. Using the INIT as the seed is load-bearing: an arm that RE-THREADS its bound
-    // state `resume(v, s)` has `next-state = s`, and `type_of` of the bare state binder alone is `Ty::Any`
-    // (the binder carries no standalone type — its type is the seed's). Deriving the slot type from the
-    // arms' next-states ONLY (the old `inner_state_ty_from_arms`) then yielded `Any` and DECLINED the merge,
-    // so a stateful inner handler under a nested context (`handle Model … in handle Tools(0) … | step(a,s)
-    // => resume(a, s)`) failed to fold while the same handler STANDALONE folded (single-handler
-    // `reduce_handle` already seeds from the init via `state_ty_of_arms`). Reusing `state_ty_of_arms` here
-    // makes the merged path seed identically — the init `Tools(0)` pins the slot to `Int64` regardless of
-    // whether an arm re-threads `s` or hands back a fresh value. (Reported by v-agent-harness Inc-2.)
-    let inner_state_ty = state_ty_of_arms(db, inner_init, inner_arms);
-    slots.push(StateSlot {
-        decl: inner_decl,
-        state_ty: inner_state_ty,
-    });
+    let mut extra_inits: Vec<StructId> = Vec::new();
+    // The peel cursor over the directly-nested handle chain, starting with the given inner handle.
+    let mut cur_init = inner_init;
+    let mut cur_arms: Vec<HandleArm> = inner_arms.to_vec();
+    let mut cur_body = inner_body;
+    let mut deepest_decl: u32;
+    loop {
+        // The single effect this handle discharges (all its arms share a decl).
+        let decl = cur_arms
+            .first()
+            .and_then(|a| crate::eval::effect_op_of(db, a.op))
+            .map(|(d, _)| d.0)?;
+        // Re-entrant same-effect nesting (this effect is already a slot) is the inside-out shadow case —
+        // not a merge; abandon the whole chain merge (as the pre-N-way single-step did for the inner).
+        if slots.iter().any(|s| s.decl == decl) {
+            return None;
+        }
+        for arm in &cur_arms {
+            let (adecl, idx) = crate::eval::effect_op_of(db, arm.op)?;
+            // A malformed resume-vs-result type declines, as in `reduce_handle`.
+            if !resume_result_type_ok(db, arm) {
+                return None;
+            }
+            arms.insert((adecl.0, idx), arm.clone());
+        }
+        // The slot's state type — seeded by this handle's INIT type joined with each arm's resume next-state
+        // type (see `state_ty_of_arms`; using the INIT as seed is load-bearing for a state-re-threading arm).
+        let state_ty = state_ty_of_arms(db, cur_init, &cur_arms);
+        slots.push(StateSlot { decl, state_ty });
+        extra_inits.push(cur_init);
+        deepest_decl = decl;
+        // Peel a further DIRECTLY-nested handle from this handle's body (the maximal chain). Stop at the first
+        // non-handle body — that is the innermost real body the recursion lives in.
+        match resolved_of(db, cur_body) {
+            Resolved::Handle {
+                init: i2,
+                arms: a2,
+                body: b2,
+            } => {
+                cur_init = i2;
+                cur_arms = a2.to_vec();
+                cur_body = b2;
+            }
+            _ => break,
+        }
+    }
     let merged = HandlerCtx::new(db, arms, slots);
-    // Only MERGE if the inner body reaches a RECURSIVE callee that (under the merged context) performs an
-    // OUTER effect too — the two-nested-states signature. When it does, the inside-out path can't fold it
-    // (specializing on the inner effect alone leaves the outer performs unresolved); merging lets the
-    // callee specialize ONCE against both. When it doesn't (an ordinary non-recursive nested handler like
-    // `(+ (A.a) (B.b))`), the inside-out path is correct and cheaper — return `None`.
-    if inner_body_needs_merge(db, inner_body, inner_decl, &merged) {
-        Some(merged)
+    // Only MERGE if the innermost body reaches a RECURSIVE callee that (under the FULL merged context)
+    // performs an OUTER effect too — the multi-nested-states signature. When it does, the inside-out path
+    // can't fold it (specializing on the inner effect alone leaves the outer performs unresolved); merging
+    // lets the callee specialize ONCE against all slots. When it doesn't (an ordinary non-recursive nested
+    // handler like `(+ (A.a) (B.b))`), the inside-out path is correct and cheaper — return `None`.
+    if inner_body_needs_merge(db, cur_body, deepest_decl, &merged) {
+        Some(MergedChain {
+            ctx: merged,
+            extra_inits,
+            innermost_body: cur_body,
+        })
     } else {
         None
     }
+}
+
+/// The result of merging a directly-nested handler CHAIN into an outer context ([`merged_nested_ctx`]): the
+/// full N-slot context, the per-peeled-handle INIT seeds (in slot order, appended after the outer states),
+/// and the INNERMOST real body the recursion lives in (past every peeled `handle`).
+struct MergedChain {
+    ctx: HandlerCtx,
+    extra_inits: Vec<StructId>,
+    innermost_body: StructId,
 }
 
 /// Whether the inner handle's body needs the MERGE (vs the inside-out path): it reaches a RECURSIVE callee
@@ -5167,13 +5204,7 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         // own state trivially (next-state == state binder — no inner-op state advance to preserve); a non-trivial
         // inner-state advance is left to the ordinary fold (unchanged). Byte-identical when nothing matches.
         let orig_body = if ctx.slots.len() > 1 {
-            lift_inner_op_arm_outer_perform(
-                db,
-                orig_body,
-                ctx,
-                caller_observes_outstate,
-                &state_names,
-            )
+            lift_inner_op_arm_outer_perform(db, orig_body, ctx, &state_names)
         } else {
             orig_body
         };
@@ -5530,73 +5561,75 @@ fn performs_discharged_op_other_than(
 }
 
 /// DEPTH-3+ GUARD for the pre-spec-lift (rn3 regression, breaker 2026-08-05). `val` is an inner-op arm's
-/// resume value that performs a DIFFERENT discharged op (established by `performs_discharged_op_other_than`).
-/// Return true iff the op `val` performs ITSELF has an arm whose resume value performs YET ANOTHER outer op
-/// — a depth-3+ chain (`C.hop`→arm resumes `(B.step)`→B's arm resumes `(A.tick)`). The single-step lift
-/// rewrites `C.hop`→`(B.step)` but does NOT chase `B.step`'s own arm-hidden `A.tick`, so folding it drops the
-/// deepest advance (SILENT wrong value). Detecting this makes `lift_inner_op_arm_outer_perform` decline the
-/// deeper chain (leave it un-lifted → clean decline) rather than mis-fold; a correct recursive lift is a
-/// later increment. Only inspects a 4-part `(resume v next)` arm (the shape the lift itself handles); an arm
-/// of a different shape is conservatively treated as "may perform outer" (decline — safe).
-fn resume_val_op_arm_also_performs_outer(
+/// The leftmost discharged op (in `ctx`) that `node` performs, OTHER than `own` — the next hop of a lift
+/// chain. `None` if `node` performs no such op (the chain has bottomed out).
+fn first_discharged_op_other_than(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+    own: (u32, u32),
+) -> Option<(u32, u32)> {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(id) = is_perform(db, head, ctx)
+        && id != own
+    {
+        return Some(id);
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .find_map(|&c| first_discharged_op_other_than(db, c, ctx, own)),
+        Struct::Atom(_) => None,
+    }
+}
+
+/// Whether the deeper op-chain rooted at resume value `val` (which performs a discharged op OTHER than `own`)
+/// flattens COMPLETELY under the recursive lift — every INTERMEDIATE op it hops through is a trivial-inner-
+/// state tail-resume (`next == arm.state`, so lifting it away drops no advance), down to a DEEPEST op whose
+/// resume value performs no further discharged op (that op is left in place, its advance preserved by the
+/// merged fold's own state threading). When true, `lift_inner_op_arm_outer_perform` may recursively rewrite
+/// the whole chain to the deepest op — SOUND for the observed AND unobserved cases (rn3/rx4/rx6/11215 all
+/// fold to 21, no dropped advance). When false — an un-analyzable/abortive intermediate arm (not a bare
+/// `(resume v next)`), or an INTERMEDIATE op that ADVANCES its own state (whose advance the lift would drop)
+/// — the chain must DECLINE (leave un-lifted) rather than fold a wrong value. Every hop's op must be a slot
+/// in `ctx` (the N-way merge guarantees this for a fully-nested stack); an op not in `ctx` → not analyzable
+/// → false (decline).
+fn chain_fully_liftable(
     db: &mut Db,
     val: StructId,
     ctx: &HandlerCtx,
     own: (u32, u32),
+    depth: u32,
 ) -> bool {
-    // Find the discharged op `val` performs (the leftmost such op — its arm is what the lift would expose).
-    fn find_performed_op(
-        db: &mut Db,
-        node: StructId,
-        ctx: &HandlerCtx,
-        own: (u32, u32),
-    ) -> Option<(u32, u32)> {
-        if let Resolved::Apply { head, .. } = resolved_of(db, node)
-            && let Some(id) = is_perform(db, head, ctx)
-            && id != own
-        {
-            return Some(id);
-        }
-        match db.ast.get(node).clone() {
-            Struct::List(children) => children
-                .iter()
-                .find_map(|&c| find_performed_op(db, c, ctx, own)),
-            Struct::Atom(_) => None,
-        }
-    }
-    let Some(op_id) = find_performed_op(db, val, ctx, own) else {
+    // DEPTH BOUND: a CYCLIC arm chain (A's arm performs B, B's arm performs A — each hop's op differs from
+    // its immediate predecessor `own`, so the `op != own` guard never closes the cycle) would recurse
+    // forever. A cycle CANNOT be flattened to a deepest op (it has none), so bound the walk and treat an
+    // over-deep chain CONSERVATIVELY as NOT liftable → the lift declines it cleanly (never folds a cycle).
+    if depth > 32 {
         return false;
-    };
-    let Some(inner_arm) = ctx.arms.get(&op_id).cloned() else {
-        return false;
-    };
-    // The op `val` performs (op_id) has an arm in THIS ctx. If that arm's resume value performs YET ANOTHER
-    // effect op (ANY effect, not just one THIS ctx discharges — a depth-3 chain's third handler is NOT in
-    // this 2-slot merge, so a ctx-scoped `is_perform` check would MISS it — use `effect_op_of`), other than
-    // op_id itself, this is a deeper chain the single lift can't flatten → guard fires (decline).
-    fn resume_reaches_another_effect_op(db: &mut Db, node: StructId, own_op: (u32, u32)) -> bool {
-        if let Resolved::Apply { head, .. } = resolved_of(db, node)
-            && let Some((d, i)) = crate::eval::effect_op_of(db, head)
-            && (d.0, i) != own_op
-        {
-            return true;
-        }
-        match db.ast.get(node).clone() {
-            Struct::List(children) => children
-                .iter()
-                .any(|&c| resume_reaches_another_effect_op(db, c, own_op)),
-            Struct::Atom(_) => false,
-        }
     }
-    match tail_resume(db, inner_arm.body) {
-        Some((inner_val, _)) => resume_reaches_another_effect_op(db, inner_val, op_id),
-        // The deeper op's arm is NOT a bare `(resume v next)` — a shape this analysis cannot inspect (a
-        // wrapped `do`/`match` body, or an abortive arm). Per the doc contract, treat an un-analyzable arm
-        // CONSERVATIVELY as "may perform a further outer op" → true, so `lift_inner_op_arm_outer_perform`
-        // DECLINES the chain (under the observer gate) rather than lifting a shape whose depth it can't verify
-        // (github-liaison #2179 review: the old `None => false` said "safe to lift", the OPPOSITE of the
-        // documented conservative-decline, letting a wrapped/abortive depth-3+ intermediate arm slip the lift).
-        None => true,
+    let Some(op_id) = first_discharged_op_other_than(db, val, ctx, own) else {
+        return true; // `val` performs no further discharged op → the chain has bottomed out cleanly.
+    };
+    let Some(arm) = ctx.arms.get(&op_id).cloned() else {
+        return false; // the hop's op is not a slot in this ctx → cannot flatten it here.
+    };
+    if arm.cont.is_some() {
+        return false; // a general `ctl`-style (escaping-k) arm is not a plain tail-resume hop.
+    }
+    let Some((inner_val, next)) = tail_resume(db, arm.body) else {
+        return false; // an un-analyzable / abortive arm (not a bare `(resume v next)`).
+    };
+    let trivial =
+        db.ast.as_name(next).is_some() && db.ast.as_name(next) == db.ast.as_name(arm.state);
+    if trivial {
+        // An INTERMEDIATE hop with no own-state advance — it lifts cleanly; recurse into its resume value.
+        chain_fully_liftable(db, inner_val, ctx, op_id, depth + 1)
+    } else {
+        // `op_id` ADVANCES its own state. That is sound ONLY if it is the DEEPEST op (left in place, its
+        // advance preserved by the merged fold) — i.e. its resume value performs no further discharged op.
+        // An advancing INTERMEDIATE (its resume value performs yet another op) would drop the advance → false.
+        first_discharged_op_other_than(db, inner_val, ctx, op_id).is_none()
     }
 }
 
@@ -5604,7 +5637,6 @@ fn lift_inner_op_arm_outer_perform(
     db: &mut Db,
     node: StructId,
     ctx: &HandlerCtx,
-    caller_observes_outstate: bool,
     state_names: &[String],
 ) -> StructId {
     // Is this node an inner-op call whose arm resume-value performs an outer op with trivial inner-state?
@@ -5637,18 +5669,16 @@ fn lift_inner_op_arm_outer_perform(
         // does NOT perform-outer, e.g. B.step's arm `(resume (A.tick) t)` where A.tick's arm is a plain
         // state step) is UNAFFECTED — it lifts and folds → 21.
         //
-        // OBSERVER-GATED (rn3/rx4 vs rx6, breaker 2026-08-05). The depth-3+ decline above OVER-DECLINED the
-        // NO-OBSERVER chain: `#2179` applied it unconditionally, so rx6 (bare `(loop 2)`, no post-recursion
-        // observer of the out-state) regressed from fold-21 to a decline. The silent-20 miscompile the decline
-        // exists to prevent ONLY arises under an OBSERVING caller (the accum-redirect path #2136 added, keyed
-        // by `force_multivalue` = `caller_observes_outstate`): there the single-step lift drops the deepest
-        // advance. WITHOUT an observer the deep chain still folds correctly (rx6 → 21 — the between-iteration
-        // advance carries, the redirect never engages), so the lift must fire there as before. Gate the
-        // depth-3+ decline on `caller_observes_outstate`: decline the deeper chain (rn3/rx4) only when observed;
-        // let rx6 lift+fold when unobserved. (A correct recursive lift folding →21 at all depths regardless of
-        // observation is a later increment.)
-        && !(caller_observes_outstate
-            && resume_val_op_arm_also_performs_outer(db, val, ctx, (decl.0, idx)))
+        // DEPTH-3+ CHAIN: the resume value's own op may ITSELF have an arm performing a further outer op
+        // (`C.hop`→arm resumes `(B.step)`→B's arm resumes `(A.tick)`). The RECURSIVE lift below chases the
+        // whole chain to its deepest op; admit the lift only when that chain FLATTENS COMPLETELY
+        // (`chain_fully_liftable`: every intermediate hop trivial-inner-state, the deepest op left in place so
+        // no advance is dropped). This SUPERSEDES the former observer-gated single-step decline (which folded
+        // depth-2 + unobserved depth-3 but declined observed depth-3 to avoid the silent-20): with the N-way
+        // merge (all nested handlers in ONE ctx) + the recursive lift, observed AND unobserved chains flatten
+        // to their deepest op and fold correctly (11215/rn3/rx4 → 21, rx6 stays 21). A NON-flattening chain
+        // (un-analyzable/abortive intermediate arm, or an advancing intermediate) is DECLINED — never mis-folded.
+        && chain_fully_liftable(db, val, ctx, (decl.0, idx), 0)
     {
         // β-reduce the arm's resume value with params↦args (the op's args) so a param-referencing outer
         // perform arg resolves. (Unit-op arms bind nothing; a mismatch leaves it un-substituted, still sound
@@ -5676,6 +5706,13 @@ fn lift_inner_op_arm_outer_perform(
         } else {
             crate::eval::beta_reduce(db, val, &subst)
         };
+        // RECURSE (depth-3+ chase). The lifted value may ITSELF be an inner-op call whose arm resume-value
+        // performs a further outer op — `(C.hop)` lifts to `(B.step)`, whose own arm still hides `(A.tick)`.
+        // Re-run the lift on `reduced` so the chain flattens fully to its DEEPEST op (which stays in place,
+        // an ordinary body perform of its own slot). `chain_fully_liftable` above already verified the whole
+        // chain flattens, so this recursion terminates at the deepest op (its resume value performs nothing
+        // further → the main guard's `performs_discharged_op_other_than` is false → no lift → returned as-is).
+        let reduced = lift_inner_op_arm_outer_perform(db, reduced, ctx, state_names);
         return deep_fresh_copy(db, reduced);
     }
     // Recurse structurally, rebuilding with lifted children.
@@ -5683,15 +5720,7 @@ fn lift_inner_op_arm_outer_perform(
         Struct::List(children) => {
             let lifted: Vec<StructId> = children
                 .iter()
-                .map(|&c| {
-                    lift_inner_op_arm_outer_perform(
-                        db,
-                        c,
-                        ctx,
-                        caller_observes_outstate,
-                        state_names,
-                    )
-                })
+                .map(|&c| lift_inner_op_arm_outer_perform(db, c, ctx, state_names))
                 .collect();
             if lifted == children {
                 node

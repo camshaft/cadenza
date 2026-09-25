@@ -9956,19 +9956,20 @@
   (output (: 21 Int64)))
 
 (case
-  "a DEPTH-3 nested-op chain whose deepest resume performs the outer effect declines cleanly (no silent drop)"
+  "a DEPTH-3 nested-op chain whose deepest resume performs the outer effect threads the advance (post-observer)"
   (doc
     "The depth-3 companion of the post-observer case above — the outer perform hides TWO handler levels
            down. `loop` performs `C.hop`; C's arm resumes `(B.step)`; B's arm resumes `(A.tick)`; then a
-           post-loop `(A.get)`. The correct value is 21 (tick returns 10 advancing A→11; loop=10; A.get reads
-           11). The depth-2 fix's pre-spec-lift (`lift_inner_op_arm_outer_perform`) rewrites `(C.hop)` into
-           C's resume value `(B.step)` in ONE step, but does NOT chase `B.step`'s OWN arm-hidden `(A.tick)` —
-           so folding it would specialize against B alone and DROP A's advance → a SILENT 20 (the regression
-           this guards against — it briefly shipped that way in #2136 before the depth-3 guard). A correct
-           depth-3 fold must lift RECURSIVELY (a later increment); until then this DECLINES cleanly (a decline
-           is safe, a wrong value is not). `resume_val_op_arm_also_performs_outer` detects the deeper chain
-           (the op the resume value performs has an arm that itself performs YET ANOTHER effect op) and leaves
-           it un-lifted → `specialize_recursive` declines. Flips decline→21 when the recursive lift lands.")
+           post-loop `(A.get)` OBSERVES A's advance. The value is 21 (tick returns 10 advancing A→11; loop=10;
+           A.get reads 11). Now FOLDS via the N-WAY MERGE + RECURSIVE lift: `merged_nested_ctx` peels the full
+           A/B/C nested-handler stack into ONE 3-slot context (a pairwise 2-slot merge could not see through
+           `loop`'s inner `C.hop` to detect the transitive A-reach), and `lift_inner_op_arm_outer_perform`
+           chases the chain RECURSIVELY — `(C.hop)`→`(B.step)`→`(A.tick)` — leaving the deepest op `(A.tick)`
+           in place as a direct-body perform of A's slot, so its advance threads to the observer (no silent
+           drop). `chain_fully_liftable` admits the lift only when every intermediate hop is trivial-inner-
+           state and the deepest op stays, so an advancing-intermediate or a cyclic chain still declines
+           cleanly. (Was a safe decline before the recursive lift; a wrong single-step lift shipped a silent
+           20 in #2136 — the merged+recursive fold preserves the advance at every depth.)")
   (input
     (do
       (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
