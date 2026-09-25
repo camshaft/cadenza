@@ -521,11 +521,50 @@ pub(super) fn fixed_shape_sum_param_arg(
             for i in 0..join_len {
                 match (ok_vts.get(i), err_vts.get(i)) {
                     (Some(a), Some(b)) if a == b => joined.push(*a),
+                    // An {i32, i64} mismatch at a SHARED position widens the joined slot to i64; the narrow
+                    // (i32) side reads its bits from the i64 slot with an `i32.wrap_i64` before use (a byte-leaf
+                    // arm's ptr via `ptr_from_i64`, a scalar arm's value via `wrap_join`), the same join the
+                    // top-level `result_scalar_string_arg` / `fixed_shape_option_scalar_arg` Result arm applies.
+                    // This is what admits a `result<s64, string>` FIELD (the i64 scalar widens the String arm's
+                    // i32 ptr). Any OTHER mismatch (float↔int, f32↔f64) has no wrap and declines.
+                    (Some(ValType::I32), Some(ValType::I64))
+                    | (Some(ValType::I64), Some(ValType::I32)) => joined.push(ValType::I64),
                     (Some(a), None) => joined.push(*a),
                     (None, Some(b)) => joined.push(*b),
-                    _ => return None, // differing per-position width — a later widening
+                    _ => return None, // an unwrappable per-position width mismatch — a later widening
                 }
             }
+            // An arm whose OWN position-0 slot is NARROWER than the joined slot (i32 widened to i64) must wrap
+            // it. Only position 0 can mismatch here: a scalar value or a byte-leaf ptr — a byte-leaf len is
+            // always i32 and, when both arms are byte-leaves, matches. `fixed_shape_option_scalar_arg` already
+            // owns the all-scalar Result (this arm is only reached with a byte-leaf/enum arm present), so in
+            // practice the wrapped side is the byte-leaf ptr; an enum-disc arm that would need widening has no
+            // verified wrap and declines (a later slice).
+            let joined0 = joined.first().copied();
+            let needs_wrap = |own: &[ValType]| {
+                matches!(
+                    (own.first().copied(), joined0),
+                    (Some(ValType::I32), Some(ValType::I64))
+                )
+            };
+            let patch = |payload: SumArmPayload, wrap: bool| -> Option<SumArmPayload> {
+                if !wrap {
+                    return Some(payload);
+                }
+                match payload {
+                    SumArmPayload::Bytes { .. } => {
+                        Some(SumArmPayload::Bytes { ptr_from_i64: true })
+                    }
+                    SumArmPayload::Scalar { box_op, extend, .. } => Some(SumArmPayload::Scalar {
+                        box_op,
+                        extend,
+                        wrap_join: true,
+                    }),
+                    _ => None,
+                }
+            };
+            let ok_payload = patch(ok_payload, needs_wrap(&ok_vts))?;
+            let err_payload = patch(err_payload, needs_wrap(&err_vts))?;
             (
                 SumArgRebuild {
                     base_param: 0,

@@ -50,24 +50,34 @@ pub(super) fn structuralize_wit(wt: &crate::wit_world::WitType) -> crate::wit_wo
 /// variant) takes `spilled_result_wit_type`'s structural former. Returns `None` for a sum shape the rebuild
 /// does not admit; the caller then declines the whole param.
 pub(super) fn sum_field_wit(db: &mut Db, gty: &crate::ty::Ty) -> Option<crate::wit_world::WitType> {
-    use crate::backend::wasm::envelope::ArgSlot;
-    // Mirror the top-level scalar-sum arm: an all-scalar Result classifies as `ArgSlot::Result` and MUST cross
-    // as a structural `result<ok,err>` (its two payload naturals), matching the rebuild's Ok=0/Err=1 disc + join.
-    if let Some((ArgSlot::Result(_, _), _, _)) =
-        crate::backend::wasm::arg_boundary::fixed_shape_option_scalar_arg(db, gty)
-    {
-        let crate::ty::Ty::Sum { args, .. } = gty.strip_nominal() else {
-            return None;
+    use crate::wit_world::WitType;
+    // A TWO-PAYLOAD Result-shaped sum `(Ok a)(Err b)` FIELD crosses as a STRUCTURAL `result<ok,err>` — its two
+    // payload naturals — matching `fixed_shape_sum_param_arg`'s `[1,1]` rebuild (a leading disc then the
+    // position-wise JOIN of the arms' leaves, Ok=boundary-disc 0 / Err=1). This MUST agree with that rebuild
+    // for EVERY liftable arm — a scalar, a byte-leaf `String`/`Bytes`, or a fixed-shape compound — NOT the
+    // `variant<…>` `spilled_result_wit_type` would mint: a `variant` WIT disagrees with the result-shaped
+    // flattening the rebuild emits, so an admitted `result<s64, string>` field emitted an INVALID component
+    // (the erp2-class disagreement). Derived here from the decl (exactly two variants, each one payload) so a
+    // byte-leaf arm takes this path too, not the scalar-only `ArgSlot::Result` shortcut. Falls through to
+    // `spilled_result_wit_type` when a payload has no natural WIT (e.g. `result<list<u8>, enum>`, whose enum
+    // err arm `spilled` mints as an `enum`), and for the Option / general-variant shapes.
+    if let crate::ty::Ty::Sum { decl, args, .. } = gty.strip_nominal() {
+        let counts: Vec<usize> = {
+            let dr = db.type_decl_by_occ(*decl)?;
+            dr.variants.iter().map(|v| v.payloads.len()).collect()
         };
-        if args.len() != 2 {
-            return None; // a `Result ok err` has exactly two type args
+        if counts == [1, 1]
+            && args.len() == 2
+            && let (Some(ok), Some(err)) = (
+                crate::wit_world::ty_natural_wit(&args[0]),
+                crate::wit_world::ty_natural_wit(&args[1]),
+            )
+        {
+            return Some(structuralize_wit(&WitType::Result {
+                ok: Some(Box::new(ok)),
+                err: Some(Box::new(err)),
+            }));
         }
-        let ok = crate::wit_world::ty_natural_wit(&args[0])?;
-        let err = crate::wit_world::ty_natural_wit(&args[1])?;
-        return Some(crate::wit_world::WitType::Result {
-            ok: Some(Box::new(ok)),
-            err: Some(Box::new(err)),
-        });
     }
     // Every other admitted sum (option<…>, result<list<u8>,enum>, a general liftable variant) crosses as the
     // structural former `spilled_result_wit_type` mints Db-awarely.
