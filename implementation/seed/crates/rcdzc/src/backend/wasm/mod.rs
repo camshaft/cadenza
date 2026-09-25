@@ -7415,7 +7415,10 @@ fn try_bare_entry_param_component(
             // The def BORROWS the decoded value (beyond-i64 arithmetic, exact-Rational compare, a Map-key
             // lookup — none consume it); the wrapper, owner of the freshly `value-decode`d handle, reclaims it
             // after the call. An ESCAPING value-form param declines at the borrowed-only gate below.
-            let drop_after = !crate::backend::wasm::select::param_escapes_body(db, body, *binder);
+            // Borrow-aware (el1 lane): a direct-binder arg read-only through a helper/recursive walk is a
+            // borrow, not an escape (the wrapper still reclaims it).
+            let drop_after =
+                !crate::backend::wasm::select::param_borrow_aware_escapes(db, body, *binder);
             let idx = value_form_descs.len() as u32;
             value_form_descs.push(desc);
             // Canonical `list<u8>` flattening: `(ptr: i32, len: i32)`.
@@ -7448,8 +7451,12 @@ fn try_bare_entry_param_component(
         };
         match (mem_kind, gty) {
             (Some(kind), _) => {
+                // BORROW-aware: the wrapper (owner of the lifted value) reclaims the param after the call iff
+                // it does not escape — treating a DIRECT binder arg threaded read-only into a helper/recursive
+                // walk as a borrow (el1: a List param summed via a recursive `List.at` indexed walk). A param
+                // consumed / moved to the result still escapes → declines (the borrowed-only gate below).
                 let drop_after =
-                    !crate::backend::wasm::select::param_escapes_body(db, body, *binder);
+                    !crate::backend::wasm::select::param_borrow_aware_escapes(db, body, *binder);
                 param_vts.push(ValType::I32.byte());
                 param_vts.push(ValType::I32.byte());
                 mem_leaf_params.push(Some((kind, drop_after)));

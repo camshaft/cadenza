@@ -11496,7 +11496,10 @@
       (def (main (: xs (List Int64))) (suml xs 0))
       (export main)))
   (call main (: #list(1 2 3) (List Int64)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  ; The lifted List param is BORROWED read-only through the recursive indexed walk (List.at borrows, the
+  ; self-call threads it invariant), so the wrapper (its owner) reclaims it once after the call — 0 leak.
+  (live-objects 0))
 
 (case
   "el2 TWO List entry params measure independently"

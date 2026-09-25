@@ -47,7 +47,7 @@ fn ifjoin_arm_dead(
     net_borrow: bool,
 ) -> bool {
     for &a in aliases {
-        if binding_escapes_dup_aware(db, arm, EscapeTarget::Binder(a), false, Some(dup)) {
+        if binding_escapes_dup_aware(db, arm, EscapeTarget::Binder(a), false, Some(dup), false) {
             return false;
         }
         let mut seen = HashSet::new();
@@ -4563,6 +4563,7 @@ pub(super) fn emit(
                             EscapeTarget::Binder(pb),
                             false,
                             Some(&out.dup_sites),
+                            false,
                         );
                         let esc_else = binding_escapes_dup_aware(
                             db,
@@ -4570,6 +4571,7 @@ pub(super) fn emit(
                             EscapeTarget::Binder(pb),
                             false,
                             Some(&out.dup_sites),
+                            false,
                         );
                         // DIVERGENT ownership iff `b` escapes exactly one arm — that arm is the ALIAS arm
                         // (pick == b there, a move-alias); dup `b` there so pick owns its own reference.
@@ -4667,6 +4669,7 @@ pub(super) fn emit(
                         EscapeTarget::Binder(binder),
                         false,
                         Some(&dup_sites),
+                        false,
                     );
                     let esc_else = binding_escapes_dup_aware(
                         db,
@@ -4674,6 +4677,7 @@ pub(super) fn emit(
                         EscapeTarget::Binder(binder),
                         false,
                         Some(&dup_sites),
+                        false,
                     );
                     // DIVERGENT iff it escapes exactly one arm; the D (dead) arm is the one it does NOT
                     // escape → drop there.
@@ -4710,6 +4714,7 @@ pub(super) fn emit(
                             EscapeTarget::Binder(a),
                             false,
                             Some(&dup_sites),
+                            false,
                         )
                     });
                     // BODY-LEVEL SAFETY GATE (join-liveness): run the nested reclaim ONLY when the binding is
@@ -4787,6 +4792,7 @@ pub(super) fn emit(
                     EscapeTarget::Binder(binder),
                     false,
                     Some(&dup_sites),
+                    false,
                 ) {
                     continue;
                 }
@@ -4812,6 +4818,7 @@ pub(super) fn emit(
                         EscapeTarget::Binder(binder),
                         false,
                         Some(&dup_sites),
+                        false,
                     )
                 });
                 // Elide ONLY a PURE FRESH-ALLOC-CHILD consume: on NO path may the binder be moved out or
