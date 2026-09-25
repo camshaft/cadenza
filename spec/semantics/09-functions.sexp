@@ -13806,6 +13806,37 @@
   (call main (: #record((= n 5) (= s (Some "abc"))) (Record (: n Int64) (: s (Option String)))))
   (output (: 503 Int64)))
 
+; rpp21/rpp22 widen the sum-payload FIELD to a two-payload RESULT with a byte-leaf arm. A `result<ok,err>`
+; field flattens `(disc, <position-wise join of the arms' leaves>)`; the guest rebuilds the selected arm.
+; rpp21 = result<s64, string> field: the arms' leaves DIFFER in width — the s64 Ok slot (i64) and the String
+; Err ptr (i32) join to i64, so the String arm reads its ptr from the widened slot with an i32.wrap_i64
+; (ptr_from_i64), the same join the top-level result_scalar_string_arg applies. rpp22 = result<string,
+; string> field: both arms are byte-leaves (same-width join). The field WIT is a STRUCTURAL result<ok,err>
+; (NOT a variant — a variant WIT disagrees with the result-shaped flattening and emits an INVALID component),
+; derived to match the rebuild for a byte-leaf arm. rpp21 takes the Err arm (498 = 100*5 - byte-len "xy" 2);
+; rpp22 takes the Ok arm (503 = 100*5 + byte-len "abc" 3). Pass on wasm + rust + rust-async.
+(case
+  "rpp21 a Record entry param with a result-of-scalar-and-string field crosses the width-joined String arm"
+  (input
+    (do
+      (def
+        (main (: rec (Record (: n Int64) (: r (Result Int64 String)))))
+        (+ (* 100 rec.n) (match rec.r ((Result.Ok v) v) ((Result.Err e) (- 0 (String.byte-len e))))))
+      (export main)))
+  (call main (: #record((= n 5) (= r (Err "xy"))) (Record (: n Int64) (: r (Result Int64 String)))))
+  (output (: 498 Int64)))
+
+(case
+  "rpp22 a Record entry param with a result-of-two-strings field measures the active byte-leaf arm"
+  (input
+    (do
+      (def
+        (main (: rec (Record (: n Int64) (: r (Result String String)))))
+        (+ (* 100 rec.n) (match rec.r ((Result.Ok s) (String.byte-len s)) ((Result.Err e) (- 0 (String.byte-len e))))))
+      (export main)))
+  (call main (: #record((= n 5) (= r (Ok "abc"))) (Record (: n Int64) (: r (Result String String)))))
+  (output (: 503 Int64)))
+
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
   (doc

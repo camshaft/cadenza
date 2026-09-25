@@ -9948,6 +9948,8 @@ pass	rpp17 a Record entry param with an option-of-tuple field projects the Some 
 pass	rpp18 a Record entry param with an option-of-record field projects the Some payload
 pass	rpp19 a Record entry param with an option-of-bytes field measures the Some payload byte-length
 pass	rpp20 a Record entry param with an option-of-string field measures the Some payload byte-length
+pass	rpp21 a Record entry param with a result-of-scalar-and-string field crosses the width-joined String arm
+pass	rpp22 a Record entry param with a result-of-two-strings field measures the active byte-leaf arm
 pass	rpp2 an open-row helper projects a field of the boundary Record param
 pass	rpp3 a Record entry param with a heap list field measures both
 pass	rpp4 a scalar Tuple entry param projects both positions
