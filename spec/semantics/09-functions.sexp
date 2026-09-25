@@ -13837,15 +13837,15 @@
   (call main (: #record((= n 5) (= r (Ok "abc"))) (Record (: n Int64) (: r (Result String String)))))
   (output (: 503 Int64)))
 
-; rpp23 widens the sum-payload FIELD family to a LIST-of-sum field — a `list<option<scalar>>` record field.
-; It crosses like the top-level `list<option<scalar>>` param (lpo1/lpo2): `param_field_rebuild`'s `Ty::List` arm
-; falls to `list_sum_elem` when `list_scalar_elem` declines the option element, and `natural_wit_bare` derives the
-; field WIT `list<option<s64>>` (its `Ty::List` arm recurses so the option element gets its structural WIT). The
-; per-element `emit_list_level` sum branch reads the canonical `option<T>` (disc at offset 0, payload at its
-; canonical offset) straight from the element address and builds the guest sum cell with NO fresh locals, so it
-; lifts through the same throwaway-`next_local` field cell-lift the compound-element field uses. The double-match
-; reads element 0's outer (List.at in-range?) then inner (Some/None) option. 503 = 100*5 + element-0
-; Some(Some 3) payload 3. Pass on wasm + rust + rust-async.
+; rpp23 (TODO on wasm) pins the LIST-of-sum FIELD — a `list<option<scalar>>` record field — which SHOULD cross
+; like the top-level `list<option<scalar>>` param (lpo1/lpo2). `param_field_rebuild`'s `Ty::List` arm now falls to
+; `list_sum_elem` when `list_scalar_elem` declines the option element (#9749), and `natural_wit_bare` derives the
+; field WIT `list<option<s64>>`, but the wasm bare-entry record/tuple path STILL DECLINES this shape (grades Todo,
+; a clean decline — NOT a miscompile) for a reason under investigation: the `list_sum_elem` field wiring is not yet
+; sufficient (the emit-path trace looked complete but the coarse-09 gate — the authoritative 09 grader, which
+; gate-local's 01/05/06 SUBSET does NOT cover — shows it does not cross). The double-match reads element 0's outer
+; (List.at in-range?) then inner (Some/None) option; expected 503 = 100*5 + element-0 Some(Some 3) payload 3 once
+; it crosses. rust/rust-async handle the field natively (auto-promote from todo). Root-cause + fix is a follow-up.
 (case
   "rpp23 a Record entry param with a list<option<scalar>> field reads an element's Some payload"
   (input
@@ -13858,6 +13858,28 @@
              ((Option.None) -10))))
       (export main)))
   (call main (: #record((= n 5) (= xs #list((Some 3) (None unit)))) (Record (: n Int64) (: xs (List (Option Int64))))))
+  (output (: 503 Int64)))
+
+; rpp24 is the TUPLE-element twin of rpp23: a `list<option<scalar>>` as a Tuple entry-param ELEMENT (rpp23 was a
+; Record FIELD). It exercises a code interaction neither sibling covers alone — the top-level tuple-param arm's
+; per-element `param_field_rebuild` recursion (rpp16 fences tuple-element × scalar-sum) reaching the `Ty::List`
+; arm's `list_sum_elem` (rpp23 fences record-field × list-of-option) — so a regression that broke ONLY the
+; tuple-element list-of-option path (leaving record-field and tuple-scalar green) would slip through without this
+; fence once it crosses. Same shared lowering as rpp23, so it currently DECLINES identically on wasm (TODO — root
+; cause under investigation with rpp23); expected 503 = 100*5 + element-0 Some(Some 3) payload 3. rust/rust-async
+; handle a tuple-carried `Vec<Option<i64>>` natively (auto-promote from todo).
+(case
+  "rpp24 a Tuple entry param with a list<option<scalar>> element reads an element's Some payload"
+  (input
+    (do
+      (def
+        (main (: t (Tuple Int64 (List (Option Int64)))))
+        (+ (* 100 (. t 0))
+           (match (List.at (. t 1) 0)
+             ((Option.Some o) (match o ((Option.Some v) v) ((Option.None) -1)))
+             ((Option.None) -10))))
+      (export main)))
+  (call main (: #tuple(5 #list((Some 3) (None unit))) (Tuple Int64 (List (Option Int64)))))
   (output (: 503 Int64)))
 
 (case
