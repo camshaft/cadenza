@@ -315,6 +315,21 @@
   (input (do (def (main) (Qty.of 5 (Unit.* (Unit.base #"m")))) (export main)))
   (error CDZ0201))
 
+(case
+  "an unknown unit in a Qty TYPE position names the unit, not the flat non-type-annotation error"
+  (doc
+    "`(: x (Qty Float64 (Unit.of #\"zorks\")))` uses an unregistered unit in a Qty TYPE position. The unit
+           fails to resolve, so the annotation-is-type check would ALSO emit the flat CDZ0203 `a parameter's
+           annotation requires a type, but found a non-type` at the whole Qty type application — a misleading
+           consequent that never names the unit and reads as if the whole `Qty` form were wrong. The
+           actionable CDZ0201 `unknown unit zorks` (naming the unit + carrying the `Unit.define`/compound-unit
+           fix) is the ONE primary; the flat non-type consequent is dropped, node-scoped so an UNRELATED
+           non-type annotation elsewhere in the same file keeps its own. The `(error CDZ0201)` outcome grades
+           on the FIRST diagnostic, so it pins that the unknown-unit reject LEADS (before the fix the flat
+           CDZ0203 led, and the case graded Todo).")
+  (input (do (def (main (: x (Qty Float64 (Unit.of #"zorks")))) x) (export main)))
+  (error CDZ0201 (message "unknown unit `zorks`")))
+
 ; `Qty.of <value> <unit>` requires its SECOND argument to be a UNIT: a non-unit second arg (a bare Int, a
 ; String, a tuple) made `eval::unit_of` return None and `type_of`'s `Qty.of` arm silently fall through to
 ; `Any`, so `cdz check` passed a quantity with no real unit. Now CDZ0201 naming the unit forms. Migrated from

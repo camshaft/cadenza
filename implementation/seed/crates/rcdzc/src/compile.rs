@@ -4809,6 +4809,20 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     let has_uncomparable_fn_compound_reject = faults.iter().any(|r| {
         r.code == Some(Code::NotEquatable) && r.message.contains("nested in this compound")
     });
+    // An UNKNOWN UNIT in a `Qty` TYPE position — `(: x (Qty Float64 (Unit.of #"zorks")))` — is reported by
+    // `check_unknown_units` as the actionable CDZ0201 "unknown unit `zorks` …" AT the unit expression. But
+    // the unit fails to reduce to a unit, so the annotation-is-type check ALSO sees a non-type in the unit
+    // position and emits the flat CDZ0203 "… requires a type, but found a non-type" AT the enclosing `Qty`
+    // type application — a misleading consequent (it never names the unit, and reads as if the whole `Qty`
+    // form were wrong). The two are emitted by SEPARATE passes, so only here (post-merge) are both visible.
+    // Drop the flat non-type reject when its node ENCLOSES an unknown-unit node (`is_within`) — node-scoped
+    // so it never swallows an UNRELATED bare-literal non-type annotation elsewhere in the same file. Leaves
+    // the CDZ0201 (which names the unit + carries the `Unit.define`/compound-unit fix) as the one primary.
+    let unknown_unit_nodes: Vec<crate::ast::StructId> = faults
+        .iter()
+        .filter(|r| r.code == Some(Code::Malformed) && r.message.starts_with("unknown unit `"))
+        .filter_map(|r| r.at)
+        .collect();
     // Likewise: a TUPLE accessed by NAME — `(. (tuple 1 2) foo)` — is rejected by `infer` with the precise,
     // actionable "a tuple is accessed by position, not by name `foo` — use a numeric index …" at the def.
     // When that def is CALLED from an exported body, the emit path's reached-poison walk lowers the reduced
@@ -5305,6 +5319,17 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
                 && (r.message.contains(crate::diag::COMPOUND_COMPARISON_DECLINE)
                     || r.message
                         .contains(crate::diag::COMPOUND_ORDERING_NO_TOTAL_ORDER_DECLINE))
+            {
+                return false;
+            }
+            // The unknown-unit-in-a-Qty-type consequent: drop the flat CDZ0203 "… requires a type, but found
+            // a non-type" when its node ENCLOSES an unknown-unit CDZ0201 node — the CDZ0201 (naming the unit)
+            // is the one primary. Node-scoped via `is_within` so an unrelated bare non-type annotation in the
+            // same file keeps its own flat reject.
+            if r.code == Some(Code::TypeMismatch)
+                && r.message.ends_with("requires a type, but found a non-type")
+                && r.at
+                    .is_some_and(|app| unknown_unit_nodes.iter().any(|&u| db.is_within(u, app)))
             {
                 return false;
             }
