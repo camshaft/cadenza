@@ -75,6 +75,12 @@ ORACLE_THRESHOLD_PCT="${ORACLE_THRESHOLD_PCT:-60}" # Class D fires at/above this
 # OUTSIDE (older than) this window — the exact false-target the design's blanket-sweep REFUSAL is about is
 # structurally excluded by the window, before the keep-list even applies. Default 30d.
 UNCOVERED_MAX_AGE_MIN="${UNCOVERED_MAX_AGE_MIN:-43200}"
+# Trend-log threshold (percent): APPEND one trend line to prune-tmp-inodes.trend ONLY when inode-use is at/
+# above this (default 85 = WARN). The `.last-run` stamp is OVERWRITE (latest only), so a climb/reversal
+# trajectory (e.g. self-clean pulling 6748→2876 over ~6h) is invisible in it — this append log makes the
+# per-run trajectory greppable, but ONLY during a pressure episode (silent below WARN) so it stays bounded
+# without rotation, exactly like reap-leases.log logs only on a nonzero reap.
+TREND_LOG_PCT="${TREND_LOG_PCT:-85}"
 
 # Class C allowlist — ONLY these known agent-scratch dir SHAPES are ever candidates (never a blanket sweep).
 # The grade/shred/roundtrip families below were added after a fleet-wide 100%-inode wedge (breaker issue
@@ -278,3 +284,11 @@ printf 'prune-tmp-inodes: UNCOVERED-scratch REPORT (no delete): %s own-user dir(
 # silent-cron observability, 2026-08-29). Overwrite (not append) → bounded, no rotation needed.
 printf '%s apply=%s inode-use=%s%% uncovered-stale-scratch=%s\n' "$(date -Is)" "$APPLY" "$iuse" "${uncovered:-?}" \
   > "$(dirname "${BASH_SOURCE[0]}")/prune-tmp-inodes.last-run" 2>/dev/null || true
+
+# TREND APPEND (best-effort): during a pressure episode (inode-use >= TREND_LOG_PCT) append one tab-separated
+# line so the CLIMB/REVERSAL trajectory the overwrite `.last-run` can't show is greppable + bounded (silent
+# below WARN → no unbounded growth). Same events-only discipline as reap-leases.log (#9690).
+if [ "$iuse" -ge "$TREND_LOG_PCT" ]; then
+  printf '%s\tinode-use=%s%%\tuncovered=%s\tapply=%s\n' "$(date -Is 2>/dev/null || echo now)" "$iuse" "${uncovered:-?}" "$APPLY" \
+    >> "$(dirname "${BASH_SOURCE[0]}")/prune-tmp-inodes.trend" 2>/dev/null || true
+fi

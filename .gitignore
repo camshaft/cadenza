@@ -77,6 +77,8 @@ implementation/design/wasm-opt-gaps.sexp
 
 # fleet prune-cron liveness heartbeats (runtime artifact, never tracked)
 fleet/*.last-run
+# fleet prune-cron pressure-episode trend append-logs (runtime artifact, never tracked)
+fleet/*.trend
 
 # nix's XDG cache (eval-cache/fetcher-cache sqlite, fetcher-locks, sentry) — machine-local, regenerable
 # junk that lands here when XDG_CACHE_HOME resolves into a worktree. NEVER tracked (a `git add -A` swept 7
