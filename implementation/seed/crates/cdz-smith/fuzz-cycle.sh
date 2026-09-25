@@ -201,12 +201,12 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
       # differential structurally cannot reach. Small count (it shells `cdz` per program, like the sweep
       # above) under its own cap, reusing the already-resolved cdz + store. A KILL at the cap is SAFE
       # (findings stream to disk per program); the count sizes the SLOWEST (cdz-shelling) pass to fit.
-      # Scale EP_COUNT with generate_export_param's `variant(N)` (14 shapes as of the 14-shape generator:
-      # 6 scalar + 3 List-entry-borrow + const-sum-field E0282 family #9586/#9684/#9687 + #9689 List-consume
-      # + #9694 String-consume). NOTE: draws/shape DROPPED from ~20 to ~15 here — the cdz-shelling cost was
-      # nearing the tick budget (~67s at 13x20), so past ~13 shapes we hold the pass bounded by trimming
-      # draws/shape (all shapes still drawn ~15x/cycle) rather than growing EP_COUNT linearly. A KILL at the
-      # cap is safe (findings stream); prefer trimming draws/shape or splitting the pass over a larger cap.
+      # generate_export_param has 15 shapes (6 scalar + 3 List-entry-borrow + const-sum-field E0282 family
+      # #9586/#9684/#9687 + #9689 List-consume + #9694 String-consume + #9699 scalar-fielded Record). NOTE:
+      # EP_COUNT is HELD at 210 (now ~14 draws/shape, was ~20) — the cdz-shelling cost neared the tick budget
+      # (~67s at 13x20), so past ~13 shapes we hold the pass bounded by keeping the count flat (all shapes
+      # still drawn ~14x/cycle) rather than growing it linearly. Past ~16 shapes: SPLIT the pass (fast subset
+      # per cycle + full nightly) rather than trimming further. A KILL at the cap is safe (findings stream).
       EP_COUNT="${CDZ_SMITH_EXPORT_PARAM_COUNT:-210}"
       EP_CAP="${CDZ_SMITH_EXPORT_PARAM_CAP:-75}"
       if [ "$EP_COUNT" -gt 0 ]; then
