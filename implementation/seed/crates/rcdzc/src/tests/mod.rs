@@ -3544,42 +3544,12 @@ fn a_bare_export_param_without_a_world_is_still_ambiguous() {
     );
 }
 
-/// A RECORD/TUPLE entry param on the plain scalar-result export declines with a message naming the PARAM,
-/// not the result. Before, `export_result_valtype` (shared by result AND param positions) surfaced its
-/// RESULT-phrased error ("returning a (Record …) on the multi-export boundary") for a record PARAM — doubly
-/// wrong (it is a parameter; there is one export). Pins the truthful param-constraint message. (Admitting
-/// fixed-shape scalar record/tuple params — the make-forwarding compound-param rebuild the resource-escape
-/// path already does — is a later feature slice; this only corrects the diagnostic.)
-#[test]
-fn a_record_entry_param_declines_naming_the_param_not_a_bogus_multi_export_return() {
-    use crate::testkit::parse;
-    let src = "(do (def (main (: r (Record (: x Int64) (: y Int64)))) (+ (. r x) (. r y))) (export main))";
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "main",
-            crate::codec::encode(&parse(src)),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    assert!(
-        out.artifact(crate::backend::Target::Wasm.artifact_kind())
-            .is_none(),
-        "a record entry param declines on this export path"
-    );
-    let msgs: Vec<&str> = out.diagnostics.iter().map(|d| d.message.as_str()).collect();
-    assert!(
-        !msgs
-            .iter()
-            .any(|m| m.contains("returning a") || m.contains("multi-export boundary")),
-        "must NOT surface the result-phrased multi-export message for a PARAM: {msgs:?}"
-    );
-    assert!(
-        msgs.iter()
-            .any(|m| m.contains("has no scalar boundary representation") && m.contains("parameter")),
-        "must name the PARAM constraint truthfully: {msgs:?}"
-    );
-}
+// NOTE: the former `a_record_entry_param_declines_naming_the_param_not_a_bogus_multi_export_return` test was
+// REMOVED (#9699/#9701): a scalar-fielded Record entry param — and a Record/Tuple with a flat list<scalar>
+// field — now CROSSES the wasm boundary (as a structural tuple), so its decline assertion was obsolete. The
+// cross behaviour is covered by the corpus (rpp1/rpp2/rpp3/rpp5, 09-functions.sexp). The still-valid part of
+// its diagnostic-quality intent — a PARAM decline must NOT be phrased as a result/"multi-export boundary"
+// error (#4031) — is preserved below on a shape that STILL declines (`Set Int64`).
 
 /// DIAGNOSTIC QUALITY — homed here per v-corpus-declines/v-corpus-harness's grade-owner call after Char
 /// began crossing the boundary (the old `#\`-param match_engine/diagnostics tests were removed, and this
@@ -3619,6 +3589,15 @@ fn an_annotated_no_boundary_rep_export_param_names_the_type_not_ambiguous() {
     assert!(
         !d.message.contains("ambiguous"),
         "an ANNOTATED no-rep param must not get the `ambiguous — annotate it` steer (already annotated): {}",
+        d.message
+    );
+    // #4031 regression (relocated here from the removed scalar-Record decline test after #9699 made that shape
+    // CROSS): `export_result_valtype` is shared by PARAM and RESULT positions, so a param decline once surfaced
+    // the RESULT-phrased "returning a … on the multi-export boundary" error. A PARAM decline MUST name the
+    // param constraint, never the result/multi-export one. Guarded here on the still-declining `Set` param.
+    assert!(
+        !d.message.contains("returning a") && !d.message.contains("multi-export boundary"),
+        "a PARAM decline must NOT surface the result-phrased multi-export message: {}",
         d.message
     );
 }
