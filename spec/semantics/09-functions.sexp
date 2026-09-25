@@ -11789,12 +11789,19 @@
   (call main (: #list(0.5 2.25 9.0) (List Float64)))
   (output (: 2.25 Float64)))
 
-; -- breaker batch 452 (2026-08-27): the GENERAL-recursion-gate edge ladder, pre-delivered for the
-; consuming slice. The slice's enabler is a general call-graph cycle check (tail-only
-; mutual_loop_group misses el1's non-tail suml). Post-slice contract: grx1/grx2 must FLIP to pass
-; (non-recursive consumption through a deep chain; recursion elsewhere must not poison the param) —
-; grx3/grx4 must STAY todo (non-tail MUTUAL recursion; transitive reach through a non-recursive
-; relay). A flip on grx3/grx4 is OVER-ADMISSION — the miscompiling recursive-param-slot shape.
+; -- breaker batch 452 (2026-08-27; grx4 fence RETIRED 2026-09-25): the GENERAL-recursion-gate edge
+; ladder, pre-delivered for the consuming slice. grx4 now CROSSES via el1's borrow-aware oracle
+; (#9679): def_consumes_param is invariance-gated, so grx4's admit itself proves suml threads its ys
+; slot invariantly — an invariant read-only param relayed into a self-recursive borrow-walk is
+; soundly wrapper-reclaimable (the el1 borrow theorem, one non-consuming relay removed). The original
+; fence PREDATED el1 and the invariance-gated oracle (no sound recursive-param borrow oracle then
+; existed, so any such reclaim was unsound); breaker re-confirmed at tip 0c5e673855 that its
+; adversarial UAF probe (re-read ys[i] after the recursion unwinds) now stays correct, and guarded-all
+; plus the HOP2 cadenza re-emit hop are green. STILL-todo contract: grx3 STAYS todo (non-tail MUTUAL
+; recursion — a genuinely different shape the borrow oracle does not admit); grx1/grx2 = the consuming
+; slice (concat / Map.insert CONSUME the entry param — they FLIP only once the ownership-transfer lift
+; plus a position-aware acyclicity guard land, drop_after=false gated on def_consumes_param's
+; owned-vs-borrow verdict).
 (case
   "grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat"
   (input

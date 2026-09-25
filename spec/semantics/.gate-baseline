@@ -11288,7 +11288,7 @@ todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly 
 todo	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
-todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
+pass	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 todo	hce2 a borrowing op (=) over a captured value in a closure body declines pending the ownership proof (todo)
 todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the boundary
 todo	lcap3 an ESCAPING closure capturing BOTH a def-param and a let-local folds using both (no half-capture)
