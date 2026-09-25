@@ -1112,7 +1112,7 @@ fn cmd_differential(args: &[String]) -> ExitCode {
             // Draw ALGEBRAIC-EFFECT programs (effect/handle/resume/abort) — value-observable coverage of the
             // effects lowering (continuation capture, handler-stack resolution). See `GenMode::Effect`.
             "--effect" => gen_mode = driver::GenMode::Effect,
-            // Draw EXPORT-PARAM shapes — a single export TAKING scalar params, CALLED with concrete args on
+            // Draw EXPORT-PARAM shapes — a single export TAKING scalar or List params, CALLED with concrete args on
             // BOTH backends (the entry-param boundary-marshal value surface, unblocked by #9670's
             // `cdz run-rust --arg`). Routes to `export_param_differential_sweep`; ignores the `gen_mode`
             // grammar flags (the shapes carry their own args). See `generate_export_param`.
