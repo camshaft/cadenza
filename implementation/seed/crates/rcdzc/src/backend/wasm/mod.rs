@@ -7549,21 +7549,27 @@ fn try_bare_entry_param_component(
     // NOT in this slice — its escape still declines (its consumer's reclaim is unverified here).
     for (m, (binder, _)) in mem_leaf_params.iter().zip(params.iter()) {
         let Some((kind, false)) = m else { continue };
-        // Scoped to `List` consumed by `List.concat` — the VERIFIED clean-transfer slice (elc4/grx1: 0-leak
-        // under guarded-all + the HOP2 re-emit hop + the O0-O3 opt-sweep). Two guards keep it sound
-        // (leak-over-admit, v-core-opt reclaim envelope):
+        // A mem-leaf param (List / String / Bytes) consumed by a CONCAT — the VERIFIED clean-transfer slice
+        // (elc4/grx1 List.concat, ep1 String.concat=`Core::BytesConcat`: 0-leak under guarded-all + the HOP2
+        // re-emit hop + the O0-O3 opt-sweep). Two guards keep it sound (leak-over-admit, v-core-opt reclaim
+        // envelope):
         //   * `param_flow_into_cycle` — a param THREADED through a recursion (grx3's non-tail mutual
         //     `suma.0 -> sumb.0 -> suma.0`) is consumed-and-rethreaded per iteration, not one transfer.
         //   * `param_consume_sink_whitelisted` — a POSITIVE whitelist (v-core-opt-recommended, safe by
         //     construction): every binder occurrence is a relay or a `List.concat`/`Bytes.concat` operand.
         //     Anything else declines — a List-as-Map/Set-KEY (elc2/grx2: the collection stores the boxed key,
-        //     a measured 2-object leak) or any unmodeled retaining sink — a missed admit, never a mis-reclaim.
-        // A `Str`/`Bytes` escape also stays declined here (byp2: a bin-match consumer only BORROWS the
-        // segments, so `drop_after = false` would leave it unreclaimed — a measured 1-object leak, the
-        // borrow-ABI mismatch); its owned-vs-borrow verdict needs the dup-aware bytes query, a later slice.
-        let acyclic_concat_consume = matches!(kind, serialize::MemLeafKind::List(_))
-            && !crate::backend::wasm::select::param_flow_into_cycle(db, body, *binder)
-            && crate::backend::wasm::select::param_consume_sink_whitelisted(db, body, *binder);
+        //     a measured 2-object leak), a Bytes bin-match/slice (byp2/byp3: a borrow the dup-unaware query
+        //     mis-reads as escaping, or an unverified slice reclaim), or any unmodeled retaining sink — a
+        //     missed admit, never a mis-reclaim. `Str`/`Bytes` are admitted here ONLY through the concat sink
+        //     (the whitelist), so a `String`/`Bytes` param used any other consuming way still declines.
+        let acyclic_concat_consume =
+            matches!(
+                kind,
+                serialize::MemLeafKind::List(_)
+                    | serialize::MemLeafKind::Str
+                    | serialize::MemLeafKind::Bytes
+            ) && !crate::backend::wasm::select::param_flow_into_cycle(db, body, *binder)
+                && crate::backend::wasm::select::param_consume_sink_whitelisted(db, body, *binder);
         if !acyclic_concat_consume {
             return None;
         }
