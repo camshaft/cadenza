@@ -11938,6 +11938,42 @@
   (call main (: #list(b"\x01\x02\x03\x04") (List Bytes)))
   (output (: 4 Int64)))
 
+; lpt1/lpr1 extend the list entry param to a COMPOUND element — a scalar-fielded `tuple<…>` (lpt1) or
+; `record<…>` (lpr1). Each element occupies its canonical_size contiguous bytes in the list's linear-memory
+; buffer; the lift reads each field at its canonical offset, boxes it, and builds a value-heap cell per
+; element (`arr-alloc`/`arr-set`), pushing the cell into the vec — the compound counterpart of the scalar
+; `list<scalar>` (el1) and byte-leaf `list<string>` (els1) lifts. A `record` element crosses structurally as
+; a `tuple<…>` (structuralize_wit); its fields route by name-lex (= canonical) order. Both cases read element
+; 0 AND element 1 (distinct multipliers 100*f0+f1) so the per-element loop + field routing are discriminated:
+; lpt1 = 304+506 = 810, lpr1 = 708+102 = 810, and an EMPTY list reads no element (both None → -2).
+(case
+  "lpt1 a list<tuple> entry param reads two elements' fields"
+  (input
+    (do
+      (def
+        (main (: xs (List (Tuple Int64 Int64))))
+        (+
+          (match (List.at xs 0) ((Option.Some t) (+ (* 100 (. t 0)) (. t 1))) ((Option.None) -1))
+          (match (List.at xs 1) ((Option.Some t) (+ (* 100 (. t 0)) (. t 1))) ((Option.None) -1))))
+      (export main)))
+  (call main (: #list(#tuple(3 4) #tuple(5 6)) (List (Tuple Int64 Int64))))
+  (output (: 810 Int64))
+  (call main (: #list() (List (Tuple Int64 Int64))))
+  (output (: -2 Int64)))
+
+(case
+  "lpr1 a list<record> entry param reads two elements' fields by name"
+  (input
+    (do
+      (def
+        (main (: xs (List (Record (: a Int64) (: b Int64)))))
+        (+
+          (match (List.at xs 0) ((Option.Some r) (+ (* 100 r.a) r.b)) ((Option.None) -1))
+          (match (List.at xs 1) ((Option.Some r) (+ (* 100 r.a) r.b)) ((Option.None) -1))))
+      (export main)))
+  (call main (: #list(#record((= a 7) (= b 8)) #record((= a 1) (= b 2))) (List (Record (: a Int64) (: b Int64)))))
+  (output (: 810 Int64)))
+
 (case
   "eo1 an Option entry param delivers its Some payload"
   (input

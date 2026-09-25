@@ -735,6 +735,14 @@ pub fn emit(
                             // byte-leaf (`bytes-alloc`/`bytes-set`); its `box_op` is inert.
                             used.insert("bytes-alloc");
                             used.insert("bytes-set");
+                        } else if let Some(fields) = &elem.compound {
+                            // A `list<tuple>`/`list<record>` builds a value-heap cell per element
+                            // (`arr-alloc`/`arr-set`) + boxes each scalar field.
+                            used.insert("arr-alloc");
+                            used.insert("arr-set");
+                            for f in fields {
+                                used.insert(f.box_op);
+                            }
                         } else {
                             used.insert(elem.box_op);
                         }
@@ -6409,6 +6417,11 @@ fn param_field_rebuild(
             if le.byte_leaf.is_some() {
                 return None;
             }
+            // A compound-element list (`list<tuple>`/`list<record>`) as a nested FIELD is a later slice — its
+            // per-element cell build is admitted only as a TOP-LEVEL param (`MemLeafKind::List`) for now.
+            if le.compound.is_some() {
+                return None;
+            }
             param_vts.push(ValType::I32.byte());
             param_vts.push(ValType::I32.byte());
             Some(FieldRebuild::ListLeaf(le))
@@ -6484,7 +6497,6 @@ fn record_fields_rebuild(
 /// list<tuple>) — a later slice.
 fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serialize::ListElem> {
     use crate::backend::wasm::serialize::ListElem;
-    use crate::backend::wasm::wasm_abi::op;
     use crate::ty::Ty;
     // Descend nested list levels: a `list<list<…<scalar>>>` element is `nest` list-levels then a scalar leaf.
     // Every intermediate `list<T>` has the SAME `(ptr,len)` boundary rep, so the nesting is a uniform depth.
@@ -6511,49 +6523,52 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
             box_op: "",
             nest_lists: 0,
             byte_leaf: Some(matches!(leaf, Ty::String)),
+            compound: None,
+        });
+    }
+    // A COMPOUND leaf — a scalar-fielded `tuple<…>`/`record<…>` — crosses as `stride` contiguous bytes per
+    // element (the element's `canonical_size`), each field at its canonical offset. Only a FLAT (`nest == 0`)
+    // element whose fields are ALL aliased-width scalars is admitted here (a nested-compound / byte-leaf / sum
+    // field is a later slice); read each field into a value-heap cell (`arr-alloc`/`arr-set`) per element.
+    if matches!(leaf, Ty::Tuple(_) | Ty::Record(_)) {
+        if nest != 0 {
+            return None;
+        }
+        use crate::backend::wasm::wit_ctype::{canonical_size, record_field_offsets};
+        // Field types in CELL-SLOT order: a tuple is positional; a record's cell slots are name-lex, which is
+        // also `ty_natural_wit`'s sorted `WitType::Record` order — so the field WITs, their offsets, and the
+        // cell slots all share one order.
+        let field_wits: Vec<crate::wit_world::WitType> =
+            match crate::wit_world::ty_natural_wit(&leaf)? {
+                crate::wit_world::WitType::Tuple(ws) => ws,
+                crate::wit_world::WitType::Record(fs) => fs.into_iter().map(|(_n, w)| w).collect(),
+                _ => return None,
+            };
+        let offsets = record_field_offsets(&field_wits);
+        let mut fields = Vec::with_capacity(field_wits.len());
+        for (fw, off) in field_wits.iter().zip(offsets) {
+            let (load_op, load_align, _stride, extend, box_op) = scalar_read_box(fw)?;
+            fields.push(crate::backend::wasm::serialize::CompoundListField {
+                offset: off,
+                load_op,
+                load_align,
+                extend,
+                box_op,
+            });
+        }
+        return Some(ListElem {
+            load_op: 0,
+            load_align: 0,
+            stride: canonical_size(&crate::wit_world::ty_natural_wit(&leaf)?),
+            extend: None,
+            box_op: "",
+            nest_lists: 0,
+            byte_leaf: None,
+            compound: Some(fields),
         });
     }
     // The scalar leaf's read+box: (load_op, natural-align, stride, narrow-extend, box_op).
-    let (load_op, load_align, stride, extend, box_op): (u8, u32, u32, Option<bool>, &'static str) =
-        match &leaf {
-            Ty::Int(it) => {
-                let signed = it.ground_signed();
-                match it.ground_width() {
-                    64 => (op::I64_LOAD, 3, 8, None, "box-int"),
-                    32 => (op::I32_LOAD, 2, 4, Some(signed), "box-int"),
-                    16 => (
-                        if signed {
-                            op::I32_LOAD16_S
-                        } else {
-                            op::I32_LOAD16_U
-                        },
-                        1,
-                        2,
-                        Some(signed),
-                        "box-int",
-                    ),
-                    8 => (
-                        if signed {
-                            op::I32_LOAD8_S
-                        } else {
-                            op::I32_LOAD8_U
-                        },
-                        0,
-                        1,
-                        Some(signed),
-                        "box-int",
-                    ),
-                    _ => return None,
-                }
-            }
-            Ty::Bool => (op::I32_LOAD8_U, 0, 1, None, "box-bool"),
-            Ty::Float(ft) => match ft.ground_width() {
-                64 => (op::F64_LOAD, 3, 8, None, "box-float"),
-                32 => (op::F32_LOAD, 2, 4, None, "box-float32"),
-                _ => return None,
-            },
-            _ => return None, // a compound leaf (list<record>/list<tuple>) — a later slice
-        };
+    let (load_op, load_align, stride, extend, box_op) = scalar_read_box_ty(&leaf)?;
     Some(ListElem {
         load_op,
         load_align,
@@ -6562,6 +6577,77 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
         box_op,
         nest_lists: nest,
         byte_leaf: None,
+        compound: None,
+    })
+}
+
+/// The wasm read+box descriptor `(load_op, natural-align log2, canonical stride, narrow-int extend, box op)`
+/// for an aliased-width SCALAR leaf `Ty` (`Int*`/`UInt*`/`Bool`/`Float*`). `None` for a non-scalar. Shared by
+/// [`list_scalar_elem`]'s flat-scalar and compound-element paths.
+fn scalar_read_box_ty(leaf: &crate::ty::Ty) -> Option<(u8, u32, u32, Option<bool>, &'static str)> {
+    use crate::backend::wasm::wasm_abi::op;
+    use crate::ty::Ty;
+    Some(match leaf {
+        Ty::Int(it) => {
+            let signed = it.ground_signed();
+            match it.ground_width() {
+                64 => (op::I64_LOAD, 3, 8, None, "box-int"),
+                32 => (op::I32_LOAD, 2, 4, Some(signed), "box-int"),
+                16 => (
+                    if signed {
+                        op::I32_LOAD16_S
+                    } else {
+                        op::I32_LOAD16_U
+                    },
+                    1,
+                    2,
+                    Some(signed),
+                    "box-int",
+                ),
+                8 => (
+                    if signed {
+                        op::I32_LOAD8_S
+                    } else {
+                        op::I32_LOAD8_U
+                    },
+                    0,
+                    1,
+                    Some(signed),
+                    "box-int",
+                ),
+                _ => return None,
+            }
+        }
+        Ty::Bool => (op::I32_LOAD8_U, 0, 1, None, "box-bool"),
+        Ty::Float(ft) => match ft.ground_width() {
+            64 => (op::F64_LOAD, 3, 8, None, "box-float"),
+            32 => (op::F32_LOAD, 2, 4, None, "box-float32"),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+/// The read+box descriptor for a compound field, keyed on its canonical `WitType` (so the memarg alignment
+/// matches the canonical layout `record_field_offsets` computed). Maps each scalar WIT to the same
+/// load/extend/box the value rep uses.
+fn scalar_read_box(
+    wt: &crate::wit_world::WitType,
+) -> Option<(u8, u32, u32, Option<bool>, &'static str)> {
+    use crate::backend::wasm::wasm_abi::op;
+    use crate::wit_world::WitType;
+    Some(match wt {
+        WitType::S64 | WitType::U64 => (op::I64_LOAD, 3, 8, None, "box-int"),
+        WitType::S32 => (op::I32_LOAD, 2, 4, Some(true), "box-int"),
+        WitType::U32 => (op::I32_LOAD, 2, 4, Some(false), "box-int"),
+        WitType::S16 => (op::I32_LOAD16_S, 1, 2, Some(true), "box-int"),
+        WitType::U16 => (op::I32_LOAD16_U, 1, 2, Some(false), "box-int"),
+        WitType::S8 => (op::I32_LOAD8_S, 0, 1, Some(true), "box-int"),
+        WitType::U8 => (op::I32_LOAD8_U, 0, 1, Some(false), "box-int"),
+        WitType::Bool => (op::I32_LOAD8_U, 0, 1, None, "box-bool"),
+        WitType::F64 => (op::F64_LOAD, 3, 8, None, "box-float"),
+        WitType::F32 => (op::F32_LOAD, 2, 4, None, "box-float32"),
+        _ => return None,
     })
 }
 
@@ -7284,7 +7370,13 @@ fn try_bare_entry_param_component(
             }
             (None, _) => return None, // an unhandled compound/unit param — a later slice
         }
-        wit_params.push((format!("p{i}"), wit));
+        // Structuralize the emitted param WIT so any nominal `record<…>` (top-level, or nested inside a
+        // crossing `list<…>`/`tuple<…>` — e.g. a `list<record>` mem-leaf param) becomes the structural
+        // `tuple<…>` the bare assembler can declare (a nominal record → INVALID component, CDZ0910). Idempotent:
+        // the Tuple/Record arms already produced a structural tuple, and a scalar/String/Bytes/`list<scalar>`
+        // WIT carries no record, so it is unchanged. The rebuild was built from the ORIGINAL field WITs and a
+        // record/tuple share one canonical layout, so the wire stays byte-identical.
+        wit_params.push((format!("p{i}"), structuralize_wit(&wit)));
     }
     // Require at least one memory-bearing leaf OR sum OR record/tuple-cell param — OR a scalar-only export
     // whose flattened params SPILL (over MAX_FLAT_PARAMS core values), which this path now emits
@@ -7390,6 +7482,13 @@ fn try_bare_entry_param_component(
                 // A `list<string>`/`list<bytes>` copies each element's bytes into a value-heap byte-leaf
                 // (`bytes-alloc`/`bytes-set`) rather than a scalar box op (`box_op` is inert for a byte-leaf).
                 lift_ops.extend(["bytes-alloc", "bytes-set"]);
+            } else if let Some(fields) = &elem.compound {
+                // A `list<tuple>`/`list<record>` builds a value-heap cell per element (`arr-alloc`/`arr-set`) +
+                // boxes each scalar field with its own box op.
+                lift_ops.extend(["arr-alloc", "arr-set"]);
+                for f in fields {
+                    lift_ops.push(f.box_op);
+                }
             } else {
                 // A list<scalar> boxes each element with its own box op (box-int/float/float32/bool).
                 lift_ops.push(elem.box_op);
@@ -8847,6 +8946,12 @@ impl MakeParams {
                             if elem.byte_leaf.is_some() {
                                 out("bytes-alloc");
                                 out("bytes-set");
+                            } else if let Some(fields) = &elem.compound {
+                                out("arr-alloc");
+                                out("arr-set");
+                                for f in fields {
+                                    out(f.box_op);
+                                }
                             } else {
                                 out(elem.box_op);
                             }
@@ -8883,7 +8988,7 @@ impl MakeParams {
                         _ => Vec::new(),
                     };
                     MakeCoreSlot::MemLeaf {
-                        kind: *kind,
+                        kind: kind.clone(),
                         drop_after: *drop_after,
                         desc,
                     }
