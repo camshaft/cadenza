@@ -180,9 +180,14 @@ pub(super) fn param_field_rebuild(
         // A `list<scalar>` field (rpp3's `xs: list<s64>`): crosses as `(ptr, len)` and lifts into a value-heap
         // vec (`FieldRebuild::ListLeaf`), mirroring the top-level `MemLeafKind::List` param lift. Only a FLAT
         // list is admitted — `list_scalar_elem` returns the scalar element's read/box descriptor + its
-        // `nest_lists`, which must be 0; a nested `list<list<…>>` field is a later slice.
+        // `nest_lists`, which must be 0; a nested `list<list<…>>` field is a later slice. A SUM element
+        // (`list<option<scalar>>`, rpp23) falls to `list_sum_elem` when `list_scalar_elem` declines it — the
+        // per-element `emit_list_level` sum branch reads the disc+payload straight from the element address and
+        // builds the guest sum cell with NO fresh locals (like the compound branch, unlike the byte-leaf), so it
+        // lifts through the same throwaway-`next_local` field cell-lift the top-level `list<option<scalar>>`
+        // param (lpo1) uses.
         Ty::List(elem) => {
-            let le = list_scalar_elem(elem)?;
+            let le = list_scalar_elem(elem).or_else(|| list_sum_elem(db, elem))?;
             if le.nest_lists != 0 {
                 return None;
             }
