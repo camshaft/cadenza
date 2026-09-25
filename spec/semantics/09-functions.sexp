@@ -13101,6 +13101,53 @@
   (call main (: (Err b"\x01\x02\x03") (Result String Bytes)))
   (output (: -3 Int64)))
 
+; erc1/erc2/erc3 extend the Result entry param to a COMPOUND arm — a scalar-fielded `tuple<…>` on one or both
+; sides (`result<tuple<i64,i64>, i64>`, `result<i64, tuple<i64,i64>>`, `result<tuple<i64,i64>, tuple<i64,i64>>`).
+; The compound side crosses as its natural `tuple<…>` WIT; the canonical ABI flattens the result to
+; `(disc: i32, <joined leaves…>)` — each arm's payload flattens to a leaf list, joined position-by-position (the
+; join length is the longer arm). The active arm rebuilds its value-heap cell over a prefix of the joined slots
+; (the same `sum-new`-of-compound lift the closure-arg path uses). BORROW-only: the def matches the Result and
+; reads the payload; the wrapper deep-drops the built shell after the call (a payload that ESCAPES declines,
+; since dropping an escaped compound cell would double-free it).
+(case
+  "erc1 a Result entry param with a compound Ok tuple sums the active arm"
+  (input
+    (do
+      (def
+        (main (: r (Result (Tuple Int64 Int64) Int64)))
+        (match r ((Result.Ok t) (+ (. t 0) (. t 1))) ((Result.Err e) e)))
+      (export main)))
+  (call main (: (Ok (tuple 3 4)) (Result (Tuple Int64 Int64) Int64)))
+  (output (: 7 Int64))
+  (call main (: (Err 99) (Result (Tuple Int64 Int64) Int64)))
+  (output (: 99 Int64)))
+
+(case
+  "erc2 a Result entry param with a compound Err tuple multiplies the active arm"
+  (input
+    (do
+      (def
+        (main (: r (Result Int64 (Tuple Int64 Int64))))
+        (match r ((Result.Ok v) v) ((Result.Err t) (* (. t 0) (. t 1)))))
+      (export main)))
+  (call main (: (Ok 42) (Result Int64 (Tuple Int64 Int64))))
+  (output (: 42 Int64))
+  (call main (: (Err (tuple 5 6)) (Result Int64 (Tuple Int64 Int64))))
+  (output (: 30 Int64)))
+
+(case
+  "erc3 a Result entry param with compound tuples on both arms folds the active arm"
+  (input
+    (do
+      (def
+        (main (: r (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
+        (match r ((Result.Ok t) (+ (. t 0) (. t 1))) ((Result.Err t) (* (. t 0) (. t 1)))))
+      (export main)))
+  (call main (: (Ok (tuple 3 4)) (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
+  (output (: 7 Int64))
+  (call main (: (Err (tuple 5 6)) (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
+  (output (: 30 Int64)))
+
 ; -- breaker batch 485 (2026-08-27): String-param compositions (the eoc lenses on slice-1's String
 ; lift) + the borrow-relay cell that CORRECTS the eoc2 comment. All pass 0-leak: capture (ssc1),
 ; cross-def borrow relay (ssc2 — and lbr1 proves the same for LISTS: the escape-gate keys on the
