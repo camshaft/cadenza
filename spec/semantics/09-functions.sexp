@@ -13258,6 +13258,29 @@
   (call main (: #record((= n 10) (= s "abcd")) (Record (: n Int64) (: s String))))
   (output (: 14 Int64)))
 
+; rpp8/rpp9 extend the compound-entry-param cluster to a NESTED compound FIELD. A `Tuple` field crosses as a
+; STRUCTURAL `tuple<…>` (no defined-type declaration) and rebuilds a positional sub-cell recursively, so a
+; Tuple nested in a Tuple (rpp8) or a Tuple field of a Record (rpp9) crosses. (A nested nominal `record<…>`
+; field is NOT yet admitted — the bare structural assembler cannot declare it; that structural-record
+; flattening is a shared-lowering slice.)
+(case
+  "rpp8 a nested Tuple entry param projects through both levels"
+  (input
+    (do
+      (def (main (: t (Tuple (Tuple Int64 Int64) Int64))) (+ (+ (. (. t 0) 0) (. (. t 0) 1)) (. t 1)))
+      (export main)))
+  (call main (: #tuple(#tuple(1 2) 3) (Tuple (Tuple Int64 Int64) Int64)))
+  (output (: 6 Int64)))
+
+(case
+  "rpp9 a Record entry param with a nested Tuple field measures both"
+  (input
+    (do
+      (def (main (: r (Record (: n Int64) (: pt (Tuple Int64 Int64))))) (+ r.n (+ (. r.pt 0) (. r.pt 1))))
+      (export main)))
+  (call main (: #record((= n 10) (= pt #tuple(3 4))) (Record (: n Int64) (: pt (Tuple Int64 Int64)))))
+  (output (: 17 Int64)))
+
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
   (doc
