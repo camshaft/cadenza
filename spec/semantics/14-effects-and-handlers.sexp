@@ -10993,11 +10993,17 @@
   (output (: 23 Int64)))
 
 (case
-  "a continuation call whose body ITSELF performs is not effect-free and declines"
+  "a cross-function performing-arg call folds by inlining the effect-reaching helper"
   (doc
-    "GUARD: a user call in `C` whose body performs the discharged effect is NOT effect-free — the
-           continuation is not pure (a second effect on the spine), so it must decline cleanly (not
-           miscompile). `bad x = (+ x (Amb.flip))` performs, so `(bad (Amb.flip))` has two performs.")
+    "A handle body `(bad (Amb.flip))` whose helper `bad x = (+ x (Amb.flip))` ITSELF performs the discharged
+           effect — the continuation re-performs across a FUNCTION boundary (two performs on the spine, one
+           behind the call). The non-recursive effect-reaching helper is INLINED into the handle body, which is
+           ORDER-SAFE here: the single performing argument binds a parameter used at the LEADING strict
+           position (`(+ x …)`), so the inlined `(+ (Amb.flip) (Amb.flip))` keeps the argument's perform first,
+           and the two-hole refold folds both by re-entering the handler for the second. First flip resumes 10:
+           `(+ 10 (Amb.flip))` → second resumes 10 → `(+ 10 10)` = 20, arm `(+ 1 20)` = 21, arm `(+ 1 21)` = 22.
+           (An order-UNSAFE helper — one whose body performs BEFORE using the arg, `bad x = (- (E.op) x)` — is
+           NOT inlined by substitution, so its effect is never reordered.)")
   (input
     (do
       (effect Amb (op flip (-> Unit Int64)))
