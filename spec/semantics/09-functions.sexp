@@ -13069,6 +13069,38 @@
   (call main (: (Ok 21) (Result Int64 Int64)))
   (output (: 42 Int64)))
 
+; erp3/erp4 extend the Result entry param to TWO memory-bearing byte-leaf arms — `result<string, string>` and
+; `result<string, bytes>`. erp1 covered one byte-leaf arm + one scalar; here BOTH arms (or the second) are a
+; String/Bytes byte-leaf. The canonical ABI joins the two arms' `(ptr, len)` slots position-by-position (both
+; are `(i32, i32)`, so the join is `(ptr, len)` with no widening); the active arm copies its bytes into a
+; value-heap byte-leaf (a Cadenza String IS a flat UTF-8 byte-leaf identical to Bytes — same copy-in, no
+; str-from-bytes). The def measures the active arm's byte-length (Err negated to distinguish the arms).
+(case
+  "erp3 a Result entry param with two String payloads measures the active arm"
+  (input
+    (do
+      (def
+        (main (: r (Result String String)))
+        (match r ((Result.Ok s) (String.byte-len s)) ((Result.Err e) (- 0 (String.byte-len e)))))
+      (export main)))
+  (call main (: (Ok "abc") (Result String String)))
+  (output (: 3 Int64))
+  (call main (: (Err "hi") (Result String String)))
+  (output (: -2 Int64)))
+
+(case
+  "erp4 a Result entry param with a String Ok and a Bytes Err measures the active arm"
+  (input
+    (do
+      (def
+        (main (: r (Result String Bytes)))
+        (match r ((Result.Ok s) (String.byte-len s)) ((Result.Err b) (- 0 (Bytes.len b)))))
+      (export main)))
+  (call main (: (Ok "abcd") (Result String Bytes)))
+  (output (: 4 Int64))
+  (call main (: (Err b"\x01\x02\x03") (Result String Bytes)))
+  (output (: -3 Int64)))
+
 ; -- breaker batch 485 (2026-08-27): String-param compositions (the eoc lenses on slice-1's String
 ; lift) + the borrow-relay cell that CORRECTS the eoc2 comment. All pass 0-leak: capture (ssc1),
 ; cross-def borrow relay (ssc2 — and lbr1 proves the same for LISTS: the escape-gate keys on the
