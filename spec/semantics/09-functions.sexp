@@ -13654,6 +13654,49 @@
       (Tuple (Tuple (Record (: a Int64) (: b Int64)) Int64) Int64)))
   (output (: 127 Int64)))
 
+; rpp14/rpp15/rpp16 pin a SUM FIELD of a record/tuple entry param. Before this, a `{n: i64, o: option<i64>}`
+; entry param declined CDZ0904: the bare deriver `ty_natural_wit` is Db-less and returns None for a `Ty::Sum`
+; (a top-level sum crosses via its own synthesized-WIT arm), so a product with a sum field bailed. `natural_wit_bare`
+; (bare-path-only) recovers the field's structural WIT — `option<T>` / `result<ok,err>` from `sum_field_wit`,
+; mirroring the top-level sum-param arms — while leaving `ty_natural_wit`'s global `Sum = None` contract intact.
+; The rebuild already existed (`param_field_rebuild`'s `Ty::Sum` arm builds the sum cell in the field's slot); only
+; the field WIT was missing. The field crosses as its structural sum former (no defined-type wall) flattened after
+; the sibling scalar leaves; the guest projects the field and matches it. Distinct multipliers discriminate correct
+; slot routing. rpp14 = a record `option<i64>` field (Some arm); rpp15 = a record `result<i64,i64>` field (Ok arm);
+; rpp16 = a tuple `option<i64>` element. Pass on wasm + rust + rust-async.
+(case
+  "rpp14 a Record entry param with an option field projects both the scalar and the Some payload"
+  (input
+    (do
+      (def
+        (main (: rec (Record (: n Int64) (: o (Option Int64)))))
+        (+ (* 100 rec.n) (match rec.o ((Option.Some v) v) ((Option.None) 0))))
+      (export main)))
+  (call main (: #record((= n 5) (= o (Some 7))) (Record (: n Int64) (: o (Option Int64)))))
+  (output (: 507 Int64)))
+
+(case
+  "rpp15 a Record entry param with a result field projects both the scalar and the Ok payload"
+  (input
+    (do
+      (def
+        (main (: rec (Record (: n Int64) (: r (Result Int64 Int64)))))
+        (+ (* 100 rec.n) (match rec.r ((Result.Ok v) v) ((Result.Err e) (- 0 e)))))
+      (export main)))
+  (call main (: #record((= n 3) (= r (Ok 9))) (Record (: n Int64) (: r (Result Int64 Int64)))))
+  (output (: 309 Int64)))
+
+(case
+  "rpp16 a Tuple entry param with an option element projects both the scalar and the Some payload"
+  (input
+    (do
+      (def
+        (main (: t (Tuple Int64 (Option Int64))))
+        (+ (* 100 (. t 0)) (match (. t 1) ((Option.Some v) v) ((Option.None) 0))))
+      (export main)))
+  (call main (: #tuple(5 (Some 8)) (Tuple Int64 (Option Int64))))
+  (output (: 508 Int64)))
+
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
   (doc
