@@ -922,7 +922,17 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
 
     let root = b.list(root_children);
     let arenas = b.finish(root);
-    Ok(crate::codec::encode(&arenas))
+    // CANONICALIZE-ON-ENCODE (facet-2, corpus-cadenza-20-0013): the Builder does not dedup STRUCTURE, so
+    // a re-emit that reuses a StructId (the `*lit` literal share, a pattern-reused-as-construction, …)
+    // yields a DAG — which the binary codec's tree-ness guard (#9433) rejects on DECODE (`NotATree` →
+    // HOP2 "binary AST failed to decode"). Which nodes get shared is profile-dependent (an upstream
+    // optimizer/codec determinism bug, facet-1, owned by v-core-opt). `canonicalize` de-shares the arena
+    // into a genuine tree (duplicating a shared subtree per occurrence; leaves stay interned), so decode
+    // always succeeds. SOUND-BY-CONSTRUCTION: every structure-reuse site is PURE (a literal / pattern /
+    // let-named value), so de-sharing never duplicates an EFFECT (an effectful `Core::HostCall` emitted
+    // twice already makes two DISTINCT StructIds — a tree, the separately-declined 0409 class — never a
+    // shared node). Cheap: an already-tree arena is returned borrowed (no clone/rebuild).
+    Ok(crate::codec::encode(&crate::canon::canonicalize(&arenas)))
 }
 
 /// Emit a NO-EXPORT `(do (def …)…)` FRAGMENT of ONLY the definitions whose source name is in `subset` —
@@ -1031,7 +1041,17 @@ pub fn emit_fragment(
 
     let root = b.list(root_children);
     let arenas = b.finish(root);
-    Ok(crate::codec::encode(&arenas))
+    // CANONICALIZE-ON-ENCODE (facet-2, corpus-cadenza-20-0013): the Builder does not dedup STRUCTURE, so
+    // a re-emit that reuses a StructId (the `*lit` literal share, a pattern-reused-as-construction, …)
+    // yields a DAG — which the binary codec's tree-ness guard (#9433) rejects on DECODE (`NotATree` →
+    // HOP2 "binary AST failed to decode"). Which nodes get shared is profile-dependent (an upstream
+    // optimizer/codec determinism bug, facet-1, owned by v-core-opt). `canonicalize` de-shares the arena
+    // into a genuine tree (duplicating a shared subtree per occurrence; leaves stay interned), so decode
+    // always succeeds. SOUND-BY-CONSTRUCTION: every structure-reuse site is PURE (a literal / pattern /
+    // let-named value), so de-sharing never duplicates an EFFECT (an effectful `Core::HostCall` emitted
+    // twice already makes two DISTINCT StructIds — a tree, the separately-declined 0409 class — never a
+    // shared node). Cheap: an already-tree arena is returned borrowed (no clone/rebuild).
+    Ok(crate::codec::encode(&crate::canon::canonicalize(&arenas)))
 }
 
 /// Reconstruct a user EFFECT's `(effect <Name> (op <o> (-> <Domain> <Result>))…)` declaration so a
