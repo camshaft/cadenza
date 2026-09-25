@@ -8762,16 +8762,32 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                         _ => false, // can't read the pane → don't suppress a possibly-genuine stall
                     }
                 };
+                // Also exempt an agent that holds a LIVE check-lease it OWNS: it launched a gate/check and is
+                // landing BEHIND it (gate-blocked-actioning), which reads IDENTICAL to a drain-stall from the
+                // outside (idle pane between ticks + a non-draining inbox — the ~25min-local-gate case that
+                // cost a false escalation + a diagnosis this session), but is not stalled. Only consulted when
+                // the pane gate didn't already clear it, never for a permission-dialog wedge (needs a human
+                // regardless). Fail-safe: no owned live lease → no suppression → unchanged behavior.
+                let gate_blocked_lease = !permission_wedge
+                    && !alive_working
+                    && check_lease_dir(&fleet.repo).is_some_and(|d| {
+                        agent_holds_live_lease(&d, &a.name, check_lease_holder_alive)
+                    });
                 let flagged = flagged_id.as_deref().unwrap_or("?");
-                if alive_working {
+                if alive_working || gate_blocked_lease {
+                    let why = if alive_working {
+                        "pane WORKING/progressing — alive + holding an actionable as an open TODO, not a stall"
+                    } else {
+                        "holds a LIVE check-lease it owns — landing behind a gate (gate-blocked-actioning), not a stall"
+                    };
                     if dry_run {
                         println!(
-                            "  DRY-RUN would SKIP drain-stall escalation for '{}' (pane WORKING/progressing — alive + holding an actionable as an open TODO, not a stall)",
+                            "  DRY-RUN would SKIP drain-stall escalation for '{}' ({why})",
                             a.name
                         );
                     } else {
                         eprintln!(
-                            "  · skipped drain-stall escalation for '{}' — pane confirms WORKING (alive, not stalled)",
+                            "  · skipped drain-stall escalation for '{}' — {why}",
                             a.name
                         );
                     }
@@ -10801,6 +10817,69 @@ fn live_priority_leases(fleet: &Fleet) -> usize {
     scan_check_leases(&dir, now_unix()).0
 }
 
+/// Derive the OWNING AGENT from a worktree path by its dir NAME — `fleet add` creates every agent's
+/// worktree at `.claude/worktrees/<agent>`, so the path component right after `worktrees` IS the agent name
+/// (no registry lookup, and BRANCH-independent — the gate runs on whatever feature branch the agent is on,
+/// so [`sender_from_branch`] is unreliable at gate time; `$FLEET_AGENT` is unset in agent envs). Returns
+/// `None` when there is no `worktrees/<x>` segment or `<x>` fails the agent-name charset (→ the lease is
+/// stamped with an empty owner → no exemption, the fail-safe). Pure so the parse is unit-tested.
+fn agent_from_worktree_cwd(cwd: &Path) -> Option<String> {
+    let mut comps = cwd.components();
+    while let Some(c) = comps.next() {
+        if c.as_os_str() == "worktrees" {
+            let name = comps.next()?.as_os_str().to_str()?;
+            return validate_agent_name(name).ok().map(|()| name.to_string());
+        }
+    }
+    None
+}
+
+/// Parse the OWNER AGENT a lease file records — the 3rd tab field of the lease body
+/// `"<acquired-ts>\t<class>\t<agent>"` that [`acquire_check_lease_weighted`] stamps. Returns `None` for a
+/// PRE-STAMP lease (2 fields), an empty owner (underivable at acquire → never falsely attributed), or an
+/// invalid name. Pure so the exemption's attribution is unit-tested.
+fn lease_owner_agent(contents: &str) -> Option<String> {
+    let owner = contents.lines().next()?.split('\t').nth(2)?.trim();
+    if owner.is_empty() {
+        return None;
+    }
+    validate_agent_name(owner).ok().map(|()| owner.to_string())
+}
+
+/// Does `agent` currently hold a LIVE check-lease — i.e. did it launch a gate/check still running? This is
+/// the ALIVE tell that distinguishes a gate-blocked-ACTIONING agent (landing behind a long local-gate — an
+/// idle pane + a non-draining inbox, IDENTICAL to a drain-stall from the outside) from a genuinely stalled
+/// one, so the drain-stall escalation can EXEMPT it. Scans `dir` for a `.lease` whose stamped owner
+/// ([`lease_owner_agent`]) is `agent` AND whose holder pid is still alive (`is_alive`, parameterized so this
+/// is unit-tested without `/proc`). Any read failure / pre-stamp / dead-or-zombie holder → skipped, so
+/// worst case is NO match → NO exemption → today's behavior (the fail-safe: it can never SUPPRESS a
+/// genuinely-stalled agent, only decline to). Pure over the fs + probe.
+fn agent_holds_live_lease(
+    dir: &Path,
+    agent: &str,
+    is_alive: impl Fn(&str) -> Option<bool>,
+) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for e in rd.filter_map(Result::ok) {
+        let p = e.path();
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".lease") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        if lease_owner_agent(&contents).as_deref() == Some(agent) && is_alive(name) == Some(true) {
+            return true;
+        }
+    }
+    false
+}
+
 /// The leaked-lease reap PREDICATE — SINGLE SOURCE, shared by the acquire/watchdog scan
 /// ([`scan_check_leases_with`]) and the reap-leases classifier ([`reap_leases_classified_in`]) so the two
 /// can never drift. A lease is reapable if (PRIMARY) its holder pid is DEAD — a SIGKILL'd checker left the
@@ -11076,8 +11155,16 @@ pub fn acquire_check_lease_weighted(repo: &Path, priority: bool, weight: usize) 
                     now.saturating_sub(wait_start)
                 );
             }
-            // Create the lease; its mtime marks acquisition (and is our liveness stamp).
-            if std::fs::write(&file, format!("{}\t{}", now, class)).is_err() {
+            // Create the lease; its mtime marks acquisition (and is our liveness stamp). Stamp the OWNER
+            // AGENT (derived from this acquiring process's worktree cwd) as a 3rd tab field so a
+            // gate-blocked agent can be exempted from a false drain-stall escalation ([`agent_holds_live_lease`]).
+            // Underivable → empty field → no attribution (the fail-safe). Nothing reads the lease CONTENT for
+            // reaping (filename + mtime only), so this extra field breaks no existing reader.
+            let owner = std::env::current_dir()
+                .ok()
+                .and_then(|d| agent_from_worktree_cwd(&d))
+                .unwrap_or_default();
+            if std::fs::write(&file, format!("{now}\t{class}\t{owner}")).is_err() {
                 eprintln!("check-lease: could not write lease (failing OPEN — unthrottled).");
                 return CheckLease {
                     file: None,
@@ -29690,6 +29777,81 @@ branch refs/heads/fleet/trunk-tools
         assert!(!lease_is_reapable(None, Some(ttl))); // exactly at the TTL is not past it (strict `>`)
         assert!(lease_is_reapable(None, Some(ttl + 1)));
         assert!(!lease_is_reapable(None, None)); // can't tell + no age → keep (fail safe)
+    }
+
+    #[test]
+    fn agent_from_worktree_cwd_maps_worktree_dir_to_agent() {
+        // Standard layout: the dir after `worktrees` is the agent (even with sub-paths below it).
+        assert_eq!(
+            agent_from_worktree_cwd(Path::new(
+                "/local/home/x/Projects/camshaft/cadenza/.claude/worktrees/v-compiler-primitives"
+            )),
+            Some("v-compiler-primitives".to_string())
+        );
+        assert_eq!(
+            agent_from_worktree_cwd(Path::new(
+                "/repo/.claude/worktrees/membrain-testing-subscriber/xtask"
+            )),
+            Some("membrain-testing-subscriber".to_string())
+        );
+        // No `worktrees` segment (e.g. the main checkout) → None (→ empty owner → no exemption).
+        assert_eq!(agent_from_worktree_cwd(Path::new("/repo/xtask/src")), None);
+        // `worktrees` is the last component (no agent after it) → None.
+        assert_eq!(
+            agent_from_worktree_cwd(Path::new("/repo/.claude/worktrees")),
+            None
+        );
+        // A path-traversal / invalid dir name is rejected by the charset (never a garbage owner).
+        assert_eq!(
+            agent_from_worktree_cwd(Path::new("/repo/worktrees/..")),
+            None
+        );
+    }
+
+    #[test]
+    fn lease_owner_agent_reads_the_stamped_third_field() {
+        // The exact body acquire stamps now: "<ts>\t<class>\t<agent>".
+        assert_eq!(
+            lease_owner_agent("1700000000\tgate\tv-compiler-primitives"),
+            Some("v-compiler-primitives".to_string())
+        );
+        // PRE-STAMP lease (2 fields) → None (not a false attribution).
+        assert_eq!(lease_owner_agent("1700000000\tgate"), None);
+        // Empty owner (underivable at acquire) → None.
+        assert_eq!(lease_owner_agent("1700000000\tgate\t"), None);
+        // Invalid owner charset → None (never resolve a garbage owner).
+        assert_eq!(lease_owner_agent("1700000000\tgate\tfoo/bar"), None);
+    }
+
+    #[test]
+    fn agent_holds_live_lease_matches_owner_and_liveness() {
+        let dir = std::env::temp_dir().join(format!("cdz-live-lease-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A LIVE gate lease owned by v-alpha, a DEAD one owned by v-beta, a pre-stamp (unowned) live lease.
+        std::fs::write(dir.join("111-gate.lease"), "1000\tgate\tv-alpha").unwrap();
+        std::fs::write(dir.join("222-gate.lease"), "1000\tgate\tv-beta").unwrap();
+        std::fs::write(dir.join("333-vertical.lease"), "1000\tvertical").unwrap(); // pre-stamp, no owner
+        // is_alive: 111 alive, everything else dead.
+        let is_alive = |name: &str| Some(name.starts_with("111-"));
+        assert!(
+            agent_holds_live_lease(&dir, "v-alpha", is_alive),
+            "v-alpha owns the LIVE lease 111 → exempt"
+        );
+        assert!(
+            !agent_holds_live_lease(&dir, "v-beta", is_alive),
+            "v-beta's lease 222 is DEAD → no exemption (a finished gate is not a reason to suppress)"
+        );
+        assert!(
+            !agent_holds_live_lease(&dir, "v-gamma", is_alive),
+            "v-gamma owns no lease → no exemption"
+        );
+        // The pre-stamp lease attributes to nobody, so it can never falsely exempt.
+        assert!(
+            !agent_holds_live_lease(&dir, "", is_alive),
+            "empty owner never matches (fail-safe)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
