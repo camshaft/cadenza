@@ -1120,6 +1120,41 @@ pub struct ListElem {
     /// WIT fields yields, so offset order == slot order). Only a FLAT (`nest_lists == 0`) element whose fields
     /// are all aliased-width SCALARS is admitted; a nested-compound / byte-leaf / sum field is a later slice.
     pub compound: Option<Vec<CompoundListField>>,
+    /// `None` for a SCALAR / byte-leaf / compound / nested-list element. `Some(sum)` for an `option<scalar>`
+    /// element (`list<option<s64>>`, lpo1) — each element occupies `stride` (= the option's `canonical_size`)
+    /// contiguous bytes and lifts by branching on the 1-byte discriminant at offset 0 and building a value-heap
+    /// sum cell (`sum-new`): the `Some` arm reads+boxes the scalar payload at its canonical offset, the `None`
+    /// arm is nullary. The memory-reading twin of the param-fed [`SumArgRebuild`]/[`emit_sum_arm`]. Only a FLAT
+    /// (`nest_lists == 0`) `option<scalar>` element is admitted; a `result<…>` / compound-payload / nested
+    /// element is a later slice.
+    pub sum: Option<SumListElem>,
+}
+
+/// How ONE `option<scalar>` element of a `list<option<scalar>>` param is read out of linear memory and built
+/// into a value-heap sum cell (see [`ListElem::sum`]). The element is a canonical `option<T>`: a 1-byte
+/// discriminant at offset 0 (`None` = 0, `Some` = 1), then the scalar payload at `payload_offset` (canonically
+/// aligned after the disc). `emit_list_level` branches on the disc — `Some` reads+boxes the payload and
+/// `sum-new`s the payload arm; `None` `sum-new`s the nullary arm (inline unit) — the exact memory-reading twin
+/// of the param-fed [`emit_sum_arm`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SumListElem {
+    /// The wire discriminant that selects the payload (`Some`) arm — component `option<T>` sends `Some` = 1.
+    pub boundary_true_disc: u32,
+    /// The Cadenza decl discriminant `sum-new` stamps for the payload (`Some`) arm.
+    pub some_decl_disc: u32,
+    /// The Cadenza decl discriminant `sum-new` stamps for the nullary (`None`) arm.
+    pub none_decl_disc: u32,
+    /// Canonical byte offset of the scalar payload within the element (after the 1-byte disc, re-aligned).
+    pub payload_offset: u32,
+    /// The wasm load opcode reading the payload scalar at `element_base + payload_offset`.
+    pub payload_load_op: u8,
+    /// The payload load's natural-alignment memarg (log2 bytes).
+    pub payload_load_align: u32,
+    /// `Some(signed)` when the narrow-int payload (loaded into an i32 slot) must be i32→i64 extended before
+    /// `payload_box` (which takes i64); `None` for a full-width i64 / float / bool.
+    pub payload_extend: Option<bool>,
+    /// The box op wrapping the loaded payload scalar into a value-heap handle (`box-int`/`box-float`/…).
+    pub payload_box: &'static str,
 }
 
 /// One scalar field of a COMPOUND list element (see [`ListElem::compound`]): read it at `offset` bytes from
@@ -4272,6 +4307,62 @@ fn emit_list_level(
             out.push(op::CALL);
             uleb128(imp("arr-set"), out); // [buf, arr]
         }
+        out.push(op::CALL);
+        uleb128(imp("vec-push"), out); // [buf']
+        out.push(op::LOCAL_SET);
+        uleb128(buf as u64, out);
+    } else if levels == 0 && elem.sum.is_some() {
+        // SUM element (`list<option<scalar>>`): the element at `addr` is a canonical `option<T>` — a 1-byte
+        // disc at offset 0 (None=0, Some=1), then the scalar payload at `payload_offset`. Branch on the disc
+        // and build the guest sum cell: the Some arm reads+boxes the payload and `sum-new`s the payload arm;
+        // the None arm `sum-new`s the nullary arm (inline unit). The result-typed `if` leaves the cell handle
+        // on the stack (exactly `emit_sum_field`'s convention), which `vec-push` then appends to `buf`. The
+        // memory-reading twin of the param-fed `emit_sum_arm`.
+        let Some(s) = elem.sum.as_ref() else {
+            unreachable!("guarded by elem.sum.is_some()")
+        };
+        out.push(op::LOCAL_GET);
+        uleb128(buf as u64, out); // [buf]
+        // disc = i32.load8_u(addr + 0)
+        emit_addr(out); // [buf, addr]
+        out.push(op::I32_LOAD8_U);
+        uleb128(0, out); // align log2(1)
+        uleb128(0, out); // offset 0 (disc)
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(s.boundary_true_disc as i64, out);
+        out.push(op::I32_EQ);
+        out.push(op::IF);
+        out.push(crate::backend::wasm::wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
+        // Some arm: sum-new(some_decl_disc, box(load(addr + payload_offset)))
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(s.some_decl_disc as i64, out); // [buf, disc]
+        emit_addr(out); // [buf, disc, addr]
+        out.push(s.payload_load_op);
+        uleb128(s.payload_load_align as u64, out);
+        uleb128(s.payload_offset as u64, out); // [buf, disc, raw]
+        if let Some(signed) = s.payload_extend {
+            out.push(if signed {
+                op::I64_EXTEND_I32_S
+            } else {
+                op::I64_EXTEND_I32_U
+            });
+        }
+        out.push(op::CALL);
+        uleb128(imp(s.payload_box), out); // [buf, disc, boxed]
+        out.push(op::CALL);
+        uleb128(imp("sum-new"), out); // [buf, some-cell]
+        out.push(op::ELSE);
+        // None arm: sum-new(none_decl_disc, IMM_UNIT)
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(s.none_decl_disc as i64, out); // [buf, disc]
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(
+            crate::backend::wasm::runtime_abi::IMM_UNIT as i64,
+            out,
+        ); // [buf, disc, unit]
+        out.push(op::CALL);
+        uleb128(imp("sum-new"), out); // [buf, none-cell]
+        out.push(op::END); // [buf, cell]
         out.push(op::CALL);
         uleb128(imp("vec-push"), out); // [buf']
         out.push(op::LOCAL_SET);

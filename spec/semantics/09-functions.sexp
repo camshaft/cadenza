@@ -12028,6 +12028,35 @@
       (Record (: xs (List (Record (: a Int64) (: b Int64)))) (: n Int64))))
   (output (: 507 Int64)))
 
+; lpo1 extends the list entry param to a SUM element — a `list<option<scalar>>`. Each element occupies the
+; option's canonical_size contiguous bytes: a 1-byte discriminant at offset 0 (None=0, Some=1), then the scalar
+; payload at its canonical offset. The lift branches on the disc per element and builds a value-heap sum cell
+; (`sum-new`) — the Some arm reads+boxes the payload, the None arm is nullary — pushing the cell into the vec.
+; It crosses as the native `list<option<s64>>` (natural_wit_bare derives the option element WIT). The sum
+; counterpart of the scalar (el1), byte-leaf (els1), and compound (lpt1) list lifts. `List.at` yields the OUTER
+; option (index in range?), so the body double-matches; two elements + an empty list discriminate the disc
+; branch: `(Some 3)`/`(Some 4)` → 304, `(Some 7)`/None → 698, an empty list → both outer None → -30.
+(case
+  "lpo1 a list<option<scalar>> entry param reads two elements' Some/None"
+  (input
+    (do
+      (def
+        (main (: xs (List (Option Int64))))
+        (+
+          (match (List.at xs 0)
+            ((Option.Some o) (match o ((Option.Some v) (* 100 v)) ((Option.None) -1)))
+            ((Option.None) -10))
+          (match (List.at xs 1)
+            ((Option.Some o) (match o ((Option.Some v) v) ((Option.None) -2)))
+            ((Option.None) -20))))
+      (export main)))
+  (call main (: #list((Some 3) (Some 4)) (List (Option Int64))))
+  (output (: 304 Int64))
+  (call main (: #list((Some 7) (None unit)) (List (Option Int64))))
+  (output (: 698 Int64))
+  (call main (: #list() (List (Option Int64))))
+  (output (: -30 Int64)))
+
 (case
   "eo1 an Option entry param delivers its Some payload"
   (input

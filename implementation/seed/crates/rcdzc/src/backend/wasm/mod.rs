@@ -743,6 +743,11 @@ pub fn emit(
                             for f in fields {
                                 used.insert(f.box_op);
                             }
+                        } else if let Some(s) = &elem.sum {
+                            // A `list<option<scalar>>` builds a value-heap sum cell per element (`sum-new`) and
+                            // boxes the Some payload scalar with its box op.
+                            used.insert("sum-new");
+                            used.insert(s.payload_box);
                         } else {
                             used.insert(elem.box_op);
                         }
@@ -6412,6 +6417,11 @@ fn natural_wit_bare(db: &mut Db, gty: &crate::ty::Ty) -> Option<crate::wit_world
             Some(WitType::Tuple(out))
         }
         Ty::Sum { .. } => sum_field_wit(db, gty),
+        // Recurse through `natural_wit_bare` (not `ty_natural_wit`) for a list ELEMENT so an option/result
+        // element derives its structural WIT — `list<option<s64>>` crosses as `list<option<s64>>` rather than
+        // declining (`ty_natural_wit`'s `Sum = None`). BYTE-IDENTICAL for every non-sum element (a scalar/
+        // record/tuple element's `natural_wit_bare` equals its `ty_natural_wit`), so this is purely additive.
+        Ty::List(elem) => Some(WitType::List(Box::new(natural_wit_bare(db, elem)?))),
         other => crate::wit_world::ty_natural_wit(other),
     }
 }
@@ -6591,6 +6601,7 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
             nest_lists: nest,
             byte_leaf: Some(matches!(leaf, Ty::String)),
             compound: None,
+            sum: None,
         });
     }
     // A COMPOUND leaf — a scalar-fielded `tuple<…>`/`record<…>` — crosses as `stride` contiguous bytes per
@@ -6632,6 +6643,7 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
             nest_lists: 0,
             byte_leaf: None,
             compound: Some(fields),
+            sum: None,
         });
     }
     // The scalar leaf's read+box: (load_op, natural-align, stride, narrow-extend, box_op).
@@ -6645,6 +6657,81 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
         nest_lists: nest,
         byte_leaf: None,
         compound: None,
+        sum: None,
+    })
+}
+
+/// The per-element descriptor for a `list<option<scalar>>` entry param (lpo1): each element is a canonical
+/// `option<T>` — a 1-byte discriminant then the scalar payload — lifted into a value-heap sum cell per element.
+/// Reuses [`crate::backend::wasm::arg_boundary::fixed_shape_option_scalar_arg`] for the disc convention
+/// (`boundary_true_disc` + the per-arm decl discs) and the canonical layout helpers for the payload's in-memory
+/// offset + load op. Only a FLAT `option<SCALAR>` element is admitted; a `result<…>` (two payload arms), a
+/// compound/`list`/`Bytes` payload, or a nested `list<option<…>>` declines to a later slice — the caller then
+/// declines the whole param. Complements [`list_scalar_elem`] (called via `.or_else` on the entry path).
+fn list_sum_elem(
+    db: &mut Db,
+    elem: &crate::ty::Ty,
+) -> Option<crate::backend::wasm::serialize::ListElem> {
+    use crate::backend::wasm::serialize::{ListElem, SumArgArm, SumArmPayload, SumListElem};
+    use crate::ty::Ty;
+    let leaf = elem.strip_nominal();
+    // Only a DIRECT sum element (no nested-list wrapping) is admitted here — a `list<list<option<…>>>` is a
+    // later slice.
+    if !matches!(leaf, Ty::Sum { .. }) {
+        return None;
+    }
+    // Classify the two-variant sum. Only the OPTION shape (one nullary + one SCALAR payload) is admitted: the
+    // rebuild's `arm_true` (Some) is a single boxed scalar, `arm_false` (None) is nullary. A `result<…>`
+    // classifies as `ArgSlot::Result` (two payload arms) and declines here — a later slice.
+    let (_slot, _vts, rebuild) =
+        crate::backend::wasm::arg_boundary::fixed_shape_option_scalar_arg(db, leaf)?;
+    let SumArgArm {
+        decl_disc: some_decl_disc,
+        payload: SumArmPayload::Scalar { .. },
+    } = rebuild.arm_true
+    else {
+        return None;
+    };
+    let SumArgArm {
+        decl_disc: none_decl_disc,
+        payload: SumArmPayload::Nullary,
+    } = rebuild.arm_false
+    else {
+        return None; // not the option shape (a result<…> Err arm carries a scalar, not nullary)
+    };
+    // The element WIT is `option<payload>`; derive the payload's canonical in-memory load op + offset from it,
+    // keyed on the WIT (so the memarg alignment matches the canonical layout the disc/payload placement uses).
+    // The disc is 1 byte at offset 0; the payload sits at `align_to(1, canonical_align(payload))`.
+    let crate::wit_world::WitType::Option(payload_wit) = natural_wit_bare(db, leaf)? else {
+        return None;
+    };
+    let (payload_load_op, payload_load_align, _pstride, payload_extend, payload_box) =
+        scalar_read_box(&payload_wit)?;
+    // The payload offset is `align_to(disc_size=1, canonical_align(payload))`, which for a 1-byte disc is just
+    // the payload's own alignment (every alignment is ≥ 1). The stride is the option's whole `canonical_size`.
+    let payload_offset = crate::backend::wasm::wit_ctype::canonical_align(&payload_wit);
+    let stride = crate::backend::wasm::wit_ctype::canonical_size(
+        &crate::wit_world::WitType::Option(payload_wit.clone()),
+    );
+    Some(ListElem {
+        load_op: 0,
+        load_align: 0,
+        stride,
+        extend: None,
+        box_op: "",
+        nest_lists: 0,
+        byte_leaf: None,
+        compound: None,
+        sum: Some(SumListElem {
+            boundary_true_disc: rebuild.boundary_true_disc,
+            some_decl_disc,
+            none_decl_disc,
+            payload_offset,
+            payload_load_op,
+            payload_load_align,
+            payload_extend,
+            payload_box,
+        }),
     })
 }
 
@@ -7324,8 +7411,12 @@ fn try_bare_entry_param_component(
             Ty::String => Some(serialize::MemLeafKind::Str),
             Ty::Bytes => Some(serialize::MemLeafKind::Bytes),
             // A list<scalar> param (Int8/16/32/64, UInt*, Float32/64, Bool) — build the per-element
-            // read+box descriptor; a nested/compound element (list<list>, list<record>) declines (later slice).
-            Ty::List(elem) => Some(serialize::MemLeafKind::List(list_scalar_elem(elem)?)),
+            // read+box descriptor; else an `option<scalar>` element (`list<option<s64>>`) via `list_sum_elem`
+            // (branch on the per-element disc → `sum-new`). A nested/`result<…>`/compound element that neither
+            // admits declines (later slice).
+            Ty::List(elem) => Some(serialize::MemLeafKind::List(
+                list_scalar_elem(elem).or_else(|| list_sum_elem(db, elem))?,
+            )),
             _ => None,
         };
         match (mem_kind, gty) {
@@ -7561,6 +7652,11 @@ fn try_bare_entry_param_component(
                 for f in fields {
                     lift_ops.push(f.box_op);
                 }
+            } else if let Some(s) = &elem.sum {
+                // A `list<option<scalar>>` builds a value-heap sum cell per element (`sum-new`) + boxes the Some
+                // payload scalar with its box op.
+                lift_ops.push("sum-new");
+                lift_ops.push(s.payload_box);
             } else {
                 // A list<scalar> boxes each element with its own box op (box-int/float/float32/bool).
                 lift_ops.push(elem.box_op);
