@@ -479,6 +479,30 @@
   (output (: 1500.0 Float64)))
 
 (case
+  "the sub-second time units nanosecond and microsecond register and convert to the second reference"
+  (doc
+    "The time family registers `nanosecond` (1/1_000_000_000 second) and `microsecond` (1/1_000_000
+           second) alongside `millisecond`/`minute`/`hour`, so `(Unit.of #\"nanosecond\")` and
+           `(Unit.of #\"microsecond\")` name real units and convert to the `second` reference — platform
+           runtime durations are nanoseconds, so this vocab must exist. `1.0 second + 1_000_000_000.0
+           nanosecond + 1_000_000.0 microsecond` converts all three to the reference and sums: 1 + 1 + 1 =
+           3.0 second. Before the units registered, `Unit.of` of the nanosecond symbol yielded a non-type and
+           the Qty use was rejected; this pins that the sub-second fractions resolve like `millisecond`.")
+  (input
+    (do
+      (def
+        (main)
+        (Qty.value
+          (+
+            (+
+              (Qty.of 1.0 (Unit.of #"second"))
+              (Qty.of 1000000000.0 (Unit.of #"nanosecond")))
+            (Qty.of 1000000.0 (Unit.of #"microsecond")))))
+      (export main)))
+  (call main)
+  (output (: 3.0 Float64)))
+
+(case
   "a NEGATIVE prefixed quantity carries its sign through the reference scale-fold"
   (doc
     "`-5 kilometer` = `(Qty.of -5.0 (Unit.prefix kilo meter))` DISPLAYS as `-5000.0 meter`: the

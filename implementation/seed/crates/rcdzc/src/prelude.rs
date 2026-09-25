@@ -1731,9 +1731,12 @@ pub fn unit_families() -> BTreeMap<String, UnitConversion> {
         ("inch", &[("meter", 1)], 127, 5000),
         ("foot", &[("meter", 1)], 381, 1250),
         ("mile", &[("meter", 1)], 201168, 125),
-        // time — reference `second`.
+        // time — reference `second`. Sub-second fractions: platform runtime durations are nanoseconds, so
+        // nanosecond/microsecond belong alongside millisecond (`1e9` fits a machine int — cf. `gigabyte`).
         ("second", &[("second", 1)], 1, 1),
         ("millisecond", &[("second", 1)], 1, 1000),
+        ("microsecond", &[("second", 1)], 1, 1_000_000),
+        ("nanosecond", &[("second", 1)], 1, 1_000_000_000),
         ("minute", &[("second", 1)], 60, 1),
         ("hour", &[("second", 1)], 3600, 1),
         // information — reference `byte`. Decimal (kB/MB/GB) and binary (KiB/MiB/GiB) are DISTINCT scales.
@@ -1816,11 +1819,16 @@ pub fn unit_families() -> BTreeMap<String, UnitConversion> {
         // time — plurals
         ("seconds", "second"),
         ("milliseconds", "millisecond"),
+        ("microseconds", "microsecond"),
+        ("nanoseconds", "nanosecond"),
         ("minutes", "minute"),
         ("hours", "hour"),
-        // time — abbreviations (`min`/`h` are the conventional short forms; `hr` also common)
+        // time — abbreviations (`min`/`h` are the conventional short forms; `hr` also common). `us` is the
+        // ASCII spelling of the microsecond abbreviation (the conventional `µs` uses a non-ASCII prefix).
         ("s", "second"),
         ("ms", "millisecond"),
+        ("us", "microsecond"),
+        ("ns", "nanosecond"),
         ("min", "minute"),
         ("h", "hour"),
         ("hr", "hour"),
