@@ -6742,7 +6742,9 @@ fn result_scalar_string_arg(
     };
     let ok_ty = payload_ty(db, 0)?;
     let err_ty = payload_ty(db, 1)?;
-    // Classify one payload side: a String (memory `(ptr, len)` leaf) or an aliased-width scalar.
+    // Classify one payload side: a byte-leaf (`String`/`Bytes`, a memory `(ptr, len)` leaf) or an
+    // aliased-width scalar. A `String` and a `Bytes` build the SAME UTF-8/byte value-heap leaf (no decode),
+    // so both map to `Kind::Str` and the same `SumArmPayload::Bytes` lift.
     #[derive(Clone, Copy)]
     enum Kind {
         Str,
@@ -6754,7 +6756,10 @@ fn result_scalar_string_arg(
     }
     fn classify(ty: &crate::ty::Ty) -> Option<(Kind, Vec<ValType>)> {
         use crate::backend::wasm::lir::{ValType, valtype_of};
-        if matches!(ty.strip_nominal(), crate::ty::Ty::String) {
+        if matches!(
+            ty.strip_nominal(),
+            crate::ty::Ty::String | crate::ty::Ty::Bytes
+        ) {
             return Some((Kind::Str, vec![ValType::I32, ValType::I32]));
         }
         if let Some(crate::backend::wasm::serialize::FieldRebuild::Scalar { box_op, extend }) =
@@ -6767,9 +6772,11 @@ fn result_scalar_string_arg(
     }
     let (ok_kind, ok_vts) = classify(&ok_ty)?;
     let (err_kind, err_vts) = classify(&err_ty)?;
-    // EXACTLY one String arm + one scalar arm (all-scalar → fixed_shape_option_scalar_arg; two-String later).
+    // AT LEAST ONE byte-leaf arm (one byte-leaf + one scalar = erp1; TWO byte-leaf arms, e.g.
+    // `result<string, string>` / `result<string, bytes>` = erp3). All-scalar (str_count == 0) is
+    // `fixed_shape_option_scalar_arg`'s Result branch, so decline it here.
     let str_count = matches!(ok_kind, Kind::Str) as u8 + matches!(err_kind, Kind::Str) as u8;
-    if str_count != 1 {
+    if str_count == 0 {
         return None;
     }
     // Position-wise WIDENING join: take the wider core per position; only an {i32, i64} mix widens (→ i64).
