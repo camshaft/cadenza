@@ -11967,6 +11967,33 @@
   (call main (: 3 Int64) (: (Some 20) (Option Int64)) (: 7 Int64))
   (output (: 327 Int64)))
 
+; eos1/eob1 extend the Option entry param to a MEMORY-BEARING Some payload — an `option<string>` / `option<bytes>`.
+; The all-scalar Option (eo1-3) and the `option<list<scalar>>` (eop2) are separate classifier arms; this is the
+; byte-leaf twin. It flattens to `(disc, ptr, len)`; the Some arm copies the payload's bytes into a value-heap
+; byte-leaf (a Cadenza String IS a flat UTF-8 byte-leaf identical to Bytes — same copy-in, no str-from-bytes),
+; the None arm is nullary. Both backends read the Some payload's byte-length; the None arm answers -1.
+(case
+  "eos1 an option<string> entry param delivers its Some payload's byte-length"
+  (input
+    (do
+      (def (main (: o (Option String))) (match o ((Option.Some s) (String.byte-len s)) ((Option.None) -1)))
+      (export main)))
+  (call main (: (Some "abc") (Option String)))
+  (output (: 3 Int64))
+  (call main (: (None unit) (Option String)))
+  (output (: -1 Int64)))
+
+(case
+  "eob1 an option<bytes> entry param delivers its Some payload's byte-length"
+  (input
+    (do
+      (def (main (: o (Option Bytes))) (match o ((Option.Some b) (Bytes.len b)) ((Option.None) -1)))
+      (export main)))
+  (call main (: (Some b"\x01\x02\x03\x04") (Option Bytes)))
+  (output (: 4 Int64))
+  (call main (: (None unit) (Option Bytes)))
+  (output (: -1 Int64)))
+
 (case
   "eb1 a BigInt entry param in beyond-i64 arithmetic"
   (input (do (def (main (: b BigInt)) (= (* b 2N) 24691357024641975308642N)) (export main)))
