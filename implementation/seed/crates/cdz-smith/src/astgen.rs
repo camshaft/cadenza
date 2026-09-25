@@ -214,10 +214,15 @@ pub struct ExportParam {
 /// summing all params — >16 flat params exceed the direct wasm param limit, so the whole set crosses via the
 /// MEMORY-INDIRECT ABI (params spilled to linear memory), a fundamentally different param-passing regime than
 /// the ≤3-param shapes above. A mis-offset / mis-index in the memory-indirect spill corrupts the sum. Args mix
-/// 7 entropy-driven values + 10 fixed so the value varies without extra entropy reads.
+/// 7 entropy-driven values + 10 fixed so the value varies without extra entropy reads. Shape 17 is the #9716
+/// els1 list<String> BYTE-LEAF entry param: a `(List String)` param (two non-empty strings + an empty-string
+/// element) whose element 0's `String.byte-len` is returned (a SCALAR — clears the String-result boundary).
+/// This exercises wasm-boundary-marshal's most novel/risky lift — the ListElem byte_leaf discriminant + the
+/// per-element (ptr,len)-descriptor read + bytes copy-in in the SHARED recursive emit_list_level path used by
+/// ALL list params — so a mis-marshaled byte-leaf element (or empty-element edge) corrupts the length.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(17);
+    let shape = c.variant(18);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -239,6 +244,9 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let record_arg = format!("#record((= x {e0}) (= y {e1}))");
     // A Record with a scalar tag + a HEAP (List Int64) field for the #9701 rpp3 shape (15); value = tag+xs[0].
     let record_list_arg = format!("#record((= tag {e2}) (= xs #list({e0} {e1})))");
+    // A (List String) of two non-empty strings + an EMPTY-string element for the #9716 els1 byte-leaf shape
+    // (17); value = byte-len of element 0 (= s0.len()). The empty element exercises the empty-byte-leaf edge.
+    let str_list_arg = format!("#list(\"{s0}\" \"{s1}\" \"\")");
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -369,7 +377,7 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      limit forces the MEMORY-INDIRECT ABI (params spilled to linear memory) — a distinct passing
         //      regime; a mis-offset in the spill corrupts the sum. Args = 7 entropy-driven + 10 fixed. The
         //      program is built programmatically so the 17-param list + right-nested `(+ …)` always balance.
-        _ => {
+        16 => {
             let params: String = (0..17).map(|i| format!("(: p{i} Int64) ")).collect();
             let mut sum = "p16".to_string();
             for i in (0..16).rev() {
@@ -381,6 +389,15 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
             wfp1_args.extend((1..=10).map(|v: i64| v.to_string()));
             (src, wfp1_args)
         }
+        // 17 — #9716 els1 list<String> BYTE-LEAF entry param: a (List String) [two non-empty + one empty
+        //      string], return element 0's String.byte-len (a SCALAR). Exercises the ListElem byte_leaf
+        //      discriminant + per-element descriptor read + bytes copy-in in the SHARED emit_list_level path;
+        //      a mis-marshaled byte-leaf element (or the empty-element edge) corrupts the length.
+        _ => (
+            "(do (def (slen (: xs (List String))) (match (List.at xs 0) ((Some s) (String.byte-len s)) (None 0))) (export slen))"
+                .to_string(),
+            vec![str_list_arg],
+        ),
     };
     ExportParam { source, args }
 }
@@ -5707,12 +5724,13 @@ mod tests {
         // shapes lhd/top(helper)/suml(recursive-walk) + the #9586 record-Option-newtype `run` + the #9684
         // const-list-of-Option-field sibling + the #9687 payload-variant field + the #9689 consuming-slice `cat`
         // + the #9694 String-consume `catlen` + the #9699 scalar-fielded Record `addpt` + the #9701 rpp3
-        // heap-carrying Record `rsum` + the #9707 wfp1 >16-flat-scalar `big`.
-        let mut reached = [false; 17];
-        for seed in 0u64..1020 {
+        // heap-carrying Record `rsum` + the #9707 wfp1 >16-flat-scalar `big` + the #9716 els1 list<String>
+        // byte-leaf `slen`.
+        let mut reached = [false; 18];
+        for seed in 0u64..1080 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(17) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // variant(18) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
             // shape selector AND every arg literal on live entropy.
             for _ in 0..64 {
                 x ^= x >> 30;
@@ -5767,11 +5785,13 @@ mod tests {
                 reached[15] = true; // shape 15 = #9701 rpp3 heap-carrying Record `rsum`
             } else if ep.source.contains("(def (big ") {
                 reached[16] = true; // shape 16 = #9707 wfp1 >16-flat-scalar `big`
+            } else if ep.source.contains("(def (slen ") {
+                reached[17] = true; // shape 17 = #9716 els1 list<String> byte-leaf `slen`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all seventeen export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all eighteen export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
