@@ -182,11 +182,19 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   With no world, there is no declared `WitType::Enum`, so `record_interface_export` isn't reached and the
   program falls back to run/encode (SHAPE 58/59). Closing it needs the SYNTHESIZED-world builder to derive
   an `enum` member result from the guest (db-aware `enum_cases`), then the SHAPE-60 lower applies.
-- **[emit, export]** a NON-SCALAR entry PARAM (enum/Sum, and a record whose fields aren't all
-  boundary-scalar) — `try_bare_entry_param_component` + `is_boundary_record`/`field_boundary_abi`
-  decline it: *"parameter … has no scalar boundary representation — a non-scalar entry parameter is not
-  yet emitted on this export path"* (verified: an enum export param, and a record with an enum field,
-  both decline `todo`). The param twin of Direction A above.
+- **[emit, export] bare entry PARAM — the `try_bare_entry_param_component` cluster (driver:
+  wasm-boundary-marshal). SOURCE OF TRUTH = the `rpp*`/`eoc*`/`eot*`/`eor*`/`erp*`/`erc*` corpus cases in
+  `spec/semantics/09-functions.sexp`** (this doc does not re-enumerate them — a per-case list re-stales every
+  landing). WHAT CROSSES now: an aliased-width scalar; `String`/`Bytes`; a flat `list<scalar>` (incl. nested
+  `list<list<…>>`) and a byte-leaf `list<string>`/`list<bytes>`; a scalar/`String`/`list`-fielded `tuple<…>`
+  and `record<…>` (a record crosses structurally as a `tuple<…>` via `structuralize_wit`); a `record`/`tuple`
+  nested at ANY depth (rpp8-13); a value-form `BigInt`/`Rational`/`Symbol` (list<u8> value-decode); and an
+  `option<…>`/`result<…>` whose payload is any of those (scalar, byte-leaf, `list`, `tuple`, or `record` —
+  eoc/eop/eos/eob/eot/eor/erp/erc). STILL DECLINES (`CDZ0904`, a clean no-bare-boundary-form decline, verified):
+  a whole enum/`Sum` (non-Option/Result) entry param; a `record`/`tuple` with a `Sum` (`Option`/`Result`) FIELD
+  (`ty_natural_wit` has no structural WIT for a nested sum — a shared-lowering slice); a compound LIST element
+  (`list<tuple>`/`list<option>`/`list<record>` — `list_scalar_elem` declines a compound leaf); and a nested
+  byte-leaf list (`list<list<string>>`).
 - **[emit, export] typed `result<ok,err>` EXPORT result — ✅ DONE (SHAPE 74/75).** A `result<s64,s64>`
   (74) and a compound-payload `result<record{lo,hi}, s64>` (75) EXPORT result now cross: `canon_write_of`
   gained a Result arm (a 2-variant both-payload sum → `CanonWrite::Variant`, mapping guest `Ok`→boundary
@@ -199,9 +207,10 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   unbox, narrowing a ≤32-bit value) and returns the scalar; no memory. `(live-objects known-leak)` (the
   record handle is not reclaimed). Restricted to a record with exactly one scalar field (a nested-compound
   single field, or a multi-field-but-1-flat record, is a later slice).
-- **[emit, export]** top-level Tuple/Sum/List/String/Bytes typed-interface PARAM
-  (`record_interface_export`); a nested/compound list-param
-  element on the bare-entry path; a `result<>` bare-entry param.
+- **[emit, export]** the TYPED-INTERFACE PARAM (`record_interface_export`) for a Tuple/Sum/List/String/Bytes
+  member (distinct from the BARE-entry cluster above, which now covers those shapes — a top-level Tuple and a
+  `result<>` bare-entry param both cross, rpp4/erp/erc). Remaining bare-entry gap: a compound LIST element
+  (see the entry-PARAM bullet's still-declines list).
 
 **Design-level (no WIT boundary form on either side; needs a design decision — TRACK, don't rush):**
 - **[design]** BigInt, Rational, exact-`Qty`, Map, Set, Symbol.
