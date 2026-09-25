@@ -665,7 +665,7 @@ fn a_depth_3_nested_op_chain_folds_via_n_way_merge_and_recursive_lift() {
 
 #[test]
 fn a_direct_conditional_resume_value_performing_outer_threads_the_advance() {
-    // 11216 adv-69 a3-direct (v-effects 2026-09-25): a DIRECT branch-performing conditional in a nested
+    // 11216 adv-69 a3-direct + 11211 a3 block-wrapped (v-effects 2026-09-25): a DIRECT branch-performing conditional in a nested
     // handler's arm resume-value performing the OUTER op — `(resume (if true (St.get) 99) t)` — used to
     // DECLINE (the a3 guard's direct-conditional disjunct floored it against a dropped-advance silent 33).
     // The through-block threading now folds it correctly to 34 (St seeded 3: Up.ask resumes (if true (St.get)
@@ -680,19 +680,34 @@ fn a_direct_conditional_resume_value_performing_outer_threads_the_advance() {
         "a DIRECT conditional resume-value performing the outer op should FOLD (through-block thread), not decline"
     );
 
-    // The BLOCK-WRAPPED twin — `(resume (let ((b true)) (if b (St.get) 99)) t)` — STILL declines cleanly: the
-    // `let` binder's scope the fold does not yet reconstruct (lifting the resume value orphans `b` → CDZ0101),
-    // so the a3 block-wrapped disjunct KEEPS it a clean CDZ090x decline pending the binder-scope through-block
-    // fold. Assert it declines with a decline-band code, never a spurious unbound-name CDZ0101 or a mis-fold.
+    // 11211 adv-69 a3 (v-effects 2026-09-25): the BLOCK-WRAPPED twin — `(resume (let ((b true)) (if b
+    // (St.get) 99)) t)` — NOW FOLDS to 34 as well. The effect specializer normalizes each arm/body by inlining
+    // simple-pure (atom/name) `let` bindings (`inline_pure_lets`): `(let ((b true)) (if b (St.get) 99))`
+    // becomes the DIRECT `(if true (St.get) 99)` above, so the through-block fold threads the outer advance
+    // (no `let` binder to orphan). Value 34 pinned by the 14b corpus case (value-equiv O0..O3).
     let wrapped = "(do (effect St (op get (-> Unit Int64))) (effect Up (op ask (-> Unit Int64))) \
                    (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
                      (handle Up 0 ((ask (u) t (resume (let ((b true)) (if b (St.get) 99)) t))) \
                        (+ (* 10 (Up.ask)) (St.get))))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(wrapped)))
-        .expect_err("the block-wrapped resume-value twin still declines pending the binder-scope through-block fold");
+    assert!(
+        compile_component(&crate::codec::encode(&parse(wrapped))).is_ok(),
+        "the block-wrapped twin must FOLD via pure-let inlining ((let ((b true)) …) → (if true …)), not decline"
+    );
+
+    // The IMPURE-block twin — the `let` init is EFFECTFUL (`(do (Log.add 1) true)`), NOT a simple-pure
+    // atom/name — is NOT inlined, so its `let` survives and the case STILL declines cleanly (the block
+    // boundary the fold does not cross). Assert a CDZ090x deferred code, never a spurious CDZ0101 / mis-fold.
+    let impure = "(do (effect St (op get (-> Unit Int64))) (effect Up (op ask (-> Unit Int64))) \
+                   (effect Log (op add (-> Int64 Unit))) \
+                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
+                     (handle Up 0 ((ask (u) t (resume (let ((b (do (Log.add 1) true))) (if b (St.get) 99)) t))) \
+                       (+ (* 10 (Up.ask)) (St.get))))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(impure))).expect_err(
+        "the IMPURE-block resume-value twin still declines (effectful init is not inlined)",
+    );
     assert!(
         err.code.as_deref().is_some_and(|c| c.starts_with("CDZ090")),
-        "the block-wrapped twin must decline with a CDZ090x deferred code, not a spurious CDZ0101 / mis-fold: {:?} / {}",
+        "the impure-block twin must decline with a CDZ090x deferred code, not a spurious CDZ0101 / mis-fold: {:?} / {}",
         err.code,
         err.message
     );
