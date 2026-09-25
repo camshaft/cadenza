@@ -326,6 +326,146 @@ fn subtree_performs_host_call(db: &mut Db, id: StructId) -> bool {
     go(db, id, &mut std::collections::HashSet::new())
 }
 
+/// Whether the subtree rooted at `id` reads a `Core::LocalRef` whose binder is NOT already resolvable in
+/// `env.lets` — i.e. it captures a `let`-binder introduced DEEPER than the current hoist point. Hoisting such a
+/// share above that binder emits its `LocalRef` where the binder is not yet in scope, which the `Core::LocalRef`
+/// emit arm rejects ("reached a `let`-binding reference with no binding in scope"). The dominating frontier
+/// proves a node is UNCONDITIONALLY evaluated, but NOT that its free variables are all bound at the scope top;
+/// this is the missing LICM legality condition — only hoist a share closed over the enclosing environment.
+/// (`Core::Param` reads are always in scope — a parameter is bound at function entry — so only `LocalRef`s can
+/// dangle.)
+fn share_captures_inner_binder(db: &mut Db, id: StructId, env: &BinderEnv) -> bool {
+    fn go(
+        db: &mut Db,
+        id: StructId,
+        env: &BinderEnv,
+        seen: &mut std::collections::HashSet<StructId>,
+    ) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        if let Core::LocalRef { binder } = core_of(db, id) {
+            if !env.lets.contains_key(&binder) {
+                return true;
+            }
+        }
+        for c in crate::backend::wasm::select::core_child_ids(db, id) {
+            if go(db, c, env, seen) {
+                return true;
+            }
+        }
+        false
+    }
+    go(db, id, env, &mut std::collections::HashSet::new())
+}
+
+/// (0704 fix — the NARROW re-emit surface-naming approach v-core-opt approved as the interim unblock for the
+/// handler-derived DAG-as-tree scratch-budget blow-up; see backend/wasm/DESIGN-sharing-aware-emit-let-slot.md).
+/// The PURE shared sub-expressions to hoist-bind ONCE at the top of the scope rooted at `scope` (a single
+/// step's value expression). A shared node re-emitted N times inflates the wasm per-branch scratch-locals
+/// budget (a handler-derived Core DAG serializes as a tree, re-descended per reference); naming it once
+/// collapses that to linear. Admits a node iff ALL of:
+///  - reached ≥2 times WITHIN this scope (`collect_node_refs` count ≥ 2) — i.e. genuinely shared here;
+///  - UNCONDITIONALLY evaluated (`collect_dominating_frontier`) — so binding at the scope top speculates no
+///    conditional/trapping work onto a path that would not have run it (the adv-55 short-circuit hazard);
+///  - PURE — no `Core::HostCall` in it (an effectful node bound once changes the fire COUNT — the 0409 class);
+///  - a NON-TRIVIAL composite (`licm_children` non-empty) — a bare name/literal/Param/LocalRef is pointless
+///    to bind (and a leaf carries no scratch cost);
+///  - not ALREADY resolvable to a binder (`env.scrut_lets`/`env.lets`);
+///  - CLOSED over the enclosing environment (`share_captures_inner_binder` false) — no `Core::LocalRef` to a
+///    `let`-binder introduced DEEPER than the hoist point, else lifting the share dangles that ref (the LICM
+///    legality condition the dominating frontier alone does not give; the 0511 regression).
+/// SOUNDNESS (the rq3/plt2 value-stability boundary, v-core-opt's criterion): the CALLER must invoke this on a
+/// SINGLE step's value expression and register the bindings only for THAT emit — so the binding sits WITHIN one
+/// evaluation of the scope (recomputed per evaluation), never hoisted ACROSS a step / resume-next-state rebind
+/// (which would collapse distinct per-iteration values). Returned deepest-first (reverse first-seen) so a
+/// nested share binds before an outer share whose value references it. Keeps the AST a TREE (the synth `let`
+/// name is a leaf — no shared structure node, so the #9433 codec tree-ness guard holds).
+fn scoped_pure_shares(db: &mut Db, scope: StructId, env: &BinderEnv) -> Vec<StructId> {
+    let mut counts: HashMap<StructId, u32> = HashMap::new();
+    let mut order: Vec<StructId> = Vec::new();
+    crate::core_analysis::collect_node_refs(db, scope, &mut counts, &mut order);
+    // Nothing shared → no work (the overwhelmingly common case; keep it a cheap early-out).
+    if !counts.values().any(|&c| c >= 2) {
+        return Vec::new();
+    }
+    let mut frontier: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    crate::core_analysis::collect_dominating_frontier(db, scope, &mut frontier);
+    let mut out: Vec<StructId> = Vec::new();
+    for &n in order.iter().rev() {
+        if n == scope {
+            continue; // never bind the scope root itself (its parent handles it)
+        }
+        if counts.get(&n).copied().unwrap_or(0) < 2 {
+            continue; // not shared within this scope
+        }
+        if !frontier.contains(&n) {
+            continue; // conditionally reached → hoisting speculates its work/trap
+        }
+        if env.scrut_lets.contains_key(&n) || env.lets.contains_key(&n) {
+            continue; // already resolves to a binder
+        }
+        if crate::core_analysis::licm_children(db, n).is_empty() {
+            continue; // trivial leaf (bare name / literal / Param / LocalRef)
+        }
+        if subtree_performs_host_call(db, n) {
+            continue; // effectful → binding once would change the effect fire-count
+        }
+        if share_captures_inner_binder(db, n, env) {
+            continue; // captures a scope-internal `let`-binder → hoisting it dangles the ref (LICM legality)
+        }
+        out.push(n);
+    }
+    out
+}
+
+/// Emit `scope` with its [`scoped_pure_shares`] hoist-bound once at the top — `(let ((_cdzK <share>)…) <scope>)`
+/// — registering each share → its fresh binder in `env.scrut_lets` so every re-emission inside `scope` resolves
+/// to the binder ([`emit_expr`]'s scrut_lets redirect), then UN-registering after (the share binding is scoped to
+/// THIS emit, never spanning a sibling step — the rq3/plt2 value-stability boundary). No shares → plain emit
+/// (near-zero cost: one `collect_node_refs` early-out). Share VALUEs are emitted deepest-first with the prior
+/// shares already registered, so a nested share resolves inside an outer share's value.
+fn emit_hoisted(
+    db: &mut Db,
+    b: &mut Builder,
+    scope: StructId,
+    expected: Option<Ty>,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Result<StructId, Reject> {
+    let shares = scoped_pure_shares(db, scope, env);
+    if shares.is_empty() {
+        return emit_expr(db, b, scope, expected, env, emitted);
+    }
+    let mut binding_nodes: Vec<StructId> = Vec::with_capacity(shares.len());
+    let mut registered: Vec<StructId> = Vec::new();
+    for sh in shares {
+        // A share already owned by an enclosing scope resolves there — skip (don't clobber its binder).
+        if env.scrut_lets.contains_key(&sh) || env.lets.contains_key(&sh) {
+            continue;
+        }
+        let name = synth_binding_name(env.next_payload);
+        env.next_payload += 1;
+        // Emit the share's value with the PRIOR shares registered (so a nested share resolves), but NOT this
+        // one yet (it cannot reference itself), then register it for the scope body.
+        let val = emit_expr(db, b, sh, None, env, emitted)?;
+        env.scrut_lets.insert(sh, name.clone());
+        registered.push(sh);
+        let name_node = b.name(name);
+        binding_nodes.push(b.list(vec![name_node, val]));
+    }
+    let body = emit_expr(db, b, scope, expected, env, emitted)?;
+    for sh in &registered {
+        env.scrut_lets.remove(sh);
+    }
+    if binding_nodes.is_empty() {
+        return Ok(body);
+    }
+    let let_head = b.name("let");
+    let binders_node = b.list(binding_nodes);
+    Ok(b.list(vec![let_head, binders_node, body]))
+}
+
 /// True iff `target` appears anywhere in the CORE subtree rooted at `node` — i.e. `node` (transitively via
 /// `core_child_ids`) references `target`. A `Core::SumPayload{scrutinee}` read yields its scrutinee as a
 /// child, so a body reading the scrutinee's payload is caught. Used to check that a folded match's Leaf body
@@ -2604,7 +2744,10 @@ fn emit_expr_viewed(
                 let name_atom = b.name(name.clone());
                 // The value is emitted with only the PRIOR bindings in scope (a binding's initializer
                 // cannot reference itself), then this binding is registered for the rest of the sequence.
-                let value_node = emit_expr(db, b, value, None, env, emitted)?;
+                // (0704) The value is ONE step's expression — hoist its pure shared sub-expressions (e.g. a
+                // handler-state tuple projection re-read N times) into a let bound once, scoped to THIS value,
+                // so the wasm per-branch scratch-locals recompute stays linear (never spanning a sibling step).
+                let value_node = emit_hoisted(db, b, value, None, env, emitted)?;
                 env.lets.insert(binder, name.clone());
                 // Register the VALUE node → this binder for the rest of the sequence + the body, so a DIRECT
                 // reference to the inlined value resolves to the once-emitted binder. Skip if already owned by
