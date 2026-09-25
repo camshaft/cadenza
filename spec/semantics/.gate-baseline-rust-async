@@ -9528,6 +9528,7 @@ pass	rpp8 a nested Tuple entry param projects through both levels
 pass	rpp9 a Record entry param with a nested Tuple field measures both
 pass	rpp10 a Tuple entry param with a nested Record element projects through both levels
 pass	rpp11 a Record entry param with a nested Record field projects through both levels
+pass	rpp12 a Record entry param whose declaration order differs from name-lex order routes fields by name
 pass	rpp10 a Record entry param with String, Bytes, list and scalar fields measures all four
 pass	rpp11 a Tuple entry param with a String, a list and a scalar element measures all three
 pass	rps2 the RPS judge with the opponent move HOISTED through match binders — the LCG advance and the mod-3 move bind once per dispatch instead of recomputing per branch, same protocol and answers
