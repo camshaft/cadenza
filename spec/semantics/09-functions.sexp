@@ -12994,7 +12994,7 @@
         (main (: o (Option (Tuple Int64 Int64))))
         (match o ((Option.Some t) (+ (. t 0) (. t 1))) ((Option.None) -1)))
       (export main)))
-  (call main (: (Some (tuple 3 4)) (Option (Tuple Int64 Int64))))
+  (call main (: (Some #tuple(3 4)) (Option (Tuple Int64 Int64))))
   (output (: 7 Int64))
   (call main (: (None unit) (Option (Tuple Int64 Int64))))
   (output (: -1 Int64)))
@@ -13007,7 +13007,7 @@
         (main (: o (Option (Record (: a Int64) (: b Int64)))))
         (match o ((Option.Some r) (+ r.a r.b)) ((Option.None) -1)))
       (export main)))
-  (call main (: (Some (record (a 5) (b 6))) (Option (Record (: a Int64) (: b Int64)))))
+  (call main (: (Some #record((= a 5) (= b 6))) (Option (Record (: a Int64) (: b Int64)))))
   (output (: 11 Int64))
   (call main (: (None unit) (Option (Record (: a Int64) (: b Int64)))))
   (output (: -1 Int64)))
@@ -13150,7 +13150,7 @@
         (main (: r (Result (Tuple Int64 Int64) Int64)))
         (match r ((Result.Ok t) (+ (. t 0) (. t 1))) ((Result.Err e) e)))
       (export main)))
-  (call main (: (Ok (tuple 3 4)) (Result (Tuple Int64 Int64) Int64)))
+  (call main (: (Ok #tuple(3 4)) (Result (Tuple Int64 Int64) Int64)))
   (output (: 7 Int64))
   (call main (: (Err 99) (Result (Tuple Int64 Int64) Int64)))
   (output (: 99 Int64)))
@@ -13165,7 +13165,7 @@
       (export main)))
   (call main (: (Ok 42) (Result Int64 (Tuple Int64 Int64))))
   (output (: 42 Int64))
-  (call main (: (Err (tuple 5 6)) (Result Int64 (Tuple Int64 Int64))))
+  (call main (: (Err #tuple(5 6)) (Result Int64 (Tuple Int64 Int64))))
   (output (: 30 Int64)))
 
 (case
@@ -13176,9 +13176,9 @@
         (main (: r (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
         (match r ((Result.Ok t) (+ (. t 0) (. t 1))) ((Result.Err t) (* (. t 0) (. t 1)))))
       (export main)))
-  (call main (: (Ok (tuple 3 4)) (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
+  (call main (: (Ok #tuple(3 4)) (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
   (output (: 7 Int64))
-  (call main (: (Err (tuple 5 6)) (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
+  (call main (: (Err #tuple(5 6)) (Result (Tuple Int64 Int64) (Tuple Int64 Int64))))
   (output (: 30 Int64)))
 
 ; erc4 is the RECORD counterpart of erc1: a Result whose Ok arm is a scalar-fielded `record<…>`. The compound
@@ -13194,7 +13194,7 @@
         (main (: r (Result (Record (: a Int64) (: b Int64)) Int64)))
         (match r ((Result.Ok rr) (+ rr.a rr.b)) ((Result.Err e) e)))
       (export main)))
-  (call main (: (Ok (record (a 3) (b 4))) (Result (Record (: a Int64) (: b Int64)) Int64)))
+  (call main (: (Ok #record((= a 3) (= b 4))) (Result (Record (: a Int64) (: b Int64)) Int64)))
   (output (: 7 Int64))
   (call main (: (Err 99) (Result (Record (: a Int64) (: b Int64)) Int64)))
   (output (: 99 Int64)))
@@ -13560,7 +13560,7 @@
   (call
     main
     (:
-      (tuple (tuple (record (a 1) (b 2)) 3) 4)
+      #tuple(#tuple(#record((= a 1) (= b 2)) 3) 4)
       (Tuple (Tuple (Record (: a Int64) (: b Int64)) Int64) Int64)))
   (output (: 127 Int64)))
 
