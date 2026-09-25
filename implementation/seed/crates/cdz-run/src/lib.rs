@@ -4375,15 +4375,25 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
         // A LIST argument: the corpus writes `(list e0 e1 …)`; coerce each element against the element type
         // (elements may themselves be compound and recurse).
         Type::List(lt) => {
-            let mut parts = parse_tuple_fields(s).ok_or_else(|| {
-                anyhow!("argument `{s}`: expected a list literal like `(list 1 2)`")
-            })?;
-            if parts.first().map(String::as_str) == Some("list") {
-                parts.remove(0);
+            // A `Bytes` value crosses as `list<u8>`, and the corpus writes its argument as the byte-string
+            // value-form literal `b"…"` (`(: b"\x01\x02" Bytes)` → `s` = `b"\x01\x02"`). Decode the
+            // `b"…"`-prefixed form via the front-end's `unescape_byte_string_token` (the exact inverse of
+            // `escape_bytes`/`render_val`), so the marshalled `list<u8>` matches the source Bytes — mirroring
+            // how a Char arg accepts the `#\` form and a String the quoted literal. Gated on a `u8` element so
+            // only a `Bytes`/`list<u8>` target accepts it; a `(list …)` form is still accepted below.
+            if matches!(lt.ty(), Type::U8) && s.starts_with("b\"") && s.ends_with('"') {
+                list_u8_val(&cadenza_syntax::literal::unescape_byte_string_token(s))
+            } else {
+                let mut parts = parse_tuple_fields(s).ok_or_else(|| {
+                    anyhow!("argument `{s}`: expected a list literal like `(list 1 2)`")
+                })?;
+                if parts.first().map(String::as_str) == Some("list") {
+                    parts.remove(0);
+                }
+                let et = lt.ty();
+                let vals: Result<Vec<Val>> = parts.iter().map(|e| coerce_one(e, &et)).collect();
+                Val::List(vals?)
             }
-            let et = lt.ty();
-            let vals: Result<Vec<Val>> = parts.iter().map(|e| coerce_one(e, &et)).collect();
-            Val::List(vals?)
         }
         // An ENUM argument (a payload-less sum): the corpus writes the `render_val` form `(<case> unit)` (a
         // bare `<case>` is also accepted). Extract the case name and validate it against the enum's declared

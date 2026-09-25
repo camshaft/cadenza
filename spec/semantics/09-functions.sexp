@@ -13369,6 +13369,36 @@
   (call main (: #record((= n 10) (= pt #tuple(3 4))) (Record (: n Int64) (: pt (Tuple Int64 Int64)))))
   (output (: 17 Int64)))
 
+; rpp10/rpp11 pin the INTEGRATION of MULTIPLE heap fields of DIFFERENT kinds in ONE cell — a String
+; (BytesLeaf) beside a Bytes (BytesLeaf) beside a list<scalar> (ListLeaf) beside a plain scalar. The single-
+; heap-field rungs above cover each in isolation (String rpp6/7, list rpp3/5); these fence their COMBINATION —
+; the per-field leaf-cursor threading + the shared byte/vec scratch reused across two memory-bearing fields in
+; the same cell must not clobber each other (a measured 0-leak). rpp10 = a 4-field Record (String+Bytes+list+
+; scalar); rpp11 = a 3-field Tuple (String+list+scalar).
+(case
+  "rpp10 a Record entry param with String, Bytes, list and scalar fields measures all four"
+  (input
+    (do
+      (def
+        (main (: r (Record (: s String) (: b Bytes) (: xs (List Int64)) (: n Int64))))
+        (+ (+ (String.byte-len r.s) (Bytes.len r.b)) (+ (List.len r.xs) r.n)))
+      (export main)))
+  (call main
+    (: #record((= s "ab") (= b b"\x01\x02\x03") (= xs #list(10 20)) (= n 5))
+       (Record (: s String) (: b Bytes) (: xs (List Int64)) (: n Int64))))
+  (output (: 12 Int64)))
+
+(case
+  "rpp11 a Tuple entry param with a String, a list and a scalar element measures all three"
+  (input
+    (do
+      (def
+        (main (: t (Tuple String (List Int64) Int64)))
+        (+ (+ (String.byte-len (. t 0)) (List.len (. t 1))) (. t 2)))
+      (export main)))
+  (call main (: #tuple("abc" #list(1 2) 10) (Tuple String (List Int64) Int64)))
+  (output (: 15 Int64)))
+
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
   (doc
