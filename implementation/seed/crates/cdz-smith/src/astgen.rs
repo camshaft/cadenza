@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(19);
+    let shape = c.variant(20);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -253,6 +253,16 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let str_list_arg = format!("#list(\"{s0}\" \"{s1}\" \"\")");
     // A nested Tuple (a tuple whose 2nd field is a tuple) for the #9714 rpp8/rpp9 shape (18); value = e0+e1+e2.
     let nested_tuple_arg = format!("#tuple({e0} #tuple({e1} {e2}))");
+    // An option<String> SUM entry-param value-form for the #9718/#9742 eos1 sum-payload-byte-leaf shape (19).
+    // Alternates the two variants by e2 parity: `(Some "xxx…")` (a String PAYLOAD carried in a sum cell) vs the
+    // payload-less `None`. Both arms are marshaled: the Some case crosses a byte-leaf INSIDE a sum discriminant
+    // (the risky path — a mis-copied payload corrupts the byte-len), the None case the empty-variant marshal.
+    // Uses the RENDERED bare-variant literal `(Some …)`/`None` (the `(Option.Some …)`/`#Some(…)` forms error on rust).
+    let opt_str_arg = if e2 % 2 == 0 {
+        format!("(Some \"{s0}\")")
+    } else {
+        "None".to_string()
+    };
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -408,10 +418,22 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      whose 2nd field is itself a tuple), read via projection (. t 0) + (. (. t 1) 0) + (. (. t 1) 1).
         //      Exercises the RECURSIVE param_field_rebuild (a tuple cell nested inside a tuple cell); a
         //      mis-nested rebuild of the inner tuple corrupts the sum.
-        _ => (
+        18 => (
             "(do (def (f (: t #tuple(Int64 #tuple(Int64 Int64)))) (+ (. t 0) (+ (. (. t 1) 0) (. (. t 1) 1)))) (export f))"
                 .to_string(),
             vec![nested_tuple_arg],
+        ),
+        // 19 — #9718/#9742 eos1 option<String> SUM ENTRY PARAM: a `(Option String)` param matched to read the
+        //      Some-payload String's byte-len (or 0 for None). This is the FIRST sum ENTRY param in the grammar
+        //      (shapes 9-11 const-materialize sum FIELDS/values inside the body — none marshal a sum ACROSS the
+        //      export boundary). The Some case carries a String BYTE-LEAF inside a sum discriminant cell — the
+        //      peer's actual risky work; a mis-copied payload or mis-read discriminant corrupts the byte-len.
+        //      The RESULT is a scalar byte-len, so it clears the String-RESULT boundary (rust has no String-value
+        //      result support — see S576). Arg alternates `(Some "…")`/`None` by e2 parity (both variants marshal).
+        _ => (
+            "(do (def (f (: o (Option String))) (match o ((Some s) (String.byte-len s)) (None 0))) (export f))"
+                .to_string(),
+            vec![opt_str_arg],
         ),
     };
     ExportParam { source, args }
@@ -5740,13 +5762,14 @@ mod tests {
         // const-list-of-Option-field sibling + the #9687 payload-variant field + the #9689 consuming-slice `cat`
         // + the #9694 String-consume `catlen` + the #9699 scalar-fielded Record `addpt` + the #9701 rpp3
         // heap-carrying Record `rsum` + the #9707 wfp1 >16-flat-scalar `big` + the #9716 els1 list<String>
-        // byte-leaf `slen` + the #9714 rpp8/rpp9 nested-Tuple `f`.
-        let mut reached = [false; 19];
-        for seed in 0u64..1140 {
+        // byte-leaf `slen` + the #9714 rpp8/rpp9 nested-Tuple `f` + the #9718/#9742 eos1 option<String>
+        // sum-entry-param `f`.
+        let mut reached = [false; 20];
+        for seed in 0u64..1200 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(19) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy.
+            // variant(20) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shape 19 reuses e2/s0 — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -5804,11 +5827,13 @@ mod tests {
                 reached[17] = true; // shape 17 = #9716 els1 list<String> byte-leaf `slen`
             } else if ep.source.contains("#tuple(Int64 #tuple(Int64 Int64))") {
                 reached[18] = true; // shape 18 = #9714 rpp8/rpp9 nested-Tuple `f`
+            } else if ep.source.contains("(: o (Option String))") {
+                reached[19] = true; // shape 19 = #9718/#9742 eos1 option<String> sum-entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all nineteen export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
@@ -7829,7 +7854,11 @@ mod tests {
         assert_eq!(c.pos, 8, "int_bounded consumes exactly eight bytes");
         // …and it IS a big-endian fold: 0x00..00_01 = 1, so `min + (1 % span)`.
         let mut c = ByteCursorChoice::new(&[0, 0, 0, 0, 0, 0, 0, 1]);
-        assert_eq!(c.int_bounded(0, 9), 1 % 10);
+        // The `1 % 10` is written OUT (not folded to `1`) to document the `min + (value % span)` mapping.
+        #[allow(clippy::identity_op)]
+        {
+            assert_eq!(c.int_bounded(0, 9), 1 % 10);
+        }
 
         // A degenerate range (`min >= max`) reads NOTHING and returns `min`.
         let mut c = ByteCursorChoice::new(&[0; 8]);

@@ -201,15 +201,15 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
       # differential structurally cannot reach. Small count (it shells `cdz` per program, like the sweep
       # above) under its own cap, reusing the already-resolved cdz + store. A KILL at the cap is SAFE
       # (findings stream to disk per program); the count sizes the SLOWEST (cdz-shelling) pass to fit.
-      # generate_export_param has 19 shapes (6 scalar + 3 List-entry-borrow + const-sum-field E0282 family
+      # generate_export_param has 20 shapes (6 scalar + 3 List-entry-borrow + const-sum-field E0282 family
       # #9586/#9684/#9687 + #9689 List-consume + #9694 String-consume + 2 Record #9699/#9701 + #9707 wfp1
-      # >16-flat memory-indirect + #9716 els1 list<String> byte-leaf + #9714 rpp8/rpp9 nested-Tuple). NOTE:
-      # EP_COUNT is HELD FLAT at 210 (now ~11 draws/shape, was ~20) — the
-      # cdz-shelling cost neared the tick budget (~67s at 13x20), so we bound the pass by keeping the count
-      # flat (all shapes still drawn ~13x/cycle, measured ~56s at 16 shapes) rather than growing it linearly.
-      # SPLIT-THRESHOLD (measured, not a fixed shape count): when this pass exceeds ~70s or draws/shape falls
-      # below ~10, split it (fast subset per cycle + full nightly). A KILL at the cap is safe (findings stream).
-      EP_COUNT="${CDZ_SMITH_EXPORT_PARAM_COUNT:-210}"
+      # >16-flat memory-indirect + #9716 els1 list<String> byte-leaf + #9714 rpp8/rpp9 nested-Tuple + #9718/#9742
+      # eos1 option<String> sum-entry-param). NOTE: EP_COUNT bumped 210->240 at the 20th shape to hold ~12
+      # draws/shape (210 would be ~10.5 = the split floor); the cdz-shelling cost stays under cap (~64-66s
+      # measured, was ~56s at 16 shapes). SPLIT-THRESHOLD (measured, not a fixed shape count): when this pass
+      # exceeds ~70s or draws/shape falls below ~10, split it (fast subset per cycle + full nightly) rather than
+      # bumping the count again. A KILL at the cap is safe (findings stream to disk per program).
+      EP_COUNT="${CDZ_SMITH_EXPORT_PARAM_COUNT:-240}"
       EP_CAP="${CDZ_SMITH_EXPORT_PARAM_CAP:-75}"
       if [ "$EP_COUNT" -gt 0 ]; then
         log "export-param differential mini-pass | count $EP_COUNT | cdz $DIFF_CDZ | store $DIFF_STORE | cap ${EP_CAP}s"
