@@ -3508,7 +3508,10 @@ impl FieldRebuild {
             // The list copy-in loop (`emit_list_leaf_lift`): build the vec (`vec-empty`), then per element
             // read + box (`elem.box_op`) + append (`vec-push`). A COMPOUND element (`list<tuple>`/`list<record>`
             // field) builds a value-heap cell per element (`arr-alloc`/`arr-set`) + boxes each scalar field
-            // instead of one `box_op`.
+            // instead of one `box_op`. A SUM element (`list<option<scalar>>` field, rpp23) builds a value-heap
+            // sum cell per element (`sum-new`) + boxes the Some payload — its `box_op` is inert (empty), so it
+            // MUST take this arm, else the empty op name poisons the wrapper's import collection. Mirrors the
+            // top-level `list<option<scalar>>` param's lift-op collection.
             FieldRebuild::ListLeaf(elem) => {
                 out("vec-empty");
                 out("vec-push");
@@ -3518,6 +3521,9 @@ impl FieldRebuild {
                     for f in fields {
                         out(f.box_op);
                     }
+                } else if let Some(s) = &elem.sum {
+                    out("sum-new");
+                    out(s.payload_box);
                 } else {
                     out(elem.box_op);
                 }
