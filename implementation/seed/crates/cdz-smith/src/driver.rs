@@ -505,6 +505,106 @@ pub fn differential_sweep(
     Ok(stats)
 }
 
+/// The (source, args) EXPORT-PARAM program for `seed` — a single export TAKING scalar parameters plus the
+/// value-form literals to call it with ([`crate::astgen::generate_export_param`]). The run loop and any
+/// filer must use this SAME function so a filed reproducer (recorded by its seed) regenerates identically.
+pub fn export_param_for_seed(seed: u64) -> (String, Vec<String>) {
+    let ep = crate::astgen::generate_export_param(&astgen_seed_entropy(seed));
+    (ep.source, ep.args)
+}
+
+/// The EXPORT-PARAM differential sweep: the entry-param boundary-marshal twin of [`differential_sweep`].
+/// For each seed, draws a single-export program whose entry TAKES scalar parameters plus concrete `args`
+/// ([`export_param_for_seed`]), then runs BOTH backends CALLING that entry with those args
+/// ([`crate::differential::differential_with_args`]) and files any disagreement. Reaches the export-PARAM
+/// value surface the nullary [`differential_sweep`] structurally cannot (unblocked by #9670's
+/// `cdz run-rust --arg` passthrough): a mis-coerced / wrong-width / wrong-sign boundary marshal on EITHER
+/// backend corrupts the returned value → a mismatch. Findings are seed-reproducible (the seed regenerates
+/// the exact source+args), so — like the `determinism` sweep — they file UNSHRUNK (the curated shapes are
+/// already minimal, and a shrinker would have to co-vary the args). Same all-`Unavailable`-is-misconfigured
+/// contract as [`differential_sweep`].
+#[cfg(feature = "differential")]
+pub fn export_param_differential_sweep(
+    cfg: &Config,
+    store: &std::path::Path,
+    cdz: &std::path::Path,
+    count: u64,
+) -> std::io::Result<DiffStats> {
+    use crate::differential::{Diff, differential_with_args};
+    let fstore = FindingStore::open(&cfg.findings_dir)?;
+    let mut stats = DiffStats::default();
+    let mut rng = SplitMix64::new(cfg.run_seed);
+    for i in 0..count {
+        let seed = rng.next();
+        let (source, args) = export_param_for_seed(seed);
+        match differential_with_args(&source, &args, store, cdz) {
+            Diff::Agree => stats.agreed += 1,
+            Diff::Unavailable(msg) => {
+                stats.unavailable += 1;
+                if stats.unavailable <= 3 {
+                    eprintln!(
+                        "[cdz-smith] export-param differential unavailable (seed {seed}): {msg}"
+                    );
+                }
+            }
+            Diff::Mismatch { kind, wasm, rust } => {
+                stats.mismatched += 1;
+                let detail = format!(
+                    "[export-param {}] args=[{}] wasm={wasm} rust={rust}",
+                    kind.tag(),
+                    args.join(", ")
+                );
+                let finding = Finding {
+                    category: Category::Differential,
+                    program: source.clone(),
+                    crash: None,
+                    detail: Some(detail),
+                    commit: cfg.commit.clone(),
+                };
+                let label = format!("export-param differential ({} mismatch)", kind.tag());
+                file_and_tally(
+                    &fstore,
+                    &finding,
+                    &mut stats.new_buckets,
+                    &mut stats.duplicate_hits,
+                    seed,
+                    &label,
+                );
+            }
+            Diff::CompileCrash(info) => {
+                stats.crashed += 1;
+                let finding = Finding {
+                    category: Category::Crash,
+                    program: source.clone(),
+                    crash: Some(info),
+                    detail: None,
+                    commit: cfg.commit.clone(),
+                };
+                file_and_tally(
+                    &fstore,
+                    &finding,
+                    &mut stats.new_buckets,
+                    &mut stats.duplicate_hits,
+                    seed,
+                    "export-param differential compile-crash",
+                );
+            }
+        }
+        if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
+            eprintln!(
+                "[cdz-smith] export-param differential {}/{count} | {} agreed, {} mismatched ({} buckets), {} crashed, {} unavailable",
+                i + 1,
+                stats.agreed,
+                stats.mismatched,
+                stats.new_buckets,
+                stats.crashed,
+                stats.unavailable
+            );
+        }
+    }
+    Ok(stats)
+}
+
 /// The OPT-INVARIANCE sweep: for each generated program, run it at the `O0` BASELINE and at every higher
 /// level (`O1`/`O2`/`O3`) ([`crate::differential::opt_invariance`]) and file any value/liveness disagreement
 /// against the baseline — a pure optimizer MISCOMPILE (the O2/O3 global-CSE / lifted-analysis reclaim class
