@@ -8890,6 +8890,16 @@ impl MakeParams {
                                     out(f.box_op);
                                 }
                             } else {
+                                // A SUM element (`list<option<scalar>>`) does not reach here today: the make-path
+                                // classifier above declines ALL list params (Str/Bytes/ValueForm only). If list
+                                // params are enabled here later via `list_sum_elem`, this arm MUST gain a sum
+                                // branch (`sum-new` + `s.payload_box`, like the entry path) — else the sum
+                                // element's inert empty `box_op` poisons the wrapper import collection (the
+                                // #9752/#9753 empty-op decline class). The assert catches that reintroduction.
+                                debug_assert!(
+                                    elem.sum.is_none(),
+                                    "make-path list sum element needs a sum-new branch (see #9752/#9753)"
+                                );
                                 out(elem.box_op);
                             }
                         }
