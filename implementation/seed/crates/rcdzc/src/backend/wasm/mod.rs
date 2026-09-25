@@ -730,6 +730,18 @@ pub fn emit(
                             used.insert("drop");
                         }
                     }
+                    // A value-form leaf PARAM (BigInt/Rational/Symbol): copy the `(ptr, len)` bytes + bake the
+                    // shape descriptor (bytes-alloc/bytes-set), then `value-decode` reconstructs the value-heap
+                    // handle; the wrapper (owner of the fresh handle + the borrowed byte/desc temps) drops them.
+                    (serialize::MemLeafKind::ValueForm(_), _drop_after) => {
+                        used.insert("bytes-alloc");
+                        used.insert("bytes-set");
+                        used.insert("value-decode");
+                        // The borrowed bytes + baked descriptor are ALWAYS dropped inside the lift (regardless
+                        // of `_drop_after`, which governs only the decoded handle's post-call reclaim — added
+                        // by `any_drop`/the emit loop). `drop` is registered here for the in-lift temporaries.
+                        used.insert("drop");
+                    }
                 }
             }
             // A TOP-LEVEL `option<scalar>` PARAM (sum_params) branches on the boundary disc and builds the guest
@@ -1065,6 +1077,11 @@ pub fn emit(
                         | crate::ty::Ty::Sum { .. }
                         | crate::ty::Ty::Nominal { .. }
                         | crate::ty::Ty::Tuple(_)
+                        // BigInt/Rational/Symbol have no scalar boundary rep; they cross as the `list<u8>`
+                        // canonical value-form, lifted via `value-decode` (eb1/er1/ey1).
+                        | crate::ty::Ty::BigInt
+                        | crate::ty::Ty::Rational
+                        | crate::ty::Ty::Symbol
                 )
             })
         })
@@ -7246,6 +7263,9 @@ fn try_bare_entry_param_component(
     let params: Vec<(crate::ast::StructId, Ty)> = layout.exports[0].params.clone();
     let mut param_vts: Vec<u8> = Vec::new();
     let mut mem_leaf_params: Vec<Option<(serialize::MemLeafKind, bool)>> = Vec::new();
+    // Shape-descriptor bytes for each `MemLeafKind::ValueForm` param (BigInt/Rational/Symbol) — indexed by the
+    // variant's `u32`. Baked into the wrapper's `value-decode` call. Empty when no value-form param.
+    let mut value_form_descs: Vec<Vec<u8>> = Vec::new();
     let mut sum_params: Vec<Option<(serialize::SumArgRebuild, bool)>> = Vec::new();
     // A scalar-fielded TUPLE entry param crosses as a native component `tuple<…>`, whose canonical ABI
     // flattens it into its elements' core valtypes. The wrapper builds the value-heap cell (`arr-alloc`/
@@ -7384,6 +7404,35 @@ fn try_bare_entry_param_component(
             wit_params.push((format!("p{i}"), wit));
             continue;
         }
+        // A VALUE-FORM leaf param (`BigInt`/`Rational`/`Symbol`) has NO scalar boundary rep: cross it as the
+        // canonical `list<u8>` value-form (the bytes `Value.encode`/`Value.decode` use) and reconstruct it in
+        // the wrapper via `value-decode(bytes, desc)` — the param twin of the R2 `Core::ValueDecode` (eb1/er1/
+        // ey1). `ty_natural_wit` DECLINES these types (they have no natural WIT), so synthesize the `list<u8>`
+        // WIT + the shape descriptor here directly, BEFORE the `ty_natural_wit` bail below. A type whose shape
+        // descriptor cannot be computed (`value_form_param_descriptor` returns None) declines to a later slice.
+        if matches!(gty, Ty::BigInt | Ty::Rational | Ty::Symbol) {
+            let desc = crate::lower::value_form_param_descriptor(db, gty)?;
+            // The def BORROWS the decoded value (beyond-i64 arithmetic, exact-Rational compare, a Map-key
+            // lookup — none consume it); the wrapper, owner of the freshly `value-decode`d handle, reclaims it
+            // after the call. An ESCAPING value-form param declines at the borrowed-only gate below.
+            let drop_after = !crate::backend::wasm::select::param_escapes_body(db, body, *binder);
+            let idx = value_form_descs.len() as u32;
+            value_form_descs.push(desc);
+            // Canonical `list<u8>` flattening: `(ptr: i32, len: i32)`.
+            param_vts.push(ValType::I32.byte());
+            param_vts.push(ValType::I32.byte());
+            mem_leaf_params.push(Some((serialize::MemLeafKind::ValueForm(idx), drop_after)));
+            sum_params.push(None);
+            cell_params.push(None);
+            cell_slots.push(None);
+            cell_drop_after.push(false);
+            cell_escaped_fields.push(None);
+            wit_params.push((
+                format!("p{i}"),
+                crate::wit_world::WitType::List(Box::new(crate::wit_world::WitType::U8)),
+            ));
+            continue;
+        }
         let wit = crate::wit_world::ty_natural_wit(gty)?;
         // A memory-bearing leaf param (String/Bytes/list<Int64>) all flatten to (ptr, len) and lift via
         // mem_leaf_params. The def OWNS the arg (callee-owns-args), but a param it only BORROWS (byte-len /
@@ -7516,6 +7565,15 @@ fn try_bare_entry_param_component(
     }) {
         lift_ops.extend(["bytes-alloc", "bytes-set"]);
     }
+    // A value-form leaf param (BigInt/Rational/Symbol) copies its `(ptr, len)` bytes + bakes the descriptor
+    // (bytes-alloc/bytes-set) then reconstructs the value with `value-decode`; the borrowed handle's post-call
+    // reclaim adds `drop` via `any_drop` below.
+    if mem_leaf_params
+        .iter()
+        .any(|m| matches!(m, Some((serialize::MemLeafKind::ValueForm(_), _))))
+    {
+        lift_ops.extend(["bytes-alloc", "bytes-set", "value-decode"]);
+    }
     for m in &mem_leaf_params {
         if let Some((serialize::MemLeafKind::List(elem), _)) = m {
             // A list<scalar> builds a vec + boxes each element with its own box op (box-int/float/float32/bool).
@@ -7575,6 +7633,7 @@ fn try_bare_entry_param_component(
         // all-`None` keeps the wrapper body's disc-remap check inert (byte-neutral passthrough).
         enum_disc_params: vec![None; params.len()],
         mem_leaf_params,
+        value_form_descs,
         // The #9014 dup-aware shell-reclaim: drop a BORROWED rebuilt cell after the def call; the escaped-field
         // variant projects+dups each moved-out field before the deep-drop (28-wit:310 SHAPE-9).
         record_param_drop_after: cell_drop_after,
@@ -8132,6 +8191,9 @@ fn record_interface_export(
             params,
             param_slots,
             mem_leaf_params,
+            // The typed-interface-member route lifts no top-level value-form leaf param (that is the bare
+            // plain-export route); empty keeps the wrapper's `ValueForm` arm unreachable (byte-neutral).
+            value_form_descs: Vec::new(),
             record_param_drop_after,
             record_param_escaped_fields,
             def_abs,

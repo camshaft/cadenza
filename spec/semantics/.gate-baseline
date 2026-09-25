@@ -11209,7 +11209,7 @@ pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up t
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	a BLOCK-wrapped branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3 sub-face)
-todo	a BigInt entry argument is marshalled through the value's own constructor
+pass	a BigInt entry argument is marshalled through the value's own constructor
 todo	a BigInt entry parameter added to a beyond-i64 annotated literal
 todo	a BigInt entry parameter is COMPUTED on, not just compared
 todo	a DEPTH-3 nested-op chain whose deepest resume performs the outer effect declines cleanly (no silent drop)
@@ -11217,11 +11217,11 @@ todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines clean
 todo	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a Rational ENTRY parameter crosses the boundary and reduces per call
-todo	a Rational entry argument is marshalled through Rational::new
+pass	a Rational entry argument is marshalled through Rational::new
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a String-typed @param accessor crosses once the world-driven result path lands
-todo	a Symbol entry parameter compares to an interned constant
+pass	a Symbol entry parameter compares to an interned constant
 pass	a `..` construction spread of an unbound operand in a MAP reports the unbound name (CDZ0101), construction spread being legal
 pass	a `..` construction spread of an unbound operand in a RECORD reports the unbound name (CDZ0101), construction spread being legal
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
@@ -11267,7 +11267,7 @@ todo	byp2 a Bytes entry param destructured by a runtime bin match declines
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
-todo	eb1 a BigInt entry param in beyond-i64 arithmetic
+pass	eb1 a BigInt entry param in beyond-i64 arithmetic
 todo	el1 a List entry param summed by an indexed walk
 pass	el8 a nested List-of-List entry param measures both levels
 todo	elc2 a Map keyed by the lifted List entry param answers its value on lookup
@@ -11278,11 +11278,11 @@ pass	eln3 a THREE-level nested-list entry param reads a leaf through two descent
 pass	eop2 an Option-of-list entry param measures its Some payload
 todo	ep1 TWO String entry params concat in declaration order
 pass	equality on a TUPLE containing a closure is rejected CDZ0216 (NotEquatable — the fn leaf poisons the compound walk)
-todo	er1 a Rational entry param in exact arithmetic
+pass	er1 a Rational entry param in exact arithmetic
 pass	erp1 a Result entry param delivers its Ok payload
 pass	erp2 a Result entry param with two scalar payloads declines pending the Result lift
 todo	expect traps on the absent case of a runtime optional
-todo	ey1 a Symbol entry param keys a Map
+pass	ey1 a Symbol entry param keys a Map
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
 todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)
 todo	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat

@@ -10485,20 +10485,26 @@
 ; LIBRARY was correct. Fixed in the rust gate harness (`rust_call_arg` now lowers each non-scalar arg via
 ; the SAME construction the library body uses: `cdz_num::Big`/`Rational`, a `Vec<u8>`/`vec!`, `Option`).
 ; breaker-found CLUSTER (corpus-bugfix); the surface was wholly untested (every case built the value INSIDE
-; the program). On wasm the picture is now SPLIT (the non-scalar entry lift was realized for the leaf/collection
-; shapes): the Bytes / List / Option entry args CROSS (copied into a value-heap value at the entry boundary),
-; while the BigInt / Rational / Symbol entry args STILL DECLINE (a sound todo — their non-scalar leaf is not yet
-; lifted). On rust they all run via the marshal, matching the recorded value. (The String member — likewise
-; read-only-crosses on wasm now — is pinned in 13-strings.sexp.)
+; the program). On wasm every one of these entry shapes now CROSSES: Bytes / List / Option are copied into a
+; value-heap value at the boundary; BigInt / Rational / Symbol have no scalar boundary rep, so they cross as
+; the canonical `list<u8>` value-form and the wrapper reconstructs them via `value-decode` (eb1/er1/ey1). A
+; value-form entry arg with a SCALAR result is `(wasm-build-only)` (the harness cannot marshal a value-form
+; CLI arg, so the wasm exec is build-graded on the valid-component compile while rust runs the real trial); a
+; value-form arg with a value-form RESULT (the two BigInt-result cases below) still declines on the compound-
+; result gate (a later slice). On rust they all run via the marshal, matching the recorded value. (The String
+; member — likewise read-only-crosses on wasm now — is pinned in 13-strings.sexp.)
 (case
   "a BigInt entry argument is marshalled through the value's own constructor"
   (doc
     "`(def (main (: a BigInt)) (= a 100N))` called with `100N` → true. The rust driver marshals the
            BigInt arg as `cdz_num::Big::from_i64(100)` (the in-body constructor), NOT the raw `100N` text
-           (which is an invalid Rust suffix). wasm declines the BigInt entry arg (a sound todo).")
+           (which is an invalid Rust suffix). wasm crosses the BigInt entry arg as the `list<u8>` value-form,
+           reconstructed by the wrapper's `value-decode` (eb1); build-graded since the harness cannot marshal
+           a value-form CLI arg.")
   (input (do (def (main (: a BigInt)) (= a 100N)) (export main)))
   (call main (: 100N BigInt))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (wasm-build-only))
 
 (case
   "a BigInt entry parameter is COMPUTED on, not just compared"
@@ -10533,10 +10539,13 @@
   "a Rational entry argument is marshalled through Rational::new"
   (doc
     "`(def (main (: r Rational)) (= r 1R))` called with `1R` → true. The driver marshals it as
-           `cdz_num::Rational::new(Big::from_i64(1), Big::from_i64(1))`, not the invalid `1R` literal.")
+           `cdz_num::Rational::new(Big::from_i64(1), Big::from_i64(1))`, not the invalid `1R` literal. wasm
+           crosses the Rational entry arg as the `list<u8>` value-form via the wrapper's `value-decode` (er1);
+           build-graded since the harness cannot marshal a value-form CLI arg.")
   (input (do (def (main (: r Rational)) (= r 1R)) (export main)))
   (call main (: 1R Rational))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (wasm-build-only))
 
 (case
   "a Bytes entry argument is marshalled as a Vec<u8>"
@@ -10577,11 +10586,14 @@
            The rust driver marshals the `#\"read\"` symbol literal as `\"read\".to_string()` (a Symbol
            param emits as an owned String in the rust backend — strip the `#` sigil, marshal like the String
            entry arm; the driver used to emit the raw `#\"read\"` Cadenza text → a rustc syntax-error
-           no-build, breaker-found, same family as the BigInt entry marshal). wasm declines the Symbol entry
-           arg (a sound todo). Completes the entry-param-marshal family: String / BigInt / Symbol.")
+           no-build, breaker-found, same family as the BigInt entry marshal). wasm crosses the Symbol entry
+           arg as the `list<u8>` value-form via the wrapper's `value-decode` (ey1); build-graded since the
+           harness cannot marshal a value-form CLI arg. Completes the entry-param-marshal family: String /
+           BigInt / Symbol.")
   (input (do (def (main (: s Symbol)) (= s (Symbol.of "read"))) (export main)))
   (call main (: #"read" Symbol))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (wasm-build-only))
 
 ; ============================================================================================
 ; MATCH-INTO-IF fusion (backend-independent Core opt, v-core-opt): a `match` over a SUM built through an
@@ -11913,14 +11925,23 @@
   "eb1 a BigInt entry param in beyond-i64 arithmetic"
   (input (do (def (main (: b BigInt)) (= (* b 2N) 24691357024641975308642N)) (export main)))
   (call main (: 12345678512320987654321N BigInt))
-  (output (: true Bool)))
+  (output (: true Bool))
+  ; The BigInt arg has no scalar boundary rep — on wasm it crosses as the `list<u8>` value-form and the
+  ; wrapper reconstructs it via `value-decode`; the harness cannot marshal that value-form CLI arg, so the
+  ; wasm exec is BUILD-graded (the RUST exec runs the real trial). Correctness of the beyond-i64 arithmetic
+  ; is covered by the rust run.
+  (wasm-build-only))
 
 (case
   "er1 a Rational entry param in exact arithmetic"
   (input
     (do (def (main (: r Rational)) (= (+ r (Rational.of 1 6)) (Rational.of 1 2))) (export main)))
   (call main (: 1/3 Rational))
-  (output (: true Bool)))
+  (output (: true Bool))
+  ; The Rational arg crosses as the `list<u8>` value-form on wasm (no scalar boundary rep), reconstructed by
+  ; the wrapper's `value-decode`; the harness cannot marshal that CLI arg, so the wasm exec is BUILD-graded
+  ; (the RUST exec runs the exact-arithmetic trial).
+  (wasm-build-only))
 
 (case
   "ey1 a Symbol entry param keys a Map"
@@ -11934,7 +11955,11 @@
           ((Option.None) -1)))
       (export main)))
   (call main (: #"hot" Symbol))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  ; The Symbol arg crosses as the `list<u8>` value-form on wasm (no scalar boundary rep), reconstructed by
+  ; the wrapper's `value-decode`; the harness cannot marshal that CLI arg, so the wasm exec is BUILD-graded
+  ; (the RUST exec runs the Map-lookup trial).
+  (wasm-build-only))
 
 ; -- breaker batch 436 (2026-08-26): CLOSURE-ENVIRONMENT reclaim — heap values captured by
 ; closures: invoked once, SHARED across two closures, built-but-NEVER-invoked (the discarded-env
