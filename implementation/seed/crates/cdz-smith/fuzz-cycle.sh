@@ -201,9 +201,9 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
       # differential structurally cannot reach. Small count (it shells `cdz` per program, like the sweep
       # above) under its own cap, reusing the already-resolved cdz + store. A KILL at the cap is SAFE
       # (findings stream to disk per program); the count sizes the SLOWEST (cdz-shelling) pass to fit.
-      # generate_export_param has 16 shapes (6 scalar + 3 List-entry-borrow + const-sum-field E0282 family
-      # #9586/#9684/#9687 + #9689 List-consume + #9694 String-consume + #9699 scalar-fielded Record + #9701
-      # rpp3 heap-carrying Record). NOTE: EP_COUNT is HELD FLAT at 210 (now ~13 draws/shape, was ~20) — the
+      # generate_export_param has 17 shapes (6 scalar + 3 List-entry-borrow + const-sum-field E0282 family
+      # #9586/#9684/#9687 + #9689 List-consume + #9694 String-consume + 2 Record #9699/#9701 + #9707 wfp1
+      # >16-flat memory-indirect). NOTE: EP_COUNT is HELD FLAT at 210 (now ~12 draws/shape, was ~20) — the
       # cdz-shelling cost neared the tick budget (~67s at 13x20), so we bound the pass by keeping the count
       # flat (all shapes still drawn ~13x/cycle, measured ~56s at 16 shapes) rather than growing it linearly.
       # SPLIT-THRESHOLD (measured, not a fixed shape count): when this pass exceeds ~70s or draws/shape falls
