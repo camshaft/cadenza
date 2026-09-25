@@ -128,6 +128,12 @@ pub struct Record {
     /// pins "exactly this one code, nothing else". ERRORS ONLY (warnings are orthogonal — a separate
     /// `(no-other-warnings)` would split them if ever needed). `false` for a case without the clause.
     pub no_other_errors: bool,
+    /// `true` iff the case authored a bare `(wasm-build-only)` clause — a PER-BACKEND grading marker
+    /// shredded verbatim to the grade side (`TestRun::wasm_build_only`): on the WASM exec a case that
+    /// COMPILES is build-graded (its runtime trials skipped, no arg marshal attempted), while the RUST exec
+    /// runs the trials. For a value-form entry param whose arg the wasm harness cannot yet marshal (BigInt/
+    /// Rational/Symbol crossing as wire `list<u8>`). `false` for a case without the clause.
+    pub wasm_build_only: bool,
     /// `(no-diagnostic "phrase")` clauses — a CASE-LEVEL, PROGRAM-SCOPED, CROSS-KIND message-ABSENCE
     /// assertion: the phrase must appear in NO diagnostic the compiler emits for this program — ANY kind
     /// (coded/uncoded error, decline, warning). Distinct from a trial's `(not "phrase")`, which is
@@ -981,6 +987,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut live_objects_cadenza_tolerate = false;
     let mut live_objects_per_call: Option<Vec<u32>> = None;
     let mut no_other_errors = false;
+    let mut wasm_build_only = false;
     let mut no_diagnostic: Vec<String> = Vec::new();
     let mut diagnostic_quality = false;
     let mut diagnostic_quality_opt_out = false;
@@ -1273,6 +1280,8 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
             // `(no-other-errors)` — a bare CASE-LEVEL no-cascade assertion: no error-severity diagnostic
             // outside the case's own `(error CODE …)` codes. Errors only (see the `Record` field doc).
             Some("no-other-errors") => no_other_errors = true,
+            // `(wasm-build-only)` — the bare per-backend build-grade marker (see `Record::wasm_build_only`).
+            Some("wasm-build-only") => wasm_build_only = true,
             // `(diagnostic-quality)` — a bare CASE-LEVEL C1 opt-in: every emitted coded diagnostic must meet
             // the golden-standard rubric (§1 no forbidden phrase, §2 per-code required tokens).
             Some("diagnostic-quality") => diagnostic_quality = true,
@@ -1390,6 +1399,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         live_objects_cadenza_tolerate,
         live_objects_per_call,
         no_other_errors,
+        wasm_build_only,
         no_diagnostic,
         diagnostic_quality,
         diagnostic_quality_opt_out,
@@ -2713,5 +2723,26 @@ mod tests {
         )
         .unwrap();
         assert!(!text.contains("live-objects"));
+    }
+
+    /// A bare `(wasm-build-only)` clause parses into `Record.wasm_build_only` (a per-backend build-grade
+    /// marker carried verbatim to the grade side); absent, the flag is `false`.
+    #[test]
+    fn wasm_build_only_marker_parses() {
+        let with = read(
+            r#"(case "x"
+                 (input (do (def (main (: b Bool)) b) (export main)))
+                 (call main (: true Bool)) (output (: true Bool))
+                 (wasm-build-only))"#,
+        )
+        .unwrap();
+        assert!(with[0].wasm_build_only);
+        let without = read(
+            r#"(case "x"
+                 (input (do (def (main (: b Bool)) b) (export main)))
+                 (call main (: true Bool)) (output (: true Bool)))"#,
+        )
+        .unwrap();
+        assert!(!without[0].wasm_build_only);
     }
 }

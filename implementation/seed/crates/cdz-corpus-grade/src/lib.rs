@@ -298,6 +298,17 @@ pub struct TestRun {
     /// `(error CODE)` codes (FAIL on any unasserted error code). Errors only. Composes with per-code
     /// `(count …)`; only enforced when the diagnostics wire was captured (`diag_wire` `Some`).
     pub no_other_errors: bool,
+    /// `true` iff the case authored `(wasm-build-only)` — a PER-BACKEND grading marker: on the WASM exec a
+    /// case that COMPILES grades on build success alone (its runtime trials are SKIPPED — no arg marshal is
+    /// attempted), so it reports `PASS (build-graded, no run-time trial)`. The RUST exec IGNORES this marker
+    /// and runs the trials normally. It exists for a VALUE-OUTPUT entry param whose value-form arg the wasm
+    /// harness cannot yet marshal (e.g. a BigInt `12345N` / Rational / Symbol crossing as wire `list<u8>`):
+    /// without it, a case that now COMPILES would enter `run_trial`, fail to marshal the arg, and HARD-ERROR
+    /// the whole grade derivation (`grade_run`'s `run_trial(trial)?`). Rust still carries the real runtime +
+    /// value coverage, and the cross-backend value oracle catches any wasm divergence — the ratified
+    /// build-grade policy for harness-unmarshalable value-form entry params. Honored only when the caller
+    /// passes `build_only = true` (the wasm exec sets it from this flag; the rust exec passes `false`).
+    pub wasm_build_only: bool,
     /// `(no-diagnostic "phrase")` clauses — CASE-LEVEL, PROGRAM-SCOPED, CROSS-KIND message-ABSENCE pins:
     /// each phrase must appear in NO diagnostic the compiler emits for the program (ANY kind — coded/uncoded
     /// error, decline, warning). Graded by scanning the FULL raw `compile_diag` text (not a single matched
@@ -654,6 +665,15 @@ where
             if matches!(worst, Grade::Fail(_)) {
                 break;
             }
+            continue;
+        }
+        // `(wasm-build-only)`: the case COMPILED, so grade it on build success and SKIP the runtime trial (do
+        // not attempt to marshal the value-form entry-param arg — that would `Err` out of `run_trial` below
+        // and HARD-ERROR the derivation). `ran_a_trial` stays false → the caller reports `PASS (build-graded,
+        // no run-time trial)`. This is honored on the WASM exec; the RUST exec CLEARS `wasm_build_only` before
+        // grading (a wasm-only marker; rust runs the trial for its real value coverage). See
+        // [`TestRun::wasm_build_only`].
+        if test_run.wasm_build_only {
             continue;
         }
         ran_a_trial = true;
@@ -1625,6 +1645,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut live_objects_cadenza_tolerate = false;
     let mut live_objects_per_call: Option<Vec<u32>> = None;
     let mut no_other_errors = false;
+    let mut wasm_build_only = false;
     let mut no_diagnostic: Vec<String> = Vec::new();
     let mut diagnostic_quality = false;
     let mut diagnostic_quality_opt_out = false;
@@ -1708,6 +1729,8 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
             }
             // `(no-other-errors)` — the bare case-level no-cascade flag (shredded from the case clause).
             Some("no-other-errors") => no_other_errors = true,
+            // `(wasm-build-only)` — the bare per-backend marker (see `TestRun::wasm_build_only`).
+            Some("wasm-build-only") => wasm_build_only = true,
             // `(diagnostic-quality)` — the bare C1 opt-in marker (assert every coded diagnostic meets §1+§2).
             Some("diagnostic-quality") => diagnostic_quality = true,
             // `(no-diagnostic-quality)` — the C1 opt-OUT escape hatch (suppress the default-on §1 lint).
@@ -1738,6 +1761,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         live_objects_cadenza_tolerate,
         live_objects_per_call,
         no_other_errors,
+        wasm_build_only,
         no_diagnostic,
         diagnostic_quality,
         diagnostic_quality_opt_out,
@@ -3031,6 +3055,56 @@ mod tests {
         );
     }
 
+    /// `(wasm-build-only)`: a COMPILED value-output case is build-graded (its runtime trial SKIPPED, so the
+    /// harness never attempts to marshal a value-form entry-param arg — which would `Err` out of `run_trial`
+    /// and hard-fail the derivation) → `Grade::Pass` with `ran_a_trial == false` ("PASS (build-graded, no
+    /// run-time trial)"). Without the marker the SAME case runs its trial. The rust exec clears the flag so
+    /// it always runs (asserted at the cdz-rust-run caller, not here).
+    #[test]
+    fn grade_run_wasm_build_only_skips_the_trial_on_compile() {
+        use cadenza_syntax::ast::{Builder, Leaf};
+        use std::sync::Arc;
+        // Build a (test-run …) with one output trial + a bare (wasm-build-only) marker.
+        let build = |with_marker: bool| -> Vec<u8> {
+            let mut b = Builder::new();
+            let s = |b: &mut Builder, t: &str| b.atom_leaf(Leaf::Str(Arc::from(t)));
+            let head = b.name("test-run");
+            let dh = b.name("description");
+            let dv = s(&mut b, "case");
+            let desc = b.list(vec![dh, dv]);
+            let th = b.name("trial");
+            let eh = b.name("expect-output");
+            let ev = s(&mut b, "(: 42 Int64)");
+            let expect = b.list(vec![eh, ev]);
+            let trial = b.list(vec![th, expect]);
+            let trials_head = b.name("trials");
+            let trials = b.list(vec![trials_head, trial]);
+            let mut kids = vec![head, desc, trials];
+            if with_marker {
+                let mh = b.name("wasm-build-only");
+                kids.push(b.list(vec![mh]));
+            }
+            let root = b.list(kids);
+            codec::encode(&b.finish(root))
+        };
+        let never = |_: &GTrial| -> Result<Outcome> { panic!("build-only must not run the trial") };
+        // WITH the marker + a clean compile (status 0): build-graded, the trial is SKIPPED.
+        let tr = decode_test_run(&build(true)).expect("decodes");
+        assert!(tr.wasm_build_only);
+        let res = grade_run(&tr, 0, "", None, None, never).unwrap();
+        assert_eq!(res.grade, Grade::Pass);
+        assert!(!res.ran_a_trial, "build-only skips the runtime trial");
+        // WITHOUT the marker: the SAME compiled case RUNS its trial.
+        let tr = decode_test_run(&build(false)).expect("decodes");
+        assert!(!tr.wasm_build_only);
+        let res = grade_run(&tr, 0, "", None, None, |_| {
+            Ok(Outcome::Value("42".into(), vec![]))
+        })
+        .unwrap();
+        assert_eq!(res.grade, Grade::Pass);
+        assert!(res.ran_a_trial, "without the marker the trial runs");
+    }
+
     #[test]
     fn grade_run_declined_case_with_host_calls_stays_todo_not_spurious_fail() {
         // fpr3-class regression guard: a should-RUN output case that carries a `(host-calls …)` clause but
@@ -3134,6 +3208,7 @@ mod tests {
             live_objects_cadenza_tolerate: false,
             live_objects_per_call: None,
             no_other_errors: false,
+            wasm_build_only: false,
             no_diagnostic: vec![],
             diagnostic_quality: false,
             diagnostic_quality_opt_out: false,
@@ -3222,6 +3297,7 @@ mod tests {
             live_objects_cadenza_tolerate: false,
             live_objects_per_call: None,
             no_other_errors: false,
+            wasm_build_only: false,
             no_diagnostic: vec![],
             diagnostic_quality: false, // NO opt-in marker — default-on still grades it
             diagnostic_quality_opt_out: opt_out,
@@ -3279,6 +3355,7 @@ mod tests {
             live_objects_cadenza_tolerate: false,
             live_objects_per_call: None,
             no_other_errors: no_other,
+            wasm_build_only: false,
             no_diagnostic: vec![],
             diagnostic_quality: false,
             diagnostic_quality_opt_out: false,
@@ -3351,6 +3428,7 @@ mod tests {
             live_objects_cadenza_tolerate: false,
             live_objects_per_call: None,
             no_other_errors: false,
+            wasm_build_only: false,
             no_diagnostic: phrases,
             diagnostic_quality: false,
             diagnostic_quality_opt_out: false,

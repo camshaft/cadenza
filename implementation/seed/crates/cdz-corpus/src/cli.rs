@@ -1276,6 +1276,11 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
     if rec.no_other_errors {
         kids.push(form(&mut b, "no-other-errors", vec![]));
     }
+    // `(wasm-build-only)` — the bare per-backend build-grade marker carried verbatim (like
+    // `(no-other-errors)`); `decode_test_run` reads it into `TestRun::wasm_build_only`.
+    if rec.wasm_build_only {
+        kids.push(form(&mut b, "wasm-build-only", vec![]));
+    }
     // `(diagnostic-quality)` — the bare C1 opt-in marker carried verbatim to the grade side (like
     // `(no-other-errors)`); `decode_test_run` reads it into `TestRun::diagnostic_quality`.
     if rec.diagnostic_quality {

@@ -79,7 +79,12 @@ pub fn grade(
     // self-decline). Keeps declined≠error (the fuzzer differential) + honestly characterizes the rust column.
     peer: Option<&Path>,
 ) -> Result<ExitCode> {
-    let test_run = decode_test_run(test_run_ast)?;
+    let mut test_run = decode_test_run(test_run_ast)?;
+    // `(wasm-build-only)` is a WASM-exec marker (build-grade a value-form entry-param case whose arg the wasm
+    // harness cannot marshal). It does NOT apply to rust: the rust exec RUNS the trial (its real value +
+    // runtime coverage — the whole reason build-grade is safe on wasm). Clear it so the shared `grade_run`
+    // does not skip the rust trial. See `cdz_corpus_grade::TestRun::wasm_build_only`.
+    test_run.wasm_build_only = false;
     // A `(then …)` two-call (`second_call`) or a `(call-method …)` value-resource member reach (`method`)
     // would MIS-RUN on the standalone-`.rs` path — it runs only the FIRST call and has no member-invoke, so a
     // repeatable double-call SILENTLY produces the single-call value (e.g. `#tuple(5 105)` where the double-
@@ -250,6 +255,7 @@ mod tests {
             live_objects_cadenza_tolerate: false,
             live_objects_per_call: None,
             no_other_errors: false,
+            wasm_build_only: false,
             no_diagnostic: vec![],
             diagnostic_quality: false,
             diagnostic_quality_opt_out: false,
