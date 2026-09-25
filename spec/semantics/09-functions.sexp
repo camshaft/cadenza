@@ -13234,6 +13234,30 @@
   (call main (: #tuple(5 #list(1 2 3)) (Tuple Int64 (List Int64))))
   (output (: 8 Int64)))
 
+; rpp6/rpp7 extend the compound-entry-param cluster to a String HEAP field. A `String` field crosses as
+; `(ptr, len)` and lifts via the same byte-leaf copy-in as a `Bytes` field — a Cadenza `String` value IS a
+; flat UTF-8 byte-leaf, so the copied buffer is already a canonical String handle (no `str-from-bytes`
+; decode; a WIT `string` field is guaranteed valid UTF-8). Only the field's WIT type differs (`string` vs
+; `list<u8>`). Covers the Tuple positional arm (rpp6) and the Record name-lex arm (rpp7) of the shared
+; `param_field_rebuild` classifier's String field.
+(case
+  "rpp6 a Tuple entry param with a String element measures both"
+  (input
+    (do
+      (def (main (: t (Tuple Int64 String))) (+ (. t 0) (String.byte-len (. t 1))))
+      (export main)))
+  (call main (: #tuple(10 "abc") (Tuple Int64 String)))
+  (output (: 13 Int64)))
+
+(case
+  "rpp7 a Record entry param with a String field measures both"
+  (input
+    (do
+      (def (main (: r (Record (: n Int64) (: s String)))) (+ r.n (String.byte-len r.s)))
+      (export main)))
+  (call main (: #record((= n 10) (= s "abcd")) (Record (: n Int64) (: s String))))
+  (output (: 14 Int64)))
+
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
   (doc
