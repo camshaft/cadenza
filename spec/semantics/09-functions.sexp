@@ -11974,6 +11974,41 @@
   (call main (: #list(#record((= a 7) (= b 8)) #record((= a 1) (= b 2))) (List (Record (: a Int64) (: b Int64)))))
   (output (: 810 Int64)))
 
+; lft1/lfr1 nest a compound-element list as a FIELD of a record entry param — `{xs: list<tuple<…>>, n}` (lft1)
+; and `{xs: list<record<…>>, n}` (lfr1). The per-element cell build (lpt1/lpr1) reuses the wrapper's (buf, ctr)
+; scratch the `ListLeaf` field copy-in already reserves, so it needs no extra locals — the field path shares the
+; exact `emit_list_leaf_lift` → `emit_list_level` compound branch as the top-level list<tuple> param. Distinct
+; multipliers (100*n + element field-sum = 500 + 7 = 507) discriminate the field routing + the element read.
+(case
+  "lft1 a Record entry param with a list<tuple> field reads a nested element"
+  (input
+    (do
+      (def
+        (main (: r (Record (: xs (List (Tuple Int64 Int64))) (: n Int64))))
+        (+ (* 100 r.n) (match (List.at r.xs 0) ((Option.Some t) (+ (. t 0) (. t 1))) ((Option.None) 0))))
+      (export main)))
+  (call
+    main
+    (:
+      #record((= xs #list(#tuple(3 4))) (= n 5))
+      (Record (: xs (List (Tuple Int64 Int64))) (: n Int64))))
+  (output (: 507 Int64)))
+
+(case
+  "lfr1 a Record entry param with a list<record> field reads a nested element by name"
+  (input
+    (do
+      (def
+        (main (: r (Record (: xs (List (Record (: a Int64) (: b Int64)))) (: n Int64))))
+        (+ (* 100 r.n) (match (List.at r.xs 0) ((Option.Some e) (+ e.a e.b)) ((Option.None) 0))))
+      (export main)))
+  (call
+    main
+    (:
+      #record((= xs #list(#record((= a 3) (= b 4)))) (= n 5))
+      (Record (: xs (List (Record (: a Int64) (: b Int64)))) (: n Int64))))
+  (output (: 507 Int64)))
+
 (case
   "eo1 an Option entry param delivers its Some payload"
   (input

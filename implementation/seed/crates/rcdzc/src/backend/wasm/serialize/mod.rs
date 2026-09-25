@@ -3471,11 +3471,21 @@ impl FieldRebuild {
                 }
             }
             // The list copy-in loop (`emit_list_leaf_lift`): build the vec (`vec-empty`), then per element
-            // read + box (`elem.box_op`) + append (`vec-push`).
+            // read + box (`elem.box_op`) + append (`vec-push`). A COMPOUND element (`list<tuple>`/`list<record>`
+            // field) builds a value-heap cell per element (`arr-alloc`/`arr-set`) + boxes each scalar field
+            // instead of one `box_op`.
             FieldRebuild::ListLeaf(elem) => {
                 out("vec-empty");
                 out("vec-push");
-                out(elem.box_op);
+                if let Some(fields) = &elem.compound {
+                    out("arr-alloc");
+                    out("arr-set");
+                    for f in fields {
+                        out(f.box_op);
+                    }
+                } else {
+                    out(elem.box_op);
+                }
             }
             FieldRebuild::Sum(r) => {
                 r.arm_true.collect_ops_gated(bulk_bytes, out);
