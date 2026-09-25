@@ -6348,6 +6348,74 @@ fn structuralize_wit(wt: &crate::wit_world::WitType) -> crate::wit_world::WitTyp
     }
 }
 
+/// The STRUCTURAL WIT a two-variant / liftable-variant sum FIELD crosses as on the bare entry path — the
+/// field-WIT counterpart to the top-level sum-param arms' WIT synthesis. [`crate::wit_world::ty_natural_wit`]
+/// is Db-less and returns `None` for a `Ty::Sum` (a top-level sum crosses via its own synthesized-WIT arm, not
+/// that deriver), so a record/tuple entry param with an option/result FIELD used to bail there and decline
+/// (CDZ0904); this recovers the field's WIT so the product crosses. It MUST agree with
+/// [`param_field_rebuild`]'s `Ty::Sum` flattening: an all-scalar `result<ok,err>` (two single-scalar payloads)
+/// crosses as the STRUCTURAL `result<ok,err>` of its two payload naturals — NOT the `variant`
+/// [`crate::backend::wasm::host::spilled_result_wit_type`] would mint (the erp2 disagreement that emitted an
+/// INVALID component) — and every other admitted sum (`option<…>`, `result<list<u8>,enum>`, a general liftable
+/// variant) takes `spilled_result_wit_type`'s structural former. Returns `None` for a sum shape the rebuild
+/// does not admit; the caller then declines the whole param.
+fn sum_field_wit(db: &mut Db, gty: &crate::ty::Ty) -> Option<crate::wit_world::WitType> {
+    use crate::backend::wasm::envelope::ArgSlot;
+    // Mirror the top-level scalar-sum arm: an all-scalar Result classifies as `ArgSlot::Result` and MUST cross
+    // as a structural `result<ok,err>` (its two payload naturals), matching the rebuild's Ok=0/Err=1 disc + join.
+    if let Some((ArgSlot::Result(_, _), _, _)) =
+        crate::backend::wasm::arg_boundary::fixed_shape_option_scalar_arg(db, gty)
+    {
+        let crate::ty::Ty::Sum { args, .. } = gty.strip_nominal() else {
+            return None;
+        };
+        if args.len() != 2 {
+            return None; // a `Result ok err` has exactly two type args
+        }
+        let ok = crate::wit_world::ty_natural_wit(&args[0])?;
+        let err = crate::wit_world::ty_natural_wit(&args[1])?;
+        return Some(crate::wit_world::WitType::Result {
+            ok: Some(Box::new(ok)),
+            err: Some(Box::new(err)),
+        });
+    }
+    // Every other admitted sum (option<…>, result<list<u8>,enum>, a general liftable variant) crosses as the
+    // structural former `spilled_result_wit_type` mints Db-awarely.
+    crate::backend::wasm::host::spilled_result_wit_type(db, gty)
+}
+
+/// [`crate::wit_world::ty_natural_wit`] extended for the BARE entry-param path: BYTE-IDENTICAL to it for every
+/// type it already handles, but a `Ty::Sum` FIELD nested in a record/tuple param derives its structural WIT
+/// ([`sum_field_wit`]) instead of bailing. `ty_natural_wit` returns `None` for a `Ty::Sum`, so a record/tuple
+/// whose field is an option/result used to decline (CDZ0904); this recovers the field WIT so the product
+/// crosses. It does NOT change `ty_natural_wit`'s global `Sum = None` contract — a TOP-LEVEL sum reaching the
+/// caller's `ty_natural_wit` site still declines at the product-type match below (a bare `Ty::Sum` param is not
+/// a record/tuple/scalar/mem-leaf), so this only ever activates sum handling for a record/tuple FIELD. The
+/// Record arm keeps `ty_natural_wit`'s raw `name.to_string()` field name + sorted (`BTreeMap`) order so the
+/// bare-record arm's positional zip and the nested-record name-match resolve identically.
+fn natural_wit_bare(db: &mut Db, gty: &crate::ty::Ty) -> Option<crate::wit_world::WitType> {
+    use crate::ty::Ty;
+    use crate::wit_world::WitType;
+    match gty.strip_nominal() {
+        Ty::Record(fields) => {
+            let mut out = Vec::with_capacity(fields.len());
+            for (name, fty) in fields.iter() {
+                out.push((name.name.to_string(), natural_wit_bare(db, fty)?));
+            }
+            Some(WitType::Record(out))
+        }
+        Ty::Tuple(elems) => {
+            let mut out = Vec::with_capacity(elems.len());
+            for e in elems.iter() {
+                out.push(natural_wit_bare(db, e)?);
+            }
+            Some(WitType::Tuple(out))
+        }
+        Ty::Sum { .. } => sum_field_wit(db, gty),
+        other => crate::wit_world::ty_natural_wit(other),
+    }
+}
+
 /// Build the [`serialize::FieldRebuild`] for ONE record field (recursively), appending its flattened core
 /// valtypes to `param_vts` in field order. A scalar boxes one flattened leaf; a `list<u8>`/`Bytes` leaf
 /// crosses as `(ptr, len)` and copies out of memory (`BytesLeaf`, two i32); a FLAT `list<scalar>` field
@@ -7240,7 +7308,12 @@ fn try_bare_entry_param_component(
             ));
             continue;
         }
-        let mut wit = crate::wit_world::ty_natural_wit(gty)?;
+        // `natural_wit_bare` is `ty_natural_wit` for every leaf/scalar/list/record/tuple it already handles,
+        // but ALSO derives the structural WIT of an option/result FIELD nested in a record/tuple param (which
+        // `ty_natural_wit` refuses, since a sum has no Db-less natural WIT) — so a `{n: s64, o: option<s64>}`
+        // entry param crosses instead of declining CDZ0904. A TOP-LEVEL sum is unaffected: it still declines at
+        // the product-type match below (it is not a record/tuple/scalar/mem-leaf).
+        let mut wit = natural_wit_bare(db, gty)?;
         // A memory-bearing leaf param (String/Bytes/list<Int64>) all flatten to (ptr, len) and lift via
         // mem_leaf_params. The def OWNS the arg (callee-owns-args), but a param it only BORROWS (byte-len /
         // List.len / compare) is reclaimed by the OWNER — here the wrapper — so `drop_after` = the param does

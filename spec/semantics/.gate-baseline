@@ -11330,6 +11330,9 @@ pass	rpp10 a Tuple entry param with a nested Record element projects through bot
 pass	rpp11 a Record entry param with a nested Record field projects through both levels
 pass	rpp12 a Record entry param whose declaration order differs from name-lex order routes fields by name
 pass	rpp13 a Record nested two tuple levels deep in an entry param projects through all levels
+pass	rpp14 a Record entry param with an option field projects both the scalar and the Some payload
+pass	rpp15 a Record entry param with a result field projects both the scalar and the Ok payload
+pass	rpp16 a Tuple entry param with an option element projects both the scalar and the Some payload
 pass	rpp10 a Record entry param with String, Bytes, list and scalar fields measures all four
 pass	rpp11 a Tuple entry param with a String, a list and a scalar element measures all three
 todo	sbn2 a runtime utf8 CONSTRUCTION segment declines pending the encode increment (utf8 is pattern-only)
