@@ -13542,6 +13542,28 @@
   (call main (: #record((= z 2) (= a 1)) (Record (: z Int64) (: a Int64))))
   (output (: 102 Int64)))
 
+; rpp13 nests a Record TWO tuple levels deep: `tuple<tuple<record<a,b>, i64>, i64>`. rpp10 already pins a
+; Record as a DIRECT tuple element; here the record sits inside a tuple that is ITSELF a tuple element, the
+; DEEPER nesting a prior guard declined (the bare route could not declare the nested nominal `record<…>` →
+; CDZ0910). `structuralize_wit` (#9717) recursively rewrites the emitted WIT at every depth so the record
+; crosses as an anonymous `tuple<…>`; the field rebuild recurses structurally, reading the record's fields in
+; the same name-lex order. Distinct multipliers (100*a + 10*b + inner.1 + outer.1 = 100 + 20 + 3 + 4 = 127)
+; discriminate correct routing from a mis-flattening. Passes on wasm + rust + rust-async.
+(case
+  "rpp13 a Record nested two tuple levels deep in an entry param projects through all levels"
+  (input
+    (do
+      (def
+        (main (: t (Tuple (Tuple (Record (: a Int64) (: b Int64)) Int64) Int64)))
+        (+ (+ (* 100 (. (. (. t 0) 0) a)) (* 10 (. (. (. t 0) 0) b))) (+ (. (. t 0) 1) (. t 1))))
+      (export main)))
+  (call
+    main
+    (:
+      (tuple (tuple (record (a 1) (b 2)) 3) 4)
+      (Tuple (Tuple (Record (: a Int64) (: b Int64)) Int64) Int64)))
+  (output (: 127 Int64)))
+
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
   (doc

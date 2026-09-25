@@ -6413,14 +6413,14 @@ fn param_field_rebuild(
             param_vts.push(ValType::I32.byte());
             Some(FieldRebuild::ListLeaf(le))
         }
-        // A nested `Tuple` field crosses as a STRUCTURAL `tuple<…>` (no defined-type declaration — unlike a
-        // nominal record) and rebuilds a positional sub-cell, exactly like the top-level tuple entry-param
-        // arm but as a `FieldRebuild::Nested`. Each element recurses through `param_field_rebuild` (positional
-        // → identity slots). A direct `Record` element DECLINES here: a nested record field crosses as a
-        // nominal `record<…>` WIT the bare structural assembler cannot declare (it emits an INVALID component
-        // → CDZ0910), so admitting it would widen a miscompile; the structural-record flattening that would
-        // admit it is a shared-lowering slice (routed to v-wit-boundary). Deeper record nestings decline via
-        // this same guard applied at each tuple level through the recursion.
+        // A nested `Tuple` field crosses as a STRUCTURAL `tuple<…>` (no defined-type declaration) and rebuilds a
+        // positional sub-cell, exactly like the top-level tuple entry-param arm but as a `FieldRebuild::Nested`.
+        // Each element recurses through `param_field_rebuild` (positional → identity slots). A `Record` element
+        // recurses into the `Ty::Record` arm (a structure-driven name-lex cell rebuild); the top-level arm's
+        // `structuralize_wit` rewrites the emitted WIT so the nested `record<…>` crosses as the STRUCTURAL
+        // `tuple<…>` the bare assembler can declare (was CDZ0910; #9717), at any tuple nesting depth. The
+        // rebuild reads the record fields in the same name-lex order `structuralize_wit` emits, so the wire is
+        // byte-identical.
         Ty::Tuple(gtys) => {
             let WitType::Tuple(wtys) = wty else {
                 return None;
@@ -6430,9 +6430,6 @@ fn param_field_rebuild(
             }
             let mut sub = Vec::with_capacity(gtys.len());
             for (gt, wt) in gtys.iter().zip(wtys.iter()) {
-                if matches!(gt.strip_nominal(), Ty::Record(_)) {
-                    return None;
-                }
                 sub.push(param_field_rebuild(db, gt, wt, param_vts)?);
             }
             let slots: Vec<u32> = (0..gtys.len() as u32).collect();
