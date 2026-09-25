@@ -1782,6 +1782,28 @@ fn emit_elem_grounding_empty_list(
                     return Ok(format!("({}{trailing})", parts.join(", ")));
                 }
             }
+            // A NON-EMPTY list LITERAL whose SLOT element type is solved: recurse each element with the SLOT
+            // element type as target — the list twin of the Tuple/Record arms. Threads the solved element type
+            // so a bare nullary-variant element (`(list (Option.None …))` at slot `List (Option Int64)`, whose
+            // own `type_of` left the element `Option ?`) gets ASCRIBED by the SumNew arm below — else, when the
+            // whole list field is projected away, `vec![Option::None]`'s element type is unconstrained → E0282
+            // (the list-element twin of the #9586 const-materialized-record field fix; wasm carries the element
+            // type at its value-encode boundary). Int/Float elements keep their width grounding via the scalar
+            // arms above. An EMPTY list is left to the plain `Core::ListNew` emit (its own `Vec::<T>::new()`
+            // annotation) + the `vec![]` grounding below — not intercepted here.
+            Ty::List(elem) => {
+                if let Core::ListNew { elems } = core_of(db, id)
+                    && !elems.is_empty()
+                {
+                    let et = (*elem).clone();
+                    let elem_ids = elems.clone();
+                    let mut parts = Vec::with_capacity(elem_ids.len());
+                    for &e in elem_ids.iter() {
+                        parts.push(emit_elem_grounding_empty_list(db, e, Some(&et), env, ctx)?);
+                    }
+                    return Ok(format!("vec![{}]", parts.join(", ")));
+                }
+            }
             _ => {}
         }
     }
