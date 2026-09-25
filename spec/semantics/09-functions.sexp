@@ -13529,6 +13529,19 @@
       (Record (: inner (Record (: a Int64) (: b Int64))) (: n Int64))))
   (output (: 123 Int64)))
 
+; rpp12 discriminates FIELD ROUTING BY NAME: the record's DECLARATION order [z, a] differs from its name-lex
+; order [a, z]. A record entry param crosses as a structural `tuple<…>` (structuralize_wit), whose element
+; order is name-lex; the guest rebuilds the cell by name-lex slot, and cdz-run name-sorts the record-value's
+; fields before flattening. So `(+ (* 100 r.a) r.z)` = 100*1 + 2 = 102. If the fields were mis-routed by
+; DECLARATION order instead, it would compute 100*2 + 1 = 201 — the case is a real discriminator (every other
+; rpp record uses fields already in name-lex order, so none exercises the sort). Passes on wasm + rust +
+; rust-async. (Contributed by v-wit-boundary, verified here.)
+(case
+  "rpp12 a Record entry param whose declaration order differs from name-lex order routes fields by name"
+  (input (do (def (main (: r (Record (: z Int64) (: a Int64)))) (+ (* 100 r.a) r.z)) (export main)))
+  (call main (: #record((= z 2) (= a 1)) (Record (: z Int64) (: a Int64))))
+  (output (: 102 Int64)))
+
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
   (doc
