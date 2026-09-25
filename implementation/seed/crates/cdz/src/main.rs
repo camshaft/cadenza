@@ -1752,10 +1752,16 @@ struct RunRustArgs {
     /// The program SOURCE file (s-expr / ml surface). OMITTED → read the program from stdin. Mirrors
     /// `cdz run-ml`'s input contract so the fuzzer's differential harness is symmetric.
     file: Option<String>,
-    /// The export to invoke (default: the sole exported nullary `main`). The scalar/nullary case needs
-    /// none; a `--call NAME` selects a specific export for a future arg-taking case.
+    /// The export to invoke (default: the sole exported `main`, or the sole export if unambiguous). A
+    /// `--call NAME` selects a specific export when the program exports several.
     #[arg(long)]
     call: Option<String>,
+    /// An argument to the export, repeatable, each a canonical value-form literal (`7`, `"abc"`,
+    /// `(tuple 3 4)`) coerced to the export's declared parameter type — mirrors `cdz-run --arg` (the wasm
+    /// oracle) so the fuzzer's rust-vs-wasm differential feeds BOTH backends identically. Empty ⇒ a nullary
+    /// export. `allow_hyphen_values` so a negative number (`--arg -4`) is taken as the value, not a flag.
+    #[arg(long = "arg", value_name = "VALUE", allow_hyphen_values = true)]
+    args: Vec<String>,
 }
 
 /// `cdz run-rust` — compile a program to the RUST backend, run it natively, print ONE verdict line.
@@ -1773,6 +1779,11 @@ struct RunRustArgs {
 /// or an arg-taking export the nullary driver can't invoke). A harness ENVIRONMENT breakage that occurs
 /// mid-run (can't spawn the compiler/rustc) surfaces as an `error <msg>` VERDICT + exit 0, so the oracle
 /// always gets a line (Copilot PR #547/#551).
+///
+/// A non-nullary export is invoked by passing its args via `--arg` (repeatable): each value-form literal is
+/// marshalled to the Rust expression the emitted export expects (BigInt-type-aware, mirroring the corpus
+/// rust gate's `marshal_call_args`), so the differential harness drives an arg-taking export the same way on
+/// both backends. An `--arg` COUNT that disagrees with the export's source-param count is the usage error.
 ///
 /// MECHANISM (mirrors the gate's `run_program_rust`, now that its render half is the shared crate): shell
 /// `cdz compile - -o - --target rust` (self, via `current_exe`) to emit the `.rs`; wrap it in `mod prog {…}`
@@ -1842,19 +1853,12 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
         }
     };
     // 3b. VALIDATE the chosen export against the emitted module's signature BEFORE building the driver, so
-    //     a USAGE problem (a bad `--call` name, or an arg-taking export the nullary driver can't invoke)
-    //     is a clean harness error — NOT the `error` verdict, which is reserved for a rust-backend MISCOMPILE
-    //     (an emitted `.rs` that fails rustc). Without this, `--call nope` or an arg-taking `main` fell
-    //     through to rustc as `error error[E0425]/E0061`, which the fuzzer would file as a spurious miscompile.
-    match export_param_arity(&module, &export) {
-        Some(0) => {} // a nullary export — the driver can call it directly.
-        Some(n) => {
-            eprintln!(
-                "{PROG} run-rust: export `{export}` takes {n} argument(s); `cdz run-rust` runs only a \
-                 NULLARY export (no `--arg` passthrough yet) — pick a nullary export or wrap it"
-            );
-            return ExitCode::FAILURE;
-        }
+    //     a USAGE problem (a bad `--call` name, or an `--arg` count that disagrees with the signature) is a
+    //     clean harness error — NOT the `error` verdict, which is reserved for a rust-backend MISCOMPILE (an
+    //     emitted `.rs` that fails rustc). Without this, `--call nope` fell through to rustc as `error
+    //     error[E0425]`, which the fuzzer would file as a spurious miscompile.
+    let params = match emitted_params(&module, &export) {
+        Some(p) => p,
         None => {
             eprintln!(
                 "{PROG} run-rust: no exported `{export}` in the compiled program{}",
@@ -1865,7 +1869,28 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
             );
             return ExitCode::FAILURE;
         }
+    };
+    // The backend's uniform-env param (`__cdz_env: &mut dyn DynCdzEnv`, on an effectful/async export) is
+    // plumbing the driver supplies, not a source argument — filter it (mirrors cdz-rust-run's `is_env_param`)
+    // so the `--arg` count is checked against the SOURCE signature the user wrote.
+    let source_params: Vec<&str> = params
+        .iter()
+        .copied()
+        .filter(|p| !p.trim_start().starts_with("__cdz_env"))
+        .collect();
+    if source_params.len() != args.args.len() {
+        eprintln!(
+            "{PROG} run-rust: export `{export}` takes {} argument(s); {} `--arg` value(s) given \
+             (pass one `--arg <value>` per source parameter)",
+            source_params.len(),
+            args.args.len()
+        );
+        return ExitCode::FAILURE;
     }
+    // The export CALL expression the driver splices in — `prog::<export>(<marshaled args>)` (an empty arg
+    // list for a nullary export gives `prog::<export>()`, byte-identical to the pre-`--arg` driver).
+    let marshaled = marshal_export_args(&source_params, &args.args);
+    let call = format!("prog::{export}({})", marshaled.join(", "));
     let ret_ty = cdz_rust_render::cdz_return_type(&module, &export);
 
     // 4. Build a driver: wrap the emitted module in `mod prog {…}` (so its `pub fn main` becomes
@@ -1891,17 +1916,19 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
     // Gate on the MARKER's PRESENCE — rcdzc emits `// cdz-value-doc: <export>` iff the compile child had
     // CDZ_VALUE_DOC set (which `emit_rust_module` does by default now), so the marker IS the authoritative
     // signal. (No env re-check here: the emit decision already happened in the child; the marker records it.)
-    let value_doc = module
-        .lines()
-        .any(|l| l.trim() == format!("// cdz-value-doc: {export}"));
+    // The value-doc render helper (`__cdz_doc_<export>`) is emitted only for a NULLARY (constant) export, so
+    // gate it on there being no args — an arg-taking export never has the marker, but the explicit guard keeps
+    // an arg run off the nullary doc path defensively.
+    let value_doc = args.args.is_empty()
+        && module
+            .lines()
+            .any(|l| l.trim() == format!("// cdz-value-doc: {export}"));
     let driver = if value_doc {
         format!(
             "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    println!(\"{{}}\", prog::__cdz_doc_{export}());\n}}\n"
         )
     } else if ret_ty.as_deref() == Some("!") {
-        format!(
-            "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    prog::{export}();\n}}\n"
-        )
+        format!("#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    {call};\n}}\n")
     } else {
         let render = match &ret_ty {
             Some(ty) => {
@@ -1927,7 +1954,7 @@ fn run_run_rust(args: &RunRustArgs) -> ExitCode {
             None => "format!(\"{}\", __r)".to_string(),
         };
         format!(
-            "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    let __r = prog::{export}();\n    println!(\"{{}}\", {render});\n}}\n"
+            "#[allow(warnings)]\nmod prog {{\n{module}\n}}\nfn main() {{\n    let __r = {call};\n    println!(\"{{}}\", {render});\n}}\n"
         )
     };
 
@@ -1965,13 +1992,16 @@ fn emitted_pub_fn_names(module: &str) -> Vec<String> {
     names
 }
 
-/// The parameter arity of the emitted `pub fn <export>(…)` — `Some(n)` with `n` the top-level parameter
-/// count, or `None` if the module declares no such `pub fn` (a bad `--call` name / nothing runnable).
-/// Reads the emitted Rust signature: finds `pub fn <export>` (also `pub fn <export><generics>` for the
-/// async form), takes the `(…)` parameter list up to the MATCHING close paren, and counts top-level
-/// commas (0 params → arity 0; else commas+1). A conservative textual read of the backend's own output —
-/// good enough to tell a nullary export from an arg-taking one and to detect an absent export.
-fn export_param_arity(module: &str, export: &str) -> Option<usize> {
+/// The emitted `pub fn <export>(…)` parameter list, split into its top-level `<name>: <type>` slices in
+/// source order — `Some(vec![])` for a nullary export, `None` if the module declares no such `pub fn` (a
+/// bad `--call` name / nothing runnable). Reads the emitted Rust signature: finds `pub fn <export>` (also
+/// `pub fn <export><generics>` for the async form), takes the `(…)` parameter list up to the MATCHING close
+/// paren, and splits at top-level commas (a comma inside a nested `(…)`/`<…>`/`[…]` is part of one param's
+/// type). A conservative textual read of the backend's own output — good enough to count source params, read
+/// their types for the arg marshal, and detect an absent export. (A closure-typed param `Rc<dyn Fn(x) -> r>`
+/// carries an inner `->` whose `>` would unbalance this simple walk; such CONSUMER exports are not arg-driven
+/// here, so the simple walk suffices — cf. cdz-rust-run's arrow-aware `parse_emitted_sig` for that path.)
+fn emitted_params<'a>(module: &'a str, export: &str) -> Option<Vec<&'a str>> {
     // Find `pub fn <export>` where the name is a whole token (followed by `(` or `<`, not more ident chars).
     let needle = format!("pub fn {export}");
     let mut search_from = 0;
@@ -2004,20 +2034,51 @@ fn export_param_arity(module: &str, export: &str) -> Option<usize> {
     }
     let params = rest[..end?].trim();
     if params.is_empty() {
-        return Some(0);
+        return Some(Vec::new());
     }
-    // Count TOP-LEVEL commas (a comma inside a nested `(…)`/`<…>`/`[…]` is part of one param's type).
+    // Split at TOP-LEVEL commas (a comma inside a nested `(…)`/`<…>`/`[…]` is part of one param's type).
+    let mut out = Vec::new();
     let mut depth = 0i32;
-    let mut commas = 0usize;
-    for c in params.chars() {
+    let mut start = 0usize;
+    for (i, c) in params.char_indices() {
         match c {
             '(' | '<' | '[' => depth += 1,
             ')' | '>' | ']' => depth -= 1,
-            ',' if depth == 0 => commas += 1,
+            ',' if depth == 0 => {
+                out.push(params[start..i].trim());
+                start = i + 1;
+            }
             _ => {}
         }
     }
-    Some(commas + 1)
+    out.push(params[start..].trim());
+    Some(out)
+}
+
+/// Marshal each `--arg` value-form literal to the Rust expression the emitted export expects, paired
+/// positionally with the export's SOURCE params (the env param already filtered out by the caller). A scalar
+/// (`7`, `true`), String (`"abc"`), or compound (`(tuple 3 4)`) is handled by the shared
+/// `cdz_rust_render::rust_call_arg` — the same marshal the corpus rust gate uses — so both backends see
+/// byte-identical args. TYPE-AWARE for a BigInt param: a corpus decimal arg (`5`) has no self-identifying
+/// suffix, so — unlike a `"…"` String or a `5N` BigInt literal — nothing tells `rust_call_arg` to build a
+/// `cdz_num::Big`; read the param's emitted TYPE and marshal a decimal via `big_arg_expr` when the param is
+/// `cdz_num::Big`. Mirrors cdz-rust-run's `marshal_call_args`. (Closure-param CONSUMER exports — a
+/// `Rc<dyn Fn…>` param supplied by a sibling producer — are NOT arg-driven here; the differential drives
+/// ordinary and compound-entry exports, and a closure export declines at emit as before.)
+fn marshal_export_args(source_params: &[&str], args: &[String]) -> Vec<String> {
+    args.iter()
+        .zip(source_params)
+        .map(|(a, p)| {
+            let ty = p.split_once(':').map(|(_, t)| t.trim()).unwrap_or("");
+            if ty == "cdz_num::Big"
+                && let Ok(n) = a.trim().parse::<i128>()
+            {
+                cdz_rust_render::big_arg_expr(n)
+            } else {
+                cdz_rust_render::rust_call_arg(a)
+            }
+        })
+        .collect()
 }
 
 /// The outcome of emitting a program to the rust backend: the `.rs` module text, a DECLINE (front-end
@@ -9480,29 +9541,73 @@ mod tests {
     }
 
     #[test]
-    fn export_param_arity_reads_the_signature() {
+    fn emitted_params_reads_the_signature() {
+        // Nullary → an empty param list.
         assert_eq!(
-            export_param_arity("pub fn main() -> i64 { 0 }", "main"),
-            Some(0)
+            emitted_params("pub fn main() -> i64 { 0 }", "main"),
+            Some(vec![])
         );
+        // One param → its `<name>: <type>` slice (drives both the count and the arg marshal's type read).
         assert_eq!(
-            export_param_arity("pub fn f(n: i64) -> i64 { n }", "f"),
-            Some(1)
+            emitted_params("pub fn f(n: i64) -> i64 { n }", "f"),
+            Some(vec!["n: i64"])
         );
-        // A tuple/generic PARAM type has inner commas that must NOT inflate the arity.
+        // A tuple/generic PARAM type has inner commas that must NOT split the param.
         assert_eq!(
-            export_param_arity("pub fn g(p: (i64, i64), q: Vec<(A, B)>) -> i64 { 0 }", "g"),
-            Some(2)
+            emitted_params("pub fn g(p: (i64, i64), q: Vec<(A, B)>) -> i64 { 0 }", "g"),
+            Some(vec!["p: (i64, i64)", "q: Vec<(A, B)>"])
+        );
+        // A BigInt param's type is read verbatim so the marshal can build a `cdz_num::Big`.
+        assert_eq!(
+            emitted_params("pub fn h(x: cdz_num::Big) -> cdz_num::Big { x }", "h"),
+            Some(vec!["x: cdz_num::Big"])
+        );
+        // The uniform-env plumbing param is present in the raw list; the caller filters it by prefix.
+        assert_eq!(
+            emitted_params(
+                "pub fn e(x: i64, __cdz_env: &mut dyn DynCdzEnv) -> i64 { x }",
+                "e"
+            ),
+            Some(vec!["x: i64", "__cdz_env: &mut dyn DynCdzEnv"])
         );
         // Absent export → None (a bad --call).
-        assert_eq!(
-            export_param_arity("pub fn main() -> i64 { 0 }", "nope"),
-            None
-        );
+        assert_eq!(emitted_params("pub fn main() -> i64 { 0 }", "nope"), None);
         // A name that is only a PREFIX of an emitted fn must not match.
+        assert_eq!(emitted_params("pub fn main2() -> i64 { 0 }", "main"), None);
+    }
+
+    #[test]
+    fn marshal_export_args_is_type_aware() {
+        // A scalar passes through verbatim — the emitted fn signature fixes its Rust type.
         assert_eq!(
-            export_param_arity("pub fn main2() -> i64 { 0 }", "main"),
-            None
+            marshal_export_args(&["n: i64"], &["7".to_string()]),
+            vec!["7".to_string()]
+        );
+        // A String value-form crosses as an OWNED String (the emitted param is `String`, not `&str`).
+        assert_eq!(
+            marshal_export_args(&["s: String"], &["\"abc\"".to_string()]),
+            vec!["\"abc\".to_string()".to_string()]
+        );
+        // A bare decimal for a `cdz_num::Big` param has no self-identifying suffix, so the param TYPE drives
+        // the `Big` construction — without this it would pass through as a bare `5` and fail rustc (E0308).
+        assert_eq!(
+            marshal_export_args(&["x: cdz_num::Big"], &["5".to_string()]),
+            vec!["cdz_num::Big::from_i64(5)".to_string()]
+        );
+        // A NON-BigInt param leaves the same decimal verbatim (only a `cdz_num::Big` param triggers the Big
+        // path), and a self-identifying `5N` BigInt literal is marshalled by `rust_call_arg` regardless of
+        // the param type.
+        assert_eq!(
+            marshal_export_args(&["x: u64"], &["5".to_string()]),
+            vec!["5".to_string()]
+        );
+        // Positional pairing across several params.
+        assert_eq!(
+            marshal_export_args(
+                &["a: i64", "b: cdz_num::Big"],
+                &["20".to_string(), "22".to_string()]
+            ),
+            vec!["20".to_string(), "cdz_num::Big::from_i64(22)".to_string()]
         );
     }
 
