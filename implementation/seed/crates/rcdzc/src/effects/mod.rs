@@ -5220,6 +5220,12 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
             // wins no size here. Restore the flag after (the shared `ctx` may thread other, drainable, bodies).
             let saved_bind = ctx.bind_growing_state.get();
             ctx.bind_growing_state.set(false);
+            // Pre-thread normalization: INLINE a single-use, unconditional, PERFORMING do-def binding into
+            // its use so the body reaches the already-foldable "inline twin". The ordinary `thread` cannot
+            // lower a do-def-bound perform in a recursive fn (11238: `(do (def x (E.op i)) (f … x …))`),
+            // but the inline twin `(f … (E.op i) …)` folds. Semantics-preserving (exactly-once,
+            // unconditional use → perform fires once, in order). No-op when no such binding is present.
+            let orig_body = inline_single_use_do_def_perform(db, orig_body);
             let threaded = thread(db, orig_body, state_refs, ctx);
             ctx.bind_growing_state.set(saved_bind);
             let (b, _out) = threaded?;
@@ -7404,6 +7410,134 @@ fn subtree_reaches_discharged_op(db: &mut Db, node: StructId, ctx: &HandlerCtx) 
         }
     }
     walk(db, node, ctx, 0)
+}
+
+/// Count bare-name occurrences of `name` in `node`, and how many are UNDER a control form (`fn`/`if`/
+/// `match`) — a deferred or conditionally-evaluated position. `(total, unsafe_uses)`. An occurrence under
+/// control is UNSAFE to inline a performing binding into (the perform would be deferred / made conditional
+/// / repeated). Conservative: the whole `if`/`match` (incl. its unconditional condition/scrutinee) counts
+/// as under-control, so this never UNDER-reports an unsafe use.
+fn count_name_uses(db: &Db, node: StructId, name: &str, under_ctrl: bool) -> (u32, u32) {
+    if let Some(n) = db.ast.as_name(node) {
+        return if n == name {
+            (1, under_ctrl as u32)
+        } else {
+            (0, 0)
+        };
+    }
+    let node_ctrl = under_ctrl
+        || matches!(
+            db.ast.head_name(node),
+            Some("fn") | Some("if") | Some("match")
+        );
+    let (mut total, mut unsafe_uses) = (0u32, 0u32);
+    if let Struct::List(children) = db.ast.get(node) {
+        for &c in children.clone().iter() {
+            let (t, u) = count_name_uses(db, c, name, node_ctrl);
+            total += t;
+            unsafe_uses += u;
+        }
+    }
+    (total, unsafe_uses)
+}
+
+/// Replace every bare-name occurrence of `name` in `node` with `repl`. Callers gate on a SINGLE occurrence
+/// (so `repl` — a fresh copy — lands exactly once, no one-parent sharing violation).
+fn replace_bare_name(db: &mut Db, node: StructId, name: &str, repl: StructId) -> StructId {
+    if let Some(n) = db.ast.as_name(node) {
+        return if n == name { repl } else { node };
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let new: Vec<StructId> = children
+                .iter()
+                .map(|&c| replace_bare_name(db, c, name, repl))
+                .collect();
+            if new == children {
+                node
+            } else {
+                db.push_list(new)
+            }
+        }
+        Struct::Atom(_) => node,
+    }
+}
+
+/// Pre-thread normalization for the recursive-fn specializer: INLINE a do-def binding whose init PERFORMS
+/// into its unique use, then drop the def — reaching the already-foldable "inline twin" for a body the
+/// tail-resumptive specializer cannot thread as a do-def-bound perform (11238: `(do (def x (E.op i))
+/// (f … x …))` → `(f … (E.op i) …)`, the shape that already folds). SEMANTICS-PRESERVING only when the
+/// binder is used EXACTLY ONCE and UNCONDITIONALLY (not inside a `fn`/`if`/`match` — where the perform
+/// would be deferred, made conditional, or repeated), so the effect still fires exactly once in the same
+/// order (corpus-proven equivalent — the inline twin folds to the same value). Recurses bottom-up; a no-op
+/// when no such binding is present. Only a PERFORMING init is inlined (a pure single-use binding is left
+/// for the ordinary passes); zero- or multi-use / control-nested bindings are left untouched (declining
+/// stays the safe floor for those).
+fn inline_single_use_do_def_perform(db: &mut Db, node: StructId) -> StructId {
+    // Bottom-up: normalize nested `do`s first.
+    let node = match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let new: Vec<StructId> = children
+                .iter()
+                .map(|&c| inline_single_use_do_def_perform(db, c))
+                .collect();
+            if new == children {
+                node
+            } else {
+                db.push_list(new)
+            }
+        }
+        Struct::Atom(_) => return node,
+    };
+    let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec) else {
+        return node;
+    };
+    for (p, &item) in items.iter().enumerate() {
+        let Some(dt) = db.ast.as_form(item, "def").map(<[_]>::to_vec) else {
+            continue;
+        };
+        if dt.len() != 2 {
+            continue;
+        }
+        let Some(name) = db.ast.as_name(dt[0]).map(|s| s.to_owned()) else {
+            continue;
+        };
+        let init = dt[1];
+        if !reaches_any_perform(db, init) {
+            continue;
+        }
+        // Count uses of the binder in the REST (statements + tail after the def). Inline only a
+        // SINGLE, UNCONDITIONAL use (perform-once/order preserved).
+        let rest = &items[p + 1..];
+        let (mut total, mut unsafe_uses) = (0u32, 0u32);
+        for &r in rest {
+            let (t, u) = count_name_uses(db, r, &name, false);
+            total += t;
+            unsafe_uses += u;
+        }
+        if total != 1 || unsafe_uses != 0 {
+            continue;
+        }
+        // SAFE: splice a fresh copy of the performing init into the one use, drop the def.
+        let init_copy = crate::eval::copy_structural_pub(db, init, &[], &HashMap::default());
+        let new_rest: Vec<StructId> = rest
+            .iter()
+            .map(|&r| replace_bare_name(db, r, &name, init_copy))
+            .collect();
+        let mut kept: Vec<StructId> = items[..p].to_vec();
+        kept.extend(new_rest);
+        let result = if kept.len() == 1 {
+            kept[0]
+        } else {
+            let do_head = db.push_name("do");
+            let mut lst = vec![do_head];
+            lst.extend(kept);
+            db.push_list(lst)
+        };
+        crate::resolve::resolve_subtree(db, result);
+        return result;
+    }
+    node
 }
 
 /// Whether the subtree at `node` transitively reaches ANY perform (this handler's discharged op, a foreign

@@ -3071,16 +3071,17 @@ fn a_collection_extracted_performing_closure_declines_honestly_not_no_enclosing_
 }
 
 #[test]
-fn a_recursive_fn_perform_the_specializer_cant_thread_declines_without_a_mangled_name() {
-    // corpus-bugfix/breaker 2026-07-28: a do-def-bound perform in a RECURSIVE fn under a handle used to
-    // report CDZ0201 "`check-all#eff2` has no body" — a compiler-INTERNAL effect-specialization name
-    // (`#eff2`) leaked into a user-facing message. ROOT: `specialize_recursive` reserves the spec def
-    // (body `None`) + memoizes its name BEFORE threading the recursive body (so a self-call resolves its
-    // own name); when the body is UNTHREADABLE (`thread` → None), the reserved def is left bodyless, and a
-    // reference to it hit `def_as_resolved`'s "has no body" coded reject. `def_as_resolved` now reports an
-    // UNCODED "not yet reducible" decline naming the BASE fn (`check-all`) for an internal `#eff`-marked
-    // bodyless spec — the honest todo (the specializer's body-clone increment that would fold it → 110 is
-    // later). Satisfies both asks: (1) clean decline, not CDZ0201; (2) names `check-all`, not `#eff2`.
+fn a_recursive_fn_with_a_single_use_do_def_perform_folds_by_inlining() {
+    // 11238 (v-effects 2026-09-25; was corpus-bugfix/breaker 2026-07-28): a do-def-bound perform in a
+    // RECURSIVE fn under a handle — `(do (def scaled (Env.scale i)) (check-all (- i 1) (+ bad scaled)))` —
+    // used to be UNTHREADABLE: `specialize_recursive` reserved a bodyless spec def + memoized its name
+    // before threading, `thread` returned None on the do-def-bound perform, the def was left bodyless, and
+    // the self-call surfaced a clean CDZ0900 "cannot specialize `check-all`" decline (never a mangled
+    // `#eff2` name — the earlier CDZ0201 leak that was itself fixed). It now FOLDS: the single-return path
+    // of `specialize_recursive` pre-normalizes the body via `inline_single_use_do_def_perform`, inlining
+    // the SINGLE-USE, unconditional, performing do-def into its one use to reach the already-threadable
+    // inline twin `(check-all (- i 1) (+ bad (Env.scale i)))`. So it compiles CLEANLY (the runtime value
+    // 110 is pinned by the 14b corpus case). Regression guard retained: no mangled `#eff` name ever surfaces.
     let out = crate::compile::compile(
         &[crate::abi::Artifact::new(
             crate::abi::Artifact::KIND_AST,
@@ -3100,28 +3101,23 @@ fn a_recursive_fn_perform_the_specializer_cant_thread_declines_without_a_mangled
         .iter()
         .filter(|d| d.severity == crate::abi::Severity::Error)
         .collect();
-    // No MANGLED internal specialization name in any user-facing message.
+    // The single-use do-def perform now FOLDS (inlined to the twin) — compiles with NO errors.
     assert!(
-        !errors.iter().any(|d| d.message.contains("#eff")),
-        "must not leak a mangled `#eff` specialization name: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    // The decline is CDZ0900 (deferred/unsupported, seq-286: every decline carries a code), NOT the hard
-    // "has no body" CDZ0201, and names the base fn.
-    assert!(
-        errors.iter().all(|d| d.code.as_deref() == Some("CDZ0900")),
-        "the recursive-spec decline must be CDZ0900 (deferred), not CDZ0201 or uncoded: {:?}",
+        errors.is_empty(),
+        "a single-use do-def-bound perform in a recursive fn should now FOLD (inlined), not decline: {:?}",
         errors
             .iter()
             .map(|d| (&d.code, &d.message))
             .collect::<Vec<_>>()
     );
+    // Regression guard: no MANGLED internal specialization name in any user-facing message.
     assert!(
-        errors
+        !out.diagnostics.iter().any(|d| d.message.contains("#eff")),
+        "must not leak a mangled `#eff` specialization name: {:?}",
+        out.diagnostics
             .iter()
-            .any(|d| d.message.contains("check-all") && d.message.contains("cannot specialize")),
-        "expected an honest not-reducible decline naming `check-all`: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
