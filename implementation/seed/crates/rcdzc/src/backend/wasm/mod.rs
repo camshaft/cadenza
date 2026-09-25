@@ -6615,6 +6615,80 @@ fn option_list_arg(
     ))
 }
 
+/// An `option<string>` / `option<bytes>` entry param — an Option whose Some payload is a `String` or `Bytes`
+/// (a memory-bearing `(ptr, len)` byte-leaf). The all-scalar Option is
+/// [`arg_boundary::fixed_shape_option_scalar_arg`]'s path (which returns `None` for a byte-leaf payload) and a
+/// `list<scalar>` payload is [`option_list_arg`]'s (eop2); this is their byte-leaf counterpart. It crosses as a
+/// STRUCTURAL `option<string>` / `option<list<u8>>`, flattened `(disc: i32, ptr: i32, len: i32)`; the Some arm
+/// builds the guest byte-leaf via `SumArmPayload::Bytes` (a `String` builds the SAME UTF-8 byte-leaf a `Bytes`
+/// does, no decode — so one arm serves both). Bare-route local (like [`option_list_arg`]): the WIT is
+/// synthesized at the call site, so this returns no `ArgSlot`. `ptr_from_i64 = false` — an Option has a single
+/// payload, so the disc-then-`(ptr, len)` layout is not variant-JOIN-widened.
+fn option_string_arg(
+    db: &mut Db,
+    gty: &crate::ty::Ty,
+) -> Option<(
+    Vec<crate::backend::wasm::lir::ValType>,
+    crate::backend::wasm::serialize::SumArgRebuild,
+)> {
+    use crate::backend::wasm::lir::ValType;
+    use crate::backend::wasm::serialize::{SumArgArm, SumArgRebuild, SumArmPayload};
+    use crate::ty::Ty;
+    let Ty::Sum { decl, args, .. } = gty.strip_nominal() else {
+        return None;
+    };
+    let args = args.clone();
+    let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
+        let dr = db.type_decl_by_occ(*decl)?;
+        if dr.variants.len() != 2 {
+            return None;
+        }
+        (
+            dr.params.clone(),
+            dr.variants.iter().map(|v| v.payloads.clone()).collect(),
+        )
+    };
+    let counts: Vec<usize> = variant_payloads.iter().map(|p| p.len()).collect();
+    // OPTION shape: exactly one nullary + one single-payload variant.
+    let (payload_i, nullary_i) = match counts.as_slice() {
+        [1, 0] => (0u32, 1u32),
+        [0, 1] => (1u32, 0u32),
+        _ => return None,
+    };
+    let payload_occ = variant_payloads[payload_i as usize][0];
+    let pname = db
+        .ast
+        .head_name(payload_occ)
+        .or_else(|| db.ast.as_name(payload_occ))?
+        .to_string();
+    let pi = params.iter().position(|p| *p == pname)?;
+    let payload_ty = args.get(pi)?.clone();
+    // The payload must be a `String` or `Bytes` (a memory-bearing byte-leaf). A scalar is
+    // `fixed_shape_option_scalar_arg`'s path; a `list<scalar>` is `option_list_arg`'s.
+    if !matches!(payload_ty.strip_nominal(), Ty::String | Ty::Bytes) {
+        return None;
+    }
+    // Canonical `option<string>`/`option<list<u8>>` flattening: `(disc: i32, ptr: i32, len: i32)`. The Some arm
+    // copies the bytes into a guest byte-leaf; the None arm is nullary. Component `option<T>` sends Some = 1.
+    Some((
+        vec![ValType::I32, ValType::I32],
+        SumArgRebuild {
+            base_param: 1,
+            boundary_true_disc: 1,
+            arm_true: SumArgArm {
+                decl_disc: payload_i,
+                payload: SumArmPayload::Bytes {
+                    ptr_from_i64: false,
+                },
+            },
+            arm_false: SumArgArm {
+                decl_disc: nullary_i,
+                payload: SumArmPayload::Nullary,
+            },
+        },
+    ))
+}
+
 /// A `result<scalar, String>` (or the symmetric `result<String, scalar>`) entry param — a two-payload Result
 /// where ONE arm is an aliased-width scalar and the OTHER is a `String` (a memory-bearing `(ptr, len)` leaf).
 /// The all-scalar Result is [`arg_boundary::fixed_shape_option_scalar_arg`]'s path (which returns `None` for a
@@ -6824,6 +6898,34 @@ fn try_bare_entry_param_component(
             }
             // BORROW-only (this slice): the def matches the Some to read `List.len`/element, then the wrapper
             // reclaims the built sum shell (which deep-drops the inner vec) after the call.
+            let _ = body;
+            mem_leaf_params.push(None);
+            sum_params.push(Some((rebuild, true)));
+            cell_params.push(None);
+            cell_slots.push(None);
+            cell_drop_after.push(false);
+            cell_escaped_fields.push(None);
+            wit_params.push((format!("p{i}"), wit));
+            continue;
+        }
+        // An `option<string>` / `option<bytes>` entry param: an Option whose Some payload is a memory-bearing
+        // byte-leaf (String/Bytes), flattened to `(disc, ptr, len)`; the Some arm copies the bytes into a guest
+        // byte-leaf (`SumArmPayload::Bytes`). WIT synthesized as `option<string>` / `option<list<u8>>`
+        // (structural). Tried before `fixed_shape_option_scalar_arg` (which returns None for a byte-leaf
+        // payload) — the byte-leaf twin of the `option_list_arg` arm above.
+        if let Some((vts, rebuild)) = option_string_arg(db, gty) {
+            let inner = crate::wit_world::ty_natural_wit(&match gty.strip_nominal() {
+                Ty::Sum { args, .. } => args.first().cloned()?,
+                _ => return None,
+            })?;
+            let wit = crate::wit_world::WitType::Option(Box::new(inner));
+            // Canonical `option<string>`/`option<list<u8>>` flattening: `(disc: i32, ptr: i32, len: i32)`.
+            param_vts.push(ValType::I32.byte());
+            for vt in &vts {
+                param_vts.push(vt.byte());
+            }
+            // BORROW-only (this slice): the def matches the Some to read the String/Bytes, then the wrapper
+            // reclaims the built sum shell (which deep-drops the byte-leaf) after the call.
             let _ = body;
             mem_leaf_params.push(None);
             sum_params.push(Some((rebuild, true)));

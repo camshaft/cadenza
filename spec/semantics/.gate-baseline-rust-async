@@ -7922,6 +7922,8 @@ pass	end-to-end: a property run finds a failing input, then the shrinker converg
 pass	eo1 an Option entry param delivers its Some payload
 pass	eo2 an Option entry param takes the None arm
 pass	eo3 an Option param BETWEEN scalars keeps positions
+pass	eos1 an option<string> entry param delivers its Some payload's byte-length
+pass	eob1 an option<bytes> entry param delivers its Some payload's byte-length
 pass	eoc1 an Option entry param captured by a local closure applied twice
 pass	eoc2 an Option entry param relayed to a helper def and unwrapped there (owned sum, unlike the borrowed list)
 pass	eoc3 an Option entry param matched twice reclaims (the repeat-unwrap family needs a heap payload)
