@@ -725,7 +725,14 @@ pub fn emit(
                     (serialize::MemLeafKind::List(elem), drop_after) => {
                         used.insert("vec-empty");
                         used.insert("vec-push");
-                        used.insert(elem.box_op);
+                        if elem.byte_leaf.is_some() {
+                            // A `list<string>`/`list<bytes>` copies each element's bytes into a value-heap
+                            // byte-leaf (`bytes-alloc`/`bytes-set`); its `box_op` is inert.
+                            used.insert("bytes-alloc");
+                            used.insert("bytes-set");
+                        } else {
+                            used.insert(elem.box_op);
+                        }
                         if *drop_after {
                             used.insert("drop");
                         }
@@ -6923,6 +6930,13 @@ fn param_field_rebuild(
             if le.nest_lists != 0 {
                 return None;
             }
+            // A byte-leaf element list (`list<string>`/`list<bytes>`) is admitted only as a TOP-LEVEL param
+            // (its per-element byte copy-in needs fresh scratch locals the top-level lift reserves); as a
+            // nested FIELD the cell-rebuild lift threads a throwaway `next_local`, so decline here — a later
+            // slice.
+            if le.byte_leaf.is_some() {
+                return None;
+            }
             param_vts.push(ValType::I32.byte());
             param_vts.push(ValType::I32.byte());
             Some(FieldRebuild::ListLeaf(le))
@@ -7011,6 +7025,25 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
         nest += 1;
         leaf = inner.strip_nominal().clone();
     }
+    // A `String`/`Bytes` leaf: a FLAT `list<string>`/`list<bytes>` element crosses as a `(ptr, len)`
+    // descriptor (canonical stride 8, like a nested sub-list) and lifts by copying its bytes out of linear
+    // memory 0 into a value-heap byte-leaf (`bytes-alloc`/`bytes-set`), not a scalar load+box. Only `nest ==
+    // 0` is admitted (a nested `list<list<string>>` is a later slice). The scalar read/box fields are unused
+    // for a byte-leaf, so they carry inert placeholders.
+    if matches!(leaf, Ty::String | Ty::Bytes) {
+        if nest != 0 {
+            return None;
+        }
+        return Some(ListElem {
+            load_op: 0,
+            load_align: 0,
+            stride: 8,
+            extend: None,
+            box_op: "",
+            nest_lists: 0,
+            byte_leaf: Some(matches!(leaf, Ty::String)),
+        });
+    }
     // The scalar leaf's read+box: (load_op, natural-align, stride, narrow-extend, box_op).
     let (load_op, load_align, stride, extend, box_op): (u8, u32, u32, Option<bool>, &'static str) =
         match &leaf {
@@ -7059,6 +7092,7 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
         extend,
         box_op,
         nest_lists: nest,
+        byte_leaf: None,
     })
 }
 
@@ -7708,9 +7742,15 @@ fn try_bare_entry_param_component(
     }
     for m in &mem_leaf_params {
         if let Some((serialize::MemLeafKind::List(elem), _)) = m {
-            // A list<scalar> builds a vec + boxes each element with its own box op (box-int/float/float32/bool).
             lift_ops.extend(["vec-empty", "vec-push"]);
-            lift_ops.push(elem.box_op);
+            if elem.byte_leaf.is_some() {
+                // A `list<string>`/`list<bytes>` copies each element's bytes into a value-heap byte-leaf
+                // (`bytes-alloc`/`bytes-set`) rather than a scalar box op (`box_op` is inert for a byte-leaf).
+                lift_ops.extend(["bytes-alloc", "bytes-set"]);
+            } else {
+                // A list<scalar> boxes each element with its own box op (box-int/float/float32/bool).
+                lift_ops.push(elem.box_op);
+            }
         }
     }
     // A sum (option/result) param builds its cell via `sum-new` plus each arm's payload ops (box-int, etc.).
@@ -9161,7 +9201,12 @@ impl MakeParams {
                         MemLeafKind::List(elem) => {
                             out("vec-empty");
                             out("vec-push");
-                            out(elem.box_op);
+                            if elem.byte_leaf.is_some() {
+                                out("bytes-alloc");
+                                out("bytes-set");
+                            } else {
+                                out(elem.box_op);
+                            }
                         }
                     }
                 }

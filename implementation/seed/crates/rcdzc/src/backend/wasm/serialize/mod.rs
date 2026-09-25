@@ -1103,6 +1103,15 @@ pub struct ListElem {
     /// `(ptr: i32, len: i32)` boundary rep regardless of `T`, so the nesting is a depth COUNT, not a tree
     /// (el8/eln1-3). `emit_list_leaf_lift` recurses on this count.
     pub nest_lists: u32,
+    /// `None` for a SCALAR element (the `load_op`/`box_op` above read+box it). `Some(is_string)` for a
+    /// BYTE-LEAF element — a `String` (`true`) or `Bytes` (`false`) — where each element crosses as a
+    /// `(ptr: i32, len: i32)` descriptor (canonical stride 8, like a nested sub-list) and lifts by copying
+    /// its bytes out of linear memory 0 into a value-heap byte-leaf (`bytes-alloc`/`bytes-set`), NOT a
+    /// scalar load+box. A Cadenza `String` IS a flat UTF-8 byte-leaf identical to `Bytes` at the value
+    /// rep, so both use the same copy-in (the `is_string` flag is carried only for symmetry with the
+    /// param-level `MemLeafKind::Str`/`Bytes` split; the lift is identical). Only a FLAT `list<string>` /
+    /// `list<bytes>` (`nest_lists == 0`) is admitted here — a nested `list<list<string>>` is a later slice.
+    pub byte_leaf: Option<bool>,
 }
 
 /// How a boundary wrapper produces its result from the value the compiled def returns.
@@ -4130,7 +4139,11 @@ fn emit_list_level(
     // A nested element is a `(ptr,len)` sub-list = 8 canonical bytes; a scalar leaf uses its own stride.
     let stride: u32 = if levels > 0 { 8 } else { elem.stride };
     // For a nested level, pre-allocate this level's per-element scratch (inner ptr/len + inner vec/cursor).
-    let (inner_ptr, inner_len, inner_buf, inner_ctr) = if levels > 0 {
+    // A BYTE-LEAF element (`list<string>`/`list<bytes>`) at the leaf level (levels == 0) also needs four
+    // fresh locals: inner_ptr/inner_len read the element's `(ptr, len)` descriptor out of memory, and
+    // inner_buf/inner_ctr are the byte copy-in's scratch pair (`emit_bytes_leaf_copy_in`). inner_len MUST be
+    // inner_ptr + 1 (the copy-in reads its len at ptr_leaf + 1).
+    let (inner_ptr, inner_len, inner_buf, inner_ctr) = if levels > 0 || elem.byte_leaf.is_some() {
         let base = *next_local;
         *next_local += 4;
         (base, base + 1, base + 2, base + 3)
@@ -4171,7 +4184,33 @@ fn emit_list_level(
         out.push(op::I32_MUL);
         out.push(op::I32_ADD);
     };
-    if levels == 0 {
+    if levels == 0 && elem.byte_leaf.is_some() {
+        // BYTE-LEAF element (`list<string>`/`list<bytes>`): the element at `addr` is a `(ptr, len)`
+        // descriptor (8 bytes). Read it into inner_ptr/inner_len, then copy those bytes out of linear memory
+        // 0 into a fresh value-heap byte-leaf (`emit_bytes_leaf_copy_in`, per-byte — no shared allocator on
+        // the bare entry path) and push the handle. A String and a Bytes element share this lift (a Cadenza
+        // String IS a flat UTF-8 byte-leaf), so `byte_leaf`'s bool is not consulted here.
+        emit_addr(out);
+        out.push(op::I32_LOAD);
+        uleb128(2, out); // align log2(4)
+        uleb128(0, out); // offset 0 (ptr)
+        out.push(op::LOCAL_SET);
+        uleb128(inner_ptr as u64, out);
+        emit_addr(out);
+        out.push(op::I32_LOAD);
+        uleb128(2, out);
+        uleb128(4, out); // offset 4 (len)
+        out.push(op::LOCAL_SET);
+        uleb128(inner_len as u64, out);
+        // buf = vec-push(buf, bytes-copy-in(inner_ptr, inner_len))
+        out.push(op::LOCAL_GET);
+        uleb128(buf as u64, out); // [buf]
+        emit_bytes_leaf_copy_in(inner_ptr, false, inner_buf, inner_ctr, false, imp, out); // [buf, handle]
+        out.push(op::CALL);
+        uleb128(imp("vec-push"), out); // [buf']
+        out.push(op::LOCAL_SET);
+        uleb128(buf as u64, out);
+    } else if levels == 0 {
         // buf = vec-push(buf, box(load(addr)))
         out.push(op::LOCAL_GET);
         uleb128(buf as u64, out); // [buf]
