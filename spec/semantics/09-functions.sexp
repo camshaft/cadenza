@@ -13837,6 +13837,34 @@
   (call main (: #record((= n 5) (= r (Ok "abc"))) (Record (: n Int64) (: r (Result String String)))))
   (output (: 503 Int64)))
 
+; rpp23 (TODO) widens the sum-payload FIELD family to a LIST-of-sum field — a `list<option<scalar>>` record
+; field. This shape ALREADY crosses as a TOP-LEVEL param (lpo1/lpo2: `list_sum_elem` builds the per-element
+; value-heap sum cell), and `natural_wit_bare` already derives the field WIT `list<option<s64>>` (its `Ty::List`
+; arm recurses so an option element gets its structural WIT). The GAP is purely in the FIELD rebuild:
+; `param_field_rebuild`'s `Ty::List` arm calls `list_scalar_elem` ONLY (no `list_sum_elem`), so an option
+; element declines the whole param (a clean CDZ0904-class decline — WIT and rebuild commit together via `?`, so
+; NO invalid component). The idealistic expectation pinned here: a `list<option<scalar>>` field crosses exactly
+; like the top-level lpo1 — the double-match reads element 0's outer (in-range?) then inner (Some/None) option.
+; 503 = 100*5 + element-0 Some(Some 3) payload 3. Implementation slice (v-wit-boundary shared-lowering lane):
+; widen param_field_rebuild's List arm to `list_scalar_elem(elem).or_else(|| list_sum_elem(db, elem))` and carry
+; the sum descriptor through the `ListLeaf` field cell-lift — first VERIFY the field-lift's threaded `next_local`
+; supplies the sum branch's scratch (the compound element threads the wrapper's `(buf,ctr)` pair; the byte-leaf
+; element declines as a field because it needs fresh copy-in scratch — confirm which side the sum-scalar element
+; falls on before flipping this TODO to pass).
+(case
+  "rpp23 a Record entry param with a list<option<scalar>> field reads an element's Some payload"
+  (input
+    (do
+      (def
+        (main (: rec (Record (: n Int64) (: xs (List (Option Int64))))))
+        (+ (* 100 rec.n)
+           (match (List.at rec.xs 0)
+             ((Option.Some o) (match o ((Option.Some v) v) ((Option.None) -1)))
+             ((Option.None) -10))))
+      (export main)))
+  (call main (: #record((= n 5) (= xs #list((Some 3) (None unit)))) (Record (: n Int64) (: xs (List (Option Int64))))))
+  (output (: 503 Int64)))
+
 (case
   "a tuple-destructuring lambda parameter binds like a def param"
   (doc
