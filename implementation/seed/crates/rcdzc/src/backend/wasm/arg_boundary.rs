@@ -437,11 +437,18 @@ pub(super) fn fixed_shape_sum_param_arg(
         let pi = params.iter().position(|p| *p == pname)?;
         args.get(pi).cloned()
     };
-    // Classify one payload type into its arm payload + flattened leaf valtypes. `list<u8>` → Bytes `(ptr,len)`;
-    // an all-nullary sum (WIT `enum`) → Enum (one disc); an aliased-width scalar → Scalar; else decline.
+    // Classify one payload type into its arm payload + flattened leaf valtypes. `list<u8>`/`String` → Bytes
+    // `(ptr,len)`; an all-nullary sum (WIT `enum`) → Enum (one disc); an aliased-width scalar → Scalar; else
+    // decline.
     let classify = |db: &mut Db, pty: &Ty| -> Option<(SumArmPayload, Vec<ValType>)> {
         match pty.strip_nominal() {
-            Ty::Bytes => Some((
+            // A `String` or `Bytes` payload both cross as `(ptr, len)` and lift via the SAME byte-leaf copy-in
+            // (`SumArmPayload::Bytes`): a Cadenza `String` value IS a flat UTF-8 byte-leaf, built exactly by the
+            // `bytes-alloc`/`bytes-set` loop with no `str-from-bytes` decode — the same unification
+            // `param_field_rebuild`'s `String | Bytes => BytesLeaf` and the top-level `option_string_arg` already
+            // apply, so one arm serves both. `ptr_from_i64 = false`: a single-payload option's disc-then-`(ptr,
+            // len)` layout is not variant-JOIN-widened (the differing-width Result-arm join is a later slice).
+            Ty::String | Ty::Bytes => Some((
                 SumArmPayload::Bytes {
                     ptr_from_i64: false,
                 },
