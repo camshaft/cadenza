@@ -154,6 +154,77 @@ pub fn generate_large_value(entropy: &[u8]) -> Program {
     }
 }
 
+/// A generated EXPORT-PARAM program: a single export that TAKES scalar parameters, plus the `args`
+/// (value-form literals) to CALL it with on both backends. Carried together because the wasm-vs-rust
+/// [`crate::differential::differential_with_args`] oracle must run each backend with the SAME args.
+pub struct ExportParam {
+    pub source: String,
+    pub args: Vec<String>,
+}
+
+/// Generate an EXPORT-PARAM value-differential program: a single export whose entry TAKES scalar
+/// parameters, called with concrete `args` that must cross the component boundary on BOTH backends and
+/// produce an IDENTICAL value. This reaches the entry-param boundary-MARSHAL surface the nullary
+/// reclaim/effect grammars structurally cannot — the exact class wasm-boundary-marshal is landing (the
+/// ~48-case #964x cluster: the wasm component-boundary lift/lower and the rust `cdz_rust_render::rust_call_arg`
+/// marshal) — unblocked for the differential by #9670's `cdz run-rust --arg` passthrough. Every shape is a
+/// scalar-arithmetic entry over signed/unsigned integers (the #9670-WITNESSED agreeing family:
+/// double/add/idn/…): a mis-coerced, wrong-width, or wrong-sign marshal on EITHER backend corrupts the
+/// returned value → a [`crate::differential::differential_with_args`] mismatch. Args are bare value-form
+/// literals (a hyphen-led Int64 like `-4` crosses as a VALUE, not a flag — `cdz run-rust` sets
+/// `allow_hyphen_values`). NOTE: deliberately EXCLUDES the #9586 record-Option-newtype family — that target
+/// is a KNOWN cross-backend DIVERGENCE (wasm CDZ0910 vs rust E0282, routed to v-compiler-primitives), so a
+/// tripwire on it would fire against a doubly-defective pair; add it only once the rust const-materialization
+/// fix lands.
+pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
+    let mut c = ByteCursorChoice::new(entropy);
+    let shape = c.variant(6);
+    // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
+    // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
+    let a = c.int_bounded(-40, 40);
+    let b = c.int_bounded(-40, 40);
+    let m = c.int_bounded(1, 12);
+    let u = c.int_bounded(0, 60);
+    let (source, args) = match shape {
+        // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
+        0 => (
+            "(do (def (double (: x Int64)) (* x 2)) (export double))".to_string(),
+            vec![a.to_string()],
+        ),
+        // 1 — ADD: two Int64 params (the #9670 add(20,22)->42 witness — multi-arg marshal + ordering).
+        1 => (
+            "(do (def (add (: p Int64) (: q Int64)) (+ p q)) (export add))".to_string(),
+            vec![a.to_string(), b.to_string()],
+        ),
+        // 2 — IDN: identity over a (possibly NEGATIVE) Int64 (the #9670 idn(-4)->-4 witness — a wrong-sign
+        //     or truncating marshal corrupts it).
+        2 => (
+            "(do (def (idn (: x Int64)) x) (export idn))".to_string(),
+            vec![a.to_string()],
+        ),
+        // 3 — UInt64 param: unsigned width marshal (an i64-carried handle, non-negative arg) — the
+        //     CDZ0910-adjacent WIDTH surface but on a SCALAR entry param (no record wrapping → no #9586).
+        3 => (
+            "(do (def (u (: x UInt64)) (* x 3)) (export u))".to_string(),
+            vec![u.to_string()],
+        ),
+        // 4 — THREE Int64 params, mixed arithmetic (p*q)+r: deeper multi-arg marshal (param count + order).
+        4 => (
+            "(do (def (f (: p Int64) (: q Int64) (: r Int64)) (+ (* p q) r)) (export f))"
+                .to_string(),
+            vec![m.to_string(), b.to_string(), a.to_string()],
+        ),
+        // 5 — Int64 param feeding a branch (sign classification): the marshaled param must reach the
+        //     comparison with its exact value+sign to select the right arm.
+        _ => (
+            "(do (def (sgn (: x Int64)) (if (< x 0) (- 0 1) (if (> x 0) 1 0))) (export sgn))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+    };
+    ExportParam { source, args }
+}
+
 /// Generate an OWNED-AGGREGATE-RECLAIM program — a param-less `main` returning Int64 whose value
 /// depends on a heap aggregate (a `List`, or a tagged-sum payload) being CONSTRUCTED, destructured,
 /// and its dead siblings RECLAIMED while the live projection survives. This DENSIFIES value-observable
@@ -5466,6 +5537,55 @@ mod tests {
         assert!(
             reached.iter().all(|&r| r),
             "all eight effect forms must be reachable across seeds: reached={reached:?}"
+        );
+    }
+
+    #[test]
+    fn generate_export_param_reaches_all_forms_and_compiles() {
+        // Distinctive, mutually-exclusive markers for the six export-param shapes (see
+        // `generate_export_param`): double/add/idn/u(UInt64)/f(3-arg)/sgn.
+        let mut reached = [false; 6];
+        for seed in 0u64..270 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
+            let mut bytes = Vec::new();
+            // variant(6) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
+            // shape selector AND every arg literal on live entropy.
+            for _ in 0..40 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let ep = generate_export_param(&bytes);
+            assert!(
+                matches!(compile_catching(&ep.source), Verdict::Compiled { .. }),
+                "every export-param shape must COMPILE (a decline exercises no marshal): {}",
+                ep.source
+            );
+            assert!(
+                !ep.args.is_empty(),
+                "every export-param shape must carry at least one call arg: {}",
+                ep.source
+            );
+            if ep.source.contains("(def (double ") {
+                reached[0] = true;
+            } else if ep.source.contains("(def (add ") {
+                reached[1] = true;
+            } else if ep.source.contains("(def (idn ") {
+                reached[2] = true;
+            } else if ep.source.contains("(def (u (: x UInt64))") {
+                reached[3] = true;
+            } else if ep
+                .source
+                .contains("(def (f (: p Int64) (: q Int64) (: r Int64))")
+            {
+                reached[4] = true;
+            } else if ep.source.contains("(def (sgn ") {
+                reached[5] = true;
+            }
+        }
+        assert!(
+            reached.iter().all(|&r| r),
+            "all six export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 

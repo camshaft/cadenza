@@ -175,7 +175,7 @@ fn usage() {
          \n\
          USAGE:\n\
          \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR] [--astgen]\n\
-         \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen] [--large] [--reclaim] [--effect]\n\
+         \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH] [--astgen] [--large] [--reclaim] [--effect] [--export-param]   (--export-param = entry-param boundary-marshal shapes CALLED with args on both backends via `cdz run-rust --arg`)\n\
          \x20 cdz-smith opt-differential  [--count N] [--seed S] [--findings DIR] [--store DIR] [--astgen] [--large] [--reclaim] [--effect]   (O0-vs-O1/O2/O3 VALUE invariance — pure-optimizer miscompile hunt; in-process, no cdz; --reclaim = reclaim-precision shapes, --effect = algebraic-effect lowering)\n\
          \x20 cdz-smith determinism      [--count N] [--seed S] [--findings DIR] [--astgen] [--reclaim] [--effect]   (compile TWICE, require byte-identical output — compiler-nondeterminism hunt; compile-only, no store/cdz)\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
@@ -1088,6 +1088,7 @@ fn cmd_differential(args: &[String]) -> ExitCode {
     let mut store: Option<PathBuf> = None;
     let mut cdz: Option<PathBuf> = None;
     let mut gen_mode = driver::GenMode::default();
+    let mut export_param = false;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1111,6 +1112,11 @@ fn cmd_differential(args: &[String]) -> ExitCode {
             // Draw ALGEBRAIC-EFFECT programs (effect/handle/resume/abort) — value-observable coverage of the
             // effects lowering (continuation capture, handler-stack resolution). See `GenMode::Effect`.
             "--effect" => gen_mode = driver::GenMode::Effect,
+            // Draw EXPORT-PARAM shapes — a single export TAKING scalar params, CALLED with concrete args on
+            // BOTH backends (the entry-param boundary-marshal value surface, unblocked by #9670's
+            // `cdz run-rust --arg`). Routes to `export_param_differential_sweep`; ignores the `gen_mode`
+            // grammar flags (the shapes carry their own args). See `generate_export_param`.
+            "--export-param" => export_param = true,
             other => {
                 eprintln!("cdz-smith differential: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -1154,12 +1160,16 @@ fn cmd_differential(args: &[String]) -> ExitCode {
         progress_every: 100,
         gen_mode,
     };
-    let grammar = match gen_mode {
-        driver::GenMode::Astgen => "astgen",
-        driver::GenMode::LargeValue => "large-value",
-        driver::GenMode::ReclaimShapes => "reclaim-shapes",
-        driver::GenMode::Effect => "effect",
-        _ => "text",
+    let grammar = if export_param {
+        "export-param"
+    } else {
+        match gen_mode {
+            driver::GenMode::Astgen => "astgen",
+            driver::GenMode::LargeValue => "large-value",
+            driver::GenMode::ReclaimShapes => "reclaim-shapes",
+            driver::GenMode::Effect => "effect",
+            _ => "text",
+        }
     };
 
     eprintln!(
@@ -1179,7 +1189,12 @@ fn cmd_differential(args: &[String]) -> ExitCode {
         cfg.commit.clone(),
         cdz_smith::compile_guard::compile_timeout(),
     );
-    match driver::differential_sweep(&cfg, &store, &cdz, count) {
+    let sweep = if export_param {
+        driver::export_param_differential_sweep(&cfg, &store, &cdz, count)
+    } else {
+        driver::differential_sweep(&cfg, &store, &cdz, count)
+    };
+    match sweep {
         Ok(stats) => {
             eprintln!(
                 "[cdz-smith] differential done: {} agreed, {} mismatched ({} new buckets, {} dup hits), {} crashed, {} unavailable",

@@ -607,10 +607,31 @@ fn strip_value_annotation(payload: &str) -> String {
 /// we couldn't even spawn the binary, write its stdin, or reap it. That distinction matters: a usage
 /// error is per-program (skip it), an infrastructure failure means the whole sweep is misconfigured.
 pub fn run_rust(cdz: &std::path::Path, source: &str) -> Result<Side, String> {
+    run_rust_with_args(cdz, source, &[])
+}
+
+/// [`run_rust`] but CALLING the exported entry with `args` — the rust twin of [`run_wasm_with_args`], for
+/// VALUE-checking an export that TAKES scalar parameters (an entry-param / boundary-marshal program) across
+/// both backends. Passes each value-form literal as a `--arg <VALUE>` to `cdz run-rust` (the passthrough
+/// landed in #9670: source on stdin, one `--arg` per SOURCE param, coerced by the shared
+/// `cdz_rust_render::rust_call_arg` marshal — the same one the corpus rust gate uses; the `__cdz_env`
+/// plumbing param is filtered by the command). A hyphen-led literal (`-4`) is a VALUE, not a flag
+/// (`cdz run-rust` sets `allow_hyphen_values`). Empty `args` is exactly [`run_rust`]. The `args` must match
+/// the values the wasm side is called with (same values, string-rendered here vs the value-form there) so
+/// both backends run the identical call. Exit / verdict contract is unchanged from [`run_rust`].
+pub fn run_rust_with_args(
+    cdz: &std::path::Path,
+    source: &str,
+    args: &[String],
+) -> Result<Side, String> {
     use std::io::Write;
 
-    let mut child = Command::new(cdz)
-        .arg("run-rust")
+    let mut cmd = Command::new(cdz);
+    cmd.arg("run-rust");
+    for a in args {
+        cmd.arg("--arg").arg(a);
+    }
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1056,12 +1077,28 @@ fn fold_verdict(
 /// only an INFRASTRUCTURE failure that prevented the run entirely (spawn/write/reap) becomes
 /// [`Diff::Unavailable`] (logged, never filed) — see [`run_rust`].
 pub fn differential(source: &str, store: &std::path::Path, cdz: &std::path::Path) -> Diff {
-    let wasm = run_wasm(source, store);
+    differential_with_args(source, &[], store, cdz)
+}
+
+/// [`differential`] but CALLING the exported entry with `args` on BOTH backends — the entry-param /
+/// boundary-marshal value oracle. Runs the wasm side with [`run_wasm_with_args`] and the rust side with
+/// [`run_rust_with_args`] (the #9670 `cdz run-rust --arg` passthrough), then [`compare`]s. This reaches the
+/// export-PARAM value surface the nullary [`differential`] structurally cannot: a program whose export
+/// takes scalar parameters is called with the SAME `args` on each backend, so a divergence is a real
+/// entry-param marshal MISCOMPILE (a mis-coerced / wrong-width / wrong-sign boundary value). Same
+/// wasm-decline short-circuit as [`differential`] (an un-runnable wasm side is never comparable).
+pub fn differential_with_args(
+    source: &str,
+    args: &[String],
+    store: &std::path::Path,
+    cdz: &std::path::Path,
+) -> Diff {
+    let wasm = run_wasm_with_args(source, store, args);
     // Cheap short-circuit: a wasm decline is never comparable, so skip the (expensive) rustc run.
     if let Side::Declined(_) = wasm {
         return Diff::Agree;
     }
-    let rust = match run_rust(cdz, source) {
+    let rust = match run_rust_with_args(cdz, source, args) {
         Ok(s) => s,
         Err(e) => return Diff::Unavailable(e),
     };

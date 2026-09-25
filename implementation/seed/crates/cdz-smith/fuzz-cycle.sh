@@ -195,6 +195,21 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
       CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$DIFF_CAP" \
         "$DIFF_BIN" differential --count "$DIFF_COUNT" --seed "$(date +%s)" \
           --findings "$FINDINGS" --store "$DIFF_STORE" --cdz "$DIFF_CDZ" 2>&1 | tail -4 || true
+      # (export-param) — the ENTRY-PARAM boundary-marshal VALUE guard: single-export shapes CALLED with
+      # scalar args on BOTH backends via `cdz run-rust --arg` (#9670). A mis-coerced / wrong-width /
+      # wrong-sign marshal on either backend corrupts the returned value → a mismatch the NULLARY
+      # differential structurally cannot reach. Small count (it shells `cdz` per program, like the sweep
+      # above) under its own cap, reusing the already-resolved cdz + store. A KILL at the cap is SAFE
+      # (findings stream to disk per program); the count sizes the SLOWEST (cdz-shelling) pass to fit.
+      # Scale EP_COUNT with generate_export_param's `variant(N)` (6 shapes x ~20 as of the 6-shape generator).
+      EP_COUNT="${CDZ_SMITH_EXPORT_PARAM_COUNT:-120}"
+      EP_CAP="${CDZ_SMITH_EXPORT_PARAM_CAP:-45}"
+      if [ "$EP_COUNT" -gt 0 ]; then
+        log "export-param differential mini-pass | count $EP_COUNT | cdz $DIFF_CDZ | store $DIFF_STORE | cap ${EP_CAP}s"
+        CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$EP_CAP" \
+          "$DIFF_BIN" differential --export-param --count "$EP_COUNT" --seed "$(date +%s)" \
+            --findings "$FINDINGS" --store "$DIFF_STORE" --cdz "$DIFF_CDZ" 2>&1 | tail -3 || true
+      fi
     else
       log "differential: cdz-smith --features differential build failed; skipping sweep"
     fi
