@@ -186,12 +186,18 @@ pub struct ExportParam {
 /// Shape 10 is the #9684 list-element SIBLING of #9586: a record with a const `(List (Option Int64))` field
 /// PROJECTED AWAY while a sibling scalar `n` (= the param) is read — the bare nullary-variant list element
 /// (`(list (Option.None …))`) was rust E0282 until #9684 threaded the solved element type; a regression
-/// re-introducing it surfaces as a rust ArtifactError (build-blocking) → mismatch. (Set/Map-of-Option const
-/// fields are deliberately NOT generated — they still DECLINE on the rust backend today, coverage-not-yet,
-/// so they'd read as rust-declined, not a value mismatch, until that lands.)
+/// re-introducing it surfaces as a rust ArtifactError (build-blocking) → mismatch. Shape 11 is the #9687
+/// PAYLOAD-variant member — the THIRD and final distinct emit path of the const-materialized-sum-field E0282
+/// family: a record with a `(Result Int64 String)` field const-built as `(Result.Ok 1)` (the String Err arg
+/// DISCARDED) PROJECTED AWAY while a sibling scalar is read — was rust E0282 (`Ok(1): Result<i64,_>`) until
+/// #9687 ascribed it to the solved slot type. Shapes 9/10/11 fence the whole family (record-field #9680,
+/// list-element #9684, payload-variant #9687); the deeper nested variants (Option-of-Option, tuple-with-
+/// Option) exercise these SAME arms recursively and are deliberately NOT added as near-duplicates. (Set/Map-
+/// of-Option const fields are ALSO not generated — they still DECLINE on the rust backend today,
+/// coverage-not-yet, so they'd read as rust-declined, not a value mismatch, until that lands.)
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(11);
+    let shape = c.variant(12);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -279,10 +285,20 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      is read. The bare nullary-variant list element was rust E0282 (untyped `vec![Option::None]`
         //      when the field is projected away) until #9684 threaded the solved element type; returns the
         //      param. A regression reintroducing E0282 shows as a rust ArtifactError → mismatch.
-        _ => (
+        10 => (
             "(do (def (run (: k Int64)) (: (let ((rec #record((= tags (list (Option.None unit) (Option.Some 3))) (= n k)))) (. rec n)) Int64)) (export run))"
                 .to_string(),
             vec![a.to_string()],
+        ),
+        // 11 — #9687 PAYLOAD-variant member of the const-sum-field E0282 family: a record newtype whose
+        //      `(Result Int64 String)` field is const-built as `(Result.Ok 1)` (String Err arg DISCARDED),
+        //      PROJECTED AWAY while sibling scalar `n` (= the param) is read via a let-destructure. Was rust
+        //      E0282 (`Ok(1): Result<i64,_>`, Err free) until #9687 ascribed the solved slot type; returns
+        //      the param. A regression reintroducing E0282 shows as a rust ArtifactError → mismatch.
+        _ => (
+            "(do (type R (R (Record (: res (Result Int64 String)) (: n Int64)))) (def (run (: k Int64)) (: (let (((R.R f) (R.R #record((= res (Result.Ok 1)) (= n k))))) (. f n)) Int64)) (export run))"
+                .to_string(),
+            vec![b.to_string()],
         ),
     };
     ExportParam { source, args }
@@ -5605,15 +5621,15 @@ mod tests {
 
     #[test]
     fn generate_export_param_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the eleven export-param shapes (see
+        // Distinctive, mutually-exclusive markers for the twelve export-param shapes (see
         // `generate_export_param`): double/add/idn/u(UInt64)/f(3-arg)/sgn + three (List Int64) entry-param
         // shapes lhd/top(helper)/suml(recursive-walk) + the #9586 record-Option-newtype `run` + the #9684
-        // const-list-of-Option-field sibling.
-        let mut reached = [false; 11];
-        for seed in 0u64..660 {
+        // const-list-of-Option-field sibling + the #9687 payload-variant (Result Int64 String) field.
+        let mut reached = [false; 12];
+        for seed in 0u64..720 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(11) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // variant(12) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
             // shape selector AND every arg literal on live entropy.
             for _ in 0..64 {
                 x ^= x >> 30;
@@ -5656,11 +5672,13 @@ mod tests {
                 reached[9] = true; // shape 9 = #9586 record-Option-newtype `run`
             } else if ep.source.contains("(= tags (list") {
                 reached[10] = true; // shape 10 = #9684 const-list-of-Option-field sibling
+            } else if ep.source.contains("(: res (Result Int64 String))") {
+                reached[11] = true; // shape 11 = #9687 payload-variant const-sum-field
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all eleven export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all twelve export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
