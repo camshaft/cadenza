@@ -1064,11 +1064,11 @@ pub fn emit(
         && layout.exports.iter().any(|e| {
             e.params.iter().any(|(_, t)| {
                 // A memory-bearing leaf (String/Bytes/list) OR a two-variant sum (option/result) OR a
-                // scalar-fielded tuple param — the cheap pre-filter. A shape the entry path cannot classify
-                // still declines INSIDE (`ty_natural_wit` → None, or the rebuild helper → None), so widening
-                // the filter is safe (it just gives the entry path a chance to classify — rpp4). A `Record` is
-                // NOT added: the bare assembler cannot declare its named WIT type yet, so it stays on the
-                // boundary-loop decline path (CDZ0904) rather than entering the entry path only to decline.
+                // scalar-fielded tuple/record param — the cheap pre-filter. A shape the entry path cannot
+                // classify still declines INSIDE (`ty_natural_wit` → None, or the rebuild helper → None), so
+                // widening the filter is safe (it just gives the entry path a chance to classify — rpp4). A
+                // `Record` crosses STRUCTURALLY as an anonymous `tuple<…>` (rpp1) — identical canonical ABI, no
+                // nominal defined-type declaration — so it enters the entry path like a tuple.
                 matches!(
                     t,
                     crate::ty::Ty::String
@@ -1077,6 +1077,7 @@ pub fn emit(
                         | crate::ty::Ty::Sum { .. }
                         | crate::ty::Ty::Nominal { .. }
                         | crate::ty::Ty::Tuple(_)
+                        | crate::ty::Ty::Record(_)
                         // BigInt/Rational/Symbol have no scalar boundary rep; they cross as the `list<u8>`
                         // canonical value-form, lifted via `value-decode` (eb1/er1/ey1).
                         | crate::ty::Ty::BigInt
@@ -7240,7 +7241,7 @@ fn result_scalar_string_arg(
 /// The def gets a BORROWED handle; the wrapper reclaims it after the call.
 ///
 /// Returns `None` (fall through to the boundary loop's honest decline) for a shape outside the above:
-/// more than one export; a `record<…>` param (a nominal WIT type — needs instance-scoping, rpp1); a
+/// more than one export; a
 /// `BigInt`/`Rational`/`Symbol` param (crosses via the list-u8 value-form once that lift lands, eb1/er1/ey1);
 /// a param that ESCAPES its borrow (recursive / consumed / moved-to-result — el1/grx/phr, the reclaim lane);
 /// or a compound result the bare route does not yet emit.
@@ -7436,7 +7437,7 @@ fn try_bare_entry_param_component(
             ));
             continue;
         }
-        let wit = crate::wit_world::ty_natural_wit(gty)?;
+        let mut wit = crate::wit_world::ty_natural_wit(gty)?;
         // A memory-bearing leaf param (String/Bytes/list<Int64>) all flatten to (ptr, len) and lift via
         // mem_leaf_params. The def OWNS the arg (callee-owns-args), but a param it only BORROWS (byte-len /
         // List.len / compare) is reclaimed by the OWNER — here the wrapper — so `drop_after` = the param does
@@ -7487,13 +7488,6 @@ fn try_bare_entry_param_component(
             // shell-reclaim when a compound element moves out verbatim (28-wit:310 SHAPE-9). An element that is
             // neither an aliased-width scalar nor a supported compound → `None` from `param_field_rebuild`,
             // declining to a later slice.
-            //
-            // A RECORD param (rpp1) is NOT admitted here yet: a WIT `record<…>` is a NAMED defined type the
-            // bare-export assembler (`assemble_bare_typed_with_runtime`) does not declare/re-export, so an
-            // admitted record emits an INVALID component (the def is `func not valid to be used as export`). A
-            // `tuple<…>` is a STRUCTURAL/anonymous WIT type needing no declaration, so it assembles cleanly.
-            // Until the bare assembler declares a record's defined type, a Record param falls through to the
-            // honest `(None, _)` decline below (CDZ0904, graded `todo`) — never a codegen-defect fail.
             (None, Ty::Tuple(gtys)) => {
                 let crate::wit_world::WitType::Tuple(wtys) = &wit else {
                     return None;
@@ -7507,6 +7501,49 @@ fn try_bare_entry_param_component(
                 }
                 // Positional slots: element i lands in cell slot i (a tuple has no name-lex order).
                 let slots: Vec<u32> = (0..gtys.len() as u32).collect();
+                cell_params.push(Some(rebuild));
+                cell_slots.push(Some(slots));
+                mem_leaf_params.push(None);
+                sum_params.push(None);
+                cell_drop_after.push(crate::backend::wasm::select::record_cell_param_droppable(
+                    db, body, *binder,
+                ));
+                cell_escaped_fields.push(crate::backend::wasm::select::escaped_field_projections(
+                    db, body, *binder,
+                ));
+            }
+            // A scalar-fielded RECORD entry param (rpp1) crosses STRUCTURALLY as an anonymous `tuple<…>`: a
+            // record and a tuple of the same field types share ONE canonical ABI (both flatten to the field
+            // valtypes in order), and a `tuple<…>` is a STRUCTURAL WIT former needing no defined-type
+            // declaration — unlike a nominal `record<…>`, which the bare assembler
+            // (`assemble_bare_typed_with_runtime`) does not declare/re-export, so an admitted `record<…>` used
+            // to emit an INVALID component. Crossing as a tuple sidesteps that: the `record`'s natural field
+            // order is `ty_natural_wit`'s SORTED (`BTreeMap`) order, which is ALSO the order the value-heap cell
+            // stores the fields and the closure-ARG record path (`nested_fixed_shape_tuple_arg`) already uses —
+            // so field `i` in sorted order lands in cell slot `i` and the def's `r.<name>` projection resolves
+            // against the same slot. The rest mirrors the tuple arm above (borrowed cell, dup-aware shell
+            // reclaim, moved-out field handling). A field that is not an aliased-width scalar / supported
+            // compound → `None` from `param_field_rebuild`, declining to a later slice.
+            (None, Ty::Record(fields)) => {
+                let crate::wit_world::WitType::Record(field_wits) = &wit else {
+                    return None;
+                };
+                if fields.len() != field_wits.len() {
+                    return None;
+                }
+                let mut rebuild = Vec::with_capacity(fields.len());
+                // `fields` (a `BTreeMap`) iterates sorted; `ty_natural_wit` built `field_wits` in that SAME
+                // sorted order, so zipping pairs each field's guest type with its own WIT.
+                let mut tuple_wtys = Vec::with_capacity(fields.len());
+                for ((_fname, gt), (_wname, wt)) in fields.iter().zip(field_wits) {
+                    rebuild.push(param_field_rebuild(db, gt, wt, &mut param_vts)?);
+                    tuple_wtys.push(wt.clone());
+                }
+                // Re-declare the param's WIT as the STRUCTURAL tuple of the (sorted) field types — dropping the
+                // nominal record name the bare assembler cannot declare, keeping the identical wire.
+                wit = crate::wit_world::WitType::Tuple(tuple_wtys);
+                // Sorted-order positional slots: field i (sorted) lands in cell slot i.
+                let slots: Vec<u32> = (0..fields.len() as u32).collect();
                 cell_params.push(Some(rebuild));
                 cell_slots.push(Some(slots));
                 mem_leaf_params.push(None);
