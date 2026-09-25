@@ -11909,6 +11909,35 @@
   (call main (: #list(#list(#list(9) #list(42 8))) (List (List (List Int64)))))
   (output (: 162 Int64)))
 
+; els1/elb1 extend the lifted-List entry param to a MEMORY-BEARING element — a `list<string>` / `list<bytes>`.
+; Each element crosses as a `(ptr, len)` descriptor (canonical stride 8, like a nested sub-list) and lifts by
+; copying its bytes out of linear memory 0 into a value-heap byte-leaf (a Cadenza String IS a flat UTF-8
+; byte-leaf, identical to Bytes at the value rep — same copy-in, no `str-from-bytes`). Admitted as a TOP-LEVEL
+; param (the per-element copy-in needs the wrapper's reserved scratch); a byte-leaf list as a nested FIELD is a
+; later slice. The def reads element i and measures its byte-length, proving the element materialized (not just
+; the outer length).
+(case
+  "els1 a list<string> entry param reads an element's byte-length"
+  (input
+    (do
+      (def
+        (main (: xs (List String)))
+        (match (List.at xs 1) ((Option.Some s) (String.byte-len s)) ((Option.None) 0)))
+      (export main)))
+  (call main (: #list("ab" "cde" "f") (List String)))
+  (output (: 3 Int64)))
+
+(case
+  "elb1 a list<bytes> entry param reads an element's byte-length"
+  (input
+    (do
+      (def
+        (main (: xs (List Bytes)))
+        (match (List.at xs 0) ((Option.Some b) (Bytes.len b)) ((Option.None) 0)))
+      (export main)))
+  (call main (: #list(b"\x01\x02\x03\x04") (List Bytes)))
+  (output (: 4 Int64)))
+
 (case
   "eo1 an Option entry param delivers its Some payload"
   (input
