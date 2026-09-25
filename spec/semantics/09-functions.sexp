@@ -12057,6 +12057,33 @@
   (call main (: #list() (List (Option Int64))))
   (output (: -30 Int64)))
 
+; lpo2 is the NARROW-payload width-edge of lpo1 — `list<option<i32>>`. Where lpo1's i64 payload sits at offset
+; 8 with a full-width `i64.load` (no extend), an i32 payload packs into the option at offset 4 (disc 1 byte,
+; realigned to 4) with stride 8, read by `i32.load` and i32→i64 SIGN-extended before `box-int`. This exercises
+; the payload_offset / load-op / narrow-extend path list_sum_elem derives per width (via scalar_read_box on the
+; element WIT) — a wrong offset reads garbage, a missing/incorrect extend corrupts a negative payload. A negative
+; Some payload (-4) discriminates the sign-extend: `(Some 3)`/`(Some -4)` → 300+(-4) = 296, `(Some 7)`/None → 698.
+(case
+  "lpo2 a list<option<i32>> narrow-payload entry param sign-extends its Some payload"
+  (input
+    (do
+      (def
+        (main (: xs (List (Option Int32))))
+        (+
+          (match (List.at xs 0)
+            ((Option.Some o) (match o ((Option.Some v) (* 100 v)) ((Option.None) -1)))
+            ((Option.None) -10))
+          (match (List.at xs 1)
+            ((Option.Some o) (match o ((Option.Some v) v) ((Option.None) -2)))
+            ((Option.None) -20))))
+      (export main)))
+  (call main (: #list((Some 3) (Some -4)) (List (Option Int32))))
+  (output (: 296 Int32))
+  (call main (: #list((Some 7) (None unit)) (List (Option Int32))))
+  (output (: 698 Int32))
+  (call main (: #list() (List (Option Int32))))
+  (output (: -30 Int32)))
+
 (case
   "eo1 an Option entry param delivers its Some payload"
   (input

@@ -11287,6 +11287,7 @@ pass	lpr1 a list<record> entry param reads two elements' fields by name
 pass	lft1 a Record entry param with a list<tuple> field reads a nested element
 pass	lfr1 a Record entry param with a list<record> field reads a nested element by name
 pass	lpo1 a list<option<scalar>> entry param reads two elements' Some/None
+pass	lpo2 a list<option<i32>> narrow-payload entry param sign-extends its Some payload
 pass	eop2 an Option-of-list entry param measures its Some payload
 pass	ep1 TWO String entry params concat in declaration order
 pass	equality on a TUPLE containing a closure is rejected CDZ0216 (NotEquatable — the fn leaf poisons the compound walk)
