@@ -505,7 +505,7 @@ pub fn differential_sweep(
     Ok(stats)
 }
 
-/// The (source, args) EXPORT-PARAM program for `seed` — a single export TAKING scalar parameters plus the
+/// The (source, args) EXPORT-PARAM program for `seed` — a single export TAKING scalar or List parameters plus the
 /// value-form literals to call it with ([`crate::astgen::generate_export_param`]). The run loop and any
 /// filer must use this SAME function so a filed reproducer (recorded by its seed) regenerates identically.
 pub fn export_param_for_seed(seed: u64) -> (String, Vec<String>) {

@@ -172,19 +172,29 @@ pub struct ExportParam {
 /// double/add/idn/…): a mis-coerced, wrong-width, or wrong-sign marshal on EITHER backend corrupts the
 /// returned value → a [`crate::differential::differential_with_args`] mismatch. Args are bare value-form
 /// literals (a hyphen-led Int64 like `-4` crosses as a VALUE, not a flag — `cdz run-rust` sets
-/// `allow_hyphen_values`). NOTE: deliberately EXCLUDES the #9586 record-Option-newtype family — that target
-/// is a KNOWN cross-backend DIVERGENCE (wasm CDZ0910 vs rust E0282, routed to v-compiler-primitives), so a
-/// tripwire on it would fire against a doubly-defective pair; add it only once the rust const-materialization
-/// fix lands.
+/// `allow_hyphen_values`). Shapes 0-5 are SCALAR entry params (Int64/UInt64); shapes 6-8 are a `(List Int64)`
+/// ENTRY PARAM — a heap value crossing the boundary — read read-only through `List.at`/`List.len`, a helper,
+/// and a recursive index-walk, exercising #9679's el1 borrow-aware entry-param escape (the List param crosses
+/// AND is reclaimed): a mis-marshaled list, a wrong element, or an over/under-reclaim of the crossed heap
+/// value corrupts the returned scalar → a mismatch. The list `--arg` is the `#list(…)` value-form.
+/// NOTE: deliberately EXCLUDES the #9586 record-Option-newtype family — that target is a KNOWN cross-backend
+/// DIVERGENCE (wasm CDZ0910 vs rust E0282, routed to v-compiler-primitives), so a tripwire on it would fire
+/// against a doubly-defective pair; add it only once the rust const-materialization fix lands.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(6);
+    let shape = c.variant(9);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
     let b = c.int_bounded(-40, 40);
     let m = c.int_bounded(1, 12);
     let u = c.int_bounded(0, 60);
+    // Three non-negative list elements for the `(List Int64)` entry-param shapes (6-8). Non-negative keeps
+    // the `#list(…)` value-form literal simple; the scalar shapes already cover negative-sign marshaling.
+    let e0 = c.int_bounded(0, 40);
+    let e1 = c.int_bounded(0, 40);
+    let e2 = c.int_bounded(0, 40);
+    let list_arg = format!("#list({e0} {e1} {e2})");
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -216,10 +226,33 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         ),
         // 5 — Int64 param feeding a branch (sign classification): the marshaled param must reach the
         //     comparison with its exact value+sign to select the right arm.
-        _ => (
+        5 => (
             "(do (def (sgn (: x Int64)) (if (< x 0) (- 0 1) (if (> x 0) 1 0))) (export sgn))"
                 .to_string(),
             vec![a.to_string()],
+        ),
+        // 6 — (List Int64) ENTRY PARAM read via List.at + match (first element, or 0 if empty): the
+        //     crossed heap list must marshal + its element be read correctly (#9679 el1 entry-param escape).
+        6 => (
+            "(do (def (lhd (: xs (List Int64))) (match (List.at xs 0) ((Some v) v) (None 0))) (export lhd))"
+                .to_string(),
+            vec![list_arg],
+        ),
+        // 7 — (List Int64) ENTRY PARAM passed READ-ONLY THROUGH A HELPER (peek) AND read locally: len +
+        //     first element. The borrow-through-helper path el1 makes cross (#9679) — an over-reclaim of the
+        //     borrowed list between the helper call and the local read corrupts the value.
+        7 => (
+            "(do (def (peek (: ys (List Int64))) (List.len ys)) (def (top (: xs (List Int64))) (+ (peek xs) (match (List.at xs 0) ((Some v) v) (None 0)))) (export top))"
+                .to_string(),
+            vec![list_arg],
+        ),
+        // 8 — (List Int64) ENTRY PARAM summed by a RECURSIVE INDEX-WALK: the recursive read-only walk el1
+        //     makes cross + reclaim (#9679); an over/under-reclaim across the recursion, or a mis-marshaled
+        //     element, corrupts the sum.
+        _ => (
+            "(do (def (walk (: xs (List Int64)) (: i Int64) (: acc Int64)) (if (>= i (List.len xs)) acc (walk xs (+ i 1) (+ acc (match (List.at xs i) ((Some v) v) (None 0)))))) (def (suml (: xs (List Int64))) (walk xs 0 0)) (export suml))"
+                .to_string(),
+            vec![list_arg],
         ),
     };
     ExportParam { source, args }
@@ -5542,15 +5575,16 @@ mod tests {
 
     #[test]
     fn generate_export_param_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the six export-param shapes (see
-        // `generate_export_param`): double/add/idn/u(UInt64)/f(3-arg)/sgn.
-        let mut reached = [false; 6];
-        for seed in 0u64..270 {
+        // Distinctive, mutually-exclusive markers for the nine export-param shapes (see
+        // `generate_export_param`): double/add/idn/u(UInt64)/f(3-arg)/sgn + three (List Int64) entry-param
+        // shapes lhd/top(helper)/suml(recursive-walk).
+        let mut reached = [false; 9];
+        for seed in 0u64..540 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(6) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
+            // variant(9) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
             // shape selector AND every arg literal on live entropy.
-            for _ in 0..40 {
+            for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
                 bytes.push((x >> 24) as u8);
@@ -5581,11 +5615,17 @@ mod tests {
                 reached[4] = true;
             } else if ep.source.contains("(def (sgn ") {
                 reached[5] = true;
+            } else if ep.source.contains("(def (lhd ") {
+                reached[6] = true;
+            } else if ep.source.contains("(def (peek ") {
+                reached[7] = true; // shape 7 = helper `peek` + `top`
+            } else if ep.source.contains("(def (walk ") {
+                reached[8] = true; // shape 8 = recursive index-walk `suml`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all six export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all nine export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
