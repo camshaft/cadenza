@@ -7533,17 +7533,36 @@ fn try_bare_entry_param_component(
     if param_vts.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS {
         return None;
     }
-    // SLICE 1 = BORROWED memory-bearing params only. A param the def only borrows is reclaimed by the wrapper
-    // (its owner) after the call — a guaranteed 0-leak lift. A param that ESCAPES (is consumed: passed to a
-    // consuming op like `Symbol.of`, threaded into a recursive self-call, or moved into the result) needs a
-    // consuming-param lift whose reclaim the wrapper cannot guarantee here (the consumer, or a looped-param
-    // reclaim, must own it) — decline it to the existing todo, a later slice. Prevents a boundary leak (the
-    // #3808 default-enforced live-objects check reds a lifted-but-unreclaimed escaping param).
-    if mem_leaf_params
-        .iter()
-        .any(|m| matches!(m, Some((_, false))))
-    {
-        return None;
+    // A BORROWED memory-bearing param (drop_after=true) is reclaimed by the wrapper (its owner) after the
+    // call — a guaranteed 0-leak lift. An ESCAPING (drop_after=false) param is OWNED by a consumer (a
+    // consuming op / a callee whose `def_consumes_param` holds); the wrapper transfers ownership (no post-call
+    // drop) and the consumer reclaims it via Perceus. That transfer is SOUND only for a clean STRAIGHT-LINE
+    // consume — the CONSUMING SLICE (grx1/grx2/elc4: a List entry param flowing through a non-recursive helper
+    // chain into a consuming `List.concat`/`Map.insert`). A param THREADED through a recursion cycle is
+    // consumed-and-rethreaded per iteration (the ownership accounting is not one transfer — the miscompiling
+    // recursive-param-slot shape); `param_flow_into_cycle` rejects it (grx3's non-tail mutual `suma.0 ->
+    // sumb.0 -> suma.0`, and any unresolvable flow, default-decline). The value-form leaf (BigInt/Symbol) is
+    // NOT in this slice — its escape still declines (its consumer's reclaim is unverified here).
+    for (m, (binder, _)) in mem_leaf_params.iter().zip(params.iter()) {
+        let Some((kind, false)) = m else { continue };
+        // Scoped to `List` consumed by `List.concat` — the VERIFIED clean-transfer slice (elc4/grx1: 0-leak
+        // under guarded-all + the HOP2 re-emit hop + the O0-O3 opt-sweep). Two guards keep it sound
+        // (leak-over-admit, v-core-opt reclaim envelope):
+        //   * `param_flow_into_cycle` — a param THREADED through a recursion (grx3's non-tail mutual
+        //     `suma.0 -> sumb.0 -> suma.0`) is consumed-and-rethreaded per iteration, not one transfer.
+        //   * `param_consume_sink_whitelisted` — a POSITIVE whitelist (v-core-opt-recommended, safe by
+        //     construction): every binder occurrence is a relay or a `List.concat`/`Bytes.concat` operand.
+        //     Anything else declines — a List-as-Map/Set-KEY (elc2/grx2: the collection stores the boxed key,
+        //     a measured 2-object leak) or any unmodeled retaining sink — a missed admit, never a mis-reclaim.
+        // A `Str`/`Bytes` escape also stays declined here (byp2: a bin-match consumer only BORROWS the
+        // segments, so `drop_after = false` would leave it unreclaimed — a measured 1-object leak, the
+        // borrow-ABI mismatch); its owned-vs-borrow verdict needs the dup-aware bytes query, a later slice.
+        let acyclic_concat_consume = matches!(kind, serialize::MemLeafKind::List(_))
+            && !crate::backend::wasm::select::param_flow_into_cycle(db, body, *binder)
+            && crate::backend::wasm::select::param_consume_sink_whitelisted(db, body, *binder);
+        if !acyclic_concat_consume {
+            return None;
+        }
     }
     let any_drop = mem_leaf_params.iter().any(|m| matches!(m, Some((_, true))))
         || sum_params.iter().any(|m| matches!(m, Some((_, true))));

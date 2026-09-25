@@ -76,6 +76,190 @@ pub(crate) fn param_borrow_aware_escapes(db: &mut Db, body: StructId, binder: St
     binding_escapes_dup_aware(db, body, EscapeTarget::Binder(binder), false, None, true)
 }
 
+/// The CONSUMING-SLICE acyclicity guard (v-core-opt reclaim-envelope design): whether the entry param
+/// `binder` in `body` FLOWS INTO A RECURSION CYCLE at a threaded position — the "miscompiling recursive-
+/// param-slot shape" the wrapper's ownership-transfer lift (`drop_after = false`) MUST decline. Only the
+/// ESCAPING (consumed) mem-leaf entry param consults this: `param_borrow_aware_escapes` already
+/// establishes the param is OWNED somewhere (a borrow would be `drop_after = true` and reclaimed by the
+/// wrapper); a wrapper that then transfers ownership (no post-call drop) is sound ONLY when the consume is
+/// a clean STRAIGHT-LINE transfer. A param THREADED through a recursion is consumed-and-rethreaded per
+/// iteration — the ownership accounting across the cycle is not one transfer, so it stays declined.
+///
+/// POSITION-AWARE flow-closure with cycle detection: it follows a DIRECT binder occurrence (`Core::Param` /
+/// `Core::LocalRef`) passed as arg `k` of a `Core::Call` into the callee's param-`k` binder, tracking the
+/// visited `(callee, k)` on the DFS path. A revisit of a `(callee, k)` already on the path is the cycle
+/// (direct self-recursion `self.0 -> self.0`, or mutual/non-tail `suma.0 -> sumb.0 -> suma.0` — position
+/// index makes it fire regardless of tail-position, which the tail-only `mutual_loop_group` misses).
+/// Position-awareness SAVES grx2: `fact` recurses on a SCALAR, the list never enters `fact`, so the list's
+/// flow-closure excludes it -> acyclic -> admit. A constructed operand carrying the binder (not a direct
+/// occurrence) is NOT followed (it is consumed into a fresh value, not the same slot rethreaded).
+///
+/// DEFAULT-DECLINE (returns `true`) on any UNRESOLVABLE flow — a callee with no body, an arity mismatch —
+/// per the leak/UAF-over-admit paramountcy (a wrong consumed-param lift is a double-free, the worst
+/// outcome). v-core-opt owns this envelope; guarded-all + the HOP2 hop are mandatory before landing.
+pub(crate) fn param_flow_into_cycle(db: &mut Db, body: StructId, binder: StructId) -> bool {
+    // The DFS path of (callee, param-position) the tracked value is currently threaded through. A revisit
+    // is the cycle. `explored` prunes (def-body, param-binder) subtrees already proven acyclic so a shared
+    // non-recursive helper reached by two paths is not re-walked.
+    fn flow(
+        db: &mut Db,
+        body: StructId,
+        binder: StructId,
+        path: &mut Vec<(usize, u32)>,
+        explored: &mut HashSet<(StructId, StructId)>,
+    ) -> bool {
+        // Walk `body` finding every DIRECT binder occurrence passed as a Call arg; recurse into that
+        // callee's param. `seen` guards the per-body Core walk against DAG re-visits (memoized nodes).
+        fn walk(
+            db: &mut Db,
+            id: StructId,
+            binder: StructId,
+            path: &mut Vec<(usize, u32)>,
+            explored: &mut HashSet<(StructId, StructId)>,
+            seen: &mut HashSet<StructId>,
+        ) -> bool {
+            if !seen.insert(id) {
+                return false;
+            }
+            if let Core::Call { callee, args } = core_of(db, id) {
+                let args: Vec<StructId> = args.to_vec();
+                for (k, &a) in args.iter().enumerate() {
+                    let direct = matches!(
+                        core_of(db, a),
+                        Core::Param { binder: b } | Core::LocalRef { binder: b } if b == binder
+                    );
+                    if direct {
+                        let node = (callee, k as u32);
+                        if path.contains(&node) {
+                            return true; // the param threads back into a (def, position) on the path
+                        }
+                        // Resolve the callee's param-k binder to continue the flow into its body.
+                        let Some(callee_body) = db.defs.get(callee).and_then(|d| d.body) else {
+                            return true; // unresolvable callee -> default-decline
+                        };
+                        let params = crate::layout::def_params(db, callee);
+                        let Some((callee_binder, _)) = params.get(k).cloned() else {
+                            return true; // arity mismatch -> default-decline
+                        };
+                        path.push(node);
+                        let cyc = flow(db, callee_body, callee_binder, path, explored);
+                        path.pop();
+                        if cyc {
+                            return true;
+                        }
+                    }
+                    // A non-direct arg (a constructed operand, a nested expression) is NOT followed as a
+                    // slot-thread, but it may still USE the binder in a child position we must scan.
+                    if walk(db, a, binder, path, explored, seen) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            core_child_ids(db, id)
+                .into_iter()
+                .any(|c| walk(db, c, binder, path, explored, seen))
+        }
+        if !explored.insert((body, binder)) {
+            return false; // this (body, binder) subtree was already proven acyclic
+        }
+        let mut seen = HashSet::new();
+        walk(db, body, binder, path, explored, &mut seen)
+    }
+    let mut path = Vec::new();
+    let mut explored = HashSet::new();
+    flow(db, body, binder, &mut path, &mut explored)
+}
+
+/// The POSITIVE consume WHITELIST (v-core-opt-recommended, leak-over-UAF-safe by construction): whether
+/// EVERY occurrence of the escaping entry param `binder` in `body` is either (a) a DIRECT binder arg
+/// relayed into a `Core::Call` (followed into the callee's param — a non-recursive helper chain), or (b) a
+/// direct operand of a PROVEN clean-transfer LIST-CONSUMING sink (`Core::ListConcat`/`Core::BytesConcat` —
+/// a fresh-result consume Perceus reclaims the input to 0, verified 0-leak on elc4/grx1). ANY other direct
+/// occurrence — a Map/Set key, a constructor/record embed, a borrow-read, an unmodeled sink — makes the
+/// param NOT whitelisted ⇒ decline. This is safe BY CONSTRUCTION: an unenumerated consuming sink is simply
+/// not in the whitelist, so it declines (a missed admit / leak-to-todo), never a mis-reclaim/double-free —
+/// the opposite failure mode of a blacklist (which would silently admit an unmodeled retaining sink).
+/// Complements [`param_flow_into_cycle`] (the gate ANDs both); the whitelist is only consulted on an
+/// acyclic flow, so its `explored` memo needs no path-cycle detection. Scoped to `concat` — the sink the
+/// slice verified; `push`/`prepend`/`update` widen it once a corpus case exercises + guarded-verifies them.
+pub(crate) fn param_consume_sink_whitelisted(
+    db: &mut Db,
+    body: StructId,
+    binder: StructId,
+) -> bool {
+    // `walk` returns true iff EVERY binder occurrence under `id` is whitelisted (a forall — false on the
+    // first non-whitelisted occurrence). A direct binder child is classified by ITS PARENT node here, so a
+    // whitelisted-sink operand is accounted at the sink and never re-examined as a bare `Param`.
+    fn flow(
+        db: &mut Db,
+        body: StructId,
+        binder: StructId,
+        explored: &mut HashSet<(StructId, StructId)>,
+    ) -> bool {
+        fn is_direct_binder(db: &mut Db, id: StructId, binder: StructId) -> bool {
+            matches!(
+                core_of(db, id),
+                Core::Param { binder: b } | Core::LocalRef { binder: b } if b == binder
+            )
+        }
+        fn walk(
+            db: &mut Db,
+            id: StructId,
+            binder: StructId,
+            explored: &mut HashSet<(StructId, StructId)>,
+            seen: &mut HashSet<StructId>,
+        ) -> bool {
+            if !seen.insert(id) {
+                return true; // DAG revisit — already checked
+            }
+            match core_of(db, id) {
+                // A relay: a direct binder arg is followed into the callee's param `k` (acyclic by the
+                // companion cycle guard); a non-binder arg is scanned normally.
+                Core::Call { callee, args } => {
+                    let args: Vec<StructId> = args.to_vec();
+                    for (k, &a) in args.iter().enumerate() {
+                        if is_direct_binder(db, a, binder) {
+                            let Some(callee_body) = db.defs.get(callee).and_then(|d| d.body) else {
+                                return false; // unresolvable callee — not whitelisted
+                            };
+                            let params = crate::layout::def_params(db, callee);
+                            let Some((callee_binder, _)) = params.get(k).cloned() else {
+                                return false; // arity mismatch — not whitelisted
+                            };
+                            if !flow(db, callee_body, callee_binder, explored) {
+                                return false;
+                            }
+                        } else if !walk(db, a, binder, explored, seen) {
+                            return false;
+                        }
+                    }
+                    true
+                }
+                // A clean-transfer LIST-consuming sink: a direct binder operand IS whitelisted (accounted
+                // here, not recursed into as a bare `Param`); a non-binder operand is scanned.
+                Core::ListConcat { .. } | Core::BytesConcat { .. } => {
+                    core_child_ids(db, id).into_iter().all(|c| {
+                        is_direct_binder(db, c, binder) || walk(db, c, binder, explored, seen)
+                    })
+                }
+                // Any other node: a DIRECT binder operand here is a non-whitelisted occurrence (a Map/Set
+                // key, a ctor embed, a borrow-read, an unmodeled sink) ⇒ not admissible.
+                _ => core_child_ids(db, id).into_iter().all(|c| {
+                    !is_direct_binder(db, c, binder) && walk(db, c, binder, explored, seen)
+                }),
+            }
+        }
+        if !explored.insert((body, binder)) {
+            return true; // this (body, binder) subtree already proven whitelisted
+        }
+        let mut seen = HashSet::new();
+        walk(db, body, binder, explored, &mut seen)
+    }
+    let mut explored = HashSet::new();
+    flow(db, body, binder, &mut explored)
+}
+
 /// DUP-AWARE `binding_escapes` with a FRESH per-subtree dup-site collection (v-core-opt-signed-off 3049
 /// fence): collects `binder`'s Perceus retain (dup) sites WITHIN `id` itself, then asks the dup-aware escape
 /// query. `true` = `binder` escapes `id` via a consuming occurrence that was NOT a dup (an un-dup'd move /

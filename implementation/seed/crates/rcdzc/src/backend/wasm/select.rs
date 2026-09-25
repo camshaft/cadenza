@@ -50,7 +50,8 @@ mod reclaim;
 pub use reclaim::core_child_ids;
 use reclaim::*;
 pub(crate) use reclaim::{
-    EscapeTarget, escaped_field_projections, param_borrow_aware_escapes, param_escapes_body,
+    EscapeTarget, escaped_field_projections, param_borrow_aware_escapes,
+    param_consume_sink_whitelisted, param_escapes_body, param_flow_into_cycle,
     record_cell_param_droppable,
 };
 mod used_ops;
