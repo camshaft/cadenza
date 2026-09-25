@@ -6977,6 +6977,49 @@ fn try_bare_entry_param_component(
             wit_params.push((format!("p{i}"), wit));
             continue;
         }
+        // A `result<ok, err>` where AT LEAST ONE arm carries a scalar-fielded TUPLE/record (a COMPOUND) —
+        // e.g. `result<tuple<i64,i64>, i64>` (erc1). Crosses as a STRUCTURAL `result<ok, err>` whose compound
+        // side mints its natural `tuple<…>`/`record<…>` WIT; the canonical ABI flattens it to `(disc: i32,
+        // <joined leaves…>)` and the classifier's `SumArgRebuild` rebuilds the selected arm's value-heap cell
+        // via `emit_cell_rebuild` (the `SumArmPayload::Compound` arm the closure-arg path already proves). WIT
+        // from `ty_natural_wit` on both payloads (a scalar-fielded tuple's natural is `tuple<…>`). Tried BEFORE
+        // the all-scalar `fixed_shape_option_scalar_arg` (which declines a compound arm). BORROW-only: a
+        // COMPOUND payload is a value-heap cell, so an escaping payload (the def returns the tuple) would leave
+        // the wrapper's shell-drop double-freeing it — decline the escape here (the owning-reclaim widening is
+        // the shared v-core-opt lane), keeping this a guaranteed 0-leak borrow lift.
+        if let Some((_slot, vts, rebuild)) =
+            crate::backend::wasm::arg_boundary::fixed_shape_result_compound_arg(db, gty)
+        {
+            if crate::backend::wasm::select::param_borrow_aware_escapes(db, body, *binder) {
+                return None;
+            }
+            let (ok, err) = match gty.strip_nominal() {
+                Ty::Sum { args, .. } if args.len() == 2 => (
+                    crate::wit_world::ty_natural_wit(&args[0])?,
+                    crate::wit_world::ty_natural_wit(&args[1])?,
+                ),
+                _ => return None,
+            };
+            let wit = crate::wit_world::WitType::Result {
+                ok: Some(Box::new(ok)),
+                err: Some(Box::new(err)),
+            };
+            // Canonical `result<ok, err>` flattening: `(disc: i32, <joined payload slots…>)`.
+            param_vts.push(ValType::I32.byte());
+            for vt in &vts {
+                param_vts.push(vt.byte());
+            }
+            // BORROW-only (guarded above): the def matches the Result and copies out any payload; the wrapper —
+            // owner of the built sum shell — deep-drops it after the call.
+            mem_leaf_params.push(None);
+            sum_params.push(Some((rebuild, true)));
+            cell_params.push(None);
+            cell_slots.push(None);
+            cell_drop_after.push(false);
+            cell_escaped_fields.push(None);
+            wit_params.push((format!("p{i}"), wit));
+            continue;
+        }
         // A two-variant sum (`option<T>` / `result<ok,err>`) entry param crosses as a native component sum,
         // flattened to `(disc, payload…)`. Build it DIRECTLY as the def arg via the closure-arg classifier's
         // `SumArgRebuild` (branch on the boundary disc → `sum-new`); the def owns the built cell. `ty_natural_wit`

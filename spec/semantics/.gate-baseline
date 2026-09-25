@@ -11287,6 +11287,9 @@ pass	erp1 a Result entry param delivers its Ok payload
 pass	erp2 a Result entry param with two scalar payloads declines pending the Result lift
 pass	erp3 a Result entry param with two String payloads measures the active arm
 pass	erp4 a Result entry param with a String Ok and a Bytes Err measures the active arm
+pass	erc1 a Result entry param with a compound Ok tuple sums the active arm
+pass	erc2 a Result entry param with a compound Err tuple multiplies the active arm
+pass	erc3 a Result entry param with compound tuples on both arms folds the active arm
 todo	expect traps on the absent case of a runtime optional
 pass	ey1 a Symbol entry param keys a Map
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
