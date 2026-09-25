@@ -3962,11 +3962,20 @@ pub fn assemble_runtime_resource(
         section(sec::COMPONENT_TYPE, &wasm_vec(2 + shift as usize, &items))
     };
     out.extend_from_slice(&make_types);
-    // sec 8: lift `make` (core func k+3) against the make functype → component func k.
-    out.extend_from_slice(&section(
-        sec::CANON,
-        &wasm_vec(1, &canon_lift_item((k + 3) as u32, make_ft)),
-    ));
+    // sec 8: lift `make` (core func k+3) against the make functype → component func k. A make param that
+    // crosses as `string`/`list<u8>` (a mem-leaf/value-form param) is canon-lowered through linear memory,
+    // so its lift MUST carry the Memory + Realloc options (memory 0 + `cabi_realloc` = core func k+5, both
+    // aliased above) exactly like the `encode` list-result lift — otherwise wasm rejects the component
+    // ("canonical option `memory` is required"). A scalar-only make needs neither (crosses by value).
+    let make_needs_memory = make_slots
+        .iter()
+        .any(|s| matches!(s, ArgSlot::MemLeaf { .. }));
+    let make_lift = if make_needs_memory {
+        canon_lift_list_item((k + 3) as u32, 0, (k + 5) as u32, make_ft)
+    } else {
+        canon_lift_item((k + 3) as u32, make_ft)
+    };
+    out.extend_from_slice(&section(sec::CANON, &wasm_vec(1, &make_lift)));
     // sec 7: `borrow<t>`, the shared `list u8` type, then the `encode` functype `(self: borrow<t>) ->
     // list<u8>` — each shifted +`shift` by the optional tuple type. `encode` BORROWS self (the host keeps
     // ownership; the dtor reclaims on drop); the core `t-encode` gets the rep directly (no `resource.rep`),
@@ -8169,6 +8178,12 @@ fn make_functype_slots(
         param_items.extend_from_slice(name.as_bytes());
         match (slot, tup_idx) {
             (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
+            // A String mem-leaf param is the inline `string` primitive (mints no defined type).
+            (ArgSlot::MemLeaf { is_string: true }, _) => param_items.push(wasm_abi::COMP_STRING),
+            // A Bytes/list/value-form mem-leaf param references its minted `list<u8>` defined type by index.
+            (ArgSlot::MemLeaf { is_string: false }, Some(idx)) => {
+                param_items.extend_from_slice(&owned_valtype(*idx))
+            }
             (
                 ArgSlot::Tuple(_)
                 | ArgSlot::OptionScalar(_)
@@ -8182,10 +8197,13 @@ fn make_functype_slots(
                 | ArgSlot::OptionScalar(_)
                 | ArgSlot::Result(_, _)
                 | ArgSlot::OptionCompound(_)
-                | ArgSlot::ResultCompound(_, _),
+                | ArgSlot::ResultCompound(_, _)
+                | ArgSlot::MemLeaf { is_string: false },
                 None,
             ) => {
-                unreachable!("a Tuple/Option make param must carry a minted defined-type index")
+                unreachable!(
+                    "a Tuple/Option/list-mem-leaf make param must carry a minted defined-type index"
+                )
             }
         }
     }
@@ -9057,6 +9075,11 @@ pub enum ArgSlot {
     /// slot's width). The guest rebuilds the selected arm's cell over a PREFIX of the joined slots via
     /// `serialize::SumArgRebuild`. Each side carries its [`ResultSide`] (scalar byte or tuple shape).
     ResultCompound(ResultSide, ResultSide),
+    /// A MEMORY-BEARING / VALUE-FORM leaf param crossing as its natural WIT: `string` when `is_string`, else
+    /// `list<u8>` (a `Bytes`/`list<scalar>` or a `BigInt`/`Rational`/`Symbol` value-form). The canonical ABI
+    /// lowers it to a `(ptr: i32, len: i32)` pair the make body lifts out of linear memory. A `string` is an
+    /// inline primitive component type; a `list<u8>` is a minted defined type the functype references by index.
+    MemLeaf { is_string: bool },
 }
 
 /// One side (ok or err) of a [`ArgSlot::ResultCompound`]: a scalar leaf (its component primitive byte) OR a
@@ -9085,6 +9108,9 @@ fn call_arg_tuple_type_count(slots: &[ArgSlot]) -> u32 {
             ArgSlot::ResultCompound(ok, err) => {
                 result_side_type_count(ok) + result_side_type_count(err) + 1
             }
+            // A String mem-leaf is the inline `string` primitive (0 types); a Bytes/list/value-form mem-leaf
+            // mints ONE `list<u8>` defined type.
+            ArgSlot::MemLeaf { is_string } => u32::from(!*is_string),
         })
         .sum()
 }
@@ -9149,6 +9175,15 @@ fn mint_call_arg_tuple_types(
                 res.push(0x01);
                 res.extend_from_slice(&err_vt);
                 items.extend_from_slice(&res);
+                let idx = *next_type;
+                *next_type += 1;
+                Some(idx)
+            }
+            // A String mem-leaf is the inline `string` primitive — no defined type. A Bytes/list/value-form
+            // mem-leaf mints ONE `list<u8>` defined type the make functype references by index.
+            ArgSlot::MemLeaf { is_string: true } => None,
+            ArgSlot::MemLeaf { is_string: false } => {
+                items.extend_from_slice(&list_u8_defined_type());
                 let idx = *next_type;
                 *next_type += 1;
                 Some(idx)
@@ -9218,6 +9253,10 @@ fn closure_call_functype_slots(
             ) => {
                 unreachable!("a Tuple/Option slot must carry a minted defined-type index")
             }
+            // A mem-leaf/value-form param crosses only on the resource-`make` path, never a closure call.
+            (ArgSlot::MemLeaf { .. }, _) => {
+                unreachable!("a mem-leaf make param does not occur on the closure-call path")
+            }
         }
     }
     item.extend_from_slice(&wasm_vec(1 + slots.len(), &param_items));
@@ -9265,6 +9304,10 @@ fn closure_call_list_functype_slots(
                 None,
             ) => {
                 unreachable!("a Tuple/Option slot must carry a minted defined-type index")
+            }
+            // A mem-leaf/value-form param crosses only on the resource-`make` path, never a closure call.
+            (ArgSlot::MemLeaf { .. }, _) => {
+                unreachable!("a mem-leaf make param does not occur on the closure-call path")
             }
         }
     }
