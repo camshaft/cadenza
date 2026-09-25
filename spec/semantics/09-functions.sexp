@@ -13792,7 +13792,7 @@
         (main (: rec (Record (: n Int64) (: b (Option Bytes)))))
         (+ (* 100 rec.n) (match rec.b ((Option.Some x) (Bytes.len x)) ((Option.None) 0))))
       (export main)))
-  (call main (: #record((= n 5) (= b (Some #bytes(1 2 3)))) (Record (: n Int64) (: b (Option Bytes)))))
+  (call main (: #record((= n 5) (= b (Some b"\x01\x02\x03"))) (Record (: n Int64) (: b (Option Bytes)))))
   (output (: 503 Int64)))
 
 (case
