@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(21);
+    let shape = c.variant(22);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -273,6 +273,17 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         format!("(Ok {a})")
     } else {
         format!("(Err \"{s0}\")")
+    };
+    // An option<Bytes> sum entry-param value-form for the #9746/#9753 eob1 BYTES-byte-leaf-in-sum shape (21).
+    // Alternates by e0 parity: `(Some b"xxx…")` (a BYTES leaf — NOT a String — carried in a sum cell) vs the
+    // payload-less `None`. Bytes and String share the byte-leaf marshal (#9742 classified String LIKE Bytes),
+    // so this fences the OTHER byte-leaf variety inside a sum discriminant; a mis-classified Bytes-vs-String
+    // leaf or mis-copied payload corrupts the Bytes.len. Uses the `b"…"` bytes-literal cdz-run accepts (#9746;
+    // the `#bytes(…)` ctor form does NOT parse as a CLI arg). Value = Bytes.len (= s0.len()) or 0.
+    let bytes_opt_arg = if e0 % 2 == 0 {
+        format!("(Some b\"{s0}\")")
+    } else {
+        "None".to_string()
     };
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
@@ -454,10 +465,22 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      NEGATIVE (sign-marshal inside a sum cell); the Err payload is a String byte-leaf. Result is a
         //      scalar (payload value or byte-len), clearing the String-RESULT boundary. Arg alternates
         //      `(Ok {a})`/`(Err "…")` by e1 parity (both discriminants + both payload types marshal).
-        _ => (
+        20 => (
             "(do (def (f (: r (Result Int64 String))) (match r ((Ok v) v) ((Err es) (String.byte-len es)))) (export f))"
                 .to_string(),
             vec![result_arg],
+        ),
+        // 21 — #9746/#9753 eob1 option<Bytes> BYTES-byte-leaf SUM ENTRY PARAM: a `(Option Bytes)` param matched to
+        //      read the Some-payload Bytes' len (or 0 for None). The COMPANION to shape 19's option<String>: it
+        //      crosses the OTHER byte-leaf variety (Bytes, not String) inside a sum discriminant cell. Bytes and
+        //      String share the byte-leaf marshal path (#9742 classified String LIKE Bytes), so a regression that
+        //      mis-classifies the leaf variety or mis-copies the payload corrupts the Bytes.len. Result is a scalar
+        //      len → clears the byte-leaf-RESULT boundary. Arg alternates `(Some b"…")`/`None` by e0 parity; uses
+        //      the `b"…"` bytes-literal cdz-run's CLI accepts (#9746 — the `#bytes(…)` ctor form does NOT parse).
+        _ => (
+            "(do (def (f (: o (Option Bytes))) (match o ((Some b) (Bytes.len b)) (None 0))) (export f))"
+                .to_string(),
+            vec![bytes_opt_arg],
         ),
     };
     ExportParam { source, args }
@@ -5787,13 +5810,14 @@ mod tests {
         // + the #9694 String-consume `catlen` + the #9699 scalar-fielded Record `addpt` + the #9701 rpp3
         // heap-carrying Record `rsum` + the #9707 wfp1 >16-flat-scalar `big` + the #9716 els1 list<String>
         // byte-leaf `slen` + the #9714 rpp8/rpp9 nested-Tuple `f` + the #9718/#9742 eos1 option<String>
-        // sum-entry-param `f` + the #9747 rpp21/22 result<Int64,String> two-payload-sum-entry-param `f`.
-        let mut reached = [false; 21];
-        for seed in 0u64..1260 {
+        // sum-entry-param `f` + the #9747 rpp21/22 result<Int64,String> two-payload-sum-entry-param `f` + the
+        // #9746/#9753 eob1 option<Bytes> bytes-byte-leaf-sum-entry-param `f`.
+        let mut reached = [false; 22];
+        for seed in 0u64..1320 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(21) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19/20 reuse e1/e2/s0/a — no new read.)
+            // variant(22) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19/20/21 reuse e0/e1/e2/s0/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -5855,11 +5879,13 @@ mod tests {
                 reached[19] = true; // shape 19 = #9718/#9742 eos1 option<String> sum-entry-param `f`
             } else if ep.source.contains("(: r (Result Int64 String))") {
                 reached[20] = true; // shape 20 = #9747 rpp21/22 result<Int64,String> two-payload-sum-entry-param `f`
+            } else if ep.source.contains("(: o (Option Bytes))") {
+                reached[21] = true; // shape 21 = #9746/#9753 eob1 option<Bytes> bytes-byte-leaf-sum-entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-one export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-two export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
