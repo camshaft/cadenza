@@ -2094,7 +2094,13 @@ pub(crate) fn thread_bounded(
             arms: inner_arms,
             body: inner_body,
         } => {
-            if let Some(merged) = merged_nested_ctx(db, inner_init, &inner_arms, inner_body, ctx) {
+            if let Some(chain) = merged_nested_ctx(db, inner_init, &inner_arms, inner_body, ctx) {
+                let MergedChain {
+                    ctx: merged,
+                    extra_inits,
+                    innermost_body,
+                } = &chain;
+                let (merged, innermost_body) = (merged, *innermost_body);
                 // CALLER-OBSERVED OUT-STATE under the MERGE (recursive-nested-arm-resume fix). `reduce_handle`
                 // runs `mark_caller_observed_outstate` for the OUTER ctx, but the merged body threads HERE
                 // (not via reduce_handle), so a post-recursion sibling that observes the merged callee's
@@ -2102,13 +2108,14 @@ pub(crate) fn thread_bounded(
                 // iteration — is not marked, and the merged spec stays single-return (dropping the advance:
                 // 20 vs 21). Mark it under the MERGED ctx so `specialize_recursive` emits multi-value and
                 // threads the outer out-state to the observer. Additive (only upgrades a threadable callee).
-                mark_caller_observed_outstate(db, inner_body, &merged);
-                // Thread the inner body under the merged context, with the inner slot seeded by its init
-                // (appended after the outer states). The merged vector = outer states ++ [inner init].
+                mark_caller_observed_outstate(db, innermost_body, merged);
+                // Thread the INNERMOST body (past every peeled `handle`) under the merged context, with each
+                // peeled handle's slot seeded by its init (appended after the outer states, in slot order).
+                // The merged vector = outer states ++ [peeled inits…].
                 let mut merged_states = states.clone();
-                merged_states.push(inner_init);
+                merged_states.extend_from_slice(extra_inits);
                 // DRAIN the merged body's pending MULTIVALUE temps (rn post-observer fix, increment 1 tail).
-                // A caller-observed merged spec call in `inner_body` — `(+ (loop 1) (A.get))`, where the
+                // A caller-observed merged spec call in `innermost_body` — `(+ (loop 1) (A.get))`, where the
                 // post-loop `(A.get)` observes `loop`'s A-advance — emits a multi-value spec call let-bound to
                 // `{spec}$t{k}`, pushed to `merged.pending`, with `(. t 0)` in its place. The single-handler
                 // path drains these at reduce_handle's tail (line ~2528), but the MERGED body threads HERE via
@@ -2118,9 +2125,9 @@ pub(crate) fn thread_bounded(
                 // before for a merged body with no multivalue call — the common case).
                 let mark = merged.pending.borrow().len();
                 let (rbody, out) =
-                    thread_bounded(db, inner_body, merged_states, &merged, inline_depth)?;
-                let rbody = drain_and_wrap(db, &merged, mark, rbody);
-                // Drop the inner slot's final state; return the OUTER slots' states (the prefix).
+                    thread_bounded(db, innermost_body, merged_states, merged, inline_depth)?;
+                let rbody = drain_and_wrap(db, merged, mark, rbody);
+                // Drop the peeled slots' final states; return the OUTER slots' states (the prefix).
                 let outer_states = out[..states.len()].to_vec();
                 Some((rbody, outer_states))
             } else {
