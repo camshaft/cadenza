@@ -220,9 +220,13 @@ pub struct ExportParam {
 /// This exercises wasm-boundary-marshal's most novel/risky lift — the ListElem byte_leaf discriminant + the
 /// per-element (ptr,len)-descriptor read + bytes copy-in in the SHARED recursive emit_list_level path used by
 /// ALL list params — so a mis-marshaled byte-leaf element (or empty-element edge) corrupts the length.
+/// Shape 18 is the #9714 rpp8/rpp9 NESTED-Tuple entry param: a `#tuple(Int64 #tuple(Int64 Int64))` param
+/// (a Tuple whose 2nd field is itself a Tuple), read via projection `(. t 0) + (. (. t 1) 0) + (. (. t 1) 1)`.
+/// Exercises the RECURSIVE param_field_rebuild (cell-nesting: a tuple cell inside a tuple cell); a mis-nested
+/// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(18);
+    let shape = c.variant(19);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -247,6 +251,8 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     // A (List String) of two non-empty strings + an EMPTY-string element for the #9716 els1 byte-leaf shape
     // (17); value = byte-len of element 0 (= s0.len()). The empty element exercises the empty-byte-leaf edge.
     let str_list_arg = format!("#list(\"{s0}\" \"{s1}\" \"\")");
+    // A nested Tuple (a tuple whose 2nd field is a tuple) for the #9714 rpp8/rpp9 shape (18); value = e0+e1+e2.
+    let nested_tuple_arg = format!("#tuple({e0} #tuple({e1} {e2}))");
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -393,10 +399,19 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      string], return element 0's String.byte-len (a SCALAR). Exercises the ListElem byte_leaf
         //      discriminant + per-element descriptor read + bytes copy-in in the SHARED emit_list_level path;
         //      a mis-marshaled byte-leaf element (or the empty-element edge) corrupts the length.
-        _ => (
+        17 => (
             "(do (def (slen (: xs (List String))) (match (List.at xs 0) ((Some s) (String.byte-len s)) (None 0))) (export slen))"
                 .to_string(),
             vec![str_list_arg],
+        ),
+        // 18 — #9714 rpp8/rpp9 NESTED-Tuple entry param: a #tuple(Int64 #tuple(Int64 Int64)) param (a tuple
+        //      whose 2nd field is itself a tuple), read via projection (. t 0) + (. (. t 1) 0) + (. (. t 1) 1).
+        //      Exercises the RECURSIVE param_field_rebuild (a tuple cell nested inside a tuple cell); a
+        //      mis-nested rebuild of the inner tuple corrupts the sum.
+        _ => (
+            "(do (def (f (: t #tuple(Int64 #tuple(Int64 Int64)))) (+ (. t 0) (+ (. (. t 1) 0) (. (. t 1) 1)))) (export f))"
+                .to_string(),
+            vec![nested_tuple_arg],
         ),
     };
     ExportParam { source, args }
@@ -5725,12 +5740,12 @@ mod tests {
         // const-list-of-Option-field sibling + the #9687 payload-variant field + the #9689 consuming-slice `cat`
         // + the #9694 String-consume `catlen` + the #9699 scalar-fielded Record `addpt` + the #9701 rpp3
         // heap-carrying Record `rsum` + the #9707 wfp1 >16-flat-scalar `big` + the #9716 els1 list<String>
-        // byte-leaf `slen`.
-        let mut reached = [false; 18];
-        for seed in 0u64..1080 {
+        // byte-leaf `slen` + the #9714 rpp8/rpp9 nested-Tuple `f`.
+        let mut reached = [false; 19];
+        for seed in 0u64..1140 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(18) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // variant(19) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
             // shape selector AND every arg literal on live entropy.
             for _ in 0..64 {
                 x ^= x >> 30;
@@ -5787,11 +5802,13 @@ mod tests {
                 reached[16] = true; // shape 16 = #9707 wfp1 >16-flat-scalar `big`
             } else if ep.source.contains("(def (slen ") {
                 reached[17] = true; // shape 17 = #9716 els1 list<String> byte-leaf `slen`
+            } else if ep.source.contains("#tuple(Int64 #tuple(Int64 Int64))") {
+                reached[18] = true; // shape 18 = #9714 rpp8/rpp9 nested-Tuple `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all eighteen export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all nineteen export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
