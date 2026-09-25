@@ -1671,11 +1671,35 @@ fn core_module_impl(
                 if let Some((kind, drop_after)) = wrap.mem_leaf_params.get(pi).copied().flatten() {
                     let (buf, ctr) =
                         scratch.expect("a memory-bearing leaf param needs the scratch locals");
+                    // SPILLED (wfp3): the (ptr, len) for this mem-leaf param live in the memory-indirect spill
+                    // area (memory 0 at the spill pointer), not in flat param locals. Materialize them into two
+                    // CONSECUTIVE fresh locals so the lift helpers — which read `ptr_leaf` and `ptr_leaf + 1`
+                    // via `local.get` — work unchanged. Non-spilled → the (ptr, len) ARE the flat param locals
+                    // `leaf` / `leaf + 1`.
+                    let ptr_leaf = if spilled {
+                        let (off_ptr, _, _) = spill_layout[leaf as usize];
+                        let (off_len, _, _) = spill_layout[(leaf + 1) as usize];
+                        let pl = next_local;
+                        let ll = next_local + 1;
+                        next_local += 2;
+                        for (off, dst) in [(off_ptr, pl), (off_len, ll)] {
+                            inner.push(op::LOCAL_GET);
+                            uleb128(0, &mut inner); // the spill pointer (core param 0)
+                            inner.push(op::I32_LOAD);
+                            uleb128(2, &mut inner); // align (log2) = 2 (i32 ptr/len)
+                            uleb128(off as u64, &mut inner);
+                            inner.push(op::LOCAL_SET);
+                            uleb128(dst as u64, &mut inner);
+                        }
+                        pl
+                    } else {
+                        leaf
+                    };
                     match kind {
                         // String/Bytes: a raw UTF-8/byte copy-in (the copied byte-leaf IS the value).
                         MemLeafKind::Str | MemLeafKind::Bytes => {
                             emit_bytes_leaf_copy_in(
-                                leaf,
+                                ptr_leaf,
                                 false, // a top-level string/bytes ptr is i32 (no variant-join widening)
                                 buf,
                                 ctr,
@@ -1689,7 +1713,7 @@ fn core_module_impl(
                         MemLeafKind::List(elem) => {
                             emit_list_leaf_lift(
                                 &elem,
-                                leaf,
+                                ptr_leaf,
                                 buf,
                                 ctr,
                                 &mut next_local,
@@ -1707,7 +1731,7 @@ fn core_module_impl(
                             next_local += 2;
                             emit_value_form_lift(
                                 desc,
-                                leaf,
+                                ptr_leaf,
                                 buf,
                                 ctr,
                                 desc_local,

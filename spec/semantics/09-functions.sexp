@@ -12383,11 +12383,11 @@
   (output (: 120 Int64)))
 
 ; -- breaker batch 470 (2026-08-27): the >16-flat-param DECLINE (#3906 fixed the silent invalid
-; component) pinned from both sides. wfp1 = the 17-scalar rung (declines with the precise ABI
-; message; auto-flips when the memory-indirect convention lands). wfp2 = EIGHT list params = 16
-; flat values (each lifted list is ptr+len, 2 flat) — the boundary edge compiles, runs, and
-; reclaims. wfp3 = NINE list params = 18 flat — declines (currently via the generic width message
-; from the lift-wrapper path, not the flat-param message; diagnostic nit noted to v-rust-backend).
+; component) pinned from both sides. wfp1 = the 17-scalar rung — crosses memory-indirect
+; (spilled to a single pointer; the flat-param sig collapses to one i32 spill pointer). wfp2 =
+; EIGHT list params = 16 flat values (each lifted list is ptr+len, 2 flat) — the boundary edge
+; compiles, runs, and reclaims. wfp3 = NINE list params = 18 flat — crosses memory-indirect; each
+; list's ptr+len is materialized from the spill area, lifted, and reclaimed.
 (case
   "wfp1 SEVENTEEN scalar entry params cross memory-indirect (spilled to a single pointer)"
   (input
@@ -12479,7 +12479,7 @@
   (output (: 16 Int64)))
 
 (case
-  "wfp3 NINE list entry params are eighteen flat values and decline"
+  "wfp3 NINE list entry params are eighteen flat values and cross memory-indirect (each list materialized from the spill area)"
   (input
     (do
       (def

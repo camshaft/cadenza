@@ -7591,15 +7591,14 @@ fn try_bare_entry_param_component(
     }
     // MAX-FLAT-PARAMS: over the canonical flat cap (16 core values) the params cross MEMORY-INDIRECT — the
     // caller writes them to linear memory and passes ONE i32 pointer, which the wrapper reads back (the
-    // spilled-param reader, emitted by `core_module_impl` when `wrapper_params_spill`). This path emits that
-    // reader ONLY for an ALL-SCALAR param list (wfp1: each param a plain aligned load from the spill area). A
-    // spilled list that ALSO carries a memory-bearing leaf / sum / cell param (wfp3 + mixed) is a later slice
-    // — its per-param lift out of the spill area is not yet emitted — so decline rather than emit a
+    // spilled-param reader, emitted by `core_module_impl` when `wrapper_params_spill`). The reader handles a
+    // SCALAR param (a plain aligned load from the spill area — wfp1) and a MEMORY-BEARING LEAF param (the
+    // wrapper materializes its `(ptr, len)` from the spill area into two locals, then the usual String/Bytes/
+    // list/value-form lift runs unchanged — wfp3). A spilled SUM or record/tuple-CELL param is a later slice
+    // (those arms do not yet read their flattened leaves from the spill area), so decline rather than emit a
     // half-spilled wrapper.
     if param_vts.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS
-        && (mem_leaf_params.iter().any(Option::is_some)
-            || sum_params.iter().any(Option::is_some)
-            || cell_params.iter().any(Option::is_some))
+        && (sum_params.iter().any(Option::is_some) || cell_params.iter().any(Option::is_some))
     {
         return None;
     }
