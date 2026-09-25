@@ -1843,19 +1843,22 @@ fn emit_elem_grounding_empty_list(
     {
         return Ok(format!("{{ let __v: {rt} = {a}; __v }}"));
     }
-    // The SOLVED-slot twin of the free-var case above: a NULLARY generic variant (`(Option.None …)`) whose
-    // OWN `type_of` lost its arg during const-materialization (a const-folded record field reaches emit as a
-    // fresh `SumNew` typed `Option<?>`) emits a BARE `Option::None` — `nullary_variant_path` can't turbofish
-    // an unsolved arg. When the field/element is then PROJECTED AWAY (`(. rec i)` reads a SIBLING field), the
-    // bare `None`'s `Option<T>` is never constrained → E0282 "type annotations needed" (the #9586
-    // const-materialized-record `from`-field case; wasm carries the field type at its value-encode boundary,
-    // so it never hits this). The `target` IS the record/tuple declaration's SOLVED field type, so ascribe it.
-    // Gated on a BARE (un-turbofished) nullary variant + a representable generic-sum target, so a payload ctor
-    // (`Some(x)`) or an already-turbofished nullary is byte-identical.
+    // The SOLVED-slot twin of the free-var case above. When the `SumNew` node's OWN `type_of` is UNDER-GROUND
+    // (carries a free var — a const-materialized record/tuple/list field reaches emit as a fresh `SumNew` whose
+    // DISCARDED type args the checker left free), its emit is under-typed: a bare `Option::None` for a nullary
+    // variant (`nullary_variant_path` can't turbofish an unsolved arg), OR a payload ctor whose OTHER arg stays
+    // free — `Ok(1)` : `Result<i64, _>` for `(Result.Ok 1)` at slot `Result Int64 String`. When the field/
+    // element is then PROJECTED AWAY (`(. rec i)` reads a SIBLING field), that free arg is never constrained →
+    // E0282 "type annotations needed" (the #9586 const-materialized-record case + its Ok/payload
+    // generalization; wasm carries the slot type at its value-encode boundary, so it never hits this). The
+    // `target` IS the declaration's SOLVED slot type — ascribe it. Gated on the NODE being under-ground + a
+    // representable generic-sum slot, so a fully-solved `SumNew` (its own type already spells the args) is
+    // byte-identical. (The free-var-TARGET case is handled by the arm above; here the target is solved.)
+    let is_sumnew = matches!(core_of(db, id), Core::SumNew { .. });
+    let node_underground = is_sumnew && type_of(db, id).has_free_var();
     if let Some(t) = target
-        && matches!(core_of(db, id), Core::SumNew { payloads, .. } if payloads.is_empty())
+        && node_underground
         && matches!(t.strip_nominal(), Ty::Sum { args, .. } if !args.is_empty())
-        && !a.contains("::<")
         && let Some(rt) = types::rust_type(&db.name_ctx(), &types::ground_open_vars(t))
     {
         return Ok(format!("{{ let __v: {rt} = {a}; __v }}"));
