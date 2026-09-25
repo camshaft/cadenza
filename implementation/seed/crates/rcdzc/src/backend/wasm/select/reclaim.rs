@@ -171,6 +171,122 @@ pub(crate) fn param_flow_into_cycle(db: &mut Db, body: StructId, binder: StructI
     flow(db, body, binder, &mut path, &mut explored)
 }
 
+/// Whether DEF `callee` reads its parameter `param_index` (a String/Bytes) via a VIEW-PRODUCER
+/// (`String.at`/`String.slice`/`Bytes.slice`) — directly, or after threading the param DIRECTLY (a borrow
+/// position) into a further callee. A view-producer mints a char/byte-SLICE VIEW that ALIASES the container
+/// and DUPs it PER READ; that per-read dup is NOT reclaimed at the component boundary. So a String/Bytes
+/// ENTRY param threaded into such a read is NOT safely cross-able as a cheap BORROWED mem-leaf — the entry
+/// marshal must keep it DECLINED (CDZ0904), matching trunk (13-strings:6307: a scalar-walk `(match
+/// (String.at s i) …)` sits in an ARG-POSITION recursive call → node#1, the entry cell, climbs +1/iter, and
+/// no reclaim marking covers an arg-position view-mint).
+///
+/// Consulted ONLY by the borrow-aware entry-param cross (the `borrow_aware_calls` `Core::Call` arm of
+/// [`binding_escapes_dup_aware`], reached solely via [`param_borrow_aware_escapes`]), so it is INERT for
+/// every internal reclaim query — rp2's INTERNAL owned rope is never a boundary entry param and is untouched
+/// (its per-read + epilogue reclaims are decided by `param_only_borrowed_or_backedge` / the drop markings, not
+/// this boundary gate). The `String.at` borrow classification that `def_consumes_param` reports is CORRECT
+/// for the reclaim question (the callee never frees the param) but insufficient for the CROSS question — this
+/// gate is the boundary-specific complement.
+///
+/// DEFAULT-FALSE on an unresolvable callee / arity mismatch / non-String-or-Bytes param: never OVER-declines a
+/// cross we cannot positively prove views the param (leak-over-UAF-neutral — a wrong FALSE only lets an
+/// unprovable case cross exactly as it did before this gate). A `List` param read via `List.at` yields a
+/// SCALAR (no alias, no per-read dup) — not a view-producer, so it is NOT matched here and el1's borrowed-list
+/// recursive-walk cross stays admitted. Mirrors [`param_flow_into_cycle`]'s position-aware flow-closure with
+/// `(callee, position)` cycle detection.
+pub(crate) fn callee_reads_param_via_str_view(
+    db: &mut Db,
+    callee: usize,
+    param_index: usize,
+) -> bool {
+    let Some(body) = db.defs.get(callee).and_then(|d| d.body) else {
+        return false;
+    };
+    let params = crate::layout::def_params(db, callee);
+    let Some((binder, ty)) = params.get(param_index).cloned() else {
+        return false;
+    };
+    // Only a String/Bytes param can be the container of a view-producer — a cheap early-out.
+    if !matches!(ty.strip_nominal(), Ty::String | Ty::Bytes) {
+        return false;
+    }
+    fn flow(
+        db: &mut Db,
+        body: StructId,
+        binder: StructId,
+        path: &mut Vec<(usize, u32)>,
+        explored: &mut HashSet<(StructId, StructId)>,
+    ) -> bool {
+        fn walk(
+            db: &mut Db,
+            id: StructId,
+            binder: StructId,
+            path: &mut Vec<(usize, u32)>,
+            explored: &mut HashSet<(StructId, StructId)>,
+            seen: &mut HashSet<StructId>,
+        ) -> bool {
+            if !seen.insert(id) {
+                return false;
+            }
+            let direct = |db: &mut Db, x: StructId| {
+                matches!(
+                    core_of(db, x),
+                    Core::Param { binder: b } | Core::LocalRef { binder: b } if b == binder
+                )
+            };
+            match core_of(db, id) {
+                // A view-producer read of the tracked binder — its per-read view-mint dup leaks at the boundary.
+                Core::StrAt { string, .. } | Core::StrSlice { string, .. }
+                    if direct(db, string) =>
+                {
+                    return true;
+                }
+                Core::BytesSlice { bytes, .. } if direct(db, bytes) => {
+                    return true;
+                }
+                // Follow the param DIRECTLY threaded (borrow position) into a callee's param-`k`.
+                Core::Call { callee, args } => {
+                    let args: Vec<StructId> = args.to_vec();
+                    for (k, &a) in args.iter().enumerate() {
+                        if direct(db, a) {
+                            let node = (callee, k as u32);
+                            if !path.contains(&node)
+                                && let Some(cb) = db.defs.get(callee).and_then(|d| d.body)
+                            {
+                                let cparams = crate::layout::def_params(db, callee);
+                                if let Some((cbinder, _)) = cparams.get(k).cloned() {
+                                    path.push(node);
+                                    let hit = flow(db, cb, cbinder, path, explored);
+                                    path.pop();
+                                    if hit {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                        if walk(db, a, binder, path, explored, seen) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                _ => {}
+            }
+            core_child_ids(db, id)
+                .into_iter()
+                .any(|c| walk(db, c, binder, path, explored, seen))
+        }
+        if !explored.insert((body, binder)) {
+            return false; // this (body, binder) subtree was already searched — no view read reachable
+        }
+        let mut seen = HashSet::new();
+        walk(db, body, binder, path, explored, &mut seen)
+    }
+    let mut path = Vec::new();
+    let mut explored = HashSet::new();
+    flow(db, body, binder, &mut path, &mut explored)
+}
+
 /// The POSITIVE consume WHITELIST (v-core-opt-recommended, leak-over-UAF-safe by construction): whether
 /// EVERY occurrence of the escaping entry param `binder` in `body` is either (a) a DIRECT binder arg
 /// relayed into a `Core::Call` (followed into the callee's param — a non-recursive helper chain), or (b) a
@@ -1100,8 +1216,16 @@ fn binding_escapes_dup_aware_inner(
                             EscapeTarget::Binder(t),
                         ) if b == t
                     );
-                    if direct_binder && !super::def_consumes_param(db, callee, k) {
-                        return false; // borrowed by the callee → this arg is not an escape
+                    if direct_binder
+                        && !super::def_consumes_param(db, callee, k)
+                        && !callee_reads_param_via_str_view(db, callee, k)
+                    {
+                        // Borrowed by the callee AND not read via a String/Bytes VIEW-PRODUCER → not an
+                        // escape. A view-producer read (String.at/slice) is a borrow for the reclaim question
+                        // (`def_consumes_param` = false) but mints an aliasing view whose per-read dup is not
+                        // reclaimed at the boundary, so a String/Bytes ENTRY param threaded into one must stay
+                        // declined (CDZ0904) rather than cross as a cheap borrowed mem-leaf (13-strings:6307).
+                        return false;
                     }
                 }
                 binding_escapes_dup_aware(db, a, binder, false, dup_sites, borrow_aware_calls)
