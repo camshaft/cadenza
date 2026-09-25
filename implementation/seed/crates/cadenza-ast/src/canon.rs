@@ -16,7 +16,18 @@
 //! produces them, but a hand-built arena might) are dropped, which is correct for a normal form.
 
 use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
-use crate::fxhash::FxHashMap;
+use alloc::borrow::Cow;
+use alloc::vec;
+use alloc::vec::Vec;
+
+/// canon's leaf-id remap index. FxHashMap under `std` (fast, canon runs on ~every decode); alloc's
+/// BTreeMap without it (so `canon` is reachable no_std, e.g. from rcdzc's default-features=false dep,
+/// with no num-bigint / hashbrown). Lookup-only + ids are walk-ordered, so the arena — and thus the
+/// encoded bytes — are identical regardless of map kind (same argument as the Builder's `InternMap`).
+#[cfg(feature = "std")]
+type CanonMap<K, V> = crate::fxhash::FxHashMap<K, V>;
+#[cfg(not(feature = "std"))]
+type CanonMap<K, V> = alloc::collections::BTreeMap<K, V>;
 
 /// Return the canonical form of `arenas`: the same program, re-indexed so that any arena denoting
 /// this tree yields byte-identical output from [`crate::codec::encode`]. Idempotent.
@@ -27,19 +38,19 @@ use crate::fxhash::FxHashMap;
 /// only when a genuine renumbering is needed (e.g. the ML surface, which parses operands before
 /// synthesizing heads). The full rebuild below would otherwise clone every leaf + structure node — a
 /// second full pass over a large arena — and throw the identical result away.
-pub fn canonicalize(arenas: &Arenas) -> std::borrow::Cow<'_, Arenas> {
+pub fn canonicalize(arenas: &Arenas) -> Cow<'_, Arenas> {
     if is_canonical(arenas) {
-        return std::borrow::Cow::Borrowed(arenas);
+        return Cow::Borrowed(arenas);
     }
     let mut c = Canon {
         src: arenas,
         leaves: Vec::new(),
-        leaf_map: FxHashMap::default(),
+        leaf_map: CanonMap::default(),
         structure: Vec::new(),
         id_map: Vec::new(), // not tracked on this path — see `canonicalize_with_map`
     };
     let root = c.visit(arenas.root);
-    std::borrow::Cow::Owned(Arenas {
+    Cow::Owned(Arenas {
         leaves: c.leaves,
         structure: c.structure,
         root,
@@ -123,7 +134,7 @@ pub fn canonicalize_with_map(arenas: &Arenas) -> (Arenas, Vec<Option<StructId>>)
     let mut c = Canon {
         src: arenas,
         leaves: Vec::new(),
-        leaf_map: FxHashMap::default(),
+        leaf_map: CanonMap::default(),
         structure: Vec::new(),
         id_map: vec![None; arenas.structure.len()],
     };
@@ -141,7 +152,7 @@ pub fn canonicalize_with_map(arenas: &Arenas) -> (Arenas, Vec<Option<StructId>>)
 struct Canon<'a> {
     src: &'a Arenas,
     leaves: Vec<Leaf>,
-    leaf_map: FxHashMap<LeafId, LeafId>, // old leaf id -> new (first-encounter) leaf id
+    leaf_map: CanonMap<LeafId, LeafId>, // old leaf id -> new (first-encounter) leaf id
     structure: Vec<Struct>,
     /// old structure id -> new id, recorded as each node is emitted (for span-table remap). Empty when
     /// the caller does not need it (`canonicalize`), non-empty for `canonicalize_with_map`.

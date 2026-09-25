@@ -29,6 +29,13 @@ edition = "2024"
 [features]
 default = ["std"]
 std = ["dep:num-bigint", "dep:unicode-normalization"]
+# `canon` exposes the `canon` module (canonicalize / de-share) WITHOUT pulling `std`'s heavy deps
+# (num-bigint / unicode-normalization). Under `std` canon uses the FxHashMap dedup index; without it,
+# alloc's BTreeMap (Leaf/LeafId derive Ord; the map is lookup-only, so the arena + encoded bytes are
+# identical either way — same rationale as the Builder's `InternMap`). Lets `rcdzc` (default-features
+# = false, deliberately num-bigint-free — the #459 lesson) reach `canonicalize()` for its re-emit
+# encode path (de-share a DAG → tree so the tree-ness codec guard accepts it) without the `std` closure.
+canon = []
 
 [dependencies]
 num-bigint = { version = "0.4", optional = true }             # arbitrary-precision Int <-> IntValue bridge (std only)
