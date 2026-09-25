@@ -69,6 +69,12 @@ SCRATCH_THRESHOLD_PCT="${SCRATCH_THRESHOLD_PCT:-70}" # Class C fires ONLY at/abo
 SCRATCH_STALE_MIN="${SCRATCH_STALE_MIN:-240}"      # remove agent-scratch dirs older than this (minutes, default 4h)
 ORACLE_STALE_MIN="${ORACLE_STALE_MIN:-120}"        # Class D: remove oracle-run dirs older than this (minutes, default 2h; each ≈47K inodes so shorter than scratch)
 ORACLE_THRESHOLD_PCT="${ORACLE_THRESHOLD_PCT:-60}" # Class D fires at/above this — LOWER than scratch (70): oracle dirs are the dominant hog + pure-leak + lsof-protected, so reap the hog earlier (well before the 90% wedge)
+# Class F REPORT window (minutes): the UNCOVERED-scratch probe counts own-user dirs older than SCRATCH_STALE_MIN
+# but NEWER than this upper bound. The upper bound is the load-bearing safety of the WINDOW (vs a bare age
+# FLOOR): nix normalizes `*-result` GC-root mtimes to ~epoch/1980, so they read as DECADES old and fall
+# OUTSIDE (older than) this window — the exact false-target the design's blanket-sweep REFUSAL is about is
+# structurally excluded by the window, before the keep-list even applies. Default 30d.
+UNCOVERED_MAX_AGE_MIN="${UNCOVERED_MAX_AGE_MIN:-43200}"
 
 # Class C allowlist — ONLY these known agent-scratch dir SHAPES are ever candidates (never a blanket sweep).
 # The grade/shred/roundtrip families below were added after a fleet-wide 100%-inode wedge (breaker issue
@@ -84,6 +90,20 @@ SCRATCH_PATTERNS=(mphome shredall 'shred-*' otc 'vrb*' 'latentleak-*' 'cdz-*-smo
                   '*shred*' '*-grade' 'vg-*' 'rd-probe*' 'wo-*' 'th_*' 'th[0-9]*' 'tb_*' 'sw_*' 'rx_*')
 # Class D allowlist — ONLY these oracle differential run-dir SHAPES (v-lean-oracle full-corpus runs).
 ORACLE_PATTERNS=('oracle-all*' 'oall*' 'surv*')
+
+# Class F keep-list — KNOWN non-fleet / long-lived own-user dirs the UNCOVERED-scratch REPORT must never
+# count as reclaimable (a data-backed board scan 2026-09-25 found the top own-user consumers a `*/tmp/*`
+# window-sweep must exempt: a2a-client ~1176, MembrainDev ~402, S3TurboCacheModel, node-compile-cache) PLUS
+# the nix GC-root shape (`*-result`; belt-and-braces atop the mtime window). The A/B/C/D/E classes are
+# subtracted separately (their own pattern arrays) so this report counts ONLY the truly-uncovered remainder.
+#   - nix-shell.*/nix-develop-*/nix-build-* : LIVE-nix-SESSION dirs (tied to a running shell/build PID) — a
+#     sweep must never touch them; the mtime window does NOT exclude them (recent mtime) so they MUST be
+#     keep-listed explicitly.
+#   - tmp.* : the `mktemp -d` DEFAULT template, used by countless FOREIGN tools — not attributable to the
+#     fleet, so it is EXEMPT (a fleet dir here is indistinguishable from a foreign one by name alone).
+KEEP_PATTERNS=('*-result' 'a2a-client' 'MembrainDev*' 'S3TurboCacheModel*' 'node-compile-cache' \
+               'toolbox-telemetry-*' 'mcs-telemetry*' 'claude-*' \
+               'nix-shell.*' 'nix-develop-*' 'nix-build-*' 'tmp.*')
 
 iuse_pct() { df -i "$TMPDIR_ROOT" | awk 'NR==2 {gsub(/%/,"",$5); print $5}'; }
 
@@ -231,10 +251,30 @@ else
   printf 'prune-tmp-inodes: oracle class DORMANT — inode-use %s%% below oracle threshold %s%% (fires before the wedge).\n' "$iuse" "$ORACLE_THRESHOLD_PCT"
 fi
 
+# ── Class F: UNCOVERED-SCRATCH REPORT (OBSERVABILITY ONLY — never deletes). ───────────────────────────
+# The A–E allowlists reap only KNOWN shapes; a 2026-09-25 board scan found /tmp at 87% inodes was dominated
+# by ~20K own-user, days-STALE, ARBITRARY-short-named dirs (`0704v/{p1.ast,emit.wasm,c1.err}`, `9468g/9468-
+# recheck`, `PROBE/probe`, `Dg/D`, `Lw`) — agent compiler-pipeline DEBUG scratch, hand-created with names no
+# glob can match and NO generator to fix, so the allowlist demonstrably CANNOT cover them. This probe
+# QUANTIFIES that remainder (own-user dirs in the SCRATCH_STALE_MIN..UNCOVERED_MAX_AGE_MIN real-mtime window,
+# minus every A–E pattern + the Class F keep-list) so the leak is greppable + trendable and an actual reaping
+# Class F (a window-sweep) can be authorized on DATA rather than a blind blanket sweep. It DELETES NOTHING.
+uncov_excl=()
+for p in "${SCRATCH_PATTERNS[@]}" "${ORACLE_PATTERNS[@]}" "${KEEP_PATTERNS[@]}"; do
+  [ "${#uncov_excl[@]}" -gt 0 ] && uncov_excl+=(-o)
+  uncov_excl+=(-name "$p")
+done
+uncovered="$(find "$TMPDIR_ROOT" -maxdepth 1 -mindepth 1 -type d -uid "$(id -u)" \
+  -mmin +"$SCRATCH_STALE_MIN" -mmin -"$UNCOVERED_MAX_AGE_MIN" \
+  -not \( "${uncov_excl[@]}" \) -print 2>/dev/null | wc -l | tr -d ' ')"
+uncovered="${uncovered:-0}"
+printf 'prune-tmp-inodes: UNCOVERED-scratch REPORT (no delete): %s own-user dir(s) stale %s..%smin, not A-E-allowlisted, not keep-listed — reclaim candidates for a future window-sweep Class F (see ASK).\n' \
+  "$uncovered" "$SCRATCH_STALE_MIN" "$UNCOVERED_MAX_AGE_MIN"
+
 # Heartbeat (best-effort, never fails the prune): OVERWRITE a `.last-run` file next to the script. Its MTIME
 # is a liveness proof the (silent, `>/dev/null`) cron actually FIRED — mirroring how the cpu-monitor's
 # samples.tsv freshness proves ITS cron is alive — and its content shows the mode + current /tmp pressure.
 # So "is this cron firing + keeping /tmp low?" is answerable after the fact WITHOUT cron mail (concierge
 # silent-cron observability, 2026-08-29). Overwrite (not append) → bounded, no rotation needed.
-printf '%s apply=%s inode-use=%s%%\n' "$(date -Is)" "$APPLY" "$iuse" \
+printf '%s apply=%s inode-use=%s%% uncovered-stale-scratch=%s\n' "$(date -Is)" "$APPLY" "$iuse" "${uncovered:-?}" \
   > "$(dirname "${BASH_SOURCE[0]}")/prune-tmp-inodes.last-run" 2>/dev/null || true
