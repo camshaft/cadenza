@@ -44,6 +44,10 @@ path = "src/lib.rs"
 [dependencies.cadenza-ast]
 path = "../cadenza-ast"
 default-features = false
+# `canon` ONLY: reach `canonicalize()` for the re-emit encode path (de-share an emitted DAG → tree so the
+# tree-ness codec guard accepts it) WITHOUT `std`'s num-bigint/unicode-normalization (the deliberate #459
+# no_std/lightweight pin above stands — `canon` adds no deps, uses alloc's BTreeMap without `std`).
+features = ["canon"]
 
 [dependencies.cadenza-compile-abi]
 # The SECOND sanctioned exception to COPY-DON'T-DEPEND, on the same rationale as `cadenza-ast`: the

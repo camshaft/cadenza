@@ -31,7 +31,7 @@ pub mod leb128;
 
 // The full surface — canonicalization and the FxHash maps it uses — is std-only
 // (`HashMap`/`num-bigint`/NFC). Gated behind `std`; compiled out of the no_std minimal core.
-#[cfg(feature = "std")]
+#[cfg(any(feature = "std", feature = "canon"))]
 pub mod canon;
 #[cfg(feature = "std")]
 pub mod fxhash;

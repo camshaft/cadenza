@@ -15,9 +15,11 @@ extern crate alloc;
 // of the compiler keeps addressing `crate::{ast,codec,leb128}` unchanged. Formerly copied-in verbatim
 // (`ast.rs`/`codec.rs`/`leb128.rs`); consolidated onto the one shared crate (operator directive: one
 // source of truth, no diverging copies). `default-features = false` = the `no_std`+alloc CORE (no
-// num-bigint / unicode-normalization / canon), keeping the compiler dependency-light for the Cadenza
-// self-host port — cadenza-ast is the one sanctioned dependency exception.
-pub use cadenza_ast::{ast, codec, leb128};
+// num-bigint / unicode-normalization), PLUS the `canon` feature — which exposes `canonicalize` (de-share
+// a DAG → tree for the re-emit encode path) WITHOUT `std`'s num-bigint/unicode-normalization (canon backs
+// its lookup-only dedup index with alloc's `BTreeMap` when `std` is off — no new deps). Keeps the compiler
+// dependency-light for the Cadenza self-host port — cadenza-ast is the one sanctioned dependency exception.
+pub use cadenza_ast::{ast, canon, codec, leb128};
 
 // DRIFT-GUARD (ast-consolidation): `crate::{ast,codec,leb128}` MUST stay RE-EXPORTS of the single
 // `cadenza-ast` crate, never re-forked local copies. These identity-function `const`s compile ONLY while
