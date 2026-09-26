@@ -6622,15 +6622,14 @@ fn option_list_arg(
     if le.nest_lists != 0 {
         return None;
     }
-    // Only a flat list<SCALAR> payload is admitted here. `list_scalar_elem` ALSO recognizes a byte-leaf
-    // (`list<string>`/`list<bytes>`) and a compound (`list<tuple>`/`list<record>`) element, but the sum-arm
-    // downstream cannot build those: `SumArmPayload::List`'s `collect_ops_gated` emits only the scalar
-    // `elem.box_op` (a byte-leaf/compound element's `box_op` is inert/empty — the empty op name would poison the
-    // wrapper's import collection), and `emit_sum_arm`'s List arm threads a throwaway `next_local` that a
-    // byte-leaf/compound element's fresh copy-in scratch would collide with. Decline them here (a later slice)
-    // so the classifier admits exactly what the arm delivers — otherwise `option<list<string>>` /
-    // `option<list<tuple>>` slipped through to an empty-op decline (masking a latent local-collision miscompile).
-    if le.byte_leaf.is_some() || le.compound.is_some() {
+    // A flat list<SCALAR> (eop2) OR a flat list<BYTE-LEAF> (`list<string>`/`list<bytes>`, eop3) payload is
+    // admitted here. `SumArmPayload::List`'s emit + `collect_ops_gated` now build both: the scalar element via
+    // `elem.box_op`, the byte-leaf element via `emit_list_leaf_lift`'s per-element `(ptr, len)` copy-in
+    // (`bytes-alloc`/`bytes-set`), allocating its fresh copy-in scratch from the wrapper's real `next_local`.
+    // A COMPOUND (`list<tuple>`/`list<record>`) element is still declined: `SumArmPayload::List`'s emit reads a
+    // scalar/byte-leaf element, not a per-element value-heap cell (a later slice) — admitting it would slip
+    // through to an empty-op decline masking a latent local-collision miscompile.
+    if le.compound.is_some() {
         return None;
     }
     // Canonical `option<list<T>>` flattening: `(disc: i32, ptr: i32, len: i32)`. The Some arm builds the vec;

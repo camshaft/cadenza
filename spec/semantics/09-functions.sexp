@@ -13138,13 +13138,13 @@
   (call main (: (Some #list(4 5 6)) (Option (List Int64))))
   (output (: 3 Int64)))
 
-; eop3 (TODO) pins the BYTE-LEAF-element sibling of eop2 — an `option<list<string>>` entry param — which
-; SHOULD eventually cross like eop2's `option<list<scalar>>`. It currently DECLINES by design: `option_list_arg`
-; admits only a flat list<SCALAR> payload, because the sum-arm downstream (`SumArmPayload::List`'s
-; `collect_ops_gated` + `emit_sum_arm`'s throwaway-`next_local`) builds only a scalar element — a byte-leaf
-; element needs `bytes-alloc`/`bytes-set` ops the collection does not emit and fresh copy-in scratch the sum arm
-; does not reserve. Crossing it is a later slice (widen the SumArmPayload::List collection + emit like the
-; top-level `MemLeafKind::List` byte-leaf path). Expected 3 = List.len of the Some payload once it crosses.
+; eop3 is the BYTE-LEAF-element sibling of eop2 — an `option<list<string>>` entry param — and crosses just
+; like eop2's `option<list<scalar>>`. `option_list_arg` admits a flat `list<scalar>` OR a flat
+; `list<string>`/`list<bytes>` payload; the `SumArmPayload::List` arm's `collect_ops_gated` + `emit_sum_arm`
+; build a byte-leaf element via `emit_list_leaf_lift`'s per-element `(ptr, len)` copy-in
+; (`bytes-alloc`/`bytes-set`), allocating its fresh scratch from the wrapper's real `next_local` (like the
+; top-level `MemLeafKind::List` byte-leaf path). Expected 3 = List.len of the Some payload. A COMPOUND-element
+; list (`list<tuple>`/`list<record>`) in an option is still a later slice.
 (case
   "eop3 an Option-of-list-of-string entry param measures its Some payload length"
   (input
