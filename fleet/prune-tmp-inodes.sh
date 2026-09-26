@@ -81,6 +81,12 @@ UNCOVERED_MAX_AGE_MIN="${UNCOVERED_MAX_AGE_MIN:-43200}"
 # per-run trajectory greppable, but ONLY during a pressure episode (silent below WARN) so it stays bounded
 # without rotation, exactly like reap-leases.log logs only on a nonzero reap.
 TREND_LOG_PCT="${TREND_LOG_PCT:-85}"
+# Class F (uncovered-scratch REAP) fires at/above this — operator-authorized 2026-09-26 ("be aggressive,
+# no /tmp persistence guarantees"). 70 = same gate as Class C: dormant when /tmp is healthy (<70%, no wedge
+# risk so no reason to reap wanted scratch), but ARMED under real pressure (the 85% plateau) — so it reaps
+# the uncovered remainder down below WARN and keeps it there, without over-reaping at low load. The WINDOW +
+# keep-list + lsof-idle guards (not this gate) are the load-bearing safety.
+UNCOVERED_THRESHOLD_PCT="${UNCOVERED_THRESHOLD_PCT:-70}"
 
 # Class C allowlist — ONLY these known agent-scratch dir SHAPES are ever candidates (never a blanket sweep).
 # The grade/shred/roundtrip families below were added after a fleet-wide 100%-inode wedge (breaker issue
@@ -257,25 +263,70 @@ else
   printf 'prune-tmp-inodes: oracle class DORMANT — inode-use %s%% below oracle threshold %s%% (fires before the wedge).\n' "$iuse" "$ORACLE_THRESHOLD_PCT"
 fi
 
-# ── Class F: UNCOVERED-SCRATCH REPORT (OBSERVABILITY ONLY — never deletes). ───────────────────────────
-# The A–E allowlists reap only KNOWN shapes; a 2026-09-25 board scan found /tmp at 87% inodes was dominated
-# by ~20K own-user, days-STALE, ARBITRARY-short-named dirs (`0704v/{p1.ast,emit.wasm,c1.err}`, `9468g/9468-
-# recheck`, `PROBE/probe`, `Dg/D`, `Lw`) — agent compiler-pipeline DEBUG scratch, hand-created with names no
-# glob can match and NO generator to fix, so the allowlist demonstrably CANNOT cover them. This probe
-# QUANTIFIES that remainder (own-user dirs in the SCRATCH_STALE_MIN..UNCOVERED_MAX_AGE_MIN real-mtime window,
-# minus every A–E pattern + the Class F keep-list) so the leak is greppable + trendable and an actual reaping
-# Class F (a window-sweep) can be authorized on DATA rather than a blind blanket sweep. It DELETES NOTHING.
+# ── Class F: UNCOVERED-SCRATCH REAP (operator-authorized 2026-09-26: "definitely clean up tmp … we can
+#    afford to be aggressive there — no guarantees about things persisting in /tmp"). ───────────────────
+# The A–E allowlists reap only KNOWN shapes; a board scan found the /tmp inode plateau is dominated by
+# ~thousands of own-user, days-STALE, ARBITRARY-short-named dirs (`0704v/{p1.ast,emit.wasm,c1.err}`, `9468g/
+# 9468-recheck`, `PROBE/probe`, `Dg/D`, `Lw`) — agent compiler-pipeline DEBUG scratch, hand-created with
+# names no glob matches and NO generator to fix, so A–E reclaim ~0 of it (concierge confirmed: an --apply
+# pass cleared 0 from A–E while this remainder was the entire WARN plateau). This class reaps that remainder
+# under the SAME safety guards as C/D — this is why it is a scoped reaper, NOT a blind `rm`:
+#   • own-user only (-uid $(id -u));
+#   • a real-mtime WINDOW SCRATCH_STALE_MIN..UNCOVERED_MAX_AGE_MIN — the UPPER bound is the load-bearing
+#     nix-safety: nix normalizes `*-result` GC-root mtimes to ~epoch/1980, so they read as decades-old and
+#     fall OUTSIDE (older than) the window, never targeted (belt-and-braces with the `*-result` keep-list);
+#   • the KEEP_PATTERNS keep-list (a2a-client / MembrainDev* / nix-shell.*/develop/build / tmp.* / *-result
+#     / claude-* / telemetry) + every A–E pattern, all subtracted;
+#   • a per-dir lsof-idle liveness check (`scratch_dir_is_idle`, FAIL-SAFE: no lsof or ANY lsof output → KEEP);
+#   • its own gate UNCOVERED_THRESHOLD_PCT, --apply-guarded, DRY-RUN by default.
+# The candidate COUNT (`uncovered`) is computed + stamped/trended REGARDLESS of the gate so the backlog stays
+# visible on the `fleet status` INODE line + `.last-run`/`.trend` even when the class is dormant.
 uncov_excl=()
 for p in "${SCRATCH_PATTERNS[@]}" "${ORACLE_PATTERNS[@]}" "${KEEP_PATTERNS[@]}"; do
   [ "${#uncov_excl[@]}" -gt 0 ] && uncov_excl+=(-o)
   uncov_excl+=(-name "$p")
 done
-uncovered="$(find "$TMPDIR_ROOT" -maxdepth 1 -mindepth 1 -type d -uid "$(id -u)" \
-  -mmin +"$SCRATCH_STALE_MIN" -mmin -"$UNCOVERED_MAX_AGE_MIN" \
-  -not \( "${uncov_excl[@]}" \) -print 2>/dev/null | wc -l | tr -d ' ')"
-uncovered="${uncovered:-0}"
-printf 'prune-tmp-inodes: UNCOVERED-scratch REPORT (no delete): %s own-user dir(s) stale %s..%smin, not A-E-allowlisted, not keep-listed — reclaim candidates for a future window-sweep Class F (see ASK).\n' \
-  "$uncovered" "$SCRATCH_STALE_MIN" "$UNCOVERED_MAX_AGE_MIN"
+uncov_cands=()
+while IFS= read -r -d '' d; do uncov_cands+=("$d"); done \
+  < <(find "$TMPDIR_ROOT" -maxdepth 1 -mindepth 1 -type d -uid "$(id -u)" \
+        -mmin +"$SCRATCH_STALE_MIN" -mmin -"$UNCOVERED_MAX_AGE_MIN" \
+        -not \( "${uncov_excl[@]}" \) -print0 2>/dev/null)
+uncovered="${#uncov_cands[@]}"
+if [ "$iuse" -ge "$UNCOVERED_THRESHOLD_PCT" ]; then
+  # LIVENESS via ONE bulk `lsof` pass, NOT `scratch_dir_is_idle` per-dir: `lsof +D <dir>` recursively
+  # descends the dir (O(files)) and a per-candidate loop spawns lsof once per dir — at a ~thousands-dir
+  # backlog that is minutes-long + would pile up (this cron has no flock singleton). Instead: enumerate all
+  # open files ONCE (`lsof -F n` reads /proc fd/cwd tables — fast, no dir descent), collect the TOP-LEVEL
+  # /tmp names holding an open fd/cwd into a set, then O(1)-test each candidate. FAIL-SAFE: no lsof binary →
+  # cannot verify → treat EVERY candidate as live (reap NOTHING), same "when unsure, KEEP" rule as Class C/D.
+  declare -A uncov_live_set=()
+  uncov_lsof_ok=1
+  if command -v lsof >/dev/null 2>&1; then
+    while IFS= read -r _n; do
+      [ -n "$_n" ] && uncov_live_set["$_n"]=1
+    done < <(lsof -w -F n 2>/dev/null | sed -n "s#^n${TMPDIR_ROOT}/\([^/]*\).*#\1#p")
+  else
+    uncov_lsof_ok=0
+  fi
+  uncov_idle=0
+  uncov_live=0
+  for d in "${uncov_cands[@]}"; do
+    _name="${d##*/}"
+    if [ "$uncov_lsof_ok" = 0 ] || [ -n "${uncov_live_set[$_name]:-}" ]; then
+      uncov_live=$((uncov_live + 1)) # unverifiable (no lsof) OR holds an open fd/cwd → KEEP
+    else
+      [ "$APPLY" = 1 ] && rm -rf "$d" 2>/dev/null || true
+      uncov_idle=$((uncov_idle + 1))
+    fi
+  done
+  verb="WOULD remove"
+  [ "$APPLY" = 1 ] && verb="removed"
+  printf 'prune-tmp-inodes: uncovered-scratch (>=%s%%): %s %s idle uncovered dir(s), KEPT %s live/held (of %s candidate(s), own-user, stale %s..%smin, not A-E-allowlisted, not keep-listed)\n' \
+    "$UNCOVERED_THRESHOLD_PCT" "$verb" "$uncov_idle" "$uncov_live" "$uncovered" "$SCRATCH_STALE_MIN" "$UNCOVERED_MAX_AGE_MIN"
+else
+  printf 'prune-tmp-inodes: uncovered-scratch class DORMANT — inode-use %s%% below threshold %s%% (%s stale candidate(s) tracked; fires near the wedge).\n' \
+    "$iuse" "$UNCOVERED_THRESHOLD_PCT" "$uncovered"
+fi
 
 # Heartbeat (best-effort, never fails the prune): OVERWRITE a `.last-run` file next to the script. Its MTIME
 # is a liveness proof the (silent, `>/dev/null`) cron actually FIRED — mirroring how the cpu-monitor's
