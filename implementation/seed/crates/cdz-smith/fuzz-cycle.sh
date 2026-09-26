@@ -201,13 +201,13 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
       # differential structurally cannot reach. Small count (it shells `cdz` per program, like the sweep
       # above) under its own cap, reusing the already-resolved cdz + store. A KILL at the cap is SAFE
       # (findings stream to disk per program); the count sizes the SLOWEST (cdz-shelling) pass to fit.
-      # generate_export_param has 29 shapes (6 scalar + 3 List-entry-borrow + const-sum-field E0282 family
+      # generate_export_param has 30 shapes (6 numeric scalar + chr1 Char scalar + 3 List-entry-borrow + const-sum-field E0282 family
       # #9586/#9684/#9687 + #9689 List-consume + #9694 String-consume + 2 Record #9699/#9701 + #9707 wfp1
       # >16-flat memory-indirect + #9716 els1 list<String> byte-leaf + #9714 rpp8/rpp9 nested-Tuple + #9718/#9742
       # eos1 option<String> + #9747 rpp21/22 result<Int64,String> two-payload + #9746/#9753 eob1 option<Bytes>
       # byte-leaf + lpt1 list<tuple> + eot1 option<tuple> + lpr1 list<record> + eor1 option<record> + ell1
       # list<list> nested-heap + rrf1 record-with-record-field nested-product + tol1 tuple-of-list
-      # value-holding-a-heap — compound/nested list-element/sum-payload/recursive boundary-marshal paths). NOTE
+      # value-holding-a-heap — scalar/compound/nested list-element/sum-payload/recursive boundary-marshal paths). NOTE
       # (measured, corrects the earlier "split imminent"
       # flag): this pass is COUNT-BOUND, not shape-bound — it shells cdz per program at ~0.27s each, so wall-clock
       # tracks EP_COUNT (measured 65s at count 240, 23 shapes; ~56s at 16 shapes was a LOWER historical count),
