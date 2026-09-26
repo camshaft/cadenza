@@ -71,6 +71,37 @@ pub fn big_arg_expr(n: i128) -> String {
     format!("cdz_num::Big::from_sign_magnitude_bytes(&[{elems}])")
 }
 
+/// Decode a `#\`-form Char body (the `<word>` after `#\`) to its scalar — `Some(c)`, or `None` for a
+/// malformed name (the `char_leaf` `BadChar` cases). Mirrors `cadenza-syntax-core`'s `literal::char_leaf`
+/// (kept inline so this render crate stays dependency-free): a single scalar (`a`, `é`, `(`), a `u+HHHH`
+/// code point (case-insensitive), or a named control (`space`/`newline`/`tab`/`return`/`null`).
+fn char_leaf_scalar(word: &str) -> Option<char> {
+    // A single scalar — the common case (`#\a`, `#\é`).
+    let mut chars = word.chars();
+    if let Some(c) = chars.next()
+        && chars.next().is_none()
+    {
+        return Some(c);
+    }
+    // A `u+HHHH` code-point spelling (case-insensitive prefix).
+    if let Some(hex) = word.strip_prefix("u+").or_else(|| word.strip_prefix("U+"))
+        && !hex.is_empty()
+        && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        && let Ok(cp) = u32::from_str_radix(hex, 16)
+    {
+        return char::from_u32(cp);
+    }
+    // A named control char (else malformed → None, matching `char_leaf`'s `BadChar`).
+    match word {
+        "space" => Some(' '),
+        "newline" => Some('\n'),
+        "tab" => Some('\t'),
+        "return" => Some('\r'),
+        "null" => Some('\0'),
+        _ => None,
+    }
+}
+
 pub fn rust_call_arg(val: &str) -> String {
     let v = val.trim();
     // A FLOAT SPECIAL-VALUE literal (`nan`/`inf`/`-inf`) is not a Rust value token — map it to the `f64`
@@ -82,6 +113,19 @@ pub fn rust_call_arg(val: &str) -> String {
         "inf" | "+inf" => return "f64::INFINITY".to_string(),
         "-inf" => return "f64::NEG_INFINITY".to_string(),
         _ => {}
+    }
+    // A CHAR literal (`#\a`, `#\space`, `#\newline`, `#\λ`, `#\u+0041`) — the canonical value form of a
+    // `Char` ENTRY arg. The emitted export's parameter is `c: char`, so decode the `#\<word>` (exactly as
+    // the front-end's `char_leaf`: a single scalar / a named special / a `u+HHHH` code point) and cross it
+    // as a Rust `char` LITERAL, spelled via `escape_default` so `'`, `\`, and control/non-ASCII scalars are
+    // Rust-valid (`'\''`, `'\\'`, `'\n'`, `'\u{3bb}'`). Without this the `#\a` fell through to the
+    // pass-through-verbatim arm and leaked `#\a` into the driver's Rust source → `error: unknown start of
+    // token: \` (the Char twin of the String/Symbol/Bytes entry-arg marshals below; nightly rust coarse
+    // gate spx2, v-cadenza-ci). Checked BEFORE the Symbol/String arms — a `#\"` is a Char, not a Symbol.
+    if let Some(word) = v.strip_prefix("#\\")
+        && let Some(c) = char_leaf_scalar(word)
+    {
+        return format!("'{}'", c.escape_default());
     }
     // A SYMBOL literal (`#"read"`) — the canonical value form of a `Symbol` arg. A `Symbol` param emits as
     // an owned Rust `String` in the rust backend (a symbol erases to its interned text — the export is
@@ -1751,6 +1795,23 @@ mod tests {
         );
         assert_eq!(split_top_level("Int64"), vec!["Int64"]);
         assert!(split_top_level("").is_empty());
+    }
+
+    #[test]
+    fn rust_call_arg_marshals_a_char_entry_arg_to_a_rust_char_literal() {
+        // A `#\`-form Char ENTRY arg crosses as a Rust `char` literal (the emitted param is `c: char`),
+        // spelled via `escape_default` so it is always Rust-valid. Without this the `#\a` leaked verbatim
+        // into the driver → `error: unknown start of token: \` (nightly rust coarse gate spx2, v-cadenza-ci).
+        assert_eq!(rust_call_arg("#\\a"), "'a'");
+        assert_eq!(rust_call_arg("#\\space"), "' '");
+        assert_eq!(rust_call_arg("#\\newline"), "'\\n'"); // Rust `'\n'`
+        assert_eq!(rust_call_arg("#\\λ"), "'\\u{3bb}'"); // non-ASCII → `\u{..}` escape
+        assert_eq!(rust_call_arg("#\\u+0041"), "'A'"); // code-point spelling decodes to 'A'
+        // A backslash / single-quote Char must stay Rust-valid, not leak a bare `\` or `'`.
+        assert_eq!(rust_call_arg("#\\\\"), "'\\\\'"); // Rust `'\\'`
+        assert_eq!(rust_call_arg("#\\'"), "'\\''"); // Rust `'\''`
+        // A malformed `#\<name>` (char_leaf BadChar) falls through to verbatim (rustc rejects loudly, as before).
+        assert_eq!(rust_call_arg("#\\nope"), "#\\nope");
     }
 
     #[test]
