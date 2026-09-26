@@ -286,9 +286,22 @@ printf '%s apply=%s inode-use=%s%% uncovered-stale-scratch=%s\n' "$(date -Is)" "
   > "$(dirname "${BASH_SOURCE[0]}")/prune-tmp-inodes.last-run" 2>/dev/null || true
 
 # TREND APPEND (best-effort): during a pressure episode (inode-use >= TREND_LOG_PCT) append one tab-separated
-# line so the CLIMB/REVERSAL trajectory the overwrite `.last-run` can't show is greppable + bounded (silent
-# below WARN → no unbounded growth). Same events-only discipline as reap-leases.log (#9690).
+# line so the CLIMB/REVERSAL trajectory the overwrite `.last-run` can't show is greppable. DEDUP consecutive
+# IDENTICAL readings (same inode-use% AND same uncovered) — a SUSTAINED plateau at/above WARN (e.g. sitting
+# at 85% for days awaiting a decision) would otherwise append ~96 identical lines/day forever, defeating the
+# "bounded" intent. Logging only TRANSITIONS keeps it truly bounded AND makes it a cleaner change-log (one
+# line per distinct reading). Same events-only discipline as reap-leases.log (#9690).
 if [ "$iuse" -ge "$TREND_LOG_PCT" ]; then
-  printf '%s\tinode-use=%s%%\tuncovered=%s\tapply=%s\n' "$(date -Is 2>/dev/null || echo now)" "$iuse" "${uncovered:-?}" "$APPLY" \
-    >> "$(dirname "${BASH_SOURCE[0]}")/prune-tmp-inodes.trend" 2>/dev/null || true
+  _trend="$(dirname "${BASH_SOURCE[0]}")/prune-tmp-inodes.trend"
+  _sig="${iuse}:${uncovered:-?}"
+  # Read the prior signature ONLY when the file exists — a `tail` of a missing file fails the pipe under
+  # `set -o pipefail` and would abort (via `set -e`) BEFORE the append, dropping an episode's FIRST line.
+  _last_sig=""
+  if [ -f "$_trend" ]; then
+    _last_sig="$(tail -1 "$_trend" | sed -n 's/.*inode-use=\([0-9]*\)%.*uncovered=\([^[:space:]]*\).*/\1:\2/p')"
+  fi
+  if [ "$_sig" != "$_last_sig" ]; then
+    printf '%s\tinode-use=%s%%\tuncovered=%s\tapply=%s\n' "$(date -Is 2>/dev/null || echo now)" "$iuse" "${uncovered:-?}" "$APPLY" \
+      >> "$_trend" 2>/dev/null || true
+  fi
 fi
