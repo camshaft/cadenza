@@ -5284,8 +5284,12 @@
 
         # BOUNDED-SUBSET COARSE WASM GATE (v-nix — FOLD B, the localGate gateCheck swap, atomic with v-xtask's
         # in-process `gate --check` delete). This is the per-MR localGate constituent that REPLACES the deleted
-        # gateCheck: a LIGHT subset (01-literals + 05-compound-types + 06-numeric-model) of the full
-        # corpusGateCoarse, so a per-MR gate stays fast and does not re-serialize pr-sync. Same per-file
+        # gateCheck: a LIGHT subset (01-literals + 05-compound-types + 06-numeric-model + 09-functions) of the
+        # full corpusGateCoarse, so a per-MR gate stays fast and does not re-serialize pr-sync. Same per-file
+        # (09-functions added 2026-09-27 by v-cadenza-ci, operator-authorized cross-lane: it carries the wasm
+        #  value-form ENTRY-PARAM marshal cases whose cdz-run runtime trial is the ONLY place a new arg-form
+        #  spelling — Char/Bytes/#bytes/#string — surfaces; keeping it nightly-only let those escape LOCAL-green
+        #  and self-approve to main, redding only the nightly coarse. Incidents 11/14/17. CLASS-A faithfulness close.)
         # fail-on-regression semantics as the full aggregate (each file drv caches independently → only a
         # touched-file / compiler edit rebuilds). The FULL corpusGateCoarse runs in nightly for whole-corpus
         # coverage (same narrow-per-MR + full-nightly philosophy as gateCheckRust's `--case mutual` was).
@@ -5294,8 +5298,8 @@
           : > "$out"
           ${pkgs.lib.concatMapStringsSep "\n"
               (stem: ''cat ${mkCorpusGateFileCoarse { name = stem; file = ./spec/semantics + "/${stem}.sexp"; }} >> "$out"'')
-              [ "01-literals" "05-compound-types" "06-numeric-model" ]}
-          echo "ok: corpus-gate-coarse-subset — 01-literals+05-compound-types+06-numeric-model graded vs .gate-baseline (localGate gateCheck swap; full corpusGateCoarse in nightly)" >> "$out"
+              [ "01-literals" "05-compound-types" "06-numeric-model" "09-functions" ]}
+          echo "ok: corpus-gate-coarse-subset — 01-literals+05-compound-types+06-numeric-model+09-functions graded vs .gate-baseline (localGate gateCheck swap; full corpusGateCoarse in nightly)" >> "$out"
         '';
 
         # PER-FILE coarse WASM gate aggs: `corpus-gate-coarse-<stem>` for EVERY corpus stem, generated over
