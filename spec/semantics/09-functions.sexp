@@ -748,6 +748,40 @@
   (live-objects 2 cadenza-tolerate))
 
 (case
+  "a list ESCAPE-RETURNED from a mutual SCC, HELD across a later allocation, then re-read by element (over-drop UAF value tripwire)"
+  (doc
+    "The value+rc-trace over-drop tripwire that preserves the CAESAR escape-return UAF coverage as the
+           caller-ownership count-leak guard (the 711 case above) is legitimately reclaimed away by the
+           nontail-owned-temp caller-drop fix. `go`/`helper` are the same reclaiming mutual SCC, but here the
+           SCC ESCAPE-RETURNS its list arg (the `xs` arm, not `List.len xs`), so `(go #list(...) 2)` hands the
+           list back OUT of the group. `main` binds it as `got`, then allocates an intervening `filler` list,
+           then RE-READS element 0 of `got`. This is the re-read amplifier: `got` is genuinely live across the
+           `filler` allocation, so a reclaim that WRONGLY over-freed the escape-returned handle (a caller-drop
+           admit that failed to exclude the escape-return / retain shape) would let `filler` REUSE its freed
+           slot and corrupt the re-read → element 0 diverges from 7, or traps. Value = len(filler=6) + got[0]=7
+           = 13; a dangle flips it. Unlike a count-leak pin (which the legitimate reclaim erases, and which the
+           inlining-dup of a bare list literal defeats — the returned value becomes a fresh single-use dup), the
+           VALUE oracle here survives the reclaim tightening and catches the over-drop directly. Reclaims clean
+           to (live-objects 0) with the value intact on the current backend — the guard is the value, not the
+           count. Complements the 711 flip: 711 asserted the DIRECT-hop leak count; this asserts that the
+           escape-returned handle is never freed while still read, on a shape the inlining-dup cannot flatten
+           into independent single-use copies (the SCC round-trips the SAME handle out).")
+  (input
+    (do
+      (def (go (: xs (List Int64)) (: d Int64)) (if (< d 1) xs (helper xs (- d 1))))
+      (def (helper (: xs (List Int64)) (: d Int64)) (if (< d 1) xs (go xs (- d 1))))
+      (def
+        (main (: n Int64))
+        (do
+          (def got (go #list(7 8 (+ n 9)) 2))
+          (def filler #list(1 1 1 1 1 1))
+          (+ (List.len filler) (match (List.at got 0) ((Some v) v) ((None _u) -1)))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 13 Int64))
+  (live-objects 0))
+
+(case
   "a CLOSURE param carrying a captured heap env leaks in a self-recursive fn with a SINGLE call (closures trip the SCC miss more readily than list params)"
   (doc
     "The closure-typed-param face of the count_param_consumes SCC-membership owned-param-drop cluster
