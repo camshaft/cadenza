@@ -609,6 +609,14 @@ const GC_JUSTIFICATION_PHRASES: &[&str] = &[
     "gc required",
     "gc-required",
     "unreclaimable without",
+    // "tracing GC" evasion (v-memory-safety review 84941): a justification can dodge the "garbage collection"
+    // phrasing by naming the TECHNIQUE. Only the GC-PAIRED forms are added — bare "needs tracing" / "requires
+    // tracing" are DELIBERATELY excluded (the corpus uses `rc-trace` / `trace` / execution "trace" heavily, so
+    // they would false-positive on legitimate reclaim-tracing prose).
+    "tracing gc",
+    "tracing collector",
+    "tracing garbage",
+    "cyclic garbage",
 ];
 
 /// Negation tokens that, in the short window BEFORE a GC-justification phrase, flip it to the CORRECT
@@ -1943,6 +1951,28 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
             gc_justification_hits(clean).is_empty(),
             "no false positives: {:?}",
             gc_justification_hits(clean)
+        );
+
+        // "tracing GC" evasion (v-memory-safety 84941): the GC-PAIRED technique names are flagged...
+        let tracing = r#"(case "a" (doc "leaks unless a tracing GC sweeps it"))
+(case "b" (doc "needs a tracing collector to reclaim"))
+; this is cyclic garbage the RC cannot free
+(case "c" (doc "requires tracing garbage collection"))"#;
+        assert_eq!(
+            gc_justification_hits(tracing).len(),
+            4,
+            "tracing/cyclic variants flagged: {:?}",
+            gc_justification_hits(tracing)
+        );
+        // ...but legitimate reclaim-tracing prose (rc-trace / execution trace) is NOT flagged.
+        let trace_ok = r#"(case "d" (doc "rc-trace: every ALLOC reached a freed DROP, balanced"))
+(case "e" (doc "the compiler resolves exports by tracing only from main"))
+; rc-trace node#1 1->2->1->0, zero double-free
+(case "f" (input (effect trace (op mark (-> Int64 Unit)))))"#;
+        assert!(
+            gc_justification_hits(trace_ok).is_empty(),
+            "no rc-trace false positive: {:?}",
+            gc_justification_hits(trace_ok)
         );
     }
 
