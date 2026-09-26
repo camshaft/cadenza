@@ -226,8 +226,21 @@ pub(super) fn nontail_owned_temp_caller_drops(
     {
         return false;
     }
+    // The arg must be a FRESH OWNED construction, NOT a bare `Param`/`LocalRef` the caller may REUSE.
+    // `heap_operand_ownership` can read a reused bare binder as Owned (the CAESAR borrowed-and-reused witness,
+    // 09-functions: `caller xs = (+ (go xs 2) (List.len xs))` reads `xs` Owned at the `go` call even though
+    // `List.len xs` reuses it) — caller-dropping it then frees a handle the caller still borrows
+    // (double-free/UAF, the guard the mutual-SCC caller-ownership rule protects). A fresh construction (501's
+    // inlined `String.concat`) is single-use by construction and cannot be reused, so it is the only safe arg.
+    if matches!(core_of(db, arg), Core::Param { .. } | Core::LocalRef { .. }) {
+        return false;
+    }
     let g = super::mutual_loop_group(db, callee);
-    if g.is_empty() || self_def.is_some_and(|sd| g.contains(&sd)) {
+    // SINGLE-member self-loop ONLY (the validated 501 scope). A MUTUAL group (>1 member) has its own
+    // group-wide caller-ownership guard (`mutual_group_slot_reclaimable`) — a caller-drop here would
+    // DOUBLE-count against it (the go↔helper CAESAR witness, `mutual_loop_group` len 2). `len != 1` also
+    // subsumes the empty (non-loop) case.
+    if g.len() != 1 || self_def.is_some_and(|sd| g.contains(&sd)) {
         return false;
     }
     // (G) YIELD to the callee's LOOP EPILOGUE: if it already drops this param at loop exit, a caller-drop is a
