@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(30);
+    let shape = c.variant(31);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -344,6 +344,14 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     // wrong-width or wrong-codepoint marshal corrupts the to-int. Value = cp = 65 + e0%26.
     let char_cp = 65 + (e0 % 26);
     let char_arg = format!("#\\u+{char_cp:04X}");
+    // A BigInt value-form for the big1 HEAP-BIGNUM-SCALAR-ENTRY shape (30) — UNBLOCKED by the wasm-side
+    // BigInt entry-param arg-decode (#9776 cdz-param-type section + #9779 cdz-run base-10 --arg decode; a BigInt
+    // crosses as the canonical list<u8> value-form). A bare integer literal FAR beyond i64 (a varying leading
+    // digit + 31 fixed digits = a 32-digit number > i64 max ~9.2e18), returned as `(Int64.of (% x (BigInt.of 7)))`.
+    // A BigInt is a HEAP arbitrary-precision scalar — a marshal distinct from the fixed-width Int64/UInt64/Char
+    // entry scalars (reclaim shape 12 only CONSTRUCTS a BigInt, never crosses one as an ENTRY arg). `% 7` makes
+    // the WHOLE bignum's value observable (not just low digits) — a corrupted/truncated limb changes the residue.
+    let big_arg = format!("{}1234567890123456789012345678901", (e0 % 9) + 1);
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -622,9 +630,19 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      via Char.to-int. The last gap in the scalar-entry family (6 numeric scalars had no Char). A Char
         //      marshals as a fixed 32-bit Unicode scalar — distinct from the Int64/UInt64 entry scalars — so a
         //      wrong-width or wrong-codepoint marshal corrupts the to-int. Arg is a `#\u+XXXX` codepoint literal.
-        _ => (
+        29 => (
             "(do (def (f (: c Char)) (Char.to-int c)) (export f))".to_string(),
             vec![char_arg],
+        ),
+        // 30 — big1 BigInt HEAP-BIGNUM SCALAR-ENTRY param (UNBLOCKED by the #9776+#9779 wasm arg-decode): a
+        //      `(: x BigInt)` param returned via `(Int64.of (% x (BigInt.of 7)))`. Rounds out the scalar-entry
+        //      family with the HEAP scalar — a BigInt is arbitrary-precision (crosses as list<u8>), marshaled
+        //      distinctly from the fixed-width Int64/UInt64/Char entry scalars. Arg is a bare 32-digit integer
+        //      literal FAR beyond i64 (so it genuinely exercises the multi-limb bignum marshal, not an i64 fast
+        //      path); the `% 7` makes the WHOLE value observable so a truncated/corrupted limb changes the residue.
+        _ => (
+            "(do (def (f (: x BigInt)) (Int64.of (% x (BigInt.of 7)))) (export f))".to_string(),
+            vec![big_arg],
         ),
     };
     ExportParam { source, args }
@@ -5980,13 +5998,13 @@ mod tests {
         // option<record<x,y>> sum-holding-a-record-entry-param `f` + the ell1 list<list<Int64>> nested-heap
         // (heap-list-of-heap-lists) entry-param `f` + the rrf1 record-with-a-record-field nested-product
         // entry-param `f` + the tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f` + the chr1
-        // Char scalar-entry-param `f`.
-        let mut reached = [false; 30];
-        for seed in 0u64..1800 {
+        // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f`.
+        let mut reached = [false; 31];
+        for seed in 0u64..1860 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(30) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-29 reuse e0/e1/e2/s0/a — no new read.)
+            // variant(31) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-30 reuse e0/e1/e2/s0/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6075,11 +6093,13 @@ mod tests {
                 reached[28] = true; // shape 28 = tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f`
             } else if ep.source.contains("(: c Char)") {
                 reached[29] = true; // shape 29 = chr1 Char scalar-entry-param `f`
+            } else if ep.source.contains("(: x BigInt)") {
+                reached[30] = true; // shape 30 = big1 BigInt heap-bignum scalar-entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all thirty export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all thirty-one export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 

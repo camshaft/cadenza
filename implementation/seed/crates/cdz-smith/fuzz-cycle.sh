@@ -201,7 +201,7 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
       # differential structurally cannot reach. Small count (it shells `cdz` per program, like the sweep
       # above) under its own cap, reusing the already-resolved cdz + store. A KILL at the cap is SAFE
       # (findings stream to disk per program); the count sizes the SLOWEST (cdz-shelling) pass to fit.
-      # generate_export_param has 30 shapes (6 numeric scalar + chr1 Char scalar + 3 List-entry-borrow + const-sum-field E0282 family
+      # generate_export_param has 31 shapes (6 numeric scalar + chr1 Char + big1 BigInt scalars + 3 List-entry-borrow + const-sum-field E0282 family
       # #9586/#9684/#9687 + #9689 List-consume + #9694 String-consume + 2 Record #9699/#9701 + #9707 wfp1
       # >16-flat memory-indirect + #9716 els1 list<String> byte-leaf + #9714 rpp8/rpp9 nested-Tuple + #9718/#9742
       # eos1 option<String> + #9747 rpp21/22 result<Int64,String> two-payload + #9746/#9753 eob1 option<Bytes>
