@@ -437,15 +437,12 @@ pub(super) fn looped_invariant_param_caller_owned_transitive(
             let Core::Param { binder: p } = core_of(db, arg) else {
                 return false;
             };
-            debug_assert!(
-                db.defs
-                    .iter()
-                    .filter(|d| d.body == Some(caller_body))
-                    .count()
-                    <= 1,
-                "body -> def must be unique for the caller-owned transit lookup",
-            );
-            let Some(caller_def) = db.defs.iter().position(|d| d.body == Some(caller_body)) else {
+            // O(1) reverse lookup via the build-once `def_by_body` index — the canonical replacement for the
+            // equivalent linear `db.defs.iter().position(|d| d.body == Some(caller_body))` scan (its doc says
+            // so), which here sat per-call-site inside a `visited`-guarded transitive `rec` walk (an
+            // O(defs)-per-site term on this path). `def_index_by_body` is body→def unique by construction, so
+            // this is byte-identical to the position() scan it replaces.
+            let Some(caller_def) = db.def_index_by_body(caller_body) else {
                 return false;
             };
             if !rec(db, caller_def, caller_body, p, visited) {
