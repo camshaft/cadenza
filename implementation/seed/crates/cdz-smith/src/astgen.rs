@@ -682,7 +682,7 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(27);
+    let shape = c.variant(28);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -1080,8 +1080,20 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // STRING (a substring) — NOT Option Char; the Char member is `String.scalar-at` (per v-rust-backend). Both
         // backends run this (verified rust==6 = 3 outer * 2 inner * byte-len("a")=1). Distinct from every other
         // reclaim shape — the SOLE nested (loop-in-loop) String.at-Some-shell accumulate.
-        _ => "(do (def (inner (: s String) (: i Int64) (: acc Int64)) (if (< i 1) acc (inner s (- i 1) (+ acc (match (String.at s 0) ((Some sub) (String.byte-len sub)) (None 0)))))) (def (outer (: s String) (: n Int64) (: acc Int64)) (if (< n 1) acc (outer s (- n 1) (inner s 2 acc)))) (def (main) (outer \"abc\" 3 0)) (export main))"
+        26 => "(do (def (inner (: s String) (: i Int64) (: acc Int64)) (if (< i 1) acc (inner s (- i 1) (+ acc (match (String.at s 0) ((Some sub) (String.byte-len sub)) (None 0)))))) (def (outer (: s String) (: n Int64) (: acc Int64)) (if (< n 1) acc (outer s (- n 1) (inner s 2 acc)))) (def (main) (outer \"abc\" 3 0)) (export main))"
             .to_string(),
+        // 27 — MUTUAL-GROUP CALLER-DROP ADMIT tripwire (the #8f5361b09f CAESAR-711 admit). Shape 22 pins the
+        // mutual-SCC DECLINE side (caller REUSES `xs` after `(go xs 2)` → the group-exit drop MUST decline,
+        // leak-over-UAF); THIS pins the ADMIT side #8f5361b09f landed: `go`↔`helper` are a BORROW-ONLY mutual
+        // group (read element 0, forward `xs` verbatim, never free it), and `caller` passes a FRESH owned `xs` to
+        // `(go xs 2)` and does NOT reuse it — so `xs` is dead after the group call and the caller-drop
+        // (CallerDropsAfterLastUse) FIRES. Distinct from shape 22 (mutual, reused→decline) AND shape 25 (SINGLE
+        // self-loop admit — this is the MUTUAL-group admit). Value-CORRECT at tip (returns List.at xs 0 = a); a
+        // regression that over-fires (frees `xs` mid-descent → go/helper read freed) or fails to admit corrupts
+        // the value / traps. Content-observable (reads an ELEMENT). Returns the KNOWN `a`; verified rust==7 at a=7.
+        _ => format!(
+            "(do (def (go (: xs (List Int64)) (: d Int64)) (if (< d 1) (Option.expect (List.at xs 0) \"g\") (helper xs (- d 1)))) (def (helper (: xs (List Int64)) (: d Int64)) (if (< d 1) (Option.expect (List.at xs 0) \"h\") (go xs (- d 1)))) (def (caller (: xs (List Int64))) (go xs 2)) (def (main) (caller (list {a} {b} {d}))) (export main))"
+        ),
     };
     Program { source }
 }
@@ -5887,8 +5899,8 @@ mod tests {
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
         // Distinctive, mutually-exclusive markers for the twenty-seven shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 27];
-        for seed in 0u64..1215 {
+        let mut reached = [false; 28];
+        for seed in 0u64..1260 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5945,6 +5957,9 @@ mod tests {
                 reached[20] = true;
             } else if src.contains("(type P (Mk Int64 Int64))") {
                 reached[21] = true;
+            } else if src.contains("(def (caller (: xs (List Int64))) (go xs 2))") {
+                reached[27] = true; // shape 27 = mutual-group caller-drop ADMIT (no-reuse caller; checked BEFORE
+            // shape 22 since both contain the `(def (go …` marker — shape 22 REUSES xs)
             } else if src.contains("(def (go (: xs (List Int64)) (: d Int64))") {
                 reached[22] = true;
             } else if src.contains("(type Req (Req (Record (: node Node)") {
@@ -5963,7 +5978,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-seven reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-eight reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
