@@ -7239,9 +7239,11 @@
 
 ; ── breaker batch 545: DEEP-ROPE structural cells (50-concat trees — unprobed depth). rp1 = the
 ; rope itself reclaims clean after a byte-len tree walk; rp2 = the char-scan idiom across every
-; seam (values exact; carries the KNOWN String.at per-read leak at scale, ~2/read — same family
-; as the banana lexer pin, flips with it); rp3 = a slice SPANNING ~50 seams reads exact content
-; (slc-class residue rider at rope depth).
+; seam (values exact; the per-read String.at view now RECLAIMS to 0 —
+; mark_sumexpect_strat_selfloop_drops closed the single SumExpect(String.at) read at the rp2 land
+; c4f1ca8715/82668b22eb, tick #47; this is the paired annotation-flip that 501/0449344b53 got but
+; rp2 missed — v-memory-safety-retriaged faithful-0 on trunk); rp3 = a slice SPANNING ~50 seams
+; reads exact content (slc-class residue rider at rope depth).
 (case
   "rp1 a 50-concat deep rope's byte-len walks the tree and the rope reclaims clean"
   (input
@@ -7266,7 +7268,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 50 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "rp3 a slice SPANNING the seams of a deep rope reads exact length and content"
