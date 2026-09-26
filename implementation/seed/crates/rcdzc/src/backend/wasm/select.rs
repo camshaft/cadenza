@@ -1153,6 +1153,36 @@ fn looped_invariant_param_caller_owned(
 /// The mechanism-wide hardening of the OTHER arms (with a transfer-aware liveness test, not this strict Owned
 /// proxy) is a co-design follow-up with v-memory-safety (the borrow-arm family's owner). Conservative: a
 /// wrong TRUE only widens the caller-owns gate (a leak, never a UAF).
+/// Like [`occurs_in`], but a `binder` occurrence that is ONLY the CONTAINER operand of a `String.at` /
+/// `String.slice` / `String.scalar-at` / `Bytes.slice` VIEW-PRODUCER does NOT count. Such a producer BORROWS
+/// the container and mints an INDEPENDENT bytes-compact'd char/substring leaf (the emit's producer, emit.rs);
+/// the value flowing onward is the VIEW, not the container's own handle. So `binder` appearing solely there
+/// is a borrow-read, not a use of `binder`'s handle. The index / start / end sub-exprs ARE still checked (a
+/// `binder` there is a genuine occurrence). Consulted by [`param_compared_in_loop_body`] so the #9010
+/// caller-reuse guard fires on a DIRECT container compare (the find-at UAF shape) but NOT on a compare of a
+/// char-VIEW of the container (c862 / pr4-seqmatch: `(= (String.at s i) "0")` — the container is then safely
+/// loop-exit-reclaimable, since comparing an independent view of it creates no borrowed-and-reused hazard).
+fn occurs_in_non_view_producer(db: &mut Db, id: StructId, binder: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Param { binder: b } | Core::LocalRef { binder: b } => b == binder,
+        // View-producers: skip the borrowed CONTAINER operand; still check the scalar index/start/end.
+        Core::StrAt { index, .. } | Core::StrScalarAt { index, .. } => {
+            occurs_in_non_view_producer(db, index, binder)
+        }
+        Core::StrSlice { start, end, .. } => {
+            occurs_in_non_view_producer(db, start, binder)
+                || occurs_in_non_view_producer(db, end, binder)
+        }
+        Core::BytesSlice { start, len, .. } => {
+            occurs_in_non_view_producer(db, start, binder)
+                || occurs_in_non_view_producer(db, len, binder)
+        }
+        _ => core_child_ids(db, id)
+            .into_iter()
+            .any(|c| occurs_in_non_view_producer(db, c, binder)),
+    }
+}
+
 fn param_compared_in_loop_body(db: &mut Db, id: StructId, binder: StructId) -> bool {
     match core_of(db, id) {
         Core::ValueEq { lhs, rhs }
@@ -1161,7 +1191,8 @@ fn param_compared_in_loop_body(db: &mut Db, id: StructId, binder: StructId) -> b
         | Core::StrCmp { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }
         | Core::RationalCmp { lhs, rhs, .. }
-            if occurs_in(db, lhs, binder) || occurs_in(db, rhs, binder) =>
+            if occurs_in_non_view_producer(db, lhs, binder)
+                || occurs_in_non_view_producer(db, rhs, binder) =>
         {
             return true;
         }
