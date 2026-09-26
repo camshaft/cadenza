@@ -94,7 +94,7 @@ fn load_guest(engine: &Engine, bytes: &[u8], opts: &RunOpts) -> Result<Component
         // routes through here, so unframing at this ONE choke point keeps deserialize working for all
         // callers (run/grade/live-objects/peers); a RAW `.cwasm` (no magic — runtime/store/legacy) is
         // returned whole. The result-Ty MAP is read separately by the render paths (`result_types_of`).
-        let (_rtypes, cwasm) = unframe_precompiled(bytes);
+        let (_rtypes, _ptypes, cwasm) = unframe_precompiled(bytes);
         unsafe { Component::deserialize(engine, cwasm) }
             .map_err(|e| anyhow!("deserialize precompiled component (.cwasm): {e}"))
     } else {
@@ -139,49 +139,74 @@ pub fn precompile_component_bytes(component_bytes: &[u8]) -> Result<Vec<u8>> {
 /// runtime/store `.cwasm` — which have no such section — stay RAW automatically (frame iff the scan is
 /// non-empty). A raw `.cwasm` (no magic — every runtime/store/pre-existing artifact) → empty map = the
 /// prior type-blind behavior, so this is fully back-compatible.
-const CDZ_CWASM_RTYPES_MAGIC: &[u8; 8] = b"CDZRTYP1";
+const CDZ_CWASM_TYPES_MAGIC: &[u8; 8] = b"CDZTYPE2";
 
-/// Frame a serialized guest `.cwasm` with its `cdz-result-type` section: `MAGIC ‖ len(u32-le) ‖ rtypes ‖
-/// cwasm`. `None` rtypes (a component with no section — the runtime/store precompiles) → the raw `cwasm`
-/// unframed, so those artifacts are byte-identical to before. See [`CDZ_CWASM_RTYPES_MAGIC`].
+/// Frame a serialized guest `.cwasm` with its `cdz-result-type` AND `cdz-param-type` sections:
+/// `MAGIC ‖ len_r(u32-le) ‖ rtypes ‖ len_p(u32-le) ‖ ptypes ‖ cwasm` (an absent section = len 0). BOTH
+/// `None` (a component with neither section — the runtime/store precompiles) → the raw `cwasm` unframed, so
+/// those artifacts are byte-identical to before. The param section is what lets a value-form (`BigInt`) entry
+/// param decode on the cranelift-free AOT path — without it the arg-decode falls back to the raw `list<u8>`
+/// coerce (the bda1 regression). Guest `.cwasm` are ephemeral (re-precompiled per run), so the frame format
+/// carries both sections with no cross-version compat concern. See [`CDZ_CWASM_TYPES_MAGIC`].
 ///
 /// `cranelift`-gated: the ONLY caller is `--precompile-out` (`cli::precompile_to`, itself
 /// `#[cfg(feature = "cranelift")]` — precompilation needs the compiler). The cranelift-FREE build reaches
 /// artifacts only via `unframe_precompiled` (deserialize side, ungated), so without this cfg `frame_precompiled`
 /// is dead code in the `--no-default-features` config (delegate-compile / syntax-roundtrip) and trips `-D warnings`.
 #[cfg(feature = "cranelift")]
-pub(crate) fn frame_precompiled(cwasm: Vec<u8>, rtypes: Option<Vec<u8>>) -> Vec<u8> {
-    match rtypes {
-        None => cwasm,
-        Some(rt) => {
-            let mut out =
-                Vec::with_capacity(CDZ_CWASM_RTYPES_MAGIC.len() + 4 + rt.len() + cwasm.len());
-            out.extend_from_slice(CDZ_CWASM_RTYPES_MAGIC);
-            out.extend_from_slice(&(rt.len() as u32).to_le_bytes());
-            out.extend_from_slice(&rt);
-            out.extend_from_slice(&cwasm);
-            out
-        }
+pub(crate) fn frame_precompiled(
+    cwasm: Vec<u8>,
+    rtypes: Option<Vec<u8>>,
+    ptypes: Option<Vec<u8>>,
+) -> Vec<u8> {
+    if rtypes.is_none() && ptypes.is_none() {
+        return cwasm;
     }
+    let rt = rtypes.unwrap_or_default();
+    let pt = ptypes.unwrap_or_default();
+    let mut out =
+        Vec::with_capacity(CDZ_CWASM_TYPES_MAGIC.len() + 4 + rt.len() + 4 + pt.len() + cwasm.len());
+    out.extend_from_slice(CDZ_CWASM_TYPES_MAGIC);
+    out.extend_from_slice(&(rt.len() as u32).to_le_bytes());
+    out.extend_from_slice(&rt);
+    out.extend_from_slice(&(pt.len() as u32).to_le_bytes());
+    out.extend_from_slice(&pt);
+    out.extend_from_slice(&cwasm);
+    out
 }
 
-/// Split a possibly-framed precompiled `.cwasm` into `(result_type_section?, cwasm)` — the inverse of
-/// [`frame_precompiled`]. A raw `.cwasm` (no magic: runtime/store/legacy) → `(None, whole)`. TOTAL: a
-/// truncated/malformed frame falls back to raw (never a panic; `Component::deserialize` rejects genuinely
-/// bad bytes). The returned `cwasm` slice is what `Component::deserialize` receives.
-pub(crate) fn unframe_precompiled(bytes: &[u8]) -> (Option<&[u8]>, &[u8]) {
-    let hdr = CDZ_CWASM_RTYPES_MAGIC.len();
-    if bytes.len() >= hdr + 4 && &bytes[..hdr] == CDZ_CWASM_RTYPES_MAGIC.as_slice() {
-        let len = u32::from_le_bytes([bytes[hdr], bytes[hdr + 1], bytes[hdr + 2], bytes[hdr + 3]])
-            as usize;
+/// Split a possibly-framed precompiled `.cwasm` into `(result_type_section?, param_type_section?, cwasm)` —
+/// the inverse of [`frame_precompiled`]. A raw `.cwasm` (no magic: runtime/store/legacy) → `(None, None,
+/// whole)`. An empty framed section (len 0) → `None` for that slot (== absent). TOTAL: a truncated/malformed
+/// frame falls back to raw (never a panic; `Component::deserialize` rejects genuinely bad bytes). The returned
+/// `cwasm` slice is what `Component::deserialize` receives.
+pub(crate) fn unframe_precompiled(bytes: &[u8]) -> (Option<&[u8]>, Option<&[u8]>, &[u8]) {
+    let hdr = CDZ_CWASM_TYPES_MAGIC.len();
+    if bytes.len() >= hdr + 4 && &bytes[..hdr] == CDZ_CWASM_TYPES_MAGIC.as_slice() {
+        let rt_len =
+            u32::from_le_bytes([bytes[hdr], bytes[hdr + 1], bytes[hdr + 2], bytes[hdr + 3]])
+                as usize;
         let rt_start = hdr + 4;
-        if let Some(rt_end) = rt_start.checked_add(len)
-            && rt_end <= bytes.len()
+        if let Some(rt_end) = rt_start.checked_add(rt_len)
+            && rt_end + 4 <= bytes.len()
         {
-            return (Some(&bytes[rt_start..rt_end]), &bytes[rt_end..]);
+            let pt_len = u32::from_le_bytes([
+                bytes[rt_end],
+                bytes[rt_end + 1],
+                bytes[rt_end + 2],
+                bytes[rt_end + 3],
+            ]) as usize;
+            let pt_start = rt_end + 4;
+            if let Some(pt_end) = pt_start.checked_add(pt_len)
+                && pt_end <= bytes.len()
+            {
+                let rt = (rt_len != 0).then_some(&bytes[rt_start..rt_end]);
+                let pt = (pt_len != 0).then_some(&bytes[pt_start..pt_end]);
+                return (rt, pt, &bytes[pt_end..]);
+            }
         }
     }
-    (None, bytes)
+    (None, None, bytes)
 }
 
 /// The guest export result-Ty map for a component about to run — from EITHER source, so every render path
@@ -203,15 +228,17 @@ fn result_types_of(
 /// The guest export PARAM-type map for a component about to run — the twin of [`result_types_of`], read from
 /// the `cdz-param-type` custom section (increment 1). Each value is the export's `(Tuple <param-ty>…)` arena;
 /// the arg-decode consults it to recover a value-form (`BigInt`) param the erased component `list<u8>` hides.
-/// Empty (no section) → the type-blind arg-decode (unchanged). NB: on the precompiled `.cwasm` path the
-/// section is dropped by serialize and NOT re-framed (only the result-type frame is), so param-type recovery
-/// is JIT-path only for now — the corpus gate / `cdz run` path, which is where the fuzzer exercises it.
+/// Empty (no section) → the type-blind arg-decode (unchanged). Read from EITHER source, like
+/// [`result_types_of`]: on the JIT path the `cdz-param-type` custom section is byte-scanned; on the
+/// cranelift-free AOT path (`precompiled`, a `.cwasm` whose serialize DROPPED the section) it is read from the
+/// self-frame `--precompile-out` prepended (see [`frame_precompiled`]) — WITHOUT this the AOT arg-decode falls
+/// back to the raw `list<u8>` coerce and a value-form (`BigInt`) `--arg` fails (the bda1 regression).
 fn param_types_of(
     component_bytes: &[u8],
     opts: &RunOpts,
 ) -> Result<std::collections::HashMap<String, cadenza_syntax::ast::Arenas>> {
     if opts.precompiled {
-        Ok(std::collections::HashMap::new())
+        parse_param_types(unframe_precompiled(component_bytes).1)
     } else {
         parse_param_types(scan_param_type_section(component_bytes).as_deref())
     }
@@ -5175,35 +5202,54 @@ mod tests {
     #[cfg(feature = "cranelift")]
     #[test]
     fn precompiled_cwasm_framing_round_trips_and_raw_is_passthrough() {
-        // The self-framed guest `.cwasm` (`frame_precompiled`) carries the `cdz-result-type` section THROUGH
-        // the AOT split so the cranelift-free deserialize render is TYPED (corpus-28 nested-Bytes `#list`→
-        // `b"…"` fix). Pin: a framed artifact splits back to (section, cwasm) EXACTLY; a RAW `.cwasm` (no
-        // magic — the runtime/store precompiles + every legacy artifact) is passthrough `(None, whole)` =
-        // back-compat, so an unframed artifact deserializes byte-for-byte as before.
+        // The self-framed guest `.cwasm` (`frame_precompiled`) carries BOTH the `cdz-result-type` and the
+        // `cdz-param-type` sections THROUGH the AOT split so the cranelift-free deserialize render is TYPED
+        // (corpus-28 nested-Bytes `#list`→`b"…"` fix) AND the value-form param arg-decode survives (a BigInt
+        // `--arg` erased to `list<u8>`). Pin: a framed artifact splits back to (rtypes, ptypes, cwasm)
+        // EXACTLY; a RAW `.cwasm` (no magic — the runtime/store precompiles + every legacy artifact) is
+        // passthrough `(None, None, whole)` = back-compat, so an unframed artifact deserializes byte-for-byte.
         let cwasm = b"\x00serialized-cranelift-artifact\xff".to_vec();
         let rtypes = b"cdz-result-type binary-AST payload".to_vec();
-        // Framed: unframe recovers the section + the EXACT cwasm tail.
-        let framed = frame_precompiled(cwasm.clone(), Some(rtypes.clone()));
+        let ptypes = b"cdz-param-type binary-AST payload".to_vec();
+        // Framed with BOTH sections: unframe recovers each + the EXACT cwasm tail.
+        let framed = frame_precompiled(cwasm.clone(), Some(rtypes.clone()), Some(ptypes.clone()));
         assert_ne!(framed, cwasm, "framing must change the bytes");
         assert_eq!(
             unframe_precompiled(&framed),
-            (Some(rtypes.as_slice()), cwasm.as_slice()),
-            "framed .cwasm round-trips to (section, cwasm) exactly"
+            (
+                Some(rtypes.as_slice()),
+                Some(ptypes.as_slice()),
+                cwasm.as_slice()
+            ),
+            "framed .cwasm round-trips to (rtypes, ptypes, cwasm) exactly"
+        );
+        // Only ONE section present (e.g. a result-typed but nullary-param export) → the other is None.
+        let only_r = frame_precompiled(cwasm.clone(), Some(rtypes.clone()), None);
+        assert_eq!(
+            unframe_precompiled(&only_r),
+            (Some(rtypes.as_slice()), None, cwasm.as_slice()),
+            "a result-only frame recovers rtypes, no ptypes"
+        );
+        let only_p = frame_precompiled(cwasm.clone(), None, Some(ptypes.clone()));
+        assert_eq!(
+            unframe_precompiled(&only_p),
+            (None, Some(ptypes.as_slice()), cwasm.as_slice()),
+            "a param-only frame recovers ptypes, no rtypes"
         );
         // No section (a runtime/store precompile) → RAW cwasm, byte-identical (those artifacts unaffected).
-        let raw = frame_precompiled(cwasm.clone(), None);
+        let raw = frame_precompiled(cwasm.clone(), None, None);
         assert_eq!(
             raw, cwasm,
             "no section → raw cwasm (runtime/store stay byte-identical)"
         );
         assert_eq!(
             unframe_precompiled(&raw),
-            (None, cwasm.as_slice()),
+            (None, None, cwasm.as_slice()),
             "a raw .cwasm has no framed section → type-blind (prior behavior)"
         );
         // A too-short / legacy artifact that cannot hold a frame header → passthrough, no panic (totality).
         let tiny = vec![1u8, 2, 3];
-        assert_eq!(unframe_precompiled(&tiny), (None, tiny.as_slice()));
+        assert_eq!(unframe_precompiled(&tiny), (None, None, tiny.as_slice()));
     }
 
     #[test]

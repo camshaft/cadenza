@@ -309,14 +309,16 @@ fn precompile_to(
     let bytes = std::fs::read(component_path)
         .map_err(|e| anyhow::anyhow!("read component {}: {e}", component_path.display()))?;
     let cwasm = crate::precompile_component_bytes(&bytes)?;
-    // SELF-FRAME the guest `.cwasm` with its `cdz-result-type` section (if any) so the cranelift-free
-    // deserialize exec renders TYPED, not type-blind (corpus-28 nested-Bytes #list-vs-b"…" regression):
-    // a serialized `.cwasm` drops custom sections, so without this the AOT corpus-exec loses the
-    // Bytes/list<u8> disambiguation the JIT path has. GUEST-ONLY by construction — `scan_result_type_section`
-    // is non-empty only for a guest (the runtime/store components have no such section → framed raw). See
+    // SELF-FRAME the guest `.cwasm` with its `cdz-result-type` AND `cdz-param-type` sections (if any) so the
+    // cranelift-free deserialize exec renders/decodes TYPED, not type-blind: a serialized `.cwasm` drops
+    // custom sections, so without this the AOT corpus-exec loses BOTH the result Bytes/list<u8> render
+    // disambiguation (corpus-28 nested-Bytes #list-vs-b"…" regression) AND the param value-form arg-decode
+    // (a BigInt `--arg` erased to `list<u8>`). GUEST-ONLY by construction — the scan helpers are non-empty
+    // only for a guest (the runtime/store components carry no such section → framed raw). See
     // `frame_precompiled`/`unframe_precompiled`.
     let rtypes = crate::scan_result_type_section(&bytes);
-    let artifact = crate::frame_precompiled(cwasm, rtypes);
+    let ptypes = crate::scan_param_type_section(&bytes);
+    let artifact = crate::frame_precompiled(cwasm, rtypes, ptypes);
     std::fs::write(out, &artifact)
         .map_err(|e| anyhow::anyhow!("write precompiled artifact {}: {e}", out.display()))?;
     Ok(ExitCode::SUCCESS)
