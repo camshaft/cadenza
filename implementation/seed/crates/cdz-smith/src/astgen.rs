@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(24);
+    let shape = c.variant(25);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -301,6 +301,13 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     } else {
         "None".to_string()
     };
+    // A list<record<x,y>> value-form for the lpr1 RECORD-list-element shape (24): a two-element list whose
+    // elements are RECORDS with NAMED fields (not tuples). The record sibling of shape 22's list<tuple> — a
+    // RECORD cell uses a distinct assembler path (named-field resolution/layout) from a positional tuple cell,
+    // so it fences the record-assembler-in-a-list-element context; a mis-built element-0 record (wrong field
+    // resolution / cell nesting) corrupts the field-sum. Value = element-0 x+y.
+    let list_record_arg =
+        format!("#list(#record((= x {e0}) (= y {e1})) #record((= x {e2}) (= y {a})))");
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -516,10 +523,21 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      compound (tuple cell) is NESTED INSIDE a sum discriminant cell — the sum-cell-holding-a-compound
         //      marshal. A mis-built payload tuple (wrong field offsets / cell nesting) or mis-read discriminant
         //      corrupts the field-sum. Result is a scalar. Arg alternates `(Some #tuple(…))`/`None` by e2 parity.
-        _ => (
+        23 => (
             "(do (def (f (: o (Option #tuple(Int64 Int64)))) (match o ((Some t) (+ (. t 0) (. t 1))) (None 0))) (export f))"
                 .to_string(),
             vec![opt_tuple_arg],
+        ),
+        // 24 — lpr1 list<record<x,y>> RECORD-LIST-ELEMENT entry param: a `(List (Record (: x Int64) (: y Int64)))`
+        //      param, read element 0's record + sum its two NAMED fields (or 0 if empty). The RECORD sibling of
+        //      shape 22's list<tuple>: a record cell uses a distinct assembler path (named-field resolution/
+        //      layout) from a positional tuple, so this fences the record-assembler in a list-element context — a
+        //      mis-built element-0 record (wrong field resolution / cell nesting) corrupts the field-sum. Result
+        //      is a scalar. Arg is a two-record list (element 1 exercises the multi-record stride); value = x+y.
+        _ => (
+            "(do (def (f (: xs (List (Record (: x Int64) (: y Int64))))) (match (List.at xs 0) ((Some r) (+ (. r x) (. r y))) (None 0))) (export f))"
+                .to_string(),
+            vec![list_record_arg],
         ),
     };
     ExportParam { source, args }
@@ -5852,13 +5870,13 @@ mod tests {
         // sum-entry-param `f` + the #9747 rpp21/22 result<Int64,String> two-payload-sum-entry-param `f` + the
         // #9746/#9753 eob1 option<Bytes> bytes-byte-leaf-sum-entry-param `f` + the lpt1 list<tuple<Int64,Int64>>
         // compound-list-element-entry-param `f` + the eot1 option<tuple<Int64,Int64>> sum-holding-a-compound
-        // entry-param `f`.
-        let mut reached = [false; 24];
-        for seed in 0u64..1440 {
+        // entry-param `f` + the lpr1 list<record<x,y>> record-list-element-entry-param `f`.
+        let mut reached = [false; 25];
+        for seed in 0u64..1500 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(24) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-23 reuse e0/e1/e2/s0/a — no new read.)
+            // variant(25) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-24 reuse e0/e1/e2/s0/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -5926,11 +5944,16 @@ mod tests {
                 reached[22] = true; // shape 22 = lpt1 list<tuple<Int64,Int64>> compound-list-element-entry-param `f`
             } else if ep.source.contains("(: o (Option #tuple(Int64 Int64)))") {
                 reached[23] = true; // shape 23 = eot1 option<tuple<Int64,Int64>> sum-holding-a-compound-entry-param `f`
+            } else if ep
+                .source
+                .contains("(: xs (List (Record (: x Int64) (: y Int64))))")
+            {
+                reached[24] = true; // shape 24 = lpr1 list<record<x,y>> record-list-element-entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-four export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-five export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
