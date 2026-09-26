@@ -11336,7 +11336,7 @@ todo	a macro splices its quote-param list into an expansion via active unquote-s
 todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
 todo	a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read
 todo	a multi-shot whose host call completed before the perform is admitted once the detector tests the continuation
-todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
+pass	a mutually-recursive group with a CONSTANT-condition branch-perform sharing a strict expr with the mutual call folds via literal-if const-fold (adv-69 rw4 sub-face)
 todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
 todo	a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered
 todo	a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)

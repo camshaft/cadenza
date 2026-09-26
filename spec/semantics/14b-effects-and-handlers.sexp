@@ -3577,23 +3577,19 @@
   (output (: 43 Int64)))
 
 (case
-  "a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)"
+  "a mutually-recursive group with a CONSTANT-condition branch-perform sharing a strict expr with the mutual call folds via literal-if const-fold (adv-69 rw4 sub-face)"
   (doc
     "adv-69 recursive-branch-perform, MUTUAL-SCC face (v-effects self-probe 2026-08-04, breaker rw4).
-           CONTRAST the two folding cases above (perform and mutual call in SEPARATE branches — no shared
-           strict context, mutually exclusive): here the branch-perform and the mutual call SHARE one strict
-           expression — `(def (even-w n) (if (= n 0) 0 (+ (if true (St.get) 0) (odd-w (- n 1)))))` (and the
-           odd-w twin). The `(if true (St.get) 0)` branch-perform is a strict operand of `+` ALONGSIDE the
-           mutual call `(odd-w …)`. The single-return specialization threads the branch perform against the
-           INCOMING state, but the advance is branch-local and the recursion carries the incoming state
-           forward, so it drops across the cycle: seeded St=1 it ran 3 (three gets all read seed 1), correct
-           is 6 (1+2+3). DECLINE cleanly (safe floor) — a full fold needs the branch-perform lifted before
-           specialization. Detected by `branch_perform_coexists_with_reentrant_call` (a branch-performing
-           conditional as a strict operand alongside a re-entrant self/mutual call), keyed via
-           `contains_recursive_call` so it covers the mutual SCC, not just direct self-recursion. This is the
-           MUTUAL-SCC face ONLY; the SELF-recursive faces (bare `(walk n)` with the same `+` shape) are
-           rewritten by the load-time accum pass and are tracked SEPARATELY (still open). Grades TODO on all
-           backends; flips to 6 PASS when the branch-perform-before-recursion fold lands.")
+           CONTRAST the two folding cases above (perform and mutual call in SEPARATE branches): here the
+           branch-perform and the mutual call SHARE one strict expression — `(def (even-w n) (if (= n 0) 0 (+
+           (if true (St.get) 0) (odd-w (- n 1)))))` (and the odd-w twin). The `(if true (St.get) 0)` is a
+           LITERAL-condition branch-perform. The effect specializer now CONST-FOLDS a literal-condition `if`
+           in a mutual-SCC member body (`(if true X Y)` → X) BEFORE the `branch_perform_coexists_with_reentrant_
+           call` floor runs, dissolving `(if true (St.get) 0)` to the direct `(St.get)`. The body becomes
+           `(+ (St.get) (odd-w …))` — a direct perform + mutual call, which the pure-mutual group fold threads
+           correctly: seeded St=1 the three gets read 1,2,3 → 6. Value-equivalent O0..O3. A RUNTIME-condition
+           branch-perform `(if c (St.get) 0)` is NOT const-foldable and STILL declines cleanly (the rw4 floor
+           legitimately protects a genuinely branch-local advance); only the constant-condition case folds.")
   (input
     (do
       (effect St (op get (-> Unit Int64)))
