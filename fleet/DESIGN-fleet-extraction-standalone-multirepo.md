@@ -130,9 +130,12 @@ created or moved. See `AGENTS-fleet.md` (the contract that moves to core) and th
 
 ## Appendix: P1 shared-surface audit (`xtask/src/fleet.rs` ↔ the rest of `xtask`)
 
-Audited 2026-09-05 (the P1 "audit + cut the small shared surface" item). The coupling between
-`fleet.rs` (the future CORE) and the rest of `xtask` (the cadenza ADAPTER + build tool) is small and
-cuts cleanly:
+Audited 2026-09-05 (the P1 "audit + cut the small shared surface" item); RE-VERIFIED 2026-09-26 after a
+run of fleet.rs additions (token-delta liveness arc, check-lease owner-attribution #9756/#9764, the /tmp
+Class-F reaper/observability, the drain-stall live-lease exemption): the cut is UNCHANGED — every addition
+is core-side (lease pool + watchdog + roster identity), added NO new inbound `xtask` coupling, and added
+NO new adapter/nix surface. The coupling between `fleet.rs` (the future CORE) and the rest of `xtask` (the
+cadenza ADAPTER + build tool) is small and cuts cleanly:
 
 **Inbound — what `fleet.rs` needs FROM the rest of `xtask`: exactly ONE item.**
 - `crate::Paths` (`main.rs`) — a struct of `{ repo: PathBuf, seed: PathBuf }`. `fleet` uses only
@@ -185,6 +188,12 @@ any target's adapter can consume it.
 - The pool internals: `check_lease_max`, `adaptive_check_lease_cap`, `check_lease_dir`
   (now `$FLEET_HUB`-routed), `check_lease_go`, `scan_check_leases[_with]`, `reap_check_leases[_in]`,
   `check_lease_holder_alive`.
+- The lease OWNER-ATTRIBUTION surface (added post-audit, 2026-09-25/26): the owner-agent stamp in
+  `acquire_check_lease_weighted` (a 3rd lease field), `lease_owner_agent` (parse it),
+  `agent_from_worktree_cwd` (derive the owner from the acquirer's worktree — a generic roster-identity
+  helper), `agent_holds_live_lease` (the drain-stall live-lease exemption), and the owner set now
+  returned by `reap_leases_classified_in` (+ logged to `reap-leases.log`). All GENERIC (agent identity +
+  lease pool + watchdog), carrying NO cadenza gate/nix knowledge → all CORE.
 - `gate_priority_grant_decision` / `gate_priority_granted` (the priority-slot grant — a lease-pool
   policy; the name says "gate" but it is generic priority arbitration).
 
@@ -206,6 +215,10 @@ adapter interface (roughly: "gate a change / a subset → `CiVerdict`", plus the
 core, but these arms encode "is a cadenza gate running?" knowledge. **Cut:** keep the watchdog in core
 but parameterize its "is a heavy job in flight for this agent?" check via the adapter (or a generic
 in-flight signal), so core carries no `local-gate`/`nix` string knowledge.
+- MODEL of the wanted cut (2026-09-26): the drain-stall live-lease exemption (`agent_holds_live_lease`,
+  #9756) already answers "is a heavy job in flight for this agent?" via the GENERIC owner-attributed
+  check-lease — no `local-gate`/`nix` string knowledge — so it is CORE as-is, and the pattern the
+  `ps`-scraping GRAY arms above should converge to (a generic in-flight signal, not gate-proc grep).
 
 **Takeaway.** The truly-general core is: messaging (send/inbox/registry/heartbeat), window management,
 watchdog liveness, host-health crons, AND the check-lease pool. Everything with `gate`/`local-gate`/
