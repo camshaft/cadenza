@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(31);
+    let shape = c.variant(32);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -352,6 +352,16 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     // entry scalars (reclaim shape 12 only CONSTRUCTS a BigInt, never crosses one as an ENTRY arg). `% 7` makes
     // the WHOLE bignum's value observable (not just low digits) — a corrupted/truncated limb changes the residue.
     let big_arg = format!("{}1234567890123456789012345678901", (e0 % 9) + 1);
+    // A String value-form for the ssa1 String.scalar-at CHAR-EXTRACTION shape (31). Alternates by e1 parity:
+    // a non-empty `"Xbc"` (first char varies A..Z by e0 so the extracted codepoint varies) vs an empty `""`
+    // (exercises the None arm → 0). `String.scalar-at : String -> Int64 -> (Option Char)` extracts the char at
+    // an index (distinct from String.at's Option STRING substring and String.byte-len); its Some carries a Char.
+    let scalar_at_str_arg = if e1 % 2 == 0 {
+        let ch = (b'A' + (e0 % 26) as u8) as char;
+        format!("\"{ch}bc\"")
+    } else {
+        "\"\"".to_string()
+    };
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -640,9 +650,20 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      distinctly from the fixed-width Int64/UInt64/Char entry scalars. Arg is a bare 32-digit integer
         //      literal FAR beyond i64 (so it genuinely exercises the multi-limb bignum marshal, not an i64 fast
         //      path); the `% 7` makes the WHOLE value observable so a truncated/corrupted limb changes the residue.
-        _ => (
+        30 => (
             "(do (def (f (: x BigInt)) (Int64.of (% x (BigInt.of 7)))) (export f))".to_string(),
             vec![big_arg],
+        ),
+        // 31 — ssa1 String.scalar-at CHAR-EXTRACTION entry param: a `(: s String)` param, extract char 0 via
+        //      `String.scalar-at` (String -> Int64 -> (Option Char)) and return its Char.to-int (or 0 for the
+        //      empty string). The String→Char extraction op — distinct from shape 17's String.byte-len and
+        //      shape 26's String.at (Option STRING substring); its Some carries a CHAR shell decoded from the
+        //      string's UTF-8. A mis-decoded first scalar (wrong codepoint / byte-offset) corrupts the to-int.
+        //      Arg alternates a non-empty `"Xbc"` (first char A..Z, so the codepoint varies) / empty `""` (None→0).
+        _ => (
+            "(do (def (f (: s String)) (match (String.scalar-at s 0) ((Some c) (Char.to-int c)) (None 0))) (export f))"
+                .to_string(),
+            vec![scalar_at_str_arg],
         ),
     };
     ExportParam { source, args }
@@ -6013,13 +6034,14 @@ mod tests {
         // option<record<x,y>> sum-holding-a-record-entry-param `f` + the ell1 list<list<Int64>> nested-heap
         // (heap-list-of-heap-lists) entry-param `f` + the rrf1 record-with-a-record-field nested-product
         // entry-param `f` + the tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f` + the chr1
-        // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f`.
-        let mut reached = [false; 31];
-        for seed in 0u64..1860 {
+        // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
+        // String.scalar-at char-extraction entry-param `f`.
+        let mut reached = [false; 32];
+        for seed in 0u64..1920 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(31) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-30 reuse e0/e1/e2/s0/a — no new read.)
+            // variant(32) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-31 reuse e0/e1/e2/s0/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6110,11 +6132,13 @@ mod tests {
                 reached[29] = true; // shape 29 = chr1 Char scalar-entry-param `f`
             } else if ep.source.contains("(: x BigInt)") {
                 reached[30] = true; // shape 30 = big1 BigInt heap-bignum scalar-entry-param `f`
+            } else if ep.source.contains("(String.scalar-at s 0)") {
+                reached[31] = true; // shape 31 = ssa1 String.scalar-at char-extraction entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all thirty-one export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all thirty-two export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
