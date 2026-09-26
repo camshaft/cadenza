@@ -4702,7 +4702,23 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // recomputed there via the same `accum_seed_redirect`; here we only need the redirected def index.
     let callee_def = accum_seed_redirect(db, call_head_def, ctx.slots.len())
         .map_or(call_head_def, |(acc, _seeds)| acc);
-    let orig_body = db.defs[callee_def].body?;
+    // NON-TAIL MUTUAL-RECURSION: for a member of a genuine mutual SCC (size > 1), use the OPERAND-PARTNER
+    // HOISTED body — a partner call buried in an operand (frb3 `(outer2 (- k 1) (+ acc (inner2 d)))`) is
+    // A-normalized to a directly `let`-bound form (`(let ((#p (inner2 d))) (outer2 (- k 1) (+ acc #p)))`), the
+    // shape the group multi-value fold threads. Identity-preserving (a member with no operand partner — a
+    // self-recursive-only def, or a member that already binds its partner like 14:4616 — is byte-identical),
+    // so this only changes the mutual-SCC-operand-partner shape the 4995 cross-def floor otherwise declines.
+    // A SELF-recursive-only callee (SCC size 1) is left untouched; a PURE-mutual SCC (no member self-recurses,
+    // e.g. mr1 `ev`↔`od`) already folds via `caller_observed_pure_mutual` and is left untouched too (hoisting
+    // its operand partners disrupts that working fold). Only a mutual SCC CONTAINING a self-recursor (the frb3
+    // shape the 4995 floor declines) is normalized.
+    let scc_early = mutual_scc_of(db, callee_def, ctx);
+    let normalize_scc = scc_early.len() > 1 && scc_has_self_recursor(db, &scc_early);
+    let orig_body = if normalize_scc {
+        scc_normalized_body(db, callee_def, ctx, &scc_early)?
+    } else {
+        db.defs[callee_def].body?
+    };
     if !ctx.has_state() {
         return None;
     }
@@ -4880,6 +4896,10 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // register the entire group up front. Whichever member is specialized first becomes the registrar.
     let group_entry = !group_member && ctx.abortive.is_empty() && {
         let scc = mutual_scc_of(db, callee_def, ctx);
+        // Normalize (operand-partner hoist) ONLY a mutual SCC that CONTAINS a self-recursor (frb3) — a
+        // pure-mutual SCC (mr1) keeps its raw bodies so its existing `caller_observed_pure_mutual` fold is
+        // byte-identical.
+        let norm = scc.len() > 1 && scc_has_self_recursor(db, &scc);
         // A CALLER-observed SCC (the handle body's trailing draw reads the SCC's final out-state — mutrec) is
         // group-foldable ONLY when it is PURE-mutual — no member SELF-recurses. A member that ALSO self-calls
         // (frb3: `outer2` self-recurses AND mutual-calls `inner2`) has its `caller_observes_outstate` set by
@@ -4887,10 +4907,14 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         // handle-body observer; the group fold does not compose that self-recursion out-state with the mutual
         // threading and silently mis-values (frb3 → 2 not 3). So gate the caller-observed branch on
         // no-self-call; a within-body partner-precedes-observation SCC is unaffected (its own branch).
+        // Scan the OPERAND-PARTNER-HOISTED member bodies (`scc_normalized_body`), NOT the raw def bodies — so
+        // frb3's operand partner call `(+ acc (inner2 d))`, once A-normalized to `(let ((#p (inner2 d))) …)`,
+        // makes `mutual_partner_precedes_observation` FIRE (the let-body self-call observes the partner's
+        // out-state) → this group-entry fires, threading the whole SCC multi-value instead of declining at the
+        // 4995 cross-def floor. Byte-identical for a member with no operand partner (normalize is identity).
         let caller_observed_pure_mutual = caller_observes_outstate
             && scc.iter().all(|&m| {
-                db.defs[m]
-                    .body
+                scc_fold_body(db, m, ctx, &scc, norm)
                     .is_some_and(|mb| !contains_self_call(db, mb, m))
             });
         // A genuine mutual SCC (more than just this def) with at least one out-state-observing member, all of
@@ -4898,20 +4922,19 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         scc.len() > 1
             && (caller_observed_pure_mutual
                 || scc.iter().any(|&m| {
-                    db.defs[m]
-                        .body
+                    scc_fold_body(db, m, ctx, &scc, norm)
                         .is_some_and(|mb| mutual_partner_precedes_observation(db, mb, m, ctx))
                 }))
             && scc.iter().all(|&m| {
-                db.defs[m]
-                    .body
+                scc_fold_body(db, m, ctx, &scc, norm)
                     .is_some_and(|mb| group_multivalue_leaves_threadable(db, mb, m))
             })
     };
     if group_entry {
         let scc = mutual_scc_of(db, callee_def, ctx);
+        let norm = scc.len() > 1 && scc_has_self_recursor(db, &scc);
         for &m in &scc {
-            if let Some(mb) = db.defs[m].body {
+            if let Some(mb) = scc_fold_body(db, m, ctx, &scc, norm) {
                 db.group_multivalue_bodies.insert((mb, ctx.key.clone()));
             }
         }
@@ -7810,6 +7833,248 @@ fn expr_performs_foreign(
 /// perform across dispatches (an early `#ns` attempt miscompiled as1 → 89; the ordinary name folds → 61,
 /// matching the hand-written `let`-lift). The `_cdz_ns` prefix is unbindable-by-collision (no source uses it)
 /// yet ordinary to the fold. Byte-identical (no new nodes) when the expression contains no foreign perform.
+/// True if `node` is a CALL whose head resolves to a member of the mutual-recursion SCC `scc` — a partner
+/// call or a self-call.
+fn is_scc_member_call(db: &mut Db, node: StructId, scc: &[usize]) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(d) = callee_def_index_of(db, head)
+    {
+        return scc.contains(&d);
+    }
+    false
+}
+
+/// Left-to-right hoist of every PERFORM and SCC-member CALL nested in `node` into `binds` (a fresh
+/// `_cdz_pp{k}` per hoist), replacing each with a bare ref — preserving evaluation order (the recursive walk
+/// visits children left-to-right). Does NOT descend into a nested `if`/`match`/`let`/`do` (hoisting a
+/// sub-computation OUT of a conditional would run it unconditionally / orphan an inner binder) — such a node
+/// is returned unchanged. Mirrors [`hoist_foreign_in_expr`], but keyed on partner/self calls + performs so a
+/// partner call buried in an operand becomes directly `let`-bound.
+fn hoist_scc_operands(
+    db: &mut Db,
+    node: StructId,
+    scc: &[usize],
+    binds: &mut Vec<(String, StructId)>,
+) -> StructId {
+    let is_perform_here = matches!(
+        resolved_of(db, node),
+        Resolved::Apply { head, .. } if crate::eval::effect_op_of(db, head).is_some()
+    );
+    if is_perform_here || is_scc_member_call(db, node, scc) {
+        let name = format!("_cdz_pp{}", binds.len());
+        binds.push((name.clone(), node));
+        return db.push_name(&name);
+    }
+    // A nested scope-forming form is opaque to the hoist (can't lift a computation across it).
+    if db.ast.as_form(node, "if").is_some()
+        || db.ast.as_form(node, "match").is_some()
+        || db.ast.as_form(node, "let").is_some()
+        || db.ast.as_form(node, "do").is_some()
+    {
+        return node;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let rebuilt: Vec<StructId> = children
+                .iter()
+                .map(|&c| hoist_scc_operands(db, c, scc, binds))
+                .collect();
+            if rebuilt == children {
+                node
+            } else {
+                db.push_list(rebuilt)
+            }
+        }
+        Struct::Atom(_) => node,
+    }
+}
+
+/// A-normalize a mutual-SCC member body so a MUTUAL-PARTNER call buried in an OPERAND becomes directly
+/// `let`-bound: `(outer2 (- k 1) (+ acc (inner2 d)))` → `(let ((_cdz_pp0 (inner2 d))) (outer2 (- k 1) (+ acc
+/// _cdz_pp0)))` — the shape the group multi-value fold threads (14:4616), instead of the operand form the
+/// cross-def recursion-boundary floor (finding #19) declines (frb3/grx3, CDZ0907). At each APPLICATION on the
+/// strict spine it hoists that application's operand performs + partner/self calls to `let`s WRAPPING the
+/// application (left-to-right → effect order preserved). Recurses through `if`/`match`/`let`/`do` WITHOUT
+/// hoisting across them (each is its own scope). Semantics-preserving (a hoisted pure/effectful sub-term runs
+/// once, in the same order); a no-op unless a partner call sits in an operand. Returns the normalized node.
+fn normalize_scc_partner_operands(db: &mut Db, node: StructId, scc: &[usize]) -> StructId {
+    // Scope-forming special forms: recurse into each child sub-scope, rebuild; never hoist across them.
+    if let Some(t) = db.ast.as_form(node, "if").map(<[_]>::to_vec)
+        && t.len() == 3
+    {
+        let c = normalize_scc_partner_operands(db, t[0], scc);
+        let th = normalize_scc_partner_operands(db, t[1], scc);
+        let el = normalize_scc_partner_operands(db, t[2], scc);
+        if c == t[0] && th == t[1] && el == t[2] {
+            return node;
+        }
+        let head = db.push_name("if");
+        return db.push_list(vec![head, c, th, el]);
+    }
+    if let Some(t) = db.ast.as_form(node, "match").map(<[_]>::to_vec)
+        && !t.is_empty()
+    {
+        let scrut = normalize_scc_partner_operands(db, t[0], scc);
+        let mut changed = scrut != t[0];
+        let mut out = vec![db.push_name("match"), scrut];
+        for &arm in &t[1..] {
+            // An arm is `(pattern body)` — normalize the body (last element), keep the pattern.
+            if let Struct::List(kv) = db.ast.get(arm).clone()
+                && kv.len() == 2
+            {
+                let body = normalize_scc_partner_operands(db, kv[1], scc);
+                if body == kv[1] {
+                    out.push(arm);
+                } else {
+                    changed = true;
+                    out.push(db.push_list(vec![kv[0], body]));
+                }
+            } else {
+                out.push(arm);
+            }
+        }
+        if !changed {
+            return node;
+        }
+        return db.push_list(out);
+    }
+    if let Some(t) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
+        && t.len() == 2
+        && let Struct::List(pairs) = db.ast.get(t[0]).clone()
+    {
+        let mut changed = false;
+        let mut new_pairs = Vec::with_capacity(pairs.len());
+        for &pair in &pairs {
+            if let Struct::List(kv) = db.ast.get(pair).clone()
+                && kv.len() == 2
+            {
+                let init = normalize_scc_partner_operands(db, kv[1], scc);
+                if init == kv[1] {
+                    new_pairs.push(pair);
+                } else {
+                    changed = true;
+                    new_pairs.push(db.push_list(vec![kv[0], init]));
+                }
+            } else {
+                new_pairs.push(pair);
+            }
+        }
+        let body = normalize_scc_partner_operands(db, t[1], scc);
+        if !changed && body == t[1] {
+            return node;
+        }
+        let let_head = db.push_name("let");
+        let bindings = db.push_list(new_pairs);
+        return db.push_list(vec![let_head, bindings, body]);
+    }
+    if let Some(t) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
+        let mut changed = false;
+        let mut out = vec![db.push_name("do")];
+        for &it in &t {
+            let n = normalize_scc_partner_operands(db, it, scc);
+            changed |= n != it;
+            out.push(n);
+        }
+        if !changed {
+            return node;
+        }
+        return db.push_list(out);
+    }
+    // An APPLICATION on the strict spine: hoist its operands' performs + partner/self calls out to wrapping
+    // `let`s. First recurse-normalize each operand (nested apps), then hoist within each, left-to-right.
+    if let Resolved::Apply { args, .. } = resolved_of(db, node) {
+        let Struct::List(children) = db.ast.get(node).clone() else {
+            return node;
+        };
+        if children.is_empty() || args.is_empty() {
+            return node;
+        }
+        let head = children[0];
+        let mut binds: Vec<(String, StructId)> = Vec::new();
+        let mut new_children = vec![head];
+        for &a in &children[1..] {
+            let a = normalize_scc_partner_operands(db, a, scc);
+            new_children.push(hoist_scc_operands(db, a, scc, &mut binds));
+        }
+        if binds.is_empty() {
+            // No partner/perform hoisted out — return the (possibly operand-normalized) app, preserving
+            // identity when nothing changed.
+            return if new_children == children {
+                node
+            } else {
+                db.push_list(new_children)
+            };
+        }
+        let rebuilt = db.push_list(new_children);
+        // Wrap innermost-last: bindings evaluate top-to-bottom in one `let`, preserving left-to-right order.
+        let binding_nodes: Vec<StructId> = binds
+            .into_iter()
+            .map(|(name, init)| {
+                let n = db.push_name(&name);
+                db.push_list(vec![n, init])
+            })
+            .collect();
+        let let_head = db.push_name("let");
+        let bindings = db.push_list(binding_nodes);
+        return db.push_list(vec![let_head, bindings, rebuilt]);
+    }
+    node
+}
+
+/// The operand-partner-hoisted body of SCC member `def` under handler context `ctx` — memoized (via
+/// [`Db::normalized_scc_body`]) so the STABLE normalized id agrees across the group-fold registration and the
+/// `group_member` re-check (`push_list` does not intern). Identity-preserving: returns the ORIGINAL body id
+/// when `def`'s body has no operand-buried partner call (so a mutual-SCC member that already binds its partner
+/// — 14:4616 — is byte-identical). Resolves the normalized subtree so `resolved_of` works on the fresh nodes.
+/// Whether the mutual SCC contains a member that ALSO SELF-recurses (frb3: `outer2` self-recurses AND
+/// mutual-calls `inner2`). This is the shape the 4995 cross-def floor declines and the operand-partner hoist
+/// targets. A PURE-mutual SCC (mr1: `ev`↔`od`, neither self-recurses) already folds via the
+/// `caller_observed_pure_mutual` group path — hoisting its operand partners would DISRUPT that working fold
+/// (mr1 → 95 not 68), so the hoist must be gated OFF for it.
+fn scc_has_self_recursor(db: &mut Db, scc: &[usize]) -> bool {
+    scc.iter().any(|&m| {
+        db.defs[m]
+            .body
+            .is_some_and(|b| contains_self_call(db, b, m))
+    })
+}
+
+/// The body of SCC member `def` to feed the group-fold detection + threading: the OPERAND-PARTNER-HOISTED
+/// body when `normalize` (the SCC contains a self-recursor — the frb3 shape), else the RAW def body (a
+/// pure-mutual SCC like mr1 keeps its already-folding body untouched).
+fn scc_fold_body(
+    db: &mut Db,
+    def: usize,
+    ctx: &HandlerCtx,
+    scc: &[usize],
+    normalize: bool,
+) -> Option<StructId> {
+    if normalize {
+        scc_normalized_body(db, def, ctx, scc)
+    } else {
+        db.defs[def].body
+    }
+}
+
+fn scc_normalized_body(
+    db: &mut Db,
+    def: usize,
+    ctx: &HandlerCtx,
+    scc: &[usize],
+) -> Option<StructId> {
+    let key = (def, ctx.key.clone());
+    if let Some(&b) = db.normalized_scc_body.get(&key) {
+        return Some(b);
+    }
+    let orig = db.defs[def].body?;
+    let normalized = normalize_scc_partner_operands(db, orig, scc);
+    if normalized != orig {
+        crate::resolve::resolve_subtree(db, normalized);
+    }
+    db.normalized_scc_body.insert(key, normalized);
+    Some(normalized)
+}
+
 fn hoist_foreign_in_expr(
     db: &mut Db,
     node: StructId,

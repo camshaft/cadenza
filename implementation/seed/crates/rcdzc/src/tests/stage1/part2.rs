@@ -737,6 +737,40 @@ fn an_abortive_perform_in_a_connective_condition_folds() {
 }
 
 #[test]
+fn a_non_tail_mutual_scc_with_a_self_recursor_folds_via_operand_partner_hoist() {
+    // frb3 (14c, v-effects 2026-09-26): a mutual SCC where a member SELF-recurses AND mutual-calls a partner
+    // whose out-state a later spine item observes — `outer2` self-recurses and calls `inner2` in an OPERAND
+    // `(outer2 (- k 1) (+ acc (inner2 d)))`. This declined CDZ0907 at the cross-def recursion-boundary floor
+    // (multi-value threads a self-call's out-state but not a mutual sibling's in operand position). FIX:
+    // `normalize_scc_partner_operands` A-normalizes the operand partner call to a directly `let`-bound form
+    // `(let ((#p (inner2 d))) (outer2 (- k 1) (+ acc #p)))`, so the group multi-value fold threads it. Gated
+    // to SCCs CONTAINING a self-recursor (via `scc_has_self_recursor`). Folds to 2 (corpus value-grades it
+    // O0..O3 across three call args).
+    let frb3 = "(do (effect S (op depth (-> Int64))) \
+                   (def (inner2 (: d Int64)) (if (= d 0) 0 (+ (S.depth) (outer2 (- d 1) 0)))) \
+                   (def (outer2 (: k Int64) (: acc Int64)) \
+                     (if (= k 0) acc (let ((d (S.depth))) (outer2 (- k 1) (+ acc (inner2 d)))))) \
+                   (def (main (: n Int64)) \
+                     (handle S (: 0 Int64) ((depth () s (resume s (+ s 1)))) (outer2 n 0))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(frb3))).is_ok(),
+        "frb3 (self-recursor mutual SCC, operand partner) must FOLD via the operand-partner hoist, not decline"
+    );
+
+    // REGRESSION GUARD (mr1): a PURE-mutual SCC (neither `ev` nor `od` self-recurses) must stay untouched by
+    // the hoist — it already folds via `caller_observed_pure_mutual`, and normalizing its operand partners
+    // MISCOMPILED it (mr1 → 95 not 68). The `scc_has_self_recursor` gate leaves it alone; it must still fold.
+    let mr1 = "(do (effect E (op next (-> Int64))) \
+                   (def (ev (: k Int64)) (if (<= k 0) 0 (+ (* 10 (E.next)) (od (- k 1))))) \
+                   (def (od (: k Int64)) (if (<= k 0) 0 (+ (E.next) (ev (- k 1))))) \
+                   (def (main (: n Int64)) (handle E n ((next () s (resume s (+ s 1)))) (ev 4))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(mr1))).is_ok(),
+        "mr1 (pure-mutual SCC) must stay folding — the self-recursor gate must NOT touch it"
+    );
+}
+
+#[test]
 fn a_ctl_arm_applying_k_lexically_folds_through_the_continuation() {
     // E5 STEP 2 (within-activation, lexical `k`): a ctl-style arm that APPLIES `k` as `(k v)` — never
     // bare, stored, or passed as an arg — is semantically an ordinary non-tail resumptive arm: `(k v)`

@@ -27175,7 +27175,7 @@
   (output (: 24 Int64)))
 
 (case
-  "frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)"
+  "frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry threads the partner out-state via the operand-partner-hoist group multi-value fold"
   (input
     (do
       (effect S (op depth (-> Int64)))
