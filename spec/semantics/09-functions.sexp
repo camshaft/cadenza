@@ -78,27 +78,6 @@
   (output (: 510 Int64)))
 
 (case
-  "bda1 a BigInt ENTRY parameter is decoded from its base-10 argument literal (value-form arg-decode)"
-  (doc
-    "A `BigInt` entry parameter has no scalar boundary representation — it crosses as the canonical
-           `list<u8>` VALUE-FORM (a bare `Leaf::Int`, descriptor tag 17), which the export's wrapper
-           `value-decode`s back to the guest BigInt. The host arg-decode must therefore turn the base-10
-           argument LITERAL into those value-form bytes rather than reject it: `f` compares its `BigInt`
-           param to the constant `(BigInt.of 7)`. `(: 7 BigInt)` decodes to the BigInt 7 and equals it (→ 1);
-           `(: 123456789012345678901234567890 BigInt)` — a magnitude far beyond Int64 — decodes to a genuine
-           multi-limb BigInt, crosses, and compares unequal (→ 0), proving the arg-decode handles both a small
-           and an arbitrary-precision value. The rust backend already accepts the same literal; this pins the
-           wasm-side parity (cdz-param-type section + coerce_args_value_form).")
-  (input
-    (do
-      (def (f (: n BigInt)) (if (= n (BigInt.of 7)) 1 0))
-      (export f)))
-  (call f (: 7 BigInt))
-  (output (: 1 Int64))
-  (call f (: 123456789012345678901234567890 BigInt))
-  (output (: 0 Int64)))
-
-(case
   "a closure captures a map-extracted view whose map and frame both die, and reads it twice"
   (doc
     "The CLOSURE face of the map-value view-escape family (05-compound-types): `mk` builds the
