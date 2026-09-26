@@ -10511,7 +10511,7 @@ pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
 pass	the byte-len decode fall-through carries no husk
 pass	the byte-len of a multi-byte String.slice exceeds its scalar-len (the two measures diverge)
-pass	the caller-ownership guard: an EXTERNAL caller that passes the mutual SCC's owned param BORROWED-and-REUSES it stays leaking (no double-free)
+pass	an EXTERNAL caller that forwards a fresh owned list to a borrow-only mutual SCC and reuses it reclaims to 0 via a caller-side drop of the inlined duplicated call-arg (no double-free)
 pass	the canonical NaN crosses the boundary as a not-a-number float
 pass	the churned-to-empty map REGROWS with correct structure (no residue corrupts re-insertion)
 pass	the closure state is REPLACED per dispatch by one capturing the arm's OWN binder

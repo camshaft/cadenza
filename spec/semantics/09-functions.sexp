@@ -730,17 +730,22 @@
   (live-objects 0))
 
 (case
-  "the caller-ownership guard: an EXTERNAL caller that passes the mutual SCC's owned param BORROWED-and-REUSES it stays leaking (no double-free)"
+  "an EXTERNAL caller that forwards a fresh owned list to a borrow-only mutual SCC and reuses it reclaims to 0 via a caller-side drop of the inlined duplicated call-arg (no double-free)"
   (doc
-    "The load-bearing UAF guard-witness for #9140's group-wide caller-ownership (the mutual analog of the
-           single-member AXIS A `looped_invariant_param_caller_owned`). `go`/`helper` are the reclaiming mutual
-           SCC above, but here `caller` passes `xs` to `(go xs 2)` AND REUSES it after via `(List.len xs)`, so
-           the SCC does NOT own `xs` — the caller holds a live borrow across the call. The mutual-group exit
-           drop MUST DECLINE: freeing `xs` at the group exit would dangle the caller's reused handle (the
-           CAESAR-class double-free/UAF). So `xs` STAYS leaking (leak-over-UAF). Value = go(xs,2) + len(xs) =
-           3 + 3 = 6. A regression that dropped the caller-ownership guard would UAF-trap / misvalue on the
-           debug-counters+rctrace runtimes OR wrongly reclaim to 0 — this exact `(live-objects 2)` pin trips on
-           all three. (v-memory-safety rc-gate-confirmed: value 6 correct, NO rc-underflow, stays leaking 2.)")
+    "`caller` forwards a list to the `go`/`helper` mutual SCC via `(go xs 2)` AND reuses it via `(List.len xs)`,
+           so the SCC only BORROWS `xs` (never owns it): the group's exit drop rightly DECLINES — freeing at the
+           group exit would dangle the reused handle (the CAESAR-class UAF). The optimizer INLINES `caller` into
+           `main` and DUPLICATES the `#list(1 2 (+ n 1))` literal across the two use sites, so the `(go …)`
+           argument is a FRESH single-use list. That fresh call-arg is dead after the borrowing SCC returns, and
+           NEITHER the borrow-group (declines) NOR the callee reclaims it — so the OWNING caller reclaims it with
+           one balanced drop after the call (`nontail_owned_temp_caller_drops`, admitting a fresh owned call-arg
+           forwarded to a group whose `CallerDropsAfterLastUse` verdict proves a clean borrow). Result:
+           live-objects 0, value = go(xs,2) + len(xs) = 3 + 3 = 6, no trap, no rc-underflow, deterministic.
+           SOUNDNESS (leak-over-UAF): the caller-drop fires ONLY on a FRESH single-use construction — a genuinely
+           REUSED bare param, or an SCC that ESCAPE-RETURNS the arg, is EXCLUDED (stays declined), so no live
+           handle is ever over-dropped; the over-drop UAF for those excluded shapes is guarded by a separate
+           value+rc-trace witness. (v-memory-safety + breaker two-signal-confirmed on the faithful debug-counters
+           runtime: 2→0, value 6, no rc-underflow, deterministic.)")
   (input
     (do
       (def
@@ -752,21 +757,17 @@
       (def (caller (: xs (List Int64))) (+ (go xs 2) (List.len xs)))
       (def (main (: n Int64)) (caller #list(1 2 (+ n 1))))
       (export main)))
-  ; n=0: caller passes xs to the go↔helper SCC (which borrows len=3) AND reuses xs after (len=3) → 3+3=6;
-  ; the SCC must NOT free the caller's borrowed xs → it stays leaking (the caller-ownership guard declines).
-  ; cadenza-tolerate (dual-path divergence): the DIRECT wasm leaks EXACTLY 2 (the caller-ownership UAF guard —
-  ; freeing the caller's reused borrow = the CAESAR double-free). But the CADENZA re-emit lowers the OPTIMIZED
-  ; core, where `caller` is INLINED into `main` and its `#list(1 2 (+ n 1))` literal is DUPLICATED across the
-  ; two use sites (`go xs` and `List.len xs`) → two INDEPENDENT single-use lists, NO borrowed-and-reused shared
-  ; handle → both safely reclaim to 0 (value still 6). The aliasing the guard protects is eliminated by the
-  ; inlining-dup, so the cadenza reclaim is SOUND, not an over-drop (v-cadenza-backend verified via re-emit +
-  ; rc-trace: two allocs rc 0→1→0, no underflow, LEAK SUMMARY none). The `cadenza-tolerate` facet (#9596/#9602)
-  ; expresses exactly "direct=2, cadenza≤2": the DIRECT hop asserts EXACT 2 (restores the UAF count-guard that
-  ; known-leak had made dormant on both hops) while the CADENZA hop tolerates fewer (the tree-dedup measures 0,
-  ; which passes). The direct-path over-drop guard is thus a hard count tripwire again, not just value+rc-trace.
+  ; n=0: caller #list(1 2 1) → go(xs,2) borrows (len 3) + List.len xs (3) = 6. `caller` is inlined into `main`
+  ; and the `#list` literal DUPLICATED across the two use sites, so the `(go …)` arg is a FRESH single-use list;
+  ; the caller-side drop reclaims it after the borrowing SCC call (dead-after) → live-objects 0 on BOTH hops.
+  ; (Was `(live-objects 2 cadenza-tolerate)`: the DIRECT hop leaked the undropped inlined go-arg dup while the
+  ; CADENZA hop already reclaimed it. The caller-drop fix — nontail_owned_temp_caller_drops admitting a fresh
+  ; owned call-arg forwarded to a CallerDropsAfterLastUse borrow-group — now reclaims BOTH hops to 0, so the pin
+  ; is a plain `(live-objects 0)` with no dual-path divergence. The reused/escape-return over-drop UAF is guarded
+  ; by a separate value+rc-trace witness, not this count pin, which the legitimate reclaim erases.)
   (call main (: 0 Int64))
   (output (: 6 Int64))
-  (live-objects 2 cadenza-tolerate))
+  (live-objects 0))
 
 (case
   "a list ESCAPE-RETURNED from a mutual SCC, HELD across a later allocation, then re-read by element (over-drop UAF value tripwire)"
