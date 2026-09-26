@@ -11360,7 +11360,7 @@ todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and recl
 todo	elc2 a Map keyed by the lifted List entry param answers its value on lookup
 todo	expect traps on the absent case of a runtime optional
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
-todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)
+pass	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry threads the partner out-state via the operand-partner-hoist group multi-value fold
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 todo	hce2 a borrowing op (=) over a captured value in a closure body declines pending the ownership proof (todo)

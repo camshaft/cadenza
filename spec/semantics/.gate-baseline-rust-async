@@ -11075,7 +11075,7 @@ todo	distinct-sig round-trip: a higher-order closure + a scalar closure of anoth
 todo	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
 todo	expect traps on the absent case of a runtime optional
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
-todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)
+todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry threads the partner out-state via the operand-partner-hoist group multi-value fold
 todo	gtx3 a generic transformer's tuple-result closure at a SINGLE domain with a discarding consumer
 todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the boundary
 todo	llb1 a recursive do-local fn capturing a do-LOCAL BINDING computes (should-work: lexical capture is uniform)

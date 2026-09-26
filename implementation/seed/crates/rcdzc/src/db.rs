@@ -2364,6 +2364,15 @@ pub struct Db {
     /// the hot path. Populated + read only inside `mutual_scc_of`.
     pub(crate) mutual_scc: crate::fxhash::FxHashMap<(usize, String), Vec<usize>>,
 
+    /// Memo of the OPERAND-PARTNER-HOISTED body of a mutual-SCC member, keyed `(def_index,
+    /// handler-context-key)`. `effects::normalize_scc_partner_operands` A-normalizes an SCC member's body so a
+    /// mutual-partner call buried in an operand becomes directly `let`-bound (the shape the group multi-value
+    /// fold threads). `push_list` does NOT intern, so re-normalizing mints fresh ids — this memo gives a
+    /// STABLE normalized id per (def, ctx) so the group-fold registration (`group_multivalue_bodies`) and the
+    /// `group_member` re-check agree. Populated + read only via `effects::scc_normalized_body`. Value is the
+    /// (resolved) normalized body — identical to the original id when the body has no operand partner call.
+    pub(crate) normalized_scc_body: crate::fxhash::FxHashMap<(usize, String), StructId>,
+
     /// Memo of `effects::subtree_performs` — whether the subtree at a node reaches a discharged perform (a
     /// `resume`, or a call into a discharged effect) under a given handler context. Keyed by `(node,
     /// handler-context-key)` (the same resolved-identity string `effect_specializations` uses). The
@@ -3485,6 +3494,7 @@ impl Db {
             handler_region_nodes: std::collections::HashSet::new(),
             group_multivalue_bodies: std::collections::HashSet::new(),
             mutual_scc: crate::fxhash::FxHashMap::default(),
+            normalized_scc_body: crate::fxhash::FxHashMap::default(),
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
