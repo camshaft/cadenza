@@ -200,6 +200,43 @@
   (live-objects known-leak))
 
 (case
+  "a char captured early and THREADED through a tail loop survives the frees-ALL back-edge (no over-free UAF)"
+  (doc
+    "The tail-loop-threaded complement to the escaping-view read-twice tripwire above. `scan` walks
+           `\"banana\"` by index; at i=0 it CAPTURES the char shell `(at s 0)` = \"b\" into the `held` loop
+           parameter and THREADS it unchanged through every later iteration, while each iteration ALSO reads a
+           fresh `(at s i)` Some-shell (consumed by the `(= … \"n\")` count-compare). Those per-read Some-shells
+           are exactly the nested tail-loop String.at shells the back-edge now ACCUMULATES + frees ALL of
+           (per-read reclaim lever): the adversarial question is whether \"frees ALL\" also frees the char that
+           ESCAPED an earlier iteration into `held`. It must not — `held` is a live threaded parameter, and the
+           later iterations' fresh char allocations would REUSE its slot if it were freed, corrupting the
+           post-loop re-read `(= held \"b\")` → the loop returns -1 (a distinguishable UAF value catch) instead
+           of the n-count 2. Value is CORRECT here (held survives, `\"banana\"` has two n's → 2), so \"frees ALL\"
+           does NOT over-free the threaded char. LEAK-OVER-UAF RESIDUAL: 1 char leaf leaks (the StrAt husk is
+           deliberately not globally Owned — the same local>global discipline that leaves the escaping-view case
+           above at a known-leak), so pinned `known-leak`; a reclaim change that over-frees the threaded char
+           flips the VALUE to -1 (UAF), and a change that tightens the husk-drop flips the count to 0. Guards the
+           threaded-through-tail-loop boundary of the frees-ALL back-edge, which the single-escape tripwire above
+           does not exercise.")
+  (input
+    (do
+      (def (at (: s String) (: i Int64)) (Option.expect (String.at s i) "ok"))
+      (def
+        (scan (: s String) (: i Int64) (: held String) (: acc Int64))
+        (if
+          (= i (String.byte-len s))
+          (if (= held "b") acc -1)
+          (scan
+            s
+            (+ i 1)
+            (if (= i 0) (at s i) held)
+            (if (= (at s i) "n") (+ acc 1) acc))))
+      (def (main) (scan "banana" 0 "?" 0))
+      (export main)))
+  (output (: 2 Int64))
+  (live-objects 1 known-leak))
+
+(case
   "a String.at result then reuse of the source does not double-free"
   (doc
     "The String.at slice-compaction plus borrow-dup fix must not double-free the source: reading a
