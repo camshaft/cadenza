@@ -547,11 +547,13 @@
   (output (: 1190 Int64))
   (call main (: 0 Int64))
   (output (: -910 Int64))
-  ; The recursive `(match (String.at s i) ((Some c) …))` scan's Some shell is now reclaimed per iteration
-  ; (v-core-opt owned-single-view MatchSum shell reclaim), so the per-scalar leak (was 15/13) collapses to a
-  ; tiny residual (1/1) — the arm only BORROWS `c` (value-eq vs "("/")"), never consumes it, so the back-edge
-  ; shell drop is sound. Measured on the debug-counters runtime.
-  (live-objects known-leak))
+  ; The recursive `(match (String.at s i) ((Some c) …))` scan's Some shell is reclaimed per iteration
+  ; (v-core-opt owned-single-view MatchSum shell reclaim, 501 part-1), collapsing the per-scalar leak (was
+  ; 15/13) to a 1/1 residual base-rope. That residual is now ALSO reclaimed (501 part-2): `run` inlines into
+  ; `main` and the fresh `String.concat` rope is a NON-TAIL owned temp `scan` only BORROWS (it is a `match`
+  ; scrutinee, plain call — not a tail `return_call`), so `main`'s live frame caller-drops the dead temp
+  ; (`call_arg_caller_drops` owned-temp admit). Census 0 for both args (v-memory-safety cogate, deterministic).
+  (live-objects 0))
 
 (case
   "the MINIMAL String.at scalar-walk over a tail-consumed SHALLOW (concat) rope param is FULLY RECLAIMED"
