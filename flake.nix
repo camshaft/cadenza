@@ -6153,6 +6153,25 @@
           echo "ok: capability-error — no corpus case pins a capability-limit code (CDZ0900) as an (error …)" > "$out"
         '';
 
+        # gc-justification (operator directive, concierge assign 84927; v-corpus-harness): HARD-REJECT any
+        # corpus text (a `(doc …)` rationale OR a `;`-comment) that JUSTIFIES a leak / `(live-objects
+        # known-leak)` marker as needing garbage collection. Perceus is precise static RC — no GC — so a leak
+        # is always a dup/drop-placement bug to FIX, and the only RC-incompleteness is a reference cycle,
+        # impossible in acyclic Cadenza; a "needs GC / GC-territory / unreclaimable-without-GC" justification
+        # is exactly the conservative stopgap the corpus policy forbids. `cdz-corpus gc-justification-check`
+        # exits non-zero + names each file:line. FOLDED into the localGate fail-set below → a new
+        # GC-justification HOLDs a self-merge (teeth a GHA required-status can't give under admin-merge). Pure
+        # static text scan (no compile/run), cheap — same shape + closure (cdzCorpus) as capabilityErrorCheck.
+        # Starts GREEN: v-corpus-harness confirmed 0 hits on the 36-file corpus, so it folds in immediately.
+        gcJustificationCheck = pkgs.runCommand "gc-justification-check"
+          { nativeBuildInputs = [ cdzCorpus ]; } ''
+          set -euo pipefail
+          cdz-corpus gc-justification-check ${
+            pkgs.lib.concatMapStringsSep " " (f: "${./spec/semantics + "/${f}"}") corpusFileNames
+          }
+          echo "ok: gc-justification — no corpus text justifies a leak as needing GC (Perceus is precise static RC)" > "$out"
+        '';
+
         # Full-CI-in-nix increment 6b: the GHA `codegen` job (`cargo xtask codegen --check`). This is the
         # runtime-ABI STALENESS gate: xtask regenerates runtime_abi.rs (+ wasm_abi.rs) — reading the
         # runtime WIT + BUILDING the cdz-runtime (release + debug) and cdz-nfc components via
@@ -8946,6 +8965,12 @@
                   # spec guard. Starts GREEN (v-corpus-harness confirmed 0 hits, no residue → folds immediately,
                   # no fix-then-fold wait); cheap cdzCorpus static parse, same shape as corpusNativizeCheck.
                   capabilityErrorCheck
+                  # gc-justification FOLDED IN (operator directive, concierge assign 84927; v-corpus-harness): no
+                  # corpus text justifies a leak / (live-objects known-leak) as needing GC — Perceus is precise
+                  # static RC, so a leak is a dup/drop-placement bug, never a GC concession. Starts GREEN (0 hits
+                  # on the 36-file corpus → folds immediately, no fix-then-fold wait); cheap cdzCorpus static
+                  # text scan, same shape/closure as capabilityErrorCheck. Teeth under self-merge (admin-merge).
+                  gcJustificationCheck
                   # reducer-path reclaim census gates FOLDED IN (v-nix 2026-09-19, v-reducer-pooling ask 080933 +
                   # v-core-opt endorsement): the two seq-916 reclaim gates now run PER-MR, not nightly-only, so
                   # v-core-opt's #9218 borrow/drop reclaim followups (Bytes.len #9266, ListLen/StrScalarLen/MapSize/
@@ -9066,6 +9091,10 @@
             # `nix build .#checks.<sys>.capability-error` — no corpus case pins CDZ0900 as an (error …);
             # also folded into the localGate fail-set (teeth under self-merge). Scan by v-corpus-harness #6924.
             capability-error = capabilityErrorCheck;
+            # `nix build .#checks.<sys>.gc-justification` — no corpus text justifies a leak as needing GC
+            # (Perceus is precise static RC); also folded into the localGate fail-set (teeth under self-merge).
+            # Operator directive, concierge assign 84927; v-corpus-harness.
+            gc-justification = gcJustificationCheck;
             # The wasm-opt OPTIMALITY-GAP sweep (advisory, never a gate constituent): the whole-corpus
             # `wasm-opt-gaps.sexp` aggregate; the per-file `wasm-opt-gaps-<file>` aggregates are spread in below
             # so a slice (e.g. 01-literals + 10-bytes) builds in isolation. See DESIGN-wasm-opt-gap-analysis-rcdzc.md.

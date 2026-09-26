@@ -142,6 +142,23 @@ enum CorpusCmd {
         #[arg(required = true)]
         files: Vec<String>,
     },
+    /// Check no corpus text JUSTIFIES a leak as needing garbage collection — FAST, no compile/run.
+    ///
+    /// Operator directive (concierge assign 84927): Perceus is precise static RC — garbage-free, no GC — so a
+    /// leak is ALWAYS a dup/drop-placement bug to fix, and the ONLY RC-incompleteness is a reference CYCLE,
+    /// which cannot exist in acyclic Cadenza. A "needs GC / GC-territory / unreclaimable-without-GC"
+    /// justification for a leak / `(live-objects known-leak)` marker is therefore always wrong here and is the
+    /// exact conservative stopgap the corpus policy forbids. This lint FLAGs any such phrasing in the raw
+    /// `.sexp` text (a `(doc …)` rationale OR a `;`-comment — both are scanned, per "annotation or comment"),
+    /// exiting NON-ZERO with the file:line + the invariant. The `known-leak` MARKER itself stays allowed (a
+    /// tracked TODO toward 0); only a marker JUSTIFIED as GC-required is rejected. A NEGATED mention ("no GC
+    /// needed", "reclaims without GC") is exempt. Currently 0 hits (a going-forward guard). Fix = delete the
+    /// GC-justification and fix the dup/drop placement. See `balanced-0-perceus-is-precise-static-rc-no-gc-subset`.
+    GcJustificationCheck {
+        /// Corpus `.sexp` files to check (typically the full `spec/semantics/*.sexp` glob).
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
     /// Flag VANISHED titles in a `.gate-baseline*` — baseline descriptions with no corpus case — FAST, no
     /// compile/run. The authoritative, reusable primitive behind a pre-commit baseline-guard (v-fleet-tooling).
     ///
@@ -219,6 +236,7 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
         CorpusCmd::NativizeCheck { files, fix } => check_nativize_idempotence(files, *fix),
         CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
         CorpusCmd::CapabilityErrorCheck { files } => check_capability_error_pins(files),
+        CorpusCmd::GcJustificationCheck { files } => check_gc_justification(files),
         CorpusCmd::VanishedCheck { .. } => {
             unreachable!("vanished-check is handled above with distinct exit codes")
         }
@@ -556,6 +574,122 @@ fn check_capability_error_pins(files: &[String]) -> Result<(), String> {
         }
         Err(format!(
             "{} case(s) pin a capability-limit code as an (error …) — convert to (output V) (operator: corpus is the impl-independent spec)",
+            hits.len()
+        ))
+    }
+}
+
+/// Phrases that JUSTIFY a leak as needing garbage collection — the recurring anti-pattern the operator gates
+/// (concierge assign 84927). Perceus is precise static RC (garbage-free, no GC); a leak is always a
+/// dup/drop-placement bug, and the ONLY RC-incompleteness is a reference CYCLE, which cannot exist in acyclic
+/// Cadenza — so a "needs GC" justification is ALWAYS wrong. The bare word "cycle" is DELIBERATELY absent: it
+/// is ubiquitous + legitimate in the corpus (mutual-recursion / type / module-import / reclaim cycles), so
+/// linting it would be a false-positive storm. Each phrase is matched case-insensitively at a WORD BOUNDARY;
+/// a NEGATED occurrence is exempted by [`GC_NEGATION_PRECEDERS`]. Grounded 0-hit on the current corpus (the
+/// only `gc` tokens are an effect op literally named `gc` + a comment arm-label). Additions coordinated with
+/// the reclaim owners (v-memory-safety / v-core-opt).
+const GC_JUSTIFICATION_PHRASES: &[&str] = &[
+    "needs gc",
+    "need gc",
+    "needs a gc",
+    "need a gc",
+    "requires gc",
+    "require gc",
+    "requires a gc",
+    "require a gc",
+    "gc territory",
+    "gc-territory",
+    "needs garbage collection",
+    "need garbage collection",
+    "requires garbage collection",
+    "needs a garbage collector",
+    "requires a garbage collector",
+    "garbage collector to reclaim",
+    "gc to reclaim",
+    "gc required",
+    "gc-required",
+    "unreclaimable without",
+];
+
+/// Negation tokens that, in the short window BEFORE a GC-justification phrase, flip it to the CORRECT
+/// (negated) Perceus statement — "NO GC needed", "does NOT need GC", "reclaims WITHOUT GC", "NEVER needs GC",
+/// "doesN'T need GC". Matched as lowercase substrings over the preceding window so a correct statement is
+/// never flagged (the safe direction: a nearby negation suppresses the lint).
+const GC_NEGATION_PRECEDERS: &[&str] = &[
+    "no ",
+    "not",
+    "never",
+    "without",
+    "n't",
+    "cannot",
+    "free of",
+    "free from",
+];
+
+/// Every `(1-based line, phrase)` in `text` that JUSTIFIES a leak as needing GC — a [`GC_JUSTIFICATION_PHRASES`]
+/// entry present at a word boundary and NOT preceded (within a short window on its line) by a
+/// [`GC_NEGATION_PRECEDERS`] token. Scans the RAW text (a `(doc …)` rationale AND a `;`-comment both count),
+/// per the operator's "annotation or comment". Pure over the text so it is unit-testable.
+fn gc_justification_hits(text: &str) -> Vec<(usize, String)> {
+    let mut hits = Vec::new();
+    'lines: for (idx, line) in text.lines().enumerate() {
+        let lower = line.to_lowercase();
+        for phrase in GC_JUSTIFICATION_PHRASES {
+            let mut from = 0;
+            while let Some(rel) = lower[from..].find(phrase) {
+                let i = from + rel;
+                let j = i + phrase.len();
+                let before_ok =
+                    i == 0 || !lower[..i].chars().next_back().unwrap().is_alphanumeric();
+                let after_ok =
+                    j == lower.len() || !lower[j..].chars().next().unwrap().is_alphanumeric();
+                if before_ok && after_ok {
+                    let window = &lower[i.saturating_sub(24)..i];
+                    if !GC_NEGATION_PRECEDERS.iter().any(|neg| window.contains(neg)) {
+                        // One hit per line (multiple phrases can overlap one justification, e.g. "needs GC
+                        // to reclaim" — reporting the first keeps the gate output clean; the fix is the same).
+                        hits.push((idx + 1, (*phrase).to_string()));
+                        continue 'lines;
+                    }
+                }
+                from = i + 1;
+            }
+        }
+    }
+    hits
+}
+
+/// `gc-justification-check FILE…`: FAIL on any corpus text that justifies a leak as needing garbage
+/// collection (operator directive, concierge assign 84927). Perceus is precise static RC — no GC — so the
+/// leak is a dup/drop-placement bug to fix, not a GC concession. The `(live-objects known-leak)` MARKER
+/// stays allowed (a tracked TODO toward 0); only justifying it as GC-required is rejected. Exits NON-ZERO
+/// naming each file:line + phrase.
+fn check_gc_justification(files: &[String]) -> Result<(), String> {
+    let mut hits: Vec<(String, usize, String)> = Vec::new(); // (file, line, phrase)
+    for path in files {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+        for (line, phrase) in gc_justification_hits(&text) {
+            hits.push((path.clone(), line, phrase));
+        }
+    }
+    if hits.is_empty() {
+        println!(
+            "gc-justification-check: OK — no corpus text justifies a leak as needing GC in {} file(s)",
+            files.len()
+        );
+        Ok(())
+    } else {
+        for (path, line, phrase) in &hits {
+            eprintln!(
+                "gc-justification-check: {path}:{line}: {phrase:?} justifies a leak as needing GC — \
+                 Perceus is precise static RC, no GC. A leak is a dup/drop-placement bug to FIX; the only \
+                 RC-incompleteness is a reference cycle, impossible in acyclic Cadenza. A (live-objects \
+                 known-leak) marker is an allowed TODO toward 0, but justifying it as GC-required is not. \
+                 See balanced-0-perceus-is-precise-static-rc-no-gc-subset"
+            );
+        }
+        Err(format!(
+            "{} GC-justification(s) for a leak — delete the justification and fix the dup/drop placement (operator: Perceus is precise static RC, no GC)",
             hits.len()
         ))
     }
@@ -1784,6 +1918,32 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         );
         assert_eq!(hits[0].0, "wrongly pins the not-yet umbrella as an error");
         assert_eq!(hits[0].1, "CDZ0900");
+    }
+
+    #[test]
+    fn gc_justification_check_flags_only_non_negated_needs_gc() {
+        // JUSTIFYING a leak as needing GC — the anti-pattern (in a doc line AND a comment line) → FLAG.
+        let text = r#"(case "leak needs gc" (doc "this leaks 1 cell; it needs GC to reclaim") (input 1_))
+; a comment claiming this is GC territory should also be flagged
+(case "escapes" (doc "the value is unreclaimable without a collector") (input 1_))"#;
+        let hits = gc_justification_hits(text);
+        assert_eq!(
+            hits.len(),
+            3,
+            "3 justifications (doc needs-gc, comment gc-territory, doc unreclaimable-without): {hits:?}"
+        );
+
+        // NEGATED = the CORRECT Perceus statement → NOT flagged; bare non-justifying `gc` token → NOT flagged.
+        let clean = r#"(case "ok" (doc "precise RC: no GC needed; a drop-placement fix reclaims it fully"))
+(case "op" (input (effect C (op gc (-> Unit Int64)))))
+; arms md/gc/pw feed the machine — a label, not prose
+(case "neg" (doc "Perceus reclaims this without GC; never needs a garbage collector"))
+(case "gcd" (doc "the gcd computation of the two integers"))"#;
+        assert!(
+            gc_justification_hits(clean).is_empty(),
+            "no false positives: {:?}",
+            gc_justification_hits(clean)
+        );
     }
 
     #[test]
