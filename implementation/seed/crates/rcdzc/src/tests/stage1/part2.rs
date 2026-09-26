@@ -771,6 +771,40 @@ fn a_non_tail_mutual_scc_with_a_self_recursor_folds_via_operand_partner_hoist() 
 }
 
 #[test]
+fn a_mutual_scc_literal_condition_branch_perform_folds_via_const_fold() {
+    // 11339 (14b rw4 sub-face, v-effects 2026-09-26): a PURE-mutual SCC (`even-w`/`odd-w`, neither
+    // self-recurses) with a LITERAL-condition branch-perform `(if true (St.get) 0)` sharing the `+` strict
+    // node with the mutual call `(odd-w …)`. It declined CDZ0907 at the `branch_perform_coexists_with_
+    // reentrant_call` floor. The specializer now CONST-FOLDS a literal-condition `if` in a mutual-SCC body
+    // (`(if true X Y)` → X) before that floor, dissolving `(if true (St.get) 0)` to the direct `(St.get)` →
+    // the pure-mutual fold threads it → 6 (value-equiv O0..O3, corpus-pinned).
+    let lit = "(do (effect St (op get (-> Unit Int64))) \
+                   (def (even-w (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) 0) (odd-w (- n 1))))) \
+                   (def (odd-w (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) 0) (even-w (- n 1))))) \
+                   (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (even-w 3))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(lit))).is_ok(),
+        "a mutual SCC with a LITERAL-condition branch-perform must FOLD (const-fold if true), not decline"
+    );
+
+    // A RUNTIME-condition branch-perform is NOT const-foldable — its advance is genuinely branch-local, so it
+    // must STILL decline cleanly (the rw4 floor is preserved for real branch-performs). Assert a CDZ090x code.
+    let rt = "(do (effect St (op get (-> Unit Int64))) \
+                   (def (even-w (: n Int64) (: c Bool)) (if (= n 0) 0 (+ (if c (St.get) 0) (odd-w (- n 1) c)))) \
+                   (def (odd-w (: n Int64) (: c Bool)) (if (= n 0) 0 (+ (if c (St.get) 0) (even-w (- n 1) c)))) \
+                   (def (main (: b Bool)) (handle St 1 ((get (u) s (resume s (+ s 1)))) (even-w 3 b))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(rt))).expect_err(
+        "a RUNTIME-condition branch-perform in a mutual SCC still declines (not const-foldable)",
+    );
+    assert!(
+        err.code.as_deref().is_some_and(|c| c.starts_with("CDZ090")),
+        "the runtime-condition branch-perform must decline CDZ090x, not fold / spurious error: {:?} / {}",
+        err.code,
+        err.message
+    );
+}
+
+#[test]
 fn a_ctl_arm_applying_k_lexically_folds_through_the_continuation() {
     // E5 STEP 2 (within-activation, lexical `k`): a ctl-style arm that APPLIES `k` as `(k v)` — never
     // bare, stored, or passed as an arg — is semantically an ordinary non-tail resumptive arm: `(k v)`

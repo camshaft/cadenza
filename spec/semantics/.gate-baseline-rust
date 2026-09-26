@@ -10930,7 +10930,7 @@ todo	a mixed String and scalar argument cross to a peer in one op, each in its o
 todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
 todo	a multi-export record interface guest emits a wrapper per member and runs both (via an imposed WIT world)
 todo	a multi-shot whose host call completed before the perform is admitted once the detector tests the continuation
-todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
+todo	a mutually-recursive group with a CONSTANT-condition branch-perform sharing a strict expr with the mutual call folds via literal-if const-fold (adv-69 rw4 sub-face)
 todo	a named-variant result writer name-matches (not positionally) with a reversed guest decl (via an imposed WIT world)
 todo	a nested option<option<s64>> EXPORT result crosses — a SUM inside an option payload
 todo	a nested record param with a bytes leaf compiles and runs (via an imposed WIT world)
