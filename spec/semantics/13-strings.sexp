@@ -1048,7 +1048,7 @@
   (output (: 0 Int64))
   (call main (: 6 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "STRING ROTATION check searches the needle inside the doubled haystack at equal length"
@@ -1224,7 +1224,7 @@
   (output (: 570 Int64))
   (call main (: 0 Int64))
   (output (: 450 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a STRING run-length grouping counts adjacent equal scalars across a rope seam"
@@ -1359,7 +1359,7 @@
   (output (: 111 Int64))
   (call main (: 0 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a THREE-WAY scalar classifier splits vowels, consonants, and other by range and membership"
