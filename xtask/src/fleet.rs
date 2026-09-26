@@ -4540,12 +4540,14 @@ fn tmp_inode_pressure_line(
     uncovered_stale_scratch: Option<u64>,
 ) -> Option<String> {
     let pct = pct?;
-    // The uncovered-scratch clause, when the prune stamp reports a nonzero count (shown from WARN on up).
+    // The age-GC clause, when the prune stamp reports a nonzero count (shown from WARN on up). Since the
+    // operator-authorized Class F age-GC (2026-09-26) now reaps these automatically, the count is the
+    // idle-old-dir backlog the next cron pass clears — not an un-reapable remainder.
     let uncov = match uncovered_stale_scratch {
         Some(n) if n > 0 => format!(
-            " [last prune: {n} uncovered stale scratch dir(s) the reaper allowlist can't match — \
-             arbitrary-named agent debug scratch; agents self-clean their own per AGENTS-fleet.md, or an \
-             operator-blessed reaper extension is needed for the un-allowlistable class]"
+            " [last prune: {n} own-user dir(s) older than the age floor — the automatic Class-F /tmp age-GC \
+             reaps the lsof-idle ones each cron pass (nix + claude exempt); non-zero here is the backlog \
+             awaiting the next sweep, not stuck pressure]"
         ),
         _ => String::new(),
     };
@@ -23594,23 +23596,22 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
                 .contains("⚠"),
             "84% is below WARN 85 → no flag"
         );
-        // #9693: a nonzero uncovered-scratch count is surfaced from WARN on up (the dominant class the
-        // reaper's 0-reclaimed passes otherwise hide); zero/None adds no clause (no noise when clean).
+        // #9693/#9773: a nonzero age-GC backlog count is surfaced from WARN on up; zero/None adds no clause.
         let warn_uncov = tmp_inode_pressure_line(Some(88), Some(6748)).expect("line");
         assert!(
-            warn_uncov.contains("6748 uncovered") && warn_uncov.contains("AGENTS-fleet.md"),
-            "WARN surfaces the count + the self-clean remedy: {warn_uncov}"
+            warn_uncov.contains("6748") && warn_uncov.contains("age-GC"),
+            "WARN surfaces the count + the age-GC framing: {warn_uncov}"
         );
         assert!(
             !tmp_inode_pressure_line(Some(88), Some(0))
                 .expect("line")
-                .contains("uncovered"),
-            "zero uncovered → no clause (no noise)"
+                .contains("age-GC"),
+            "zero backlog → no clause (no noise)"
         );
         assert!(
             !tmp_inode_pressure_line(Some(88), None)
                 .expect("line")
-                .contains("uncovered"),
+                .contains("age-GC"),
             "absent count (old stamp) → no clause"
         );
         // df unparseable → None (fail-safe, never a false reading — matches the disk: line discipline).
