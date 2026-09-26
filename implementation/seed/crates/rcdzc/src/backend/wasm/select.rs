@@ -7914,6 +7914,13 @@ fn call_arg_caller_drops(
             return true;
         }
     }
+    // 501 (13-strings:500) NON-TAIL OWNED-TEMP caller-drop (v-memory-safety soundness sign-off, 084691): a
+    // fresh OWNED single-use rope temp the inliner DUPLICATED per param-use, passed to a LOCAL self-loop
+    // callee that BORROWS the param and never loop-exit-drops it, is reclaimed by the CALLER. Body lives in
+    // reclaim.rs (the 512-KiB select.rs source-size mandate); see its doc for the soundness argument.
+    if reclaim::nontail_owned_temp_caller_drops(db, callee, body, arg, param_index, self_def) {
+        return true;
+    }
     if !(layout.exports.iter().any(|e| e.body == body) || db.lifted.iter().any(|l| l.body == body))
     {
         return false; // (1)

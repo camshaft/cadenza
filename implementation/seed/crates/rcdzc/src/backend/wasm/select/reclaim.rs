@@ -171,6 +171,83 @@ pub(crate) fn param_flow_into_cycle(db: &mut Db, body: StructId, binder: StructI
     flow(db, body, binder, &mut path, &mut explored)
 }
 
+/// 501 (13-strings:500) NON-TAIL OWNED-TEMP caller-drop (v-memory-safety soundness sign-off, 084691). Whether
+/// the caller must `drop` arg `param_index` (a fresh OWNED heap temporary) after a NON-TAIL `Core::Call` to
+/// `callee` — the residual base-rope leak of a `run`-inlined non-tail scan: `run s = (match (scan s 0
+/// (String.scalar-len s) 0 0) …)`, where the inliner SUBSTITUTES `s` at each use so a fresh-construction arg
+/// (`String.concat …`) is RE-EVALUATED per use → the scan-arg is a DISTINCT sole-owned allocation, dead after
+/// the borrowing call, never aliasing any escaping duplicated sibling (DF-probe's `#tuple(s k)` rope is a
+/// SEPARATE node, freed on its own). `scan` is reached via a PLAIN call (NON-tail: `run` wraps it in a match
+/// scrutinee, not a tail position), so the caller's frame is alive across the call and MUST reclaim the temp;
+/// `scan` itself only BORROWS it (`!def_consumes_param`) and does not loop-exit-drop it
+/// ([`looped_owned_param_drops`] ∌ its slot), so NEITHER side reclaims it today → leak. Admits iff ALL hold:
+///   (2) the callee param is a heap type;
+///   (3) `heap_operand_ownership(arg) == Owned` at THIS occurrence — the precise UAF discriminator: the
+///       per-use duplication makes a fresh-construction arg sole-owned + dead-after, so a drop CANNOT
+///       double-free an escaping sibling; a SHARED/aliased arg reads Borrowed at the occurrence ⟹ excluded;
+///   (A) `!def_consumes_param(callee, i)` — the callee BORROWS the param (never frees or returns it), so the
+///       caller-drop is the ONLY drop;
+///   (C) the callee is a self-recursive LOOP (`mutual_loop_group` non-empty) and the caller is EXTERNAL to it
+///       (`self_def ∉` the group) — an intra-loop caller reclaims per-frame, where a caller-drop double-frees;
+///   (G) the callee does NOT reclaim the param at its loop epilogue (`looped_owned_param_drops` ∌ its slot) —
+///       single-source complementarity: if it did, a caller-drop would be a SECOND drop.
+/// NON-TAIL-only by construction: a tail self-call goes through the loop transform / `return_call`, whose emit
+/// passes `caller_drop_slots = None` and never consults this (the TAIL wrapper family stays a scan-side
+/// follow-up). Uses `def_params` (not the export plan) — the (C) local-self-loop gate excludes export callees,
+/// which have no distinct export-plan param shape here. leak-over-UAF: every conjunct is a positive ownership
+/// proof; a missed admit just leaves a leak, never a double-free.
+pub(super) fn nontail_owned_temp_caller_drops(
+    db: &mut Db,
+    callee: usize,
+    body: StructId,
+    arg: StructId,
+    param_index: usize,
+    self_def: Option<usize>,
+) -> bool {
+    // EXPORT-EXCLUDE: an export callee's emit assigns param slots from its EXPORT PLAN, which can differ from
+    // `def_params` — so `def_params` (used below for both the slot index and the `looped_owned_param_drops`
+    // epilogue oracle) may not match the emit's real slots, and Gate G could check the wrong slot. Route an
+    // export callee to the export/lifted path instead (its own Owned + `!param_escapes_body` gate). The 501
+    // family is a LOCAL self-loop (`scan`), so this never narrows the target flip; it only fences the
+    // broad-reach corpus-wide (v-memory-safety RED-review nit, 084694 — slot-convention exactness).
+    if db.exports.iter().any(|e| e.def == Some(callee)) {
+        return false;
+    }
+    let params = crate::layout::def_params(db, callee);
+    let Some((_param_binder, param_ty)) = params.get(param_index).cloned() else {
+        return false;
+    };
+    if !is_heap_type(&param_ty)
+        || !matches!(
+            super::heap_operand_ownership(db, arg),
+            Ok(super::HandleOwnership::Owned)
+        )
+        || super::def_consumes_param(db, callee, param_index)
+    {
+        return false;
+    }
+    let g = super::mutual_loop_group(db, callee);
+    if g.is_empty() || self_def.is_some_and(|sd| g.contains(&sd)) {
+        return false;
+    }
+    // (G) YIELD to the callee's LOOP EPILOGUE: if it already drops this param at loop exit, a caller-drop is a
+    // SECOND drop → double-free. Slot = count of non-Unit params before `param_index` (the emit's assignment).
+    let mut slot = 0u32;
+    let mut target: Option<u32> = None;
+    for (idx, (_b, ty)) in params.iter().enumerate() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        if idx == param_index {
+            target = Some(slot);
+            break;
+        }
+        slot += 1;
+    }
+    let epilogue = super::looped_owned_param_drops(db, body, &params, Some(callee));
+    target.is_some_and(|s| !epilogue.contains(&s))
+}
+
 /// Whether DEF `callee` reads its parameter `param_index` (a String/Bytes) via a VIEW-PRODUCER
 /// (`String.at`/`String.slice`/`Bytes.slice`) — directly, or after threading the param DIRECTLY (a borrow
 /// position) into a further callee. A view-producer mints a char/byte-SLICE VIEW that ALIASES the container
