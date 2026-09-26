@@ -200,6 +200,23 @@ fn result_types_of(
     }
 }
 
+/// The guest export PARAM-type map for a component about to run — the twin of [`result_types_of`], read from
+/// the `cdz-param-type` custom section (increment 1). Each value is the export's `(Tuple <param-ty>…)` arena;
+/// the arg-decode consults it to recover a value-form (`BigInt`) param the erased component `list<u8>` hides.
+/// Empty (no section) → the type-blind arg-decode (unchanged). NB: on the precompiled `.cwasm` path the
+/// section is dropped by serialize and NOT re-framed (only the result-type frame is), so param-type recovery
+/// is JIT-path only for now — the corpus gate / `cdz run` path, which is where the fuzzer exercises it.
+fn param_types_of(
+    component_bytes: &[u8],
+    opts: &RunOpts,
+) -> Result<std::collections::HashMap<String, cadenza_syntax::ast::Arenas>> {
+    if opts.precompiled {
+        Ok(std::collections::HashMap::new())
+    } else {
+        parse_param_types(scan_param_type_section(component_bytes).as_deref())
+    }
+}
+
 /// The wall-clock a single in-process run may take before the epoch deadline TRAPS it. Generous — a
 /// legitimate heap program is milliseconds; this only fires on a genuine runaway loop. `CDZ_RUN_TIMEOUT_SECS`
 /// overrides (0 disables — for a debugger). The epoch ticker below advances one epoch per `EPOCH_TICK`, so
@@ -699,6 +716,9 @@ pub fn run_with_live_objects(
     // section, so the nix corpus-exec rendered type-blind `#list`). Absent/no-match → `None` = type-blind.
     let result_types = result_types_of(component_bytes, opts)?;
     let result_ty = lookup_result_ty(&result_types, opts.export.as_deref());
+    // The PARAM-Ty twin (cdz-param-type section): lets the arg-decode recover a value-form (`BigInt`) param.
+    let param_types_map = param_types_of(component_bytes, opts)?;
+    let param_ty = lookup_result_ty(&param_types_map, opts.export.as_deref());
 
     let outcome = run_export(
         &engine,
@@ -710,6 +730,7 @@ pub fn run_with_live_objects(
         drop_handle,
         call_member,
         result_ty,
+        param_ty,
     )?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     // Read the heap balance ONLY on a clean VALUE return: a trapping run aborted mid-computation, so its
@@ -806,6 +827,9 @@ pub fn run_with_rc_trace(
     bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
     let result_types = result_types_of(component_bytes, opts)?;
     let result_ty = lookup_result_ty(&result_types, opts.export.as_deref());
+    // The PARAM-Ty twin (cdz-param-type section): lets the arg-decode recover a value-form (`BigInt`) param.
+    let param_types_map = param_types_of(component_bytes, opts)?;
+    let param_ty = lookup_result_ty(&param_types_map, opts.export.as_deref());
 
     let outcome = run_export(
         &engine,
@@ -817,6 +841,7 @@ pub fn run_with_rc_trace(
         drop_handle,
         call_member,
         result_ty,
+        param_ty,
     )?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     // Drain only on a clean value return (a trap may leave the runtime instance unusable — same caution
@@ -1377,6 +1402,7 @@ pub fn run_capturing(
         CompiledComponent {
             component: load_guest(&engine, component_bytes, opts)?,
             result_types: result_types_of(component_bytes, opts)?,
+            param_types: param_types_of(component_bytes, opts)?,
         }
     } else {
         compile_component(component_bytes)?
@@ -1398,6 +1424,11 @@ pub struct CompiledComponent {
     /// Consulted by [`run_capturing_compiled`] via [`Self::result_ty_for`] so a WIT-erased leaf renders its
     /// value-form (`render::render_val_typed`). Empty when absent → the type-blind render.
     result_types: std::collections::HashMap<String, cadenza_syntax::ast::Arenas>,
+    /// The GUEST export PARAM-Ty map (`cdz-param-type` section), twin of `result_types`. Consulted via
+    /// [`Self::param_ty_for`] so the arg-decode recovers a value-form (`BigInt`) param the erased component
+    /// `list<u8>` hides. Empty when absent (incl. a serialized `.cwasm`, which drops the section) → the
+    /// type-blind arg-decode.
+    param_types: std::collections::HashMap<String, cadenza_syntax::ast::Arenas>,
 }
 
 impl CompiledComponent {
@@ -1406,6 +1437,13 @@ impl CompiledComponent {
     /// the type-blind render.
     fn result_ty_for(&self, export: Option<&str>) -> Option<&cadenza_syntax::ast::Arenas> {
         lookup_result_ty(&self.result_types, export)
+    }
+
+    /// The param-tuple-Ty arena (`(Tuple <param-ty>…)`, from the `cdz-param-type` section) for the export
+    /// being run — reuses [`lookup_result_ty`]'s export-name keying over the param map. `None` → the
+    /// type-blind arg-decode.
+    fn param_ty_for(&self, export: Option<&str>) -> Option<&cadenza_syntax::ast::Arenas> {
+        lookup_result_ty(&self.param_types, export)
     }
 }
 
@@ -1420,9 +1458,12 @@ pub fn compile_component(component_bytes: &[u8]) -> Result<CompiledComponent> {
     // spawned corpus-gate binary that pipes the raw component). Absent → empty map (type-blind); a
     // present-but-malformed section is a hard error (decode-validity invariant).
     let result_types = parse_result_types(scan_result_type_section(component_bytes).as_deref())?;
+    // The PARAM-Ty twin (cdz-param-type section), same scan-in-the-component discipline.
+    let param_types = parse_param_types(scan_param_type_section(component_bytes).as_deref())?;
     Ok(CompiledComponent {
         component,
         result_types,
+        param_types,
     })
 }
 
@@ -1463,6 +1504,7 @@ pub fn run_capturing_compiled(
     // component (scanned from its `cdz-result-type` section at `compile_component`), so `cdz run` /
     // `run_capturing_compiled` also disambiguates a WIT-erased leaf via `render_val_typed`.
     let result_ty = compiled.result_ty_for(opts.export.as_deref());
+    let param_ty = compiled.param_ty_for(opts.export.as_deref());
 
     let outcome = run_export(
         &engine,
@@ -1474,6 +1516,7 @@ pub fn run_capturing_compiled(
         drop_handle,
         call_member,
         result_ty,
+        param_ty,
     )?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     Ok((outcome, calls))
@@ -1881,6 +1924,8 @@ fn run_composition_hosted_capturing(
         // Composition (multi-component) result-Ty threading is a follow-up — the single-component gate
         // paths (run_with_live_objects / run_capturing) carry it; a composed run stays type-blind for now.
         None,
+        // param-Ty threading (value-form arg-decode) likewise stays a follow-up for a composed run.
+        None,
     )?;
     // Take (not clone) the observed list — nothing reads `observed` after this, so move it out (avoids an
     // O(n) copy of the op list). The mutex guard is dropped immediately.
@@ -2101,7 +2146,7 @@ where
     })?;
 
     run_export(
-        &engine, &consumer, &mut store, &linker, opts, None, false, None, None,
+        &engine, &consumer, &mut store, &linker, opts, None, false, None, None, None,
     )
 }
 
@@ -2245,7 +2290,7 @@ where
     }
 
     run_export(
-        &engine, &consumer, &mut store, &linker, opts, None, false, None, None,
+        &engine, &consumer, &mut store, &linker, opts, None, false, None, None, None,
     )
 }
 
@@ -2356,7 +2401,7 @@ pub fn run_agent_hosted(
     bind_host_op_bindings(&mut store, &mut linker, &rt_instance, bindings)?;
 
     run_export(
-        &engine, &consumer, &mut store, &linker, opts, None, false, None, None,
+        &engine, &consumer, &mut store, &linker, opts, None, false, None, None, None,
     )
 }
 
@@ -2562,6 +2607,22 @@ fn check_host_op_shape(
 /// `cdz-result-type` yields its payload. Nested core modules are opaque section blobs (skipped whole), so
 /// their own id-0 customs never false-match. `None` when absent/malformed -> the type-blind render.
 pub(crate) fn scan_result_type_section(bytes: &[u8]) -> Option<Vec<u8>> {
+    scan_top_level_custom(bytes, b"cdz-result-type")
+}
+
+/// The PARAM-type twin of [`scan_result_type_section`]: the `cdz-param-type` custom section (increment 1)
+/// carrying each export's `(Tuple <param-ty>…)` so the arg-decode can recover a value-form (`BigInt`) param.
+pub(crate) fn scan_param_type_section(bytes: &[u8]) -> Option<Vec<u8>> {
+    scan_top_level_custom(bytes, b"cdz-param-type")
+}
+
+/// Byte-scan a COMPONENT's top-level sections for the custom section named `want` (bytes-second run-wiring):
+/// the guest run-wiring maps ride IN the component (rcdzc appends them), so they reach EVERY invocation incl.
+/// the spawned corpus-gate binary that pipes the raw component. No `wasmparser` dep (INTERP-1): a hand walk.
+/// Skips the 8-byte preamble; a top-level id-0 custom whose name equals `want` yields its payload. Nested core
+/// modules are opaque section blobs (skipped whole), so their own id-0 customs never false-match. `None` when
+/// absent/malformed.
+fn scan_top_level_custom(bytes: &[u8], want: &[u8]) -> Option<Vec<u8>> {
     // magic (4) + version (2) + layer (2) — a component's layer differs from a core module, but we only skip.
     let mut pos = 8usize;
     while pos < bytes.len() {
@@ -2578,7 +2639,7 @@ pub(crate) fn scan_result_type_section(bytes: &[u8]) -> Option<Vec<u8>> {
             let (name_len, nadv) = read_uleb(bytes, pos)?;
             let name_start = pos + nadv;
             let name_end = name_start.checked_add(name_len as usize)?;
-            if name_end <= section_end && &bytes[name_start..name_end] == b"cdz-result-type" {
+            if name_end <= section_end && &bytes[name_start..name_end] == want {
                 return Some(bytes[name_end..section_end].to_vec());
             }
         }
@@ -2637,9 +2698,33 @@ fn parse_result_types(
     Ok(map)
 }
 
+/// Parse the `cdz-param-type` section payload — the seq-284 binary-AST wire — into the export→param-tuple-Ty
+/// map (each value the `(Tuple <param-ty>…)` arena). The twin of [`parse_result_types`]; same decode-validity
+/// contract (a PRESENT-but-MALFORMED section is a HARD ERROR, an ABSENT/empty one → an empty map = the
+/// type-blind arg-decode).
+fn parse_param_types(
+    map_bytes: Option<&[u8]>,
+) -> Result<std::collections::HashMap<String, cadenza_syntax::ast::Arenas>> {
+    let mut map = std::collections::HashMap::new();
+    if let Some(bytes) = map_bytes {
+        let entries =
+            cadenza_compile_abi::param_types_wire::decode_param_types_checked(bytes).map_err(|e| {
+                anyhow!(
+                    "cdz-run: the cdz-param-type section is a MALFORMED cadenza-AST — the compiler emitted \
+                     a bad param-type doc (decode-validity invariant): {e}"
+                )
+            })?;
+        for (name, ty_arena) in entries {
+            map.insert(name, ty_arena);
+        }
+    }
+    Ok(map)
+}
+
 /// Look up the result-Ty arena for the export being run. Keyed by the requested export name (or its kebab-
 /// normalized extern form, or an interface-qualified `iface#member`'s member tail); a nullary run (no
-/// `--call`) with a SOLE export uses that one entry. `None` -> the type-blind render.
+/// `--call`) with a SOLE export uses that one entry. `None` -> the type-blind render. (Reused verbatim for the
+/// PARAM-type map — same `HashMap<String, Arenas>` shape, same export-name keying.)
 fn lookup_result_ty<'a>(
     map: &'a std::collections::HashMap<String, cadenza_syntax::ast::Arenas>,
     export: Option<&str>,
@@ -2680,6 +2765,10 @@ fn run_export(
     // WIT-erased leaf via `render::render_val_typed` (Bytes `b"…"` vs `list<u8>` `#list`, Symbol `#"…"`);
     // `None` → the type-blind `render_val` (unchanged behavior).
     result_ty: Option<&cadenza_syntax::ast::Arenas>,
+    // The GUEST param-Ty arena (the export's `(Tuple <param-ty>…)` payload, decoded from the component's
+    // `cdz-param-type` section). `Some` → the arg-decode recovers a value-form (`BigInt`) param the erased
+    // component `list<u8>` hides (see `coerce_args_value_form`); `None` → the type-blind `coerce_args`.
+    param_ty: Option<&cadenza_syntax::ast::Arenas>,
 ) -> Result<Outcome> {
     let instance = linker
         .instantiate(&mut *store, component)
@@ -2821,13 +2910,15 @@ fn run_export(
             )
         })?;
 
-    // Coerce the raw argument strings to the export's declared parameter types.
+    // Coerce the raw argument strings to the export's declared parameter types. `coerce_args_value_form`
+    // decodes a value-form (`BigInt`) param — erased to `list<u8>` at the component boundary — from its
+    // decimal `--arg`, guided by `param_ty` (the `cdz-param-type` section); it is otherwise `coerce_args`.
     let param_types: Vec<Type> = func
         .params(&*store)
         .iter()
         .map(|(_, t)| t.clone())
         .collect();
-    let args = coerce_args(&opts.args, &param_types)?;
+    let args = coerce_args_value_form(&opts.args, &param_types, param_ty)?;
 
     let result_count = func.results(&*store).len();
     let mut results = vec![Val::Bool(false); result_count];
@@ -4166,6 +4257,107 @@ fn coerce_args(raw: &[String], types: &[Type]) -> Result<Vec<Val>> {
         .collect()
 }
 
+/// Coerce the raw `--arg` strings against the export's component param `types`, BUT for a param the guest
+/// declares as a value-form leaf (`BigInt`) — which the component ABI erases to `list<u8>`, so `coerce_one`
+/// sees only `list<u8>` and a bare decimal fails the list-literal parse — decode the decimal literal to the
+/// BigInt's canonical value-form bytes and pass them as the `list<u8>` the export's wrapper `value-decode`s.
+/// `param_ty` is the export's `(Tuple <param-ty>…)` payload from the `cdz-param-type` section (increment 1);
+/// `None`/absent → identical to [`coerce_args`] (the type-blind path, unchanged for a component without the
+/// section or a param the section does not mark value-form).
+fn coerce_args_value_form(
+    raw: &[String],
+    types: &[Type],
+    param_ty: Option<&cadenza_syntax::ast::Arenas>,
+) -> Result<Vec<Val>> {
+    if raw.len() != types.len() {
+        return Err(anyhow!(
+            "argument count mismatch: the export takes {} argument(s), {} given",
+            types.len(),
+            raw.len()
+        ));
+    }
+    let bigint_mask = param_ty
+        .map(bigint_value_form_positions)
+        .unwrap_or_default();
+    raw.iter()
+        .zip(types)
+        .enumerate()
+        .map(|(i, (s, t))| {
+            if bigint_mask.get(i).copied().unwrap_or(false) {
+                let bytes = encode_bigint_value_form(s).ok_or_else(|| {
+                    anyhow!("cannot parse `{s}` as BigInt (a base-10 integer literal expected)")
+                })?;
+                Ok(Val::List(bytes.into_iter().map(Val::U8).collect()))
+            } else {
+                coerce_one(s, t)
+            }
+        })
+        .collect()
+}
+
+/// Per-position "is this param a `BigInt` value-form leaf?" for the called export, read from its
+/// `(Tuple <param-ty>…)` payload (the `cdz-param-type` section): a param element is a value-form leaf when it
+/// is the bare `BigInt` type name (`encode_ty_payload` emits `Ty::BigInt` as `push_name("BigInt")`). Empty
+/// (no section / not a `Tuple` root) → no override, the type-blind path. (Rational/Symbol reuse this channel
+/// later — their value-form ENCODING differs, so only BigInt is admitted here for now.)
+fn bigint_value_form_positions(param_tuple: &cadenza_syntax::ast::Arenas) -> Vec<bool> {
+    match param_tuple.as_form(param_tuple.root, "Tuple") {
+        Some(elems) => elems
+            .iter()
+            .map(|&e| matches!(param_tuple.as_name(e), Some("BigInt")))
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// The canonical value-form bytes of a `BigInt` given its base-10 `--arg` literal: the BARE value document a
+/// `BigInt` crosses as — a single `Leaf::Int`, `codec::encode`d, NO `(: … BigInt)` frame (mirrors the
+/// compiler's structural `constant_value_form` and the rust backend's `emit_value_form` for a BigInt). The
+/// export's wrapper reconstructs the guest BigInt via `value-decode(bytes, desc)` with the tag-17 descriptor.
+/// `None` on a non-integer literal.
+fn encode_bigint_value_form(s: &str) -> Option<Vec<u8>> {
+    let value = int_value_from_decimal(s)?;
+    let mut b = cadenza_syntax::ast::Builder::new();
+    let leaf = b.atom_leaf(cadenza_syntax::ast::Leaf::Int {
+        value,
+        radix: cadenza_syntax::ast::Radix::Dec,
+    });
+    Some(cadenza_syntax::codec::encode(&b.finish(leaf)))
+}
+
+/// Parse an arbitrary-precision base-10 integer literal (optional leading `+`/`-`) into an [`IntValue`]
+/// (big-endian magnitude, canonical: no leading zero bytes, zero = empty magnitude + non-negative) — WITHOUT
+/// a `num_bigint` dependency, so cdz-run's crate closure stays lean. `None` on an empty/non-digit literal.
+fn int_value_from_decimal(s: &str) -> Option<cadenza_syntax::ast::IntValue> {
+    let (negative, digits) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    // Horner over base-256 big-endian magnitude: mag = mag*10 + digit, per decimal digit.
+    let mut mag: Vec<u8> = Vec::new();
+    for digit in digits.bytes().map(|c| c - b'0') {
+        let mut carry = u16::from(digit);
+        for byte in mag.iter_mut().rev() {
+            let v = u16::from(*byte) * 10 + carry;
+            *byte = (v & 0xff) as u8;
+            carry = v >> 8;
+        }
+        while carry > 0 {
+            mag.insert(0, (carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    // `mag` already carries no leading zero bytes (built only by carry-prepend). Zero → empty magnitude,
+    // never negative — matching `IntValue::from_bigint`'s canonical form.
+    Some(cadenza_syntax::ast::IntValue {
+        negative: negative && !mag.is_empty(),
+        magnitude: mag,
+    })
+}
+
 /// The CADENZA surface name for a boundary parameter type, for user-facing diagnostics. wasmtime's
 /// `Type` Debug prints the component-model spelling (`S64`, `U8`, `Float64`), but the user wrote the
 /// Cadenza type (`Int64`, `UInt8`, `Float64`) in their `(: p Int64)` annotation — an arg-coercion error
@@ -4750,6 +4942,79 @@ mod tests {
         // An ABSENT section (None) is the legitimate type-blind path → Ok(empty), NOT an error.
         let absent = parse_result_types(None).expect("absent section is Ok(empty), not an error");
         assert!(absent.is_empty());
+    }
+
+    #[test]
+    fn bigint_arg_decode_parses_decimal_and_encodes_the_canonical_value_form() {
+        use cadenza_syntax::ast::{Builder, IntValue, Leaf, Radix};
+        // int_value_from_decimal matches IntValue::from_i64 across sign / magnitude / zero — the canonical form.
+        for n in [
+            0i64,
+            1,
+            9,
+            10,
+            255,
+            256,
+            1000,
+            -1,
+            -42,
+            -256,
+            i64::MAX,
+            i64::MIN + 1,
+        ] {
+            assert_eq!(
+                int_value_from_decimal(&n.to_string()),
+                Some(IntValue::from_i64(n)),
+                "decimal decode of {n} must match from_i64"
+            );
+        }
+        // Leading `+`, leading zeros, and rejects: empty / non-digit / bare sign.
+        assert_eq!(int_value_from_decimal("+7"), Some(IntValue::from_i64(7)));
+        assert_eq!(int_value_from_decimal("007"), Some(IntValue::from_i64(7)));
+        assert_eq!(
+            int_value_from_decimal("-0"),
+            Some(IntValue::from_i64(0)),
+            "neg zero canonicalizes"
+        );
+        assert!(int_value_from_decimal("").is_none());
+        assert!(int_value_from_decimal("12a").is_none());
+        assert!(int_value_from_decimal("-").is_none());
+        // A BEYOND-i64 magnitude: 2^64 = 18446744073709551616 → big-endian magnitude [1, 0×8].
+        let two_pow_64 = int_value_from_decimal("18446744073709551616").expect("parses");
+        assert!(!two_pow_64.negative);
+        assert_eq!(two_pow_64.magnitude, vec![1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        // encode_bigint_value_form = codec::encode of the BARE canonical Int leaf (the value-form document).
+        let want = {
+            let mut b = Builder::new();
+            let leaf = b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i64(42),
+                radix: Radix::Dec,
+            });
+            cadenza_syntax::codec::encode(&b.finish(leaf))
+        };
+        assert_eq!(encode_bigint_value_form("42"), Some(want));
+        assert!(encode_bigint_value_form("nope").is_none());
+    }
+
+    #[test]
+    fn bigint_value_form_positions_marks_only_bigint_tuple_elements() {
+        // The param payload is `(Tuple <e0> <e1> …)`; a BigInt element is the bare `BigInt` type name.
+        let mut b = cadenza_syntax::ast::Builder::new();
+        let head = b.name("Tuple");
+        let e0 = b.name("Int64");
+        let e1 = b.name("BigInt");
+        let e2 = b.name("Symbol");
+        let root = b.list(vec![head, e0, e1, e2]);
+        let arena = b.finish(root);
+        assert_eq!(
+            bigint_value_form_positions(&arena),
+            vec![false, true, false]
+        );
+        // A non-Tuple root (or empty) → no positions (type-blind).
+        let mut b2 = cadenza_syntax::ast::Builder::new();
+        let only = b2.name("BigInt");
+        let arena2 = b2.finish(only);
+        assert!(bigint_value_form_positions(&arena2).is_empty());
     }
 
     #[test]
