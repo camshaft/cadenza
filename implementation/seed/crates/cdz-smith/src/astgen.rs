@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(27);
+    let shape = c.variant(28);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -325,6 +325,12 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     // precision. A mis-nested inner-list rebuild (wrong element descriptor / over- or under-reclaim of the inner
     // heap) corrupts the value. Value = len(inner0) + inner0[0] = 2 + e0.
     let list_list_arg = format!("#list(#list({e0} {e1}) #list({e2} {a}))");
+    // A record<a, inner:record<x,y>> value-form for the rrf1 NESTED-PRODUCT (record-with-a-record-field) shape
+    // (27): a record whose `inner` field is itself a RECORD. The value/stack counterpart to shape 26's nested
+    // HEAP — exercises the RECURSIVE record assembler (a record cell nested inside a record cell, field-resolved
+    // through `(. (. r inner) x)`). A mis-nested inner-record rebuild (wrong field offset / cell nesting)
+    // corrupts the sum. Value = a + inner.x + inner.y = e0+e1+e2.
+    let nested_record_arg = format!("#record((= a {e0}) (= inner #record((= x {e1}) (= y {e2}))))");
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -574,10 +580,20 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      nested-heap reclaim. A mis-nested inner-list rebuild (wrong element descriptor, or over/under-reclaim
         //      of the inner heap) corrupts the value. Result is a scalar = len(inner0)+inner0[0]. Arg is a two-inner
         //      list; both empty-outer and empty-inner edges are covered by the reach-all + hunt seeds.
-        _ => (
+        26 => (
             "(do (def (f (: xs (List (List Int64)))) (match (List.at xs 0) ((Some inner) (+ (List.len inner) (match (List.at inner 0) ((Some v) v) (None 0)))) (None 0))) (export f))"
                 .to_string(),
             vec![list_list_arg],
+        ),
+        // 27 — rrf1 record<a, inner:record<x,y>> NESTED-PRODUCT (record-with-a-record-field) entry param: a record
+        //      whose `inner` field is itself a RECORD, summed as a + inner.x + inner.y. The value/stack counterpart
+        //      to shape 26's nested HEAP (list<list>): it exercises the RECURSIVE record assembler — a record cell
+        //      NESTED inside a record cell, field-resolved through `(. (. r inner) x)`. A mis-nested inner-record
+        //      rebuild (wrong field offset / cell nesting) corrupts the sum. Result is a scalar = e0+e1+e2.
+        _ => (
+            "(do (def (f (: r (Record (: a Int64) (: inner (Record (: x Int64) (: y Int64)))))) (+ (. r a) (+ (. (. r inner) x) (. (. r inner) y)))) (export f))"
+                .to_string(),
+            vec![nested_record_arg],
         ),
     };
     ExportParam { source, args }
@@ -5912,13 +5928,14 @@ mod tests {
         // compound-list-element-entry-param `f` + the eot1 option<tuple<Int64,Int64>> sum-holding-a-compound
         // entry-param `f` + the lpr1 list<record<x,y>> record-list-element-entry-param `f` + the eor1
         // option<record<x,y>> sum-holding-a-record-entry-param `f` + the ell1 list<list<Int64>> nested-heap
-        // (heap-list-of-heap-lists) entry-param `f`.
-        let mut reached = [false; 27];
-        for seed in 0u64..1620 {
+        // (heap-list-of-heap-lists) entry-param `f` + the rrf1 record-with-a-record-field nested-product
+        // entry-param `f`.
+        let mut reached = [false; 28];
+        for seed in 0u64..1680 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(27) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-26 reuse e0/e1/e2/s0/a — no new read.)
+            // variant(28) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-27 reuse e0/e1/e2/s0/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -5998,11 +6015,16 @@ mod tests {
                 reached[25] = true; // shape 25 = eor1 option<record<x,y>> sum-holding-a-record-entry-param `f`
             } else if ep.source.contains("(: xs (List (List Int64)))") {
                 reached[26] = true; // shape 26 = ell1 list<list<Int64>> nested-heap entry-param `f`
+            } else if ep
+                .source
+                .contains("(: inner (Record (: x Int64) (: y Int64)))")
+            {
+                reached[27] = true; // shape 27 = rrf1 record-with-a-record-field nested-product entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-seven export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-eight export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
