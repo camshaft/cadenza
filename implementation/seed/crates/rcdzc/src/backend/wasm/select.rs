@@ -2445,7 +2445,7 @@ pub fn select_function_of(
         param_slots: &param_slots,
         which: mutual.then_some(which_slot),
         depth: 0,
-        scrut_shell_reclaim: None,
+        scrut_shell_reclaim: [None; 8],
         selfloop_scrut_slot: None,
         list_scrut_divergent: false,
         returncall_shell_drop: None,
@@ -2890,8 +2890,12 @@ struct TailLoop<'a> {
     /// borrowed/dead on every arm (never consumed into the tail-call args), so freeing the shell (which
     /// cascades into the dead payload) before the back-edge is sound. The post-match fall-through drop
     /// handles the value-returning arms; this handles the looping arms the post-match drop `br`s past — the
-    /// codec `find-at`/`fromcol` String.at scan leak. `None` on every ordinary loop (the common case).
-    scrut_shell_reclaim: Option<u32>,
+    /// codec `find-at`/`fromcol` String.at scan leak. All-`None` on every ordinary loop (the common case).
+    ///
+    /// ACCUMULATING: nested tail-loop `MatchSum(String.at)` matches each APPEND their Some-shell (via `..t`) so
+    /// the inner back-edge frees ALL enclosing shells, not just the innermost (LCP per-read lever). Cap 8 ≫ real
+    /// depth (=2); overflow leaks the excess (leak-over-UAF).
+    scrut_shell_reclaim: [Option<u32>; 8],
     /// INC1 SELF-LOOP-TAIL shell reclaim (pt3, v-mem G1-G7 gated): the PARAM SLOT holding an owned
     /// compound-boxed match scrutinee that is DEAD-after-iteration in a tail-loop (its children are extracted
     /// — one carried into a loop-param, siblings consumed by non-tail sub-calls — all already dup'd, so the
@@ -4018,9 +4022,15 @@ fn emit_tail(
                     let shell_slot = stashed_slot
                         .expect("view/looped-scalar shell reclaim implies a stashed I32 slot")
                         .0;
-                    tl.map(|t| TailLoop {
-                        scrut_shell_reclaim: Some(shell_slot),
-                        ..t
+                    tl.map(|t| {
+                        let mut shells = t.scrut_shell_reclaim; // ACCUMULATE — see the field doc
+                        if let Some(free) = shells.iter_mut().find(|s| s.is_none()) {
+                            *free = Some(shell_slot);
+                        }
+                        TailLoop {
+                            scrut_shell_reclaim: shells,
+                            ..t
+                        }
                     })
                 } else if let Some(slot) = selfloop_scrut_slot {
                     tl.map(|t| TailLoop {
@@ -4044,7 +4054,7 @@ fn emit_tail(
                     param_slots: &[],
                     which: None,
                     depth: 0,
-                    scrut_shell_reclaim: None,
+                    scrut_shell_reclaim: [None; 8],
                     selfloop_scrut_slot: None,
                     list_scrut_divergent: false,
                     returncall_shell_drop: Some(s),
@@ -4930,7 +4940,9 @@ fn emit_loop_iteration(
     // evaluated/stored). Free it now, before the `br`, else it leaks one cell per loop iteration (the codec
     // find-at/fromcol scan). op_drop is DEEP + rc-aware; the dead payload cascades to 0. AFTER the arg
     // stores (the args never reference the view — that IS the borrow-clean gate), so no arg handle dangles.
-    if let Some(sc) = tl.scrut_shell_reclaim {
+    // Drop EVERY accumulated owned-view shell (this + enclosing nested matches — the back-edge `br`s past all
+    // their fall-through drops). See the `scrut_shell_reclaim` field doc.
+    for sc in tl.scrut_shell_reclaim.into_iter().flatten() {
         out.push(Lir::LocalGet(sc)); // [shell]
         out.push(Lir::CallImport(OP_DROP)); // free the dead owned-view shell → []
     }
