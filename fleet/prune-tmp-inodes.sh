@@ -69,24 +69,22 @@ SCRATCH_THRESHOLD_PCT="${SCRATCH_THRESHOLD_PCT:-70}" # Class C fires ONLY at/abo
 SCRATCH_STALE_MIN="${SCRATCH_STALE_MIN:-240}"      # remove agent-scratch dirs older than this (minutes, default 4h)
 ORACLE_STALE_MIN="${ORACLE_STALE_MIN:-120}"        # Class D: remove oracle-run dirs older than this (minutes, default 2h; each ≈47K inodes so shorter than scratch)
 ORACLE_THRESHOLD_PCT="${ORACLE_THRESHOLD_PCT:-60}" # Class D fires at/above this — LOWER than scratch (70): oracle dirs are the dominant hog + pure-leak + lsof-protected, so reap the hog earlier (well before the 90% wedge)
-# Class F REPORT window (minutes): the UNCOVERED-scratch probe counts own-user dirs older than SCRATCH_STALE_MIN
-# but NEWER than this upper bound. The upper bound is the load-bearing safety of the WINDOW (vs a bare age
-# FLOOR): nix normalizes `*-result` GC-root mtimes to ~epoch/1980, so they read as DECADES old and fall
-# OUTSIDE (older than) this window — the exact false-target the design's blanket-sweep REFUSAL is about is
-# structurally excluded by the window, before the keep-list even applies. Default 30d.
-UNCOVERED_MAX_AGE_MIN="${UNCOVERED_MAX_AGE_MIN:-43200}"
+# (The old Class-F REPORT upper-age WINDOW bound was removed 2026-09-26: the operator's age-only GC uses a
+# pure lower FLOOR, and nix `*-result` GC-roots are now excluded by REAP_EXEMPT_PATTERNS + `-type d`, not by
+# an upper window bound.)
 # Trend-log threshold (percent): APPEND one trend line to prune-tmp-inodes.trend ONLY when inode-use is at/
 # above this (default 85 = WARN). The `.last-run` stamp is OVERWRITE (latest only), so a climb/reversal
 # trajectory (e.g. self-clean pulling 6748→2876 over ~6h) is invisible in it — this append log makes the
 # per-run trajectory greppable, but ONLY during a pressure episode (silent below WARN) so it stays bounded
 # without rotation, exactly like reap-leases.log logs only on a nonzero reap.
 TREND_LOG_PCT="${TREND_LOG_PCT:-85}"
-# Class F (uncovered-scratch REAP) fires at/above this — operator-authorized 2026-09-26 ("be aggressive,
-# no /tmp persistence guarantees"). 70 = same gate as Class C: dormant when /tmp is healthy (<70%, no wedge
-# risk so no reason to reap wanted scratch), but ARMED under real pressure (the 85% plateau) — so it reaps
-# the uncovered remainder down below WARN and keeps it there, without over-reaping at low load. The WINDOW +
-# keep-list + lsof-idle guards (not this gate) are the load-bearing safety.
-UNCOVERED_THRESHOLD_PCT="${UNCOVERED_THRESHOLD_PCT:-70}"
+# Class F (age-only /tmp GC) reaps own-user dirs older than this many minutes — operator 2026-09-26: "if it's
+# older than an hour or two it's free game to get nuked in tmp." Default 120 (2h, the conservative end of the
+# operator's 1–2h). Unlike A–E, Class F is NOT class-gated on a pressure threshold: it shares A/B's
+# INODE_THRESHOLD_PCT gate (the cron runs at 0 = ALWAYS), so it is an automatic GC that keeps /tmp perpetually
+# clear of idle old scratch — no per-agent `rm -rf` (which would hit the harness approval prompt the operator
+# wants avoided). The load-bearing safety is the REAP_EXEMPT_PATTERNS (nix/claude) + the lsof-idle guard.
+TMP_REAP_MIN="${TMP_REAP_MIN:-120}"
 
 # Class C allowlist — ONLY these known agent-scratch dir SHAPES are ever candidates (never a blanket sweep).
 # The grade/shred/roundtrip families below were added after a fleet-wide 100%-inode wedge (breaker issue
@@ -103,19 +101,26 @@ SCRATCH_PATTERNS=(mphome shredall 'shred-*' otc 'vrb*' 'latentleak-*' 'cdz-*-smo
 # Class D allowlist — ONLY these oracle differential run-dir SHAPES (v-lean-oracle full-corpus runs).
 ORACLE_PATTERNS=('oracle-all*' 'oall*' 'surv*')
 
-# Class F keep-list — KNOWN non-fleet / long-lived own-user dirs the UNCOVERED-scratch REPORT must never
-# count as reclaimable (a data-backed board scan 2026-09-25 found the top own-user consumers a `*/tmp/*`
-# window-sweep must exempt: a2a-client ~1176, MembrainDev ~402, S3TurboCacheModel, node-compile-cache) PLUS
-# the nix GC-root shape (`*-result`; belt-and-braces atop the mtime window). The A/B/C/D/E classes are
-# subtracted separately (their own pattern arrays) so this report counts ONLY the truly-uncovered remainder.
-#   - nix-shell.*/nix-develop-*/nix-build-* : LIVE-nix-SESSION dirs (tied to a running shell/build PID) — a
-#     sweep must never touch them; the mtime window does NOT exclude them (recent mtime) so they MUST be
-#     keep-listed explicitly.
-#   - tmp.* : the `mktemp -d` DEFAULT template, used by countless FOREIGN tools — not attributable to the
-#     fleet, so it is EXEMPT (a fleet dir here is indistinguishable from a foreign one by name alone).
-KEEP_PATTERNS=('*-result' 'a2a-client' 'MembrainDev*' 'S3TurboCacheModel*' 'node-compile-cache' \
-               'toolbox-telemetry-*' 'mcs-telemetry*' 'claude-*' \
-               'nix-shell.*' 'nix-develop-*' 'nix-build-*' 'tmp.*')
+# Class F reap-EXEMPT list — the MINIMAL set the operator's age-only sweep must NOT touch (operator 2026-09-26:
+# "I don't even think we need patterns in there. If it's older than an hour or two it's free game to get
+# nuked in tmp" — so the old scratch/foreign ALLOWLIST is gone; everything else >TMP_REAP_MIN idle is fair
+# game). Only CORRECTNESS/LIVENESS exemptions remain — NOT the "which scratch is ours" allowlist:
+#   - nix bookkeeping: `*-result` / `result` (GC-root out-links — deleting one UNPINS a build's store output;
+#     the SYMLINK forms are also excluded by the sweep's `-type d`) + `nix-shell.*`/`nix-develop-*`/
+#     `nix-build-*` LIVE-session dirs (a running build's dir can be >2h old yet held). This is the one caveat
+#     concierge flagged: a pure mtime floor would false-target these (nix normalizes GC-root mtimes to ~epoch).
+#   - `claude-*`: LIVE-AGENT session roots (`/tmp/claude-<pid>/`, journal.jsonl + transcripts). NOT scratch —
+#     rm -rf'ing one breaks a running agent; Class B already manages these (stale-transcript reap that
+#     PRESERVES journal.jsonl), so Class F must leave the whole tree to B.
+# The three named NON-FLEET TOOLS below (a2a-client / MembrainDev* / S3TurboCacheModel*) are a CONSERVATIVE
+# default, NOT the old scratch allowlist: they are the user's other tools' /tmp state, deleting them is
+# irreversible + outward-facing, /tmp is not under pressure, and the operator's explicit "pure-everything vs
+# skip-just-nix" confirmation is still pending (concierge is relaying). Sparing just these three named tools
+# until that confirmation is a 3-line exemption (negligible inodes) — drop this line the moment the operator
+# says "pure everything." EVERYTHING ELSE >TMP_REAP_MIN (fleet scratch, `tmp.*` mktemp leftovers, unknown idle
+# dirs) is free game per the ruling; the lsof-idle guard still spares anything with an open fd/cwd.
+REAP_EXEMPT_PATTERNS=('*-result' 'result' 'nix-shell.*' 'nix-develop-*' 'nix-build-*' 'claude-*' \
+                      'a2a-client' 'MembrainDev*' 'S3TurboCacheModel*')
 
 iuse_pct() { df -i "$TMPDIR_ROOT" | awk 'NR==2 {gsub(/%/,"",$5); print $5}'; }
 
@@ -263,42 +268,34 @@ else
   printf 'prune-tmp-inodes: oracle class DORMANT — inode-use %s%% below oracle threshold %s%% (fires before the wedge).\n' "$iuse" "$ORACLE_THRESHOLD_PCT"
 fi
 
-# ── Class F: UNCOVERED-SCRATCH REAP (operator-authorized 2026-09-26: "definitely clean up tmp … we can
-#    afford to be aggressive there — no guarantees about things persisting in /tmp"). ───────────────────
-# The A–E allowlists reap only KNOWN shapes; a board scan found the /tmp inode plateau is dominated by
-# ~thousands of own-user, days-STALE, ARBITRARY-short-named dirs (`0704v/{p1.ast,emit.wasm,c1.err}`, `9468g/
-# 9468-recheck`, `PROBE/probe`, `Dg/D`, `Lw`) — agent compiler-pipeline DEBUG scratch, hand-created with
-# names no glob matches and NO generator to fix, so A–E reclaim ~0 of it (concierge confirmed: an --apply
-# pass cleared 0 from A–E while this remainder was the entire WARN plateau). This class reaps that remainder
-# under the SAME safety guards as C/D — this is why it is a scoped reaper, NOT a blind `rm`:
-#   • own-user only (-uid $(id -u));
-#   • a real-mtime WINDOW SCRATCH_STALE_MIN..UNCOVERED_MAX_AGE_MIN — the UPPER bound is the load-bearing
-#     nix-safety: nix normalizes `*-result` GC-root mtimes to ~epoch/1980, so they read as decades-old and
-#     fall OUTSIDE (older than) the window, never targeted (belt-and-braces with the `*-result` keep-list);
-#   • the KEEP_PATTERNS keep-list (a2a-client / MembrainDev* / nix-shell.*/develop/build / tmp.* / *-result
-#     / claude-* / telemetry) + every A–E pattern, all subtracted;
-#   • a per-dir lsof-idle liveness check (`scratch_dir_is_idle`, FAIL-SAFE: no lsof or ANY lsof output → KEEP);
-#   • its own gate UNCOVERED_THRESHOLD_PCT, --apply-guarded, DRY-RUN by default.
-# The candidate COUNT (`uncovered`) is computed + stamped/trended REGARDLESS of the gate so the backlog stays
-# visible on the `fleet status` INODE line + `.last-run`/`.trend` even when the class is dormant.
-uncov_excl=()
-for p in "${SCRATCH_PATTERNS[@]}" "${ORACLE_PATTERNS[@]}" "${KEEP_PATTERNS[@]}"; do
-  [ "${#uncov_excl[@]}" -gt 0 ] && uncov_excl+=(-o)
-  uncov_excl+=(-name "$p")
+# ── Class F: AGE-ONLY /tmp GC (operator-authorized 2026-09-26: "if it's older than an hour or two it's free
+#    game to get nuked in tmp … I'd rather it just automatic" — no per-agent `rm -rf` → no harness approval
+#    prompt). This SUPERSEDES the old pattern-allowlisted Class F: there is NO scratch/foreign allowlist and
+#    NO keep-list of "which scratch is ours" — just AGE plus the minimal nix/claude correctness exemption.
+#    Reaps EVERY own-user /tmp DIR older than TMP_REAP_MIN that is neither REAP_EXEMPT nor lsof-held. Scoped
+#    to `-type d` (the inode pressure is scratch dir-trees; this also excludes nix `result` SYMLINKS). It is
+#    AUTOMATIC: shares A/B's INODE_THRESHOLD_PCT gate (the maintenance cron runs at 0 = ALWAYS), so it is a
+#    background GC keeping /tmp perpetually clear of idle old dirs. Load-bearing safety = REAP_EXEMPT_PATTERNS
+#    (nix GC-roots/live-sessions + claude live-agent roots) + the bulk lsof-idle guard. The candidate COUNT
+#    (`uncovered`) is stamped/trended regardless of the gate so the volume stays visible on the board.
+reap_excl=()
+for p in "${REAP_EXEMPT_PATTERNS[@]}"; do
+  [ "${#reap_excl[@]}" -gt 0 ] && reap_excl+=(-o)
+  reap_excl+=(-name "$p")
 done
 uncov_cands=()
 while IFS= read -r -d '' d; do uncov_cands+=("$d"); done \
   < <(find "$TMPDIR_ROOT" -maxdepth 1 -mindepth 1 -type d -uid "$(id -u)" \
-        -mmin +"$SCRATCH_STALE_MIN" -mmin -"$UNCOVERED_MAX_AGE_MIN" \
-        -not \( "${uncov_excl[@]}" \) -print0 2>/dev/null)
+        -mmin +"$TMP_REAP_MIN" \
+        -not \( "${reap_excl[@]}" \) -print0 2>/dev/null)
 uncovered="${#uncov_cands[@]}"
-if [ "$iuse" -ge "$UNCOVERED_THRESHOLD_PCT" ]; then
-  # LIVENESS via ONE bulk `lsof` pass, NOT `scratch_dir_is_idle` per-dir: `lsof +D <dir>` recursively
-  # descends the dir (O(files)) and a per-candidate loop spawns lsof once per dir — at a ~thousands-dir
-  # backlog that is minutes-long + would pile up (this cron has no flock singleton). Instead: enumerate all
-  # open files ONCE (`lsof -F n` reads /proc fd/cwd tables — fast, no dir descent), collect the TOP-LEVEL
-  # /tmp names holding an open fd/cwd into a set, then O(1)-test each candidate. FAIL-SAFE: no lsof binary →
-  # cannot verify → treat EVERY candidate as live (reap NOTHING), same "when unsure, KEEP" rule as Class C/D.
+if [ "$iuse" -ge "$INODE_THRESHOLD_PCT" ]; then
+  # LIVENESS via ONE bulk `lsof` pass, NOT `lsof +D` per-dir: `lsof +D <dir>` recursively descends each dir
+  # (O(files)) and a per-candidate loop spawns lsof once per dir — over a large backlog that is minutes-long
+  # and would pile up (this cron has no flock singleton). Instead enumerate all open files ONCE (`lsof -F n`
+  # reads /proc fd/cwd tables — fast, no dir descent), collect the TOP-LEVEL /tmp names holding an open
+  # fd/cwd, then O(1)-test each candidate. FAIL-SAFE: no lsof binary → cannot verify → treat EVERY candidate
+  # as live (reap NOTHING), the same "when unsure, KEEP" rule as Class C/D.
   declare -A uncov_live_set=()
   uncov_lsof_ok=1
   if command -v lsof >/dev/null 2>&1; then
@@ -321,11 +318,11 @@ if [ "$iuse" -ge "$UNCOVERED_THRESHOLD_PCT" ]; then
   done
   verb="WOULD remove"
   [ "$APPLY" = 1 ] && verb="removed"
-  printf 'prune-tmp-inodes: uncovered-scratch (>=%s%%): %s %s idle uncovered dir(s), KEPT %s live/held (of %s candidate(s), own-user, stale %s..%smin, not A-E-allowlisted, not keep-listed)\n' \
-    "$UNCOVERED_THRESHOLD_PCT" "$verb" "$uncov_idle" "$uncov_live" "$uncovered" "$SCRATCH_STALE_MIN" "$UNCOVERED_MAX_AGE_MIN"
+  printf 'prune-tmp-inodes: age-GC (>=%s%%, >%smin, own-user): %s %s idle dir(s), KEPT %s live/held (of %s candidate(s); nix + claude exempt, lsof-idle guarded)\n' \
+    "$INODE_THRESHOLD_PCT" "$TMP_REAP_MIN" "$verb" "$uncov_idle" "$uncov_live" "$uncovered"
 else
-  printf 'prune-tmp-inodes: uncovered-scratch class DORMANT — inode-use %s%% below threshold %s%% (%s stale candidate(s) tracked; fires near the wedge).\n' \
-    "$iuse" "$UNCOVERED_THRESHOLD_PCT" "$uncovered"
+  printf 'prune-tmp-inodes: age-GC DORMANT — inode-use %s%% below threshold %s%% (%s dir(s) >%smin tracked).\n' \
+    "$iuse" "$INODE_THRESHOLD_PCT" "$uncovered" "$TMP_REAP_MIN"
 fi
 
 # Heartbeat (best-effort, never fails the prune): OVERWRITE a `.last-run` file next to the script. Its MTIME
