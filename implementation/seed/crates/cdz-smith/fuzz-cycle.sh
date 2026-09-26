@@ -201,15 +201,19 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
       # differential structurally cannot reach. Small count (it shells `cdz` per program, like the sweep
       # above) under its own cap, reusing the already-resolved cdz + store. A KILL at the cap is SAFE
       # (findings stream to disk per program); the count sizes the SLOWEST (cdz-shelling) pass to fit.
-      # generate_export_param has 23 shapes (6 scalar + 3 List-entry-borrow + const-sum-field E0282 family
+      # generate_export_param has 24 shapes (6 scalar + 3 List-entry-borrow + const-sum-field E0282 family
       # #9586/#9684/#9687 + #9689 List-consume + #9694 String-consume + 2 Record #9699/#9701 + #9707 wfp1
       # >16-flat memory-indirect + #9716 els1 list<String> byte-leaf + #9714 rpp8/rpp9 nested-Tuple + #9718/#9742
-      # eos1 option<String> sum-entry-param + #9747 rpp21/22 result<Int64,String> two-payload sum-entry-param +
-      # #9746/#9753 eob1 option<Bytes> bytes-byte-leaf sum-entry-param + lpt1 list<tuple> compound-list-element).
-      # NOTE: EP_COUNT is 240 (= ~10.4 draws/shape at 23 shapes, just above the ~10 floor); cdz-shelling stays
-      # under cap (~64-66s measured, was ~56s at 16 shapes). SPLIT IS NOW IMMINENT: the 24th shape at count 240
-      # hits ~10 draws/shape — the NEXT EP add should SPLIT this pass (fast subset per cycle + full nightly)
-      # rather than bump the count again. A KILL at the cap is safe (findings stream to disk per program).
+      # eos1 option<String> + #9747 rpp21/22 result<Int64,String> two-payload + #9746/#9753 eob1 option<Bytes>
+      # byte-leaf + lpt1 list<tuple> compound-list-element + eot1 option<tuple> sum-holding-a-compound — all
+      # sum/compound entry-param boundary-marshal paths). NOTE (measured, corrects the earlier "split imminent"
+      # flag): this pass is COUNT-BOUND, not shape-bound — it shells cdz per program at ~0.27s each, so wall-clock
+      # tracks EP_COUNT (measured 65s at count 240, 23 shapes; ~56s at 16 shapes was a LOWER historical count),
+      # essentially INDEPENDENT of how many shapes exist. Adding shapes at fixed count keeps time flat and merely
+      # thins per-cycle draws/shape (24 shapes → ~10/cycle), which is FINE: the loop runs fresh-seed cycles
+      # continuously so coverage ACCUMULATES across cycles. The 75s EP_CAP ⇒ a hard ceiling near EP_COUNT ~275
+      # (~10s headroom left). A true SPLIT (fast subset per cycle + full nightly) is only FORCED when the count
+      # needed for adequate per-cycle density would exceed that cap — NOT yet. A KILL at the cap is safe.
       EP_COUNT="${CDZ_SMITH_EXPORT_PARAM_COUNT:-240}"
       EP_CAP="${CDZ_SMITH_EXPORT_PARAM_CAP:-75}"
       if [ "$EP_COUNT" -gt 0 ]; then
