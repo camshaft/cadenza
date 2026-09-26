@@ -643,7 +643,7 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(25);
+    let shape = c.variant(26);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -1010,8 +1010,25 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // `a`); verified wasm==rust==37 at a=7. First const-HOISTED record-field-List-of-record-newtype shape —
         // exercises the §2d static-compound reifier path (cval_to_core type-threading + newtype erasure) no
         // other shape reaches (shape 23 is a fold_sum_path CONST-FOLD, not a hoisted global).
-        _ => format!(
+        24 => format!(
             "(do (type SC (SC (Record (: n Int64)))) (def (main) (let ((cfg #record((= items #list((SC.SC #record((= n {a}))) (SC.SC #record((= n {b}))) (SC.SC #record((= n {d})))))))) (+ (* 10 (List.len (. cfg items))) (match (List.at (. cfg items) 0) ((Some sc) (match sc ((SC.SC r) (. r n)))) (None 0))))) (export main))"
+        ),
+        // 25 — SINGLE-SELF-LOOP FRESH-OWNED-ARG CALLER-DROP tripwire (the #9774 d878ebb ADMIT complement of
+        // shape 22). The 501-part-2 owned-temp caller-drop (#42ad97/#8b01bc) was fenced by d878ebb to fire ONLY
+        // for a SINGLE self-loop passed a FRESH (non-reused) owned arg — a too-broad drop had misfired on the
+        // CAESAR mutual-SCC. Shape 22 pins the mutual-SCC DECLINE side (caller REUSES xs → group drop must
+        // decline, leak-over-UAF); THIS pins the single-self-loop ADMIT side: `walk` is a SINGLE self-loop that
+        // BORROWS `xs` (reads element 0, forwards `xs` VERBATIM, returns a scalar), and `caller` passes `xs` to
+        // `(walk xs 3)` and does NOT reuse it — so `xs` is a dead owned temp AT the caller after the loop and the
+        // caller-drop FIRES (reclaims). At tip this is value-CORRECT (returns List.at xs 0 = a); a regression that
+        // over-fires the drop (frees `xs` mid-loop → walk reads freed) or mis-targets it (double-free/trap)
+        // corrupts the value — caught by determinism / opt-invariance / differential. Content-observable (reads
+        // an ELEMENT via List.at, not List.len). Distinct from shape 22 (mutual SCC, reused→decline) and from the
+        // self-recursive shapes 9-21 (none wrap the owned temp in a non-reusing caller so the caller-drop is the
+        // reclaim site). Returns the KNOWN `a`; verified rust==a (wasm-vs-rust via the in-process differential —
+        // the `cdz compile` CLI mis-rejects this go/helper/caller shape exactly like shape 22, an S602 artifact).
+        _ => format!(
+            "(do (def (walk (: xs (List Int64)) (: d Int64)) (if (< d 1) (Option.expect (List.at xs 0) \"w\") (walk xs (- d 1)))) (def (caller (: xs (List Int64))) (walk xs 3)) (def (main) (caller (list {a} {b} {d}))) (export main))"
         ),
     };
     Program { source }
@@ -5817,9 +5834,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the twenty-five shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 25];
-        for seed in 0u64..1125 {
+        // Distinctive, mutually-exclusive markers for the twenty-six shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 26];
+        for seed in 0u64..1170 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5882,6 +5899,8 @@ mod tests {
                 reached[23] = true;
             } else if src.contains("(type SC (SC (Record (: n Int64)))") {
                 reached[24] = true;
+            } else if src.contains("(def (walk (: xs (List Int64)) (: d Int64))") {
+                reached[25] = true; // shape 25 = single-self-loop fresh-owned-arg caller-drop tripwire
             } else if src.contains("(type L (Nil) (Cons (List Int64) L))") {
                 reached[19] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
@@ -5890,7 +5909,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-five reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-six reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
