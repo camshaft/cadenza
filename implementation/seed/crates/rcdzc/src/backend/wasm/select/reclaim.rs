@@ -4,6 +4,134 @@ pub(super) fn is_heap_type_for_retain(ty: &Ty) -> bool {
     is_heap_type(ty) || ty.has_free_var()
 }
 
+/// The decline-REASON verdict for a MUTUAL loop group's shared heap `slot` — the group-internal SCC-borrows
+/// proof `mutual_group_slot_reclaimable` gates on, factored out (512-KiB select.rs mandate) so the CALLER-side
+/// placement can see WHY the group will not drop the slot, not merely THAT it will not. The reclaim gate is a
+/// byte-identical `matches!(_, GroupReclaims)` wrapper over this.
+///
+/// Steps (a)/(b)/(c) certify every member only BORROWS the slot: (a) no export-boundary / funcref-taken /
+/// lifted-called (invisible) edge, (b) the slot stays INVARIANT (identity-threaded, not re-boxed —
+/// `invalidate_varying_params`), (c) it is used BORROW + back-edge-only (`param_only_borrowed_or_backedge` — a
+/// NON-tail consume by any member FAILS this). When (a)+(b)+(c) hold the group leaves the slot at the SAME rc
+/// it received (no cross-member dup), so exactly ONE rc1 drop is balanced. WHO owns that drop turns on the
+/// EXTERNAL callers (non-group callers of any member; intra-group back-edges are owned-by-flow):
+///   • all-Owned (≥1)              ⇒ `GroupReclaims`            — the group drops at its dispatch-loop exit.
+///   • all-Borrowed-and-reused (≥1)⇒ `CallerDropsAfterLastUse` — the CAESAR shape: the group must NOT drop
+///        (that would UAF the caller's still-live handle); the EXTERNAL CALLER owns one balanced drop after
+///        its last use. This is the hook v-memory-safety's caller-side placement consults.
+///   • a MIX, an unprovable external, or NO external at all ⇒ `Decline` (leak-safe: never a double-free).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum MutualGroupSlotVerdict {
+    GroupReclaims,
+    CallerDropsAfterLastUse,
+    Decline,
+}
+
+pub(super) fn mutual_group_slot_verdict(
+    db: &mut Db,
+    members: &[usize],
+    slot: u32,
+) -> MutualGroupSlotVerdict {
+    use MutualGroupSlotVerdict::Decline;
+    // (a) Conservative invisible-edge / export-boundary decline (any member): the trampoline or an eta-lifted /
+    // call_indirect edge could own or forward the handle in a way the direct call-site scan misses.
+    for &m in members {
+        let Some(body_m) = db.defs.get(m).and_then(|d| d.body) else {
+            return Decline;
+        };
+        if db.exports.iter().any(|e| e.def == Some(m)) {
+            return Decline; // an export entry's boundary param is owned/dropped by the trampoline.
+        }
+        if super::def_funcref_taken(db, body_m) || super::callee_called_from_lifted_body(db, m) {
+            return Decline;
+        }
+    }
+    let member_bodies: std::collections::HashSet<StructId> = members
+        .iter()
+        .filter_map(|&m| db.defs.get(m).and_then(|d| d.body))
+        .collect();
+    let mut any_external_owned = false;
+    let mut any_external_borrowed = false;
+    for &m in members {
+        let Some(body_m) = db.defs.get(m).and_then(|d| d.body) else {
+            return Decline;
+        };
+        let params_m = crate::layout::def_params(db, m);
+        // Re-derive member `m`'s slot assignment exactly as the emit does (dense `0..n`, Unit elided).
+        let mut slots_m: HashMap<StructId, u32> = HashMap::new();
+        let mut pslots_m: Vec<u32> = Vec::new();
+        for (b, ty) in params_m.iter() {
+            if matches!(ty.strip_nominal(), Ty::Unit) {
+                continue;
+            }
+            if valtype_of(ty).is_none() {
+                return Decline;
+            }
+            let s = pslots_m.len() as u32;
+            slots_m.insert(*b, s);
+            pslots_m.push(s);
+        }
+        // The member's own binder + type at the shared slot (must be a heap param in EVERY member).
+        let Some((binder_m, ty_m)) = params_m
+            .iter()
+            .find(|(b, _)| slots_m.get(b) == Some(&slot))
+            .cloned()
+        else {
+            return Decline;
+        };
+        if !is_heap_type(&ty_m) {
+            return Decline;
+        }
+        // (b) INVARIANT (identity-threaded) in member `m` — cut-1 declines a re-boxed (varying) shared slot.
+        let mut invariant_m: std::collections::HashSet<StructId> =
+            params_m.iter().map(|(b, _)| *b).collect();
+        invalidate_varying_params(
+            db,
+            body_m,
+            &pslots_m,
+            &slots_m,
+            members,
+            m,
+            &mut invariant_m,
+            &params_m,
+        );
+        if !invariant_m.contains(&binder_m) {
+            return Decline;
+        }
+        // (c) BORROW + back-edge-only in member `m` (a non-tail consume by any member fails this → decline).
+        if !param_only_borrowed_or_backedge(db, body_m, binder_m, members, &pslots_m, &slots_m) {
+            return Decline;
+        }
+        // External-caller ownership (the CAESAR discriminator, generalized to the mutual group): classify
+        // every EXTERNAL entry (a non-group caller of `m`) — Owned = ownership transfers in, Borrowed =
+        // borrow-and-reuse (caller keeps the rc), unprovable/missing = cannot certify either drop-owner.
+        let Some(param_index) = params_m.iter().position(|(b, _)| *b == binder_m) else {
+            return Decline;
+        };
+        let sites = crate::infer::callee_call_site_args_with_caller(db, m);
+        for (caller_body, args) in sites {
+            if member_bodies.contains(&caller_body) {
+                continue; // intra-group back-edge: owned-by-flow, not a fresh external entry.
+            }
+            let Some(&arg) = args.get(param_index) else {
+                return Decline; // missing external arg → cannot certify (leak-safe).
+            };
+            match super::heap_operand_ownership(db, arg) {
+                Ok(super::HandleOwnership::Owned) => any_external_owned = true,
+                Ok(super::HandleOwnership::Borrowed) => any_external_borrowed = true,
+                _ => return Decline, // unprovable external ownership → decline (leak, not UAF).
+            }
+        }
+    }
+    match (any_external_owned, any_external_borrowed) {
+        (true, false) => MutualGroupSlotVerdict::GroupReclaims,
+        (false, true) => MutualGroupSlotVerdict::CallerDropsAfterLastUse,
+        // a MIX (an Owned handle would need the group to drop, a Borrowed one forbids it) or NO external at
+        // all (nothing proves ownership) ⇒ decline (leak-safe).
+        _ => Decline,
+    }
+}
+
 /// Whether the reference to the `let` binding `binder` ESCAPES the node at `id` — i.e. its reference
 /// flows into a value that OUTLIVES the `let` (the returned result, an element of a constructed tuple,
 /// or a call argument — all CONSUMING positions), as opposed to being used only to BORROW (a
