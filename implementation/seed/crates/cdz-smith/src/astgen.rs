@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(29);
+    let shape = c.variant(30);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -337,6 +337,13 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     // field-1 projection must reach the live list. A dropped/over-reclaimed heap field or a mis-projected tuple
     // corrupts the value. Value = t.0 + t.1[0] = e0 + e1.
     let tuple_list_arg = format!("#tuple({e0} #list({e1} {e2}))");
+    // A Char value-form for the chr1 CHAR-SCALAR-ENTRY shape (29) — the last gap in the scalar-entry family
+    // (peer-flagged by v-rust-backend after #9771 made Char entry args marshal on rust). A `#\u+XXXX` codepoint
+    // literal (explicit form — no escaping pitfalls) for an ASCII letter 'A'..'Z' (cp 65..90), returned via
+    // Char.to-int. Char marshals as a fixed 32-bit Unicode scalar (distinct from the Int64/UInt64 scalars); a
+    // wrong-width or wrong-codepoint marshal corrupts the to-int. Value = cp = 65 + e0%26.
+    let char_cp = 65 + (e0 % 26);
+    let char_arg = format!("#\\u+{char_cp:04X}");
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -606,10 +613,18 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      list<tuple> (heap holding value-compound elements): here a value/stack TUPLE cell CARRIES a HEAP
         //      list field, so the tuple must keep the heap alive and its field-1 projection reach the live list. A
         //      dropped/over-reclaimed heap field or mis-projected tuple corrupts the value. Result is a scalar.
-        _ => (
+        28 => (
             "(do (def (f (: t #tuple(Int64 (List Int64)))) (+ (. t 0) (match (List.at (. t 1) 0) ((Some v) v) (None 0)))) (export f))"
                 .to_string(),
             vec![tuple_list_arg],
+        ),
+        // 29 — chr1 Char SCALAR-ENTRY param (peer-flagged by v-rust-backend, #9771): a `(: c Char)` param returned
+        //      via Char.to-int. The last gap in the scalar-entry family (6 numeric scalars had no Char). A Char
+        //      marshals as a fixed 32-bit Unicode scalar — distinct from the Int64/UInt64 entry scalars — so a
+        //      wrong-width or wrong-codepoint marshal corrupts the to-int. Arg is a `#\u+XXXX` codepoint literal.
+        _ => (
+            "(do (def (f (: c Char)) (Char.to-int c)) (export f))".to_string(),
+            vec![char_arg],
         ),
     };
     ExportParam { source, args }
@@ -5945,13 +5960,14 @@ mod tests {
         // entry-param `f` + the lpr1 list<record<x,y>> record-list-element-entry-param `f` + the eor1
         // option<record<x,y>> sum-holding-a-record-entry-param `f` + the ell1 list<list<Int64>> nested-heap
         // (heap-list-of-heap-lists) entry-param `f` + the rrf1 record-with-a-record-field nested-product
-        // entry-param `f` + the tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f`.
-        let mut reached = [false; 29];
-        for seed in 0u64..1740 {
+        // entry-param `f` + the tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f` + the chr1
+        // Char scalar-entry-param `f`.
+        let mut reached = [false; 30];
+        for seed in 0u64..1800 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(29) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-28 reuse e0/e1/e2/s0/a — no new read.)
+            // variant(30) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-29 reuse e0/e1/e2/s0/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6038,11 +6054,13 @@ mod tests {
                 reached[27] = true; // shape 27 = rrf1 record-with-a-record-field nested-product entry-param `f`
             } else if ep.source.contains("(: t #tuple(Int64 (List Int64)))") {
                 reached[28] = true; // shape 28 = tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f`
+            } else if ep.source.contains("(: c Char)") {
+                reached[29] = true; // shape 29 = chr1 Char scalar-entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-nine export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all thirty export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
