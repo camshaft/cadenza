@@ -746,8 +746,9 @@
   ; residual leak SURVIVES #6209+#6307 (breaker census 2026-08-30: per-call 6/7, values
   ; byte-correct) — NOT the collapsed #6022 fold class; shape = sliced-field List String
   ; accumulation (named to v-core-opt with the B multi-apply residuals). #5766 tolerate-fewer
-  ; auto-passes the eventual collapse.
-  (live-objects known-leak))
+  ; auto-passes the eventual collapse. UPDATE (2026-09-26): now reclaims to 0 faithfully — the
+  ; TIGHTEN CANDIDATE advisory fired on the debug-counters corpus-13-strings exec; stale leak, flipped.
+  (live-objects 0))
 
 (case
   "a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-len, not byte-len"
@@ -782,7 +783,7 @@
       (def (main) (do (def s (String.concat "a," (String.concat "é" ",b"))) (List.len (split s))))
       (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a concat-built rope of 1-, 2-, and 3-byte scalars measures and indexes at every width"
@@ -1458,8 +1459,9 @@
   (output (: 2001 Int64))
   ; The recursive `(match (String.at s i) ((Some c) …))` scan's Some shell is now reclaimed per iteration
   ; (v-core-opt owned-single-view MatchSum shell reclaim; the arm only borrows `c` via `(= c " ")`, never
-  ; consumes it) → was 35, now 1. Measured on the debug-counters runtime.
-  (live-objects known-leak))
+  ; consumes it) → was 35, now 0 (a later per-read reclaim closed the residual 1; TIGHTEN CANDIDATE
+  ; fired on the debug-counters corpus-13-strings exec). Measured on the debug-counters runtime.
+  (live-objects 0))
 
 (case
   "a ROMAN NUMERAL renderer walks a value-symbol table greedily with subtractive pairs"
@@ -6673,7 +6675,7 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 613 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a scalar-wise string reversal is an involution over a multibyte rope and reverses scalars, not bytes"
