@@ -211,6 +211,19 @@ pub fn grade(
                  heap trial; its reclaim fix has landed, drop the known-leak marker",
                 test_run.description
             );
+        } else if let Some(mag) = cdz_corpus_grade::known_leak_observed_leak(&per_trial_live) {
+            // concierge-84895 / operator "work each known-leak one by one": the COMPLEMENT of the tighten
+            // candidate — a still-leaking known-leak case, surfaced with its observed magnitude so the reclaim
+            // owners have the full RANKED worklist to drive the one-by-one fix loop. `mag` is the MAX residual
+            // (worst-single-trial rank key); the ordered PER-TRIAL heap-count vector follows so v-memory-safety
+            // can read SCALING — N growing across trials = the per-read view-mint / self-loop cluster, N
+            // constant = the base-owned-node cluster (reply 84899, different reclaim roots). Non-blocking.
+            let per_trial: Vec<u32> = per_trial_live.iter().flatten().copied().collect();
+            eprintln!(
+                "KNOWN-LEAK WORKLIST: {} — still leaks, observed {mag} live cell(s) (max; per-trial \
+                 {per_trial:?}); reclaim not yet landed",
+                test_run.description
+            );
         }
     } else if let Some(msg) = check_live_objects_scalar(
         &per_trial_live,
