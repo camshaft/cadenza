@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(28);
+    let shape = c.variant(29);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -331,6 +331,12 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     // through `(. (. r inner) x)`). A mis-nested inner-record rebuild (wrong field offset / cell nesting)
     // corrupts the sum. Value = a + inner.x + inner.y = e0+e1+e2.
     let nested_record_arg = format!("#record((= a {e0}) (= inner #record((= x {e1}) (= y {e2}))))");
+    // A tuple<Int64, list<Int64>> value-form for the tol1 VALUE-HOLDING-A-HEAP shape (28): a value TUPLE whose
+    // second field is a HEAP list. The INVERSE of shape 22's list<tuple> (a heap holding value-compound elements)
+    // — here a value/stack tuple cell CARRIES a heap-list field, so the tuple must keep the heap alive and its
+    // field-1 projection must reach the live list. A dropped/over-reclaimed heap field or a mis-projected tuple
+    // corrupts the value. Value = t.0 + t.1[0] = e0 + e1.
+    let tuple_list_arg = format!("#tuple({e0} #list({e1} {e2}))");
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -590,10 +596,20 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      to shape 26's nested HEAP (list<list>): it exercises the RECURSIVE record assembler — a record cell
         //      NESTED inside a record cell, field-resolved through `(. (. r inner) x)`. A mis-nested inner-record
         //      rebuild (wrong field offset / cell nesting) corrupts the sum. Result is a scalar = e0+e1+e2.
-        _ => (
+        27 => (
             "(do (def (f (: r (Record (: a Int64) (: inner (Record (: x Int64) (: y Int64)))))) (+ (. r a) (+ (. (. r inner) x) (. (. r inner) y)))) (export f))"
                 .to_string(),
             vec![nested_record_arg],
+        ),
+        // 28 — tol1 tuple<Int64, list<Int64>> VALUE-HOLDING-A-HEAP entry param: a `#tuple(Int64 (List Int64))`
+        //      param, return t.0 + t.1[0] (or t.0 if the list field is empty). The INVERSE of shape 22's
+        //      list<tuple> (heap holding value-compound elements): here a value/stack TUPLE cell CARRIES a HEAP
+        //      list field, so the tuple must keep the heap alive and its field-1 projection reach the live list. A
+        //      dropped/over-reclaimed heap field or mis-projected tuple corrupts the value. Result is a scalar.
+        _ => (
+            "(do (def (f (: t #tuple(Int64 (List Int64)))) (+ (. t 0) (match (List.at (. t 1) 0) ((Some v) v) (None 0)))) (export f))"
+                .to_string(),
+            vec![tuple_list_arg],
         ),
     };
     ExportParam { source, args }
@@ -5929,13 +5945,13 @@ mod tests {
         // entry-param `f` + the lpr1 list<record<x,y>> record-list-element-entry-param `f` + the eor1
         // option<record<x,y>> sum-holding-a-record-entry-param `f` + the ell1 list<list<Int64>> nested-heap
         // (heap-list-of-heap-lists) entry-param `f` + the rrf1 record-with-a-record-field nested-product
-        // entry-param `f`.
-        let mut reached = [false; 28];
-        for seed in 0u64..1680 {
+        // entry-param `f` + the tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f`.
+        let mut reached = [false; 29];
+        for seed in 0u64..1740 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(28) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-27 reuse e0/e1/e2/s0/a — no new read.)
+            // variant(29) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-28 reuse e0/e1/e2/s0/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6020,11 +6036,13 @@ mod tests {
                 .contains("(: inner (Record (: x Int64) (: y Int64)))")
             {
                 reached[27] = true; // shape 27 = rrf1 record-with-a-record-field nested-product entry-param `f`
+            } else if ep.source.contains("(: t #tuple(Int64 (List Int64)))") {
+                reached[28] = true; // shape 28 = tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-eight export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-nine export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
