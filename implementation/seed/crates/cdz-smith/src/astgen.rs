@@ -661,7 +661,7 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(26);
+    let shape = c.variant(27);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -1045,9 +1045,22 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // self-recursive shapes 9-21 (none wrap the owned temp in a non-reusing caller so the caller-drop is the
         // reclaim site). Returns the KNOWN `a`; verified rust==a (wasm-vs-rust via the in-process differential —
         // the `cdz compile` CLI mis-rejects this go/helper/caller shape exactly like shape 22, an S602 artifact).
-        _ => format!(
+        25 => format!(
             "(do (def (walk (: xs (List Int64)) (: d Int64)) (if (< d 1) (Option.expect (List.at xs 0) \"w\") (walk xs (- d 1)))) (def (caller (: xs (List Int64))) (walk xs 3)) (def (main) (caller (list {a} {b} {d}))) (export main))"
         ),
+        // 26 — NESTED-TAIL-LOOP String.at Some-shell ACCUMULATE tripwire (the #db21185290 value counterpart). That
+        // fix made a nested tail-loop's per-read String.at Some-shells free ALL across the back-edge (not just the
+        // innermost) — a ~20-case leak lever; the corpus 24108c118a pins the LEAK side (live-objects). THIS pins the
+        // VALUE side: `outer` tail-loops calling `inner`, an inner tail-loop that does `String.at s 0` EACH step
+        // (String.at : String -> Int64 -> (Option String); its Some carries a one-char SUBSTRING shell) and sums
+        // its `String.byte-len`. The Some-shells accumulate across BOTH back-edges. At tip value-CORRECT; a
+        // regression that OVER-frees a still-live shell (freeing more than the accumulate intended) reads freed →
+        // wrong byte-len / trap. NULLARY (const "abc"), NON-entry (no arg-decode). NB `String.at` returns Option
+        // STRING (a substring) — NOT Option Char; the Char member is `String.scalar-at` (per v-rust-backend). Both
+        // backends run this (verified rust==6 = 3 outer * 2 inner * byte-len("a")=1). Distinct from every other
+        // reclaim shape — the SOLE nested (loop-in-loop) String.at-Some-shell accumulate.
+        _ => "(do (def (inner (: s String) (: i Int64) (: acc Int64)) (if (< i 1) acc (inner s (- i 1) (+ acc (match (String.at s 0) ((Some sub) (String.byte-len sub)) (None 0)))))) (def (outer (: s String) (: n Int64) (: acc Int64)) (if (< n 1) acc (outer s (- n 1) (inner s 2 acc)))) (def (main) (outer \"abc\" 3 0)) (export main))"
+            .to_string(),
     };
     Program { source }
 }
@@ -5852,9 +5865,9 @@ mod tests {
     /// sum-fold) — a generator edit that drops a shape would quietly stop exercising that reclaim class.
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
-        // Distinctive, mutually-exclusive markers for the twenty-six shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 26];
-        for seed in 0u64..1170 {
+        // Distinctive, mutually-exclusive markers for the twenty-seven shapes (see `generate_reclaim_shapes`).
+        let mut reached = [false; 27];
+        for seed in 0u64..1215 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -5919,6 +5932,8 @@ mod tests {
                 reached[24] = true;
             } else if src.contains("(def (walk (: xs (List Int64)) (: d Int64))") {
                 reached[25] = true; // shape 25 = single-self-loop fresh-owned-arg caller-drop tripwire
+            } else if src.contains("(def (inner (: s String) (: i Int64) (: acc Int64))") {
+                reached[26] = true; // shape 26 = nested-tail-loop String.at Some-shell accumulate tripwire
             } else if src.contains("(type L (Nil) (Cons (List Int64) L))") {
                 reached[19] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
@@ -5927,7 +5942,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-six reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-seven reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
