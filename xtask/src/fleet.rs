@@ -10776,14 +10776,19 @@ fn reap_check_leases(repo: &Path, now: u64) -> usize {
 /// be cleared even when the window-touching watchdog is disabled. Touches no tmux window; prints the count.
 fn reap_leases_cmd(fleet: &Fleet) {
     let now = now_unix();
-    let (prio, vert) = match check_lease_dir(&fleet.repo) {
+    let (prio, vert, owners) = match check_lease_dir(&fleet.repo) {
         Some(dir) => reap_leases_classified_in(&dir, now, check_lease_holder_alive),
-        None => (0, 0),
+        None => (0, 0, Vec::new()),
     };
     let total = prio + vert;
     if total > 0 {
+        let owners_note = if owners.is_empty() {
+            String::new()
+        } else {
+            format!("; owned by {}", owners.join(", "))
+        };
         println!(
-            "fleet reap-leases: reclaimed {total} leaked check-lease(s) ({prio} priority, {vert} vertical; dead-PID / TTL-stale) — would have stalled the merge gate."
+            "fleet reap-leases: reclaimed {total} leaked check-lease(s) ({prio} priority, {vert} vertical{owners_note}; dead-PID / TTL-stale) — would have stalled the merge gate."
         );
         // Durable APPEND-log of reap EVENTS so the leak-RATE trend is greppable (concierge 2026-09-25): a
         // `<ts>\treaped=<n>\tpriority=<p>\tvertical=<v>` line per non-zero reap. Append-only + written ONLY
@@ -10798,7 +10803,15 @@ fn reap_leases_cmd(fleet: &Fleet) {
             .append(true)
             .open(&log)
         {
-            let _ = writeln!(f, "{now}\treaped={total}\tpriority={prio}\tvertical={vert}");
+            let owners_field = if owners.is_empty() {
+                String::new()
+            } else {
+                format!("\towners={}", owners.join(","))
+            };
+            let _ = writeln!(
+                f,
+                "{now}\treaped={total}\tpriority={prio}\tvertical={vert}{owners_field}"
+            );
         }
     } else {
         println!("fleet reap-leases: ok — no leaked check-leases to reclaim.");
@@ -10890,21 +10903,24 @@ fn lease_is_reapable(alive: Option<bool>, mtime_age_secs: Option<u64>) -> bool {
     alive == Some(false) || mtime_age_secs.is_some_and(|a| a > CHECK_LEASE_TTL_SECS)
 }
 
-/// Reap leaked leases in `dir`, returning `(priority_reaped, vertical_reaped)` as FILE COUNTS (not the
-/// weight sum — the reap-leases append-log records how many leases leaked by class, and a leaked file is one
-/// file). Uses the SAME [`lease_is_reapable`] predicate as the acquire-path scan, so the cron reaper and the
-/// acquire reaper never diverge. Parameterized on the pid-liveness probe so it's unit-tested without `/proc`.
-/// The class split lets the concierge grep the leak-RATE trend + tell a leaked PRIORITY lease (stalls the
-/// whole gate) from a vertical one (concierge 2026-09-25).
+/// Reap leaked leases in `dir`, returning `(priority_reaped, vertical_reaped, owner_agents)` — the first two
+/// are FILE COUNTS by class (not the weight sum — a leaked file is one file), the third is the DISTINCT,
+/// sorted set of owner-agents ([`lease_owner_agent`]) of the reaped leases (empty for pre-#9756 leases with
+/// no stamped owner). Uses the SAME [`lease_is_reapable`] predicate as the acquire-path scan, so the cron
+/// reaper and the acquire reaper never diverge. Parameterized on the pid-liveness probe so it's unit-tested
+/// without `/proc`. The class split lets the concierge grep the leak-RATE trend + tell a leaked PRIORITY
+/// lease (stalls the whole gate) from a vertical one; the owner set pins WHICH agents' gates are getting
+/// SIGKILL'd mid-check (the root-cause contention signal) rather than just a count (concierge 2026-09-25/26).
 fn reap_leases_classified_in(
     dir: &Path,
     now: u64,
     is_alive: impl Fn(&str) -> Option<bool>,
-) -> (usize, usize) {
+) -> (usize, usize, Vec<String>) {
     let mut prio = 0usize;
     let mut vert = 0usize;
+    let mut owners: Vec<String> = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else {
-        return (0, 0);
+        return (0, 0, owners);
     };
     for e in rd.filter_map(Result::ok) {
         let p = e.path();
@@ -10914,6 +10930,13 @@ fn reap_leases_classified_in(
         };
         let mtime_age = file_mtime_unix(&p).map(|m| now.saturating_sub(m));
         if lease_is_reapable(is_alive(&name), mtime_age) {
+            // Read the stamped owner BEFORE deleting — attributes the leak to the agent whose gate died.
+            if let Some(o) = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|c| lease_owner_agent(&c))
+            {
+                owners.push(o);
+            }
             let _ = std::fs::remove_file(&p);
             if name.contains("-priority.lease") {
                 prio += 1;
@@ -10922,7 +10945,9 @@ fn reap_leases_classified_in(
             }
         }
     }
-    (prio, vert)
+    owners.sort();
+    owners.dedup();
+    (prio, vert, owners)
 }
 
 /// Reap leaked leases in an already-resolved lease `dir`, returning the count — the reap core split out
@@ -29860,21 +29885,27 @@ branch refs/heads/fleet/trunk-tools
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let now = 1_000_000u64; // fresh mtimes → only the pid-liveness path reaps (TTL would not)
-        std::fs::write(dir.join("111-priority.lease"), "x").unwrap(); // dead → reap (priority)
-        std::fs::write(dir.join("222-vertical.lease"), "x").unwrap(); // dead → reap (vertical)
-        std::fs::write(dir.join("555-gate.lease"), "x").unwrap(); // dead → reap (counts as vertical: a file)
-        std::fs::write(dir.join("333-vertical.lease"), "x").unwrap(); // live → kept
+        // 3-field bodies carry the stamped owner (#9756); 555 is an old PRE-STAMP lease (no owner).
+        std::fs::write(dir.join("111-priority.lease"), "900\tpriority\tv-alpha").unwrap(); // dead → reap
+        std::fs::write(dir.join("222-vertical.lease"), "900\tvertical\tv-beta").unwrap(); // dead → reap
+        std::fs::write(dir.join("555-gate.lease"), "900\tgate").unwrap(); // dead → reap, pre-stamp (no owner)
+        std::fs::write(dir.join("333-vertical.lease"), "900\tvertical\tv-gamma").unwrap(); // live → kept
         std::fs::write(dir.join("notes.txt"), "ignore").unwrap(); // non-.lease → ignored
         let probe = |name: &str| match name.split('-').next() {
             Some("333") => Some(true),
             Some("111") | Some("222") | Some("555") => Some(false),
             _ => None,
         };
-        let (prio, vert) = reap_leases_classified_in(&dir, now, probe);
+        let (prio, vert, owners) = reap_leases_classified_in(&dir, now, probe);
         assert_eq!(
             (prio, vert),
             (1, 2),
             "1 priority + 2 vertical (incl the gate lease as ONE file, not its weight) reaped by class"
+        );
+        assert_eq!(
+            owners,
+            vec!["v-alpha".to_string(), "v-beta".to_string()],
+            "distinct sorted owners of the reaped leases; the pre-stamp 555 (no owner) + the LIVE 333 (kept) contribute none"
         );
         assert!(!dir.join("111-priority.lease").exists());
         assert!(
