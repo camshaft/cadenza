@@ -481,6 +481,22 @@ pub fn known_leak_now_clean(per_trial: &[Option<u32>]) -> bool {
     per_trial.iter().any(Option::is_some) && per_trial.iter().flatten().all(|&n| n == 0)
 }
 
+/// Companion to [`known_leak_now_clean`] (concierge coord 84895, operator "work through each known-leak one
+/// by one … never defer"): for a KNOWN-LEAK case that is NOT yet fully clean, return the observed leak
+/// MAGNITUDE — the MAX live-cell count across the heap trials — so the grade caller can emit a RANKED
+/// remaining-WORKLIST advisory ("still leaks N, reclaim not yet landed"). Where [`known_leak_now_clean`]
+/// surfaces the FREE flips (reclaim already landed), this surfaces the COMPLEMENT: the pile the reclaim
+/// owners still have to work. `None` when there is nothing to work: either no heap trial ran (all `None` →
+/// nothing measured) OR every measured trial is already clean (max == 0 → a TIGHTEN CANDIDATE, owned by
+/// [`known_leak_now_clean`], not the worklist — the two are mutually exclusive on a measured case). MAX (not
+/// sum) ranks by the worst single-trial residual, matching the per-trial exact-count model. Non-blocking
+/// advisory only (never fails a grade). Pure so it is unit-testable; the `eprintln!` lives at the grade
+/// call site that owns the case description.
+pub fn known_leak_observed_leak(per_trial: &[Option<u32>]) -> Option<u32> {
+    let max = per_trial.iter().flatten().copied().max()?;
+    (max > 0).then_some(max)
+}
+
 /// The BASELINE-SIDE known-leak LEDGER (operator directive 2026-09-05: known-leak is a COMPILER FACT, not
 /// spec, so it lives baseline-side, not as a corpus annotation — see the `B + leak-ledger` design). This is
 /// the ADDITIVE mechanism half (parse + compare), OFF until the `B` grade change (drop-top-level result →
@@ -4032,6 +4048,27 @@ mod tests {
         assert!(!known_leak_now_clean(&[Some(2)])); // still leaks
         assert!(!known_leak_now_clean(&[None, None])); // no heap trial measured → not a candidate
         assert!(!known_leak_now_clean(&[])); // no trials
+    }
+
+    /// concierge-84895 `known_leak_observed_leak`: the WORKLIST complement of `known_leak_now_clean`. A
+    /// still-leaking known-leak case reports its MAX residual across heap trials; a clean or unmeasured case
+    /// reports `None`. The two are mutually exclusive on any measured case (clean ⇔ max == 0).
+    #[test]
+    fn known_leak_observed_leak_reports_max_residual_of_still_leaking_only() {
+        assert_eq!(known_leak_observed_leak(&[Some(2)]), Some(2)); // still leaks 2
+        assert_eq!(known_leak_observed_leak(&[Some(0), Some(1)]), Some(1)); // one trial leaks → worklist at max
+        assert_eq!(known_leak_observed_leak(&[Some(1), None, Some(3)]), Some(3)); // max across heap trials, no-heap skipped
+        assert_eq!(known_leak_observed_leak(&[Some(0)]), None); // fully clean → tighten candidate, NOT worklist
+        assert_eq!(known_leak_observed_leak(&[Some(0), None, Some(0)]), None); // all clean → not worklist
+        assert_eq!(known_leak_observed_leak(&[None, None]), None); // no heap trial measured → nothing to work
+        assert_eq!(known_leak_observed_leak(&[]), None); // no trials
+        // mutual exclusivity on a measured case: exactly one of the two fires
+        for tr in [vec![Some(0)], vec![Some(2)], vec![Some(0), Some(1)]] {
+            assert_ne!(
+                known_leak_now_clean(&tr),
+                known_leak_observed_leak(&tr).is_some()
+            );
+        }
     }
 
     #[test]
