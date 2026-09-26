@@ -7684,7 +7684,7 @@ fn rearm_stale_scan(
         // reissue is DEMONSTRABLY not sticking, SURFACE it (rate-limited) to the concierge + watchdog.log as
         // needing an operator RESTART, instead of silently re-arming forever. We STILL send the re-arm below
         // (non-destructive, and harmless if the diagnosis is wrong); the surface just makes the wedge visible.
-        if reissue_not_sticking(&action, ra, hb_age, WEDGE_MIN_FROZEN_SECS) {
+        if reissue_not_sticking(&action, ra, hb_age, wedge_frozen_floor(interval)) {
             let key = format!("rearm-wedge.{}", a.name);
             let surfaced_recently =
                 sat_notify_age_secs(fleet, &key, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
@@ -12159,13 +12159,29 @@ fn escalate_repeated_nudge(
 /// (streak 1) still gets the cheap nudge first.
 const REPEATED_NUDGE_ESCALATE_THRESHOLD: u32 = 2;
 
-/// How long a heartbeat must stay FROZEN after a re-arm before the self-heal treats the re-arm as "not
-/// sticking" and surfaces a session wedge. A reissue pastes `/loop` and runs the tick-prompt IMMEDIATELY
-/// (not on the interval), so a re-arm that WORKS stamps a heartbeat within that tick (seconds-to-minutes);
-/// this floor (15 min) is far above a normal tick yet far below the ~47min freeze the wasm-boundary-marshal
-/// wedge showed — so a merely-slow recovering reissue is never mistaken for a wedge. Interval-agnostic
-/// because the reissue ticks immediately regardless of the agent's cadence.
+/// FLOOR (seconds) a heartbeat must stay frozen after a re-arm before the self-heal treats the re-arm as
+/// "not sticking" and surfaces a session wedge — used for VERY-SHORT-interval agents. A reissue pastes
+/// `/loop` and runs the tick-prompt IMMEDIATELY, so a re-arm that WORKS stamps a heartbeat within that tick
+/// (seconds-to-minutes); 15 min is far above a normal tick. But it is NOT interval-agnostic: a LONG-interval
+/// MONITOR (e.g. v-rust-backend at 3h) legitimately idles at its prompt between cron fires with a heartbeat
+/// age far past 15 min without being wedged — flagging that as a wedge is a FALSE POSITIVE (it fired twice
+/// wrongly on v-rust-backend, 2026-09-26). So the real floor is INTERVAL-SCALED via [`wedge_frozen_floor`];
+/// this constant is only its lower bound (for sub-`WEDGE_INTERVAL_MULT`-of-15-min intervals).
 const WEDGE_MIN_FROZEN_SECS: u64 = 900;
+
+/// A wedge is only credible once the heartbeat has been frozen well past the agent's OWN cadence — a monitor
+/// idling one interval + change between cron fires is NORMAL, not wedged. Require this multiple of the
+/// interval (2× = clearly beyond a full cycle + a slow tick).
+const WEDGE_INTERVAL_MULT: u64 = 2;
+
+/// The interval-scaled frozen-floor for the session-wedge signal: `max(WEDGE_MIN_FROZEN_SECS,
+/// WEDGE_INTERVAL_MULT × interval)`. A 10-min agent floors at 900s×… → 1200s (2× interval); a 3h monitor at
+/// 21600s (2×3h), so its normal ~11400s idle-between-ticks heartbeat age is well under the floor and never
+/// mis-flagged. Pure so the scaling is unit-tested. `interval_secs == 0` (unparseable cadence) → the bare
+/// constant floor (fail toward the old absolute behavior, never a smaller/looser floor).
+fn wedge_frozen_floor(interval_secs: u64) -> u64 {
+    WEDGE_MIN_FROZEN_SECS.max(interval_secs.saturating_mul(WEDGE_INTERVAL_MULT))
+}
 
 /// True when a re-arm is DEMONSTRABLY not sticking = a SESSION WEDGE the non-destructive self-heal cannot
 /// fix (the escalation rung above reissue — concierge greenlit + operator seq 1251). A wedged session
@@ -22591,6 +22607,34 @@ mod tests {
             Some(240),
             Some(3000),
             floor
+        ));
+    }
+
+    #[test]
+    fn wedge_frozen_floor_scales_to_interval_so_long_monitors_are_not_false_wedged() {
+        // Sub-mult-of-15min interval → the bare constant floor (never looser than the old absolute behavior).
+        assert_eq!(wedge_frozen_floor(300), WEDGE_MIN_FROZEN_SECS); // 5min: max(900, 600) = 900
+        assert_eq!(wedge_frozen_floor(0), WEDGE_MIN_FROZEN_SECS); // unparseable cadence → floor
+        // Longer intervals scale at 2×.
+        assert_eq!(wedge_frozen_floor(600), 1200); // 10min → 20min
+        assert_eq!(wedge_frozen_floor(1800), 3600); // 30min → 1h
+        assert_eq!(wedge_frozen_floor(10800), 21600); // 3h → 6h
+        // THE FIX (v-rust-backend, 2026-09-26): a 3h monitor idle ~11400s between cron fires (just past its
+        // interval) is NOT a wedge — 11400 < the 21600 (2×3h) floor → reissue_not_sticking stays false even
+        // with the ReissueLoop + no-heartbeat-since-rearm signature that the flat 900 floor mis-flagged.
+        use RearmAction::*;
+        assert!(!reissue_not_sticking(
+            &ReissueLoop,
+            Some(240),
+            Some(11400),
+            wedge_frozen_floor(10800)
+        ));
+        // A GENUINE 3h wedge still flags: frozen ~7h (past 2× interval) with the same signature.
+        assert!(reissue_not_sticking(
+            &ReissueLoop,
+            Some(240),
+            Some(25000),
+            wedge_frozen_floor(10800)
         ));
     }
 
