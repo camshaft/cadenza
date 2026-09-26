@@ -616,6 +616,31 @@
   (live-objects 0))
 
 (case
+  "a bare enum PARAM member of a typed export interface crosses (payloadless-enum disc passthrough)"
+  (doc
+    "SHAPE 77 — a TOP-LEVEL bare `enum{…}` PARAM member of a typed export interface: the PARAM twin of
+           SHAPE 52's enum RESULT. An all-nullary Cadenza sum (`db.is_enum_disc`) is represented as its raw i32
+           DISCRIMINANT (no heap handle), which IS the canonical-ABI core rep of a WIT `enum`
+           (`flatten(enum) = [i32]`), so the enum arg crosses as a bare i32 disc the wrapper hands the def
+           directly (`record_interface_export`'s enum-param arm; `enum_disc_params` = identity passthrough when
+           the guest case order == the WIT case order). Guest `f` matches its `Color` param → 1/2/3; `red`→1,
+           `green`→2, `blue`→3, proving all three discs decode. GUARD: guest case order (kebab) must equal the
+           WIT case order (a reorder needs a runtime disc remap — a later increment). The param analogue of the
+           enum-result-member passthrough SHAPE 52 (distinct from an enum as a record FIELD or a host arg).")
+  (wit-world (world w (export iface (member f (func (param c (enum red green blue)) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (f (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+      (export f)))
+  (call f (: (red unit) Color))
+  (output (: 1 Int64))
+  (call f (: (blue unit) Color))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case
   "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
   (doc
     "SHAPE 10 — a scalar host-import RESULT (clock.now : () -> u64) driven through an imposed WIT world.

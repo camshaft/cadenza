@@ -1678,6 +1678,7 @@ pass	a bare effect declaration keyword form declares nothing and is rejected
 pass	a bare effect declaration that is never performed is well-formed
 pass	a bare empty list reflects an undetermined element, distinct from a concrete list type
 pass	a bare enum RESULT member of a typed export interface crosses (payloadless-enum disc passthrough)
+pass	a bare enum PARAM member of a typed export interface crosses (payloadless-enum disc passthrough)
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare float list element adopts a sibling's Float32 width — the mixed-float list unifies (no rust E0308)
 pass	a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs
