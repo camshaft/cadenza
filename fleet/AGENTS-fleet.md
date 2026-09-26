@@ -79,6 +79,18 @@ behavior is exactly what the corpus is FOR.
 diagnostic; that IS the spec. The rule targets working around IMPLEMENTATION gaps, not asserting real
 errors.)
 
+## 🚫 PERCEUS, NOT GC — OPERATOR STANDING INVARIANT (2026-09-26)
+
+**Balanced-0 memory (0 leak + 0 use-after-free) is achieved by PRECISE STATIC REFERENCE COUNTING** —
+Perceus: garbage-free RC with reuse. **There is NO garbage collector in this design.** NEVER pitch,
+design, or implement a GC; NEVER mark a leak case "GC-territory" or "unreclaimable-without-GC". A
+shared/escaping value is freed at its LAST reference (rc→0) via correct `dup`/`drop` placement — not by an
+"owner", and not by a GC. The ONLY thing precise RC cannot reclaim is a reference CYCLE, and Cadenza values
+are ACYCLIC by construction, so RC is COMPLETE: **every leak is a `dup`/`drop`-placement bug to FIX, never
+a reason to reach for GC.** (This lived in shared memory, but memory isn't load-bearing at the decision
+point — so it lives HERE, in the contract you re-read at tick step 1. Rationale + the
+ownership-vs-refcounting category-error trap: memory `balanced-0-perceus-is-precise-static-rc-no-gc-subset`.)
+
 ## 🔬 Standing operating principles — OPERATOR NOTE 408, FLEET-WIDE (2026-09-07)
 
 **Every agent must INTERNALIZE these and apply them in EVERYTHING you do** (operator: "every single
