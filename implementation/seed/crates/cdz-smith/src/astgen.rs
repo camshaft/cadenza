@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(23);
+    let shape = c.variant(24);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -290,6 +290,17 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     // shapes 6/7/8 are list<scalar>, 17 is list<String> (byte-leaf). Exercises the list-element descriptor
     // holding a TUPLE CELL in the emit_list_level path; a mis-built element-0 tuple cell corrupts the field-sum.
     let list_tuple_arg = format!("#list(#tuple({e0} {e1}) #tuple({e2} {a}))");
+    // An option<tuple<Int64,Int64>> value-form for the eot1 SUM-HOLDING-A-COMPOUND shape (23). Alternates by e2
+    // parity: `(Some #tuple({e0} {e1}))` — a sum cell whose PAYLOAD is a TUPLE (not a scalar/byte-leaf) — vs the
+    // payload-less `None`. Distinct from shapes 19/20/21 (sum payloads are byte-leaves/scalars) AND from shape 22
+    // (compound as a LIST element, not a SUM payload): this crosses a compound cell NESTED inside a sum
+    // discriminant cell. A mis-built payload tuple or mis-read discriminant corrupts the field-sum. Value = e0+e1
+    // (Some) or 0 (None).
+    let opt_tuple_arg = if e2 % 2 == 0 {
+        format!("(Some #tuple({e0} {e1}))")
+    } else {
+        "None".to_string()
+    };
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -494,10 +505,21 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      in the shared emit_list_level path; a mis-built element-0 tuple cell (wrong field offsets / cell
         //      nesting) corrupts the field-sum. Result is a scalar. Arg is a two-tuple list (element 1 exercises
         //      the multi-compound-element stride even though only element 0 is read); value = first tuple e0+e1.
-        _ => (
+        22 => (
             "(do (def (f (: xs (List #tuple(Int64 Int64)))) (match (List.at xs 0) ((Some t) (+ (. t 0) (. t 1))) (None 0))) (export f))"
                 .to_string(),
             vec![list_tuple_arg],
+        ),
+        // 23 — eot1 option<tuple<Int64,Int64>> SUM-HOLDING-A-COMPOUND entry param: a `(Option #tuple(Int64 Int64))`
+        //      param matched to sum the Some-payload tuple's two fields (or 0 for None). Distinct from shapes
+        //      19/20/21 (sum payloads are byte-leaves/scalars) AND shape 22 (compound as a LIST element): here the
+        //      compound (tuple cell) is NESTED INSIDE a sum discriminant cell — the sum-cell-holding-a-compound
+        //      marshal. A mis-built payload tuple (wrong field offsets / cell nesting) or mis-read discriminant
+        //      corrupts the field-sum. Result is a scalar. Arg alternates `(Some #tuple(…))`/`None` by e2 parity.
+        _ => (
+            "(do (def (f (: o (Option #tuple(Int64 Int64)))) (match o ((Some t) (+ (. t 0) (. t 1))) (None 0))) (export f))"
+                .to_string(),
+            vec![opt_tuple_arg],
         ),
     };
     ExportParam { source, args }
@@ -5829,13 +5851,14 @@ mod tests {
         // byte-leaf `slen` + the #9714 rpp8/rpp9 nested-Tuple `f` + the #9718/#9742 eos1 option<String>
         // sum-entry-param `f` + the #9747 rpp21/22 result<Int64,String> two-payload-sum-entry-param `f` + the
         // #9746/#9753 eob1 option<Bytes> bytes-byte-leaf-sum-entry-param `f` + the lpt1 list<tuple<Int64,Int64>>
-        // compound-list-element-entry-param `f`.
-        let mut reached = [false; 23];
-        for seed in 0u64..1380 {
+        // compound-list-element-entry-param `f` + the eot1 option<tuple<Int64,Int64>> sum-holding-a-compound
+        // entry-param `f`.
+        let mut reached = [false; 24];
+        for seed in 0u64..1440 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(23) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-22 reuse e0/e1/e2/s0/a — no new read.)
+            // variant(24) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-23 reuse e0/e1/e2/s0/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -5901,11 +5924,13 @@ mod tests {
                 reached[21] = true; // shape 21 = #9746/#9753 eob1 option<Bytes> bytes-byte-leaf-sum-entry-param `f`
             } else if ep.source.contains("(: xs (List #tuple(Int64 Int64)))") {
                 reached[22] = true; // shape 22 = lpt1 list<tuple<Int64,Int64>> compound-list-element-entry-param `f`
+            } else if ep.source.contains("(: o (Option #tuple(Int64 Int64)))") {
+                reached[23] = true; // shape 23 = eot1 option<tuple<Int64,Int64>> sum-holding-a-compound-entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-three export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-four export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
