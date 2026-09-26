@@ -1171,6 +1171,27 @@ fn compile_with_opt_inner(
             program_name(&db),
             map_bytes.clone(),
         ));
+        // GUEST export PARAM-TYPE map (bytes-second run-wiring, `cdz-param-type`): the twin of the result map
+        // above, carrying each export's PARAM types so `cdz-run`'s arg-decode can recover a value-form param
+        // (`BigInt`/`Rational`/`Symbol`) that the ERASED wasmtime component type (`list<u8>`) hides — otherwise
+        // a value-form entry-param `--arg` (a bignum for a `BigInt` param) declines. Each export's params pack
+        // as ONE `(Tuple <param-ty>…)` payload (an empty `(Tuple)` for a nullary export), in signature order
+        // (`ExportPlan::params`); the consumer reads the tuple elements as the ordered param types. Built here
+        // while the db + layout are still live (`encode_ty_payload` needs `&mut db`).
+        let param_entries: Vec<(String, crate::ast::Arenas)> = layout
+            .exports
+            .iter()
+            .map(|e| {
+                let tys: Vec<crate::ty::Ty> = e.params.iter().map(|(_, t)| t.clone()).collect();
+                let tuple_ty = crate::ty::Ty::Tuple(tys.into());
+                let root = crate::eval::encode_ty_payload(&mut db, &tuple_ty);
+                (
+                    e.name.clone(),
+                    crate::sidecar::extract_subtree(&db.ast, root),
+                )
+            })
+            .collect();
+        let param_map_bytes = cadenza_compile_abi::encode_param_types(&param_entries);
         // ALSO EMBED it as a COMPONENT-TOP-LEVEL custom section `cdz-result-type` (the run-wiring): the corpus
         // gate is a multi-process pipe — it spawns the `cdz-run` BINARY over the component bytes, so no
         // in-process artifact reaches it; the runner byte-scans this section from the piped component to
@@ -1202,6 +1223,11 @@ fn compile_with_opt_inner(
             let section =
                 crate::backend::wasm::dwarf::custom_section("cdz-result-type", &map_bytes);
             comp.bytes.extend_from_slice(&section);
+            // The PARAM-type twin rides under the SAME guard (a per-file `EmitTests*` build or a multi-
+            // component build must not carry it, for the same byte-identity reasons as the result section).
+            let param_section =
+                crate::backend::wasm::dwarf::custom_section("cdz-param-type", &param_map_bytes);
+            comp.bytes.extend_from_slice(&param_section);
         }
     }
 
