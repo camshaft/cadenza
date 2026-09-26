@@ -9550,6 +9550,7 @@ pass	rpp21 a Record entry param with a result-of-scalar-and-string field crosses
 pass	rpp22 a Record entry param with a result-of-two-strings field measures the active byte-leaf arm
 todo	rpp23 a Record entry param with a list<option<scalar>> field reads an element's Some payload
 todo	rpp24 a Tuple entry param with a list<option<scalar>> element reads an element's Some payload
+todo	bda1 a BigInt ENTRY parameter is decoded from its base-10 argument literal (value-form arg-decode)
 pass	rpp2 an open-row helper projects a field of the boundary Record param
 pass	rpp3 a Record entry param with a heap list field measures both
 pass	rpp4 a scalar Tuple entry param projects both positions
