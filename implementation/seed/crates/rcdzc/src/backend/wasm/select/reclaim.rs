@@ -364,15 +364,13 @@ pub(super) fn nontail_owned_temp_caller_drops(
         return false;
     }
     let g = super::mutual_loop_group(db, callee);
-    // SINGLE-member self-loop ONLY (the validated 501 scope). A MUTUAL group (>1 member) has its own
-    // group-wide caller-ownership guard (`mutual_group_slot_reclaimable`) — a caller-drop here would
-    // DOUBLE-count against it (the go↔helper CAESAR witness, `mutual_loop_group` len 2). `len != 1` also
-    // subsumes the empty (non-loop) case.
-    if g.len() != 1 || self_def.is_some_and(|sd| g.contains(&sd)) {
+    // INTRA-LOOP caller exclusion (ALL group sizes): a caller that is itself a group member reclaims per-frame,
+    // where a caller-drop double-frees. Applies to the single-self-loop AND the mutual group.
+    if self_def.is_some_and(|sd| g.contains(&sd)) {
         return false;
     }
-    // (G) YIELD to the callee's LOOP EPILOGUE: if it already drops this param at loop exit, a caller-drop is a
-    // SECOND drop → double-free. Slot = count of non-Unit params before `param_index` (the emit's assignment).
+    // Slot = count of non-Unit params before `param_index` (the emit's dense assignment) — needed for the
+    // mutual-group verdict below AND gate (G).
     let mut slot = 0u32;
     let mut target: Option<u32> = None;
     for (idx, (_b, ty)) in params.iter().enumerate() {
@@ -385,8 +383,36 @@ pub(super) fn nontail_owned_temp_caller_drops(
         }
         slot += 1;
     }
+    let Some(target_slot) = target else {
+        return false;
+    };
+    // GROUP-SIZE gate. A SINGLE-member self-loop is the validated 501 scope (admit). A MUTUAL group (>1 member)
+    // has the group-wide caller-ownership guard `mutual_group_slot_reclaimable`; a caller-drop is sound ONLY when
+    // the group PROVABLY borrows the shared slot and leaves its reclaim to the EXTERNAL caller — the
+    // `CallerDropsAfterLastUse` verdict (the go↔helper CAESAR witness: when `caller` is INLINED into `main`, its
+    // `#list(…)` literal is DUPLICATED across the two use sites, so the `(go …)` arg is a DISTINCT single-use
+    // fresh temp — fence 5 above already excluded a REUSED bare param, the non-inlined `caller xs` shape whose
+    // caller-drop would UAF the reused `List.len xs` borrow). `GroupReclaims` (the group drops at its own exit)
+    // and `Decline` (a mix / unprovable external — a member MIGHT consume it) both mean a caller-drop double-
+    // frees or over-admits ⟹ decline. A non-loop callee (len 0) is not this path. leak-over-UAF: the verdict's
+    // (a) invisible-edge / (b) invariant / (c) borrow-only fences certify the clean borrow, so the admit is the
+    // sole balanced drop; gate (G) below is the further backstop (the group's own epilogue must not also drop).
+    match g.len() {
+        1 => {}
+        n if n > 1 => {
+            if !matches!(
+                mutual_group_slot_verdict(db, &g, target_slot),
+                MutualGroupSlotVerdict::CallerDropsAfterLastUse
+            ) {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+    // (G) YIELD to the callee's LOOP EPILOGUE: if it already drops this param at loop exit, a caller-drop is a
+    // SECOND drop → double-free.
     let epilogue = super::looped_owned_param_drops(db, body, &params, Some(callee));
-    target.is_some_and(|s| !epilogue.contains(&s))
+    !epilogue.contains(&target_slot)
 }
 
 /// Whether DEF `callee` reads its parameter `param_index` (a String/Bytes) via a VIEW-PRODUCER
