@@ -483,25 +483,20 @@ pub fn result_list_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
     if args.len() != 2 {
         return None;
     }
-    // The Ok arm (args[0]) must be a `list<scalar | all-scalar-product>` — a `list<u8>` (Bytes) is
-    // `result_bytes_enum`'s job, and an element that reaches `list<u8>` (Bytes/list/nested) needs the shared list
-    // type (a later increment). An all-scalar record/tuple element marshals inline via `emit_list_arg_marshal`
-    // (`emit_record_to_mem` / `emit_tuple_to_mem`) and never reaches `list<u8>`.
+    // The Ok arm (args[0]) must be a `list<T>` whose element the shared list marshal handles — the SAME element
+    // capability a `list<T>` ARG uses (`list_elem_marshalable`: a scalar, `Bytes`, a record/tuple product, a
+    // nested `list`, an `option<…>`, or a `result<list<u8>,enum>`). `emit_list_arg_marshal` writes each element
+    // inline (scalar) / at its canonical layout (`emit_record_to_mem` / `emit_tuple_to_mem` / a nested-list
+    // header / `emit_option_to_mem`) — so the whole list marshals identically whether it is a bare arg or the Ok
+    // arm of a result. The per-param component `result<list<T>, enum>` type is built structurally from the declared
+    // WIT (so a `list<u8>`-reaching element needs no `has_list_param` shared-type change — `ResultList` rides the
+    // structural-CRef path, not the fallback `(list u8)` index). NB: a `list<u8>` Ok is `Bytes` → `result_bytes_
+    // enum`'s job (a `list<u8>` arg type is `Ty::Bytes`, not `Ty::List`, so this never sees it).
     let Ty::List(elem) = args[0].strip_nominal() else {
         return None;
     };
     let elem = (**elem).clone();
-    let elem_ok = abi_val_type(&elem).is_some()
-        || match elem.strip_nominal() {
-            Ty::Record(fields) => {
-                !fields.is_empty() && fields.values().all(|f| abi_val_type(f).is_some())
-            }
-            Ty::Tuple(elems) => {
-                !elems.is_empty() && elems.iter().all(|e| abi_val_type(e).is_some())
-            }
-            _ => false,
-        };
-    if !elem_ok {
+    if !(abi_val_type(&elem).is_some() || list_elem_marshalable(db, &elem)) {
         return None;
     }
     // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
