@@ -84,6 +84,30 @@ fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<(StructId, Vec<Str
     if hname == Some("try") && kids.len() == 2 {
         return Some((node, Vec::new()));
     }
+    // A MEMBER-CALL application `(recv.member arg…)` — its head `kids[0]` is a `.`-member-access node
+    // `(. recv member)`, so `hname` is None and the generic operand loop below (plain-name / flat compound-ctor
+    // heads only) would miss a `?` in an argument. The member NAME is static and the RECEIVER evaluates BEFORE
+    // the arguments. We fire ONLY for a SIMPLE receiver — a module/value NAME atom (e.g. `List`), which is pure
+    // and re-read (not re-evaluated) in the continuation, so there is no receiver-effect to reorder. Then the
+    // ARGUMENTS descend exactly like operator operands: the FIRST arg holding a `?` hoists, earlier IMPURE args
+    // bind as the prefix. A COMPOUND receiver (a nested module path `(. A B)` or a computed expression) is left
+    // untouched — a clean decline rather than risk mis-binding a non-value head or reordering a receiver effect.
+    if let Some(recv) = ast.as_form(kids[0], ".").and_then(|m| m.first().copied())
+        && is_pure_atom(ast, recv)
+    {
+        for i in 1..kids.len() {
+            if let Some((tn, inner_prefix)) = find_hoistable_try(ast, kids[i]) {
+                let mut prefix: Vec<StructId> = kids[1..i]
+                    .iter()
+                    .copied()
+                    .filter(|&a| !is_pure_atom(ast, a))
+                    .collect();
+                prefix.extend(inner_prefix);
+                return Some((tn, prefix));
+            }
+        }
+        return None;
+    }
     // `#record` — its kids are `(= field value)` pairs: the field name is STATIC (not evaluated), the
     // VALUE is the evaluated sub-expression. Descend into the FIRST pair whose VALUE holds a `?`, binding
     // EARLIER pairs' impure VALUES (fields evaluate left-to-right) — NOT the pairs themselves, since a

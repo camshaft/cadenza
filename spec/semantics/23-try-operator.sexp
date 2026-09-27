@@ -1269,19 +1269,17 @@
   (live-objects 0))
 
 (case
-  "trmc1 a `?` as the argument of a MODULE-MEMBER call unwraps then calls — pending member-call arg descent"
+  "trmc1 a `?` as the argument of a MODULE-MEMBER call unwraps then calls"
   (doc
-    "The member-call face of the expression-position `?`, an idealistic TODO pinning a KNOWN GAP: a `?` as the
-     argument of a module-member/method call — `(Ok (List.len (try r)))` under a `(Result Int64 String)`
-     boundary. It DECLINES today (CDZ0900): unlike a plain-name call `(add (try r) …)` (trc1) or a user-fn
-     call `(dbl (try r))`, a member call `List.len` desugars to a `.`-headed member-access node, so the hoist
-     search (`find_hoistable_try`) — which descends only plain-name and flat compound-ctor heads — does not
-     reach the `?` argument. IDEALISTICALLY it should hoist to `(let ((h (try r))) (Ok (List.len h)))`: k>0 →
-     Ok payload `#list(10 20 30)`, `List.len` = 3; k=0 → Err short-circuits `mk` to -1. The future fix must
-     descend a member-call's arguments AND bind a runtime RECEIVER (for a `recv.method` call) as a prefix
-     `let` ahead of the `?`, to preserve receiver-before-argument evaluation order — the same eval-order care
-     as the `#map` key-before-value descent. A MODULE member (`List`, static — no runtime receiver) is the
-     safe common case. Flips to a run when member-call arg descent lands.")
+    "The member-call face of the expression-position `?`: a `?` as the argument of a module-member call —
+     `(Ok (List.len (try r)))` under a `(Result Int64 String)` boundary. A member call `List.len` desugars to
+     a `.`-headed member-access node, so the head is not a plain name; the hoist's dedicated member-call arm
+     (`find_hoistable_try`) recognizes a `.`-head with a SIMPLE receiver (`List`, a pure name atom — re-read,
+     not re-evaluated, in the continuation) and descends its ARGUMENTS like operator operands, hoisting to
+     `(let ((h (try r))) (Ok (List.len h)))`. k>0 → Ok payload `#list(10 20 30)`, `List.len` = 3; k=0 → Err
+     short-circuits `mk` to -1. Verified leak-clean (live-objects 0 both paths). A COMPOUND receiver (a nested
+     module path or a computed expression) stays a clean CDZ0900 decline — it is not descended, so no
+     non-value head is mis-bound and no receiver effect is reordered.")
   (input
     (do
       (def
@@ -1294,7 +1292,8 @@
   (call main (: 1 Int64))
   (output (: 3 Int64))
   (call main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects 0))
 
 ; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
 ; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return).
