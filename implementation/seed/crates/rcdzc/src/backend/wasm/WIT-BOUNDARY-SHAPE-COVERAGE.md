@@ -244,6 +244,17 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   variant-field>` ARG (173, `emit_option_reg_flatten`'s record branch → `emit_record_arg_marshal`'s variant-field
   arm). REMAINING variant gaps: a multi-payload variant case at the ARG register-flatten position, and a mixed
   int↔float / f32↔f64 single-payload variant (the canonical reinterpret join).
+- **[emit, ARG-side] the BARE (top-level) named-variant host-op ARG — ✅ DONE / TESTED (SHAPE 184/185).**
+  `emit_variant_reg_flatten` has always been documented as "the bare-variant ARG marshal", but the corpus never
+  pinned it at the top-level param position directly — every prior `variant` case sat inside a record field /
+  element / result. SHAPE 184/185 lock a 3-case `variant{a, b, c(s64)}` bare arg on both a scalar-payload arm
+  (`(C 9)` → `(disc=2, join=9)`) and a nullary arm (`(B)` → `(disc=1, join=0)`, payload slot zero-filled). A
+  3-case variant is NOT reducible to an option, so this genuinely exercises the N-case register flatten (not the
+  2-case some/none path). The host stub returns a fixed value; a valid running component that crosses the
+  boundary is the pin (the marshal shape is pinned by the module validating with the right core signature).
+  REMAINING: a NON-scalar variant payload as a bare arg — a `variant{…, c(tuple<s64,s64>)}` / `variant{…, c(bytes)}`
+  declines (CDZ0903) at the ARG position (`emit_variant_reg_flatten`'s payload flatten is scalar-only; the
+  multi-slot / rope-copying join is the next variant increment, same family as the multi-payload gap above).
 - **[emit, ARG-side] a RECORD host-op ARG with a payload-less `enum` FIELD — ✅ DONE (SHAPE 174).** A
   payload-less `enum` crossed only at the TOP-LEVEL arg (`HostParam::Enum`); nested in a record it declined
   because `field_boundary_abi` had no enum arm. A new `RecordFieldAbi::Enum(cases)` (via `enum_cases`) makes
