@@ -1088,6 +1088,35 @@
   (call main (: 2 Int64))
   (output (: 100 Int64)))
 
+(case
+  "trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit"
+  (doc
+    "The compound-constructor face of the expression-position `?` (BRICK 3 slice 2c): two `?`s appear as
+     ELEMENTS of a `#list` — `(Ok #list((try r) (try s)))` — under a `(Result (List Int64) String)` boundary.
+     A `#list` head is a `Leaf::Ctor`, not a name, so the hoist descends it as a pure container (elements
+     evaluate left-to-right) and, by fixpoint, lifts BOTH `?`s to nested boundary `let`s in order —
+     `(let ((a (try r))) (let ((b (try s))) (Ok #list(a b))))` — each riding the inline-safe `lower_let`
+     short-circuit. Both Ok → the two-element list (len 2); the FIRST Err short-circuits `mk` to that Err
+     (mapped to -1), leaving the second `?` unevaluated. Verified leak-clean (live-objects 0 every path).")
+  (input
+    (do
+      (def
+        (mk (: r (Result Int64 String)) (: s (Result Int64 String)))
+        (: (Ok #list((try r) (try s))) (Result (List Int64) String)))
+      (def
+        (main (: k Int64))
+        (match
+          (mk (if (> k 0) (Ok 7) (Err "a")) (if (> k 1) (Ok 9) (Err "b")))
+          ((Ok xs) (List.len xs))
+          ((Err _e) -1)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 2 Int64))
+  (call main (: 1 Int64))
+  (output (: -1 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
 ; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
 ; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return).
 ; FIXED (v-effects): previously REJECTED with `CDZ0101: unbound name #seed<n>` — under this conjunction

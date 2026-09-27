@@ -10490,6 +10490,7 @@ pass	trm2 an EXACT-arity tuple leaves the rest binder EMPTY, and a rest-only pat
 pass	trm2 an export returns a one-entry Map (one reachable cell)
 pass	trm3 an export returns a BigInt built from the scalar param (one reachable cell)
 pass	trm4 an export returns an exact Rational from the scalar param (three reachable cells)
+pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
 pass	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 pass	trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepening negative count), push passes and relocks or bounces (bounces answer their own negative count), the seed decides whether the gate STARTS unlocked, and the first push diverges the runs from the very first row
 pass	true is greater than false

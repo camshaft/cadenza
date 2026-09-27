@@ -24,7 +24,7 @@
 //! Runs at LOAD, BEFORE the parent index and resolution (alongside `reify_quotes` / `desugar_eval`), so the
 //! rewritten `let` resolves like hand-written source.
 
-use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, Leaf, LeafId, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
 
 /// The binding/control heads a hoist of an expression-position `?` MUST NOT cross (BRICK 3 slice 1,
@@ -84,11 +84,19 @@ fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<(StructId, Vec<Str
     if hname == Some("try") && kids.len() == 2 {
         return Some((node, Vec::new()));
     }
-    // A binding/control head, or a non-name head (an applied lambda / compound-ctor form not yet handled):
-    // do not cross it.
-    match hname {
-        Some(h) if !is_boundary_or_control_head(h) => {}
-        _ => return None,
+    // Descendable into its arguments/elements: a non-control NAME head (an application / constructor /
+    // ascription), OR a FLAT compound-ctor head — `#list`/`#tuple`/`#set`, whose head is a `Leaf::Ctor`
+    // (not a name), a pure container whose elements evaluate left-to-right exactly like operator operands.
+    // A `record`/`map` (paired `(= k v)` entries) or a non-name applied-lambda head is NOT descended.
+    let descendable = match hname {
+        Some(h) => !is_boundary_or_control_head(h),
+        None => matches!(
+            ast.compound_ctor_leaf(node),
+            Some(CompoundCtor::List | CompoundCtor::Tuple | CompoundCtor::Set)
+        ),
+    };
+    if !descendable {
+        return None;
     }
     // Descend into the FIRST argument containing a `?`. Every earlier argument (positions `1..i`) is
     // evaluated before it; collect the NON-ATOM ones as the impure prefix to bind (OUTER level first), then
@@ -231,35 +239,50 @@ pub fn desugar_try_expr_position(ast: &mut Arenas) {
     {
         return;
     }
-    let original_len = ast.structure.len() as u32;
-    // Each fallible-boundary body is a `def`/`fn` node's LAST child (`(def target body)` / `(fn params
-    // body)`, both arity-3). For each body, collect its TAIL positions and hoist the FIRST that holds a
-    // hoistable expression-position `?`; only ORIGINAL nodes are boundary bodies (the rewrite APPENDS the
-    // `let` scaffolding). Plan `(target_node, try_node, impure_prefix)`, one hoist per body per pass.
-    let mut plans: Vec<(StructId, StructId, Vec<StructId>)> = Vec::new();
-    for i in 0..original_len {
-        let id = StructId(i);
-        let Struct::List(kids) = ast.get(id) else {
-            continue;
-        };
-        if kids.len() != 3 {
-            continue;
-        }
-        if !matches!(ast.as_name(kids[0]), Some("def") | Some("fn")) {
-            continue;
-        }
-        let body = kids[2];
-        let mut tails: Vec<StructId> = Vec::new();
-        collect_tail_positions(ast, body, &mut tails);
-        for t in tails {
-            if let Some((tn, prefix)) = find_hoistable_try(ast, t) {
-                plans.push((t, tn, prefix));
-                break; // one hoist per body per pass
+    // FIXPOINT: hoist ONE `?` per boundary body per pass, then repeat until a pass finds none. Each hoist
+    // converts an expression-position `?` to a `let`-INIT (which the search stops at), so the count of
+    // searchable `?`s strictly DECREASES — the loop terminates, and it handles MULTIPLE `?`s in one body
+    // (e.g. several `#list` elements: each pass hoists the next, its predecessors already bound to names).
+    // Bounded by the structure size as a defensive backstop against any non-decreasing pass.
+    let mut guard = ast.structure.len() + 1;
+    loop {
+        // Each fallible-boundary body is a `def`/`fn` node's LAST child (`(def target body)` / `(fn params
+        // body)`, both arity-3). For each body, collect its TAIL positions and plan the FIRST hoistable
+        // expression-position `?`. Re-scan the (grown) structure each pass; the appended `let` scaffolding
+        // is never a `def`/`fn`, and a hoisted `?` is now a `let`-init the search skips.
+        let len = ast.structure.len() as u32;
+        let mut plans: Vec<(StructId, StructId, Vec<StructId>)> = Vec::new();
+        for i in 0..len {
+            let id = StructId(i);
+            let Struct::List(kids) = ast.get(id) else {
+                continue;
+            };
+            if kids.len() != 3 {
+                continue;
+            }
+            if !matches!(ast.as_name(kids[0]), Some("def") | Some("fn")) {
+                continue;
+            }
+            let body = kids[2];
+            let mut tails: Vec<StructId> = Vec::new();
+            collect_tail_positions(ast, body, &mut tails);
+            for t in tails {
+                if let Some((tn, prefix)) = find_hoistable_try(ast, t) {
+                    plans.push((t, tn, prefix));
+                    break; // one hoist per body per pass
+                }
             }
         }
-    }
-    for (target, tn, prefix) in plans {
-        hoist_try_at(ast, target, tn, &prefix);
+        if plans.is_empty() {
+            break;
+        }
+        for (target, tn, prefix) in plans {
+            hoist_try_at(ast, target, tn, &prefix);
+        }
+        guard -= 1;
+        if guard == 0 {
+            break;
+        }
     }
 }
 
