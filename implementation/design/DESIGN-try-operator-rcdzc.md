@@ -34,10 +34,19 @@ if/match position, anonymous-lambda boundary), the reject family (CDZ0203 operan
 error-type-disagree, CDZ0230 no-boundary), the strict-spine effect ordering, and two rcdzc-lib wasmtime RUN
 tests (a value executes, both paths). The lambda boundary is ruled (§6 v1): a lambda IS a function boundary,
 no auto-wrap. A diagnostic-dedup fix drops the misleading "lowers only a constant operand yet" decline on an
-ill-typed (CDZ0203) operand. REMAINING: the name split (`?` suffix vs `try` catcher, §4.1 forks); the RUNTIME
-`?` (non-constant operand → `Core::MatchSum`/block-br emit, BRICK 3b, operator-gated); the ML postfix `?`
-surface + the `(? e)` s-expr head (v-syntax); the explicit `try { }` catcher boundary (v2 / §4); and the T3
-conversion-idiom prelude ops (`Result.map-err`/`Option.ok-or`). Line numbers are landmarks, not promises.
+ill-typed (CDZ0203) operand. BRICK 3b (the RUNTIME `?` in BINDING-TAIL position) has since LANDED via a
+different-than-designed route: `lower_let` lowers a `(let ((x (try e))) body)` whose init is a runtime
+operand to a `Core::MatchSum { scrutinee: e, success → payload-bound body, failure → the boundary failure
+value }` — NO `Core::Block`/`Break` involved (the let body IS the boundary tail, so the MatchSum's failure
+arm carries the boundary value directly). The try-do-def→let desugar (`try_desugar.rs`, #9840) routes the
+`(do (def x (try e)) body)` idiom through that same path, and the `enclosing_boundary_ty` `fn`-body fix
+(#9844) resolves a `?`-in-closure to the closure's own result — so a runtime `?` in binding-tail (incl.
+inside a stored closure) computes on all three targets. REMAINING: the name split (`?` suffix vs `try`
+catcher, §4.1 forks); the RUNTIME `?` in **EXPRESSION position** (not binding-tail — e.g. `(+ 1 (try e))`,
+a list element, a tail-call argument), which is the genuine `Core::Block`/`Break` block-br emit (BRICK 2
+fn-body wrap + BRICK 3 emit — see §7.1); the ML postfix `?` surface + the `(? e)` s-expr head (v-syntax);
+the explicit `try { }` catcher boundary (v2 / §4); and the T3 conversion-idiom prelude ops
+(`Result.map-err`/`Option.ok-or`). Line numbers are landmarks, not promises.
 
 > **Origin.** The operator asked for "a `?` operator like Rust — there are quite a few nested matches we
 > could clean up" and, crucially, *"is that a monad generally? do we start going down that territory?"*
@@ -369,6 +378,56 @@ promote passing breaker probes into it per the *breaker-promotes-passing-probes*
 - **T3 — the conversion idiom (prelude + docs).** Ensure `Result.map-err` and `Option.ok-or` exist in the
   prelude with docstrings; the CDZ0203 fix hint names them. **Green:** a case that converts an error type
   across a `?` boundary explicitly. (Small; may fold into T1/T2 if the prelude ops already exist.)
+
+### 7.1 Implementation status + the BRICK 3 slice plan (updated 2026-09-27, v-try-operator)
+
+What is actually built, and how the remaining EXPRESSION-position `?` decomposes into gated slices.
+
+**Built (all three targets, corpus-gated):**
+- BRICK 1 (`Core::Block`/`Break` nodes + non-emit pass-through arms), BRICK 2a (constant-success fold →
+  payload), BRICK 3a (constant-failure → `Core::Break`, folded by `lower_let` on the strict spine + §283
+  elide), and the T0 reject family (CDZ0230 / CDZ0203).
+- **BRICK 3b (binding-tail runtime `?`)** — NOT the designed `Core::Block` wrap. `lower_let`
+  (`lower.rs`) lowers `(let ((x (try e))) body)` with a RUNTIME init to `Core::MatchSum { scrutinee: e,
+  Ok/Some → the payload-bound body, Err/None → the boundary failure value }`. No `Core::Block`/`Break`:
+  the let body IS the boundary tail, so the MatchSum's failure arm carries the boundary value directly.
+  The try-do-def→let desugar (`try_desugar.rs`, #9840) routes `(do (def x (try e)) body)` through it;
+  the `enclosing_boundary_ty` `fn`-body fix (#9844) makes a `?`-in-closure resolve to the closure's own
+  `Option`/`Result` result. So binding-tail runtime `?` (incl. inside a stored closure) computes.
+
+**Remaining — the EXPRESSION-position runtime `?`** (`(+ 1 (try e))`, a `#list(…)` element, a tail-call
+argument): reaches the generic `Resolved::Try` arm (`lower/compute.rs`) and DECLINES **CDZ0900** "lowers
+only a constant operand" — the honest safe floor (reject-don't-miscompile). This is the ONLY thing gating
+`trr1` (`23:1039`), `list-elem` (`14b:8783`), `mutual-rec` (`23:1114`); all three are confirmed
+expression-position (each declines CDZ0900, NOT a boundary bug). `bin-parse`/`tbx2` are a separate
+try-under-effects gap (behind glb1), not this.
+
+This genuinely needs the designed `Core::Block`/`Break` path, because an expression-position `?` requires a
+NON-LOCAL exit to the fn boundary. Nothing currently PRODUCES a `Core::Block` (BRICK 2 unbuilt), and
+`emit.rs` (the `Core::Block { .. } | Core::Break { .. }` arm) DECLINES both (BRICK 3 stub). Three
+interlocking pieces, decomposed into gated slices:
+
+- **THE CRUX (emit-frame depth).** `emit.rs` branches with a STATIC relative `Lir::Br(n)` computed locally
+  inside a self-contained sequence. A `Core::Break` targeting an ENCLOSING `Core::Block` needs a DYNAMIC
+  relative depth = how many wasm control frames (block/loop/if) sit between the `Break` and its target
+  `Block`. So BRICK 3 must thread a control-frame-depth (a boundary-block label stack) through the emit
+  recursion so a nested `Break` emits the correct `br` depth. This is the intricate, leak-sensitive part
+  (the block introduces a new scope the reclaim passes must account for) and is the foundation both slices
+  below rest on.
+- **Slice 1 (foundation, smaller, independently gate-testable) — BRICK 2 wrap + BRICK 3 emit for the
+  CONSTANT-FAILURE expression-position sub-case.** Wrap a fallible fn body containing an expression-position
+  `?` in `Core::Block { result_ty: T_B }` (BRICK 2); the constant-failure `(try (Err r))` already yields
+  `Core::Break { value }` (`compute.rs`), so no runtime MatchSum is needed; emit `block`/`br` with the
+  depth machinery (BRICK 3). Gate with a NEW corpus case: a constant-failure `?` in expression position
+  (e.g. `(Ok (+ 1 (try (: (Err "x") (Result Int64 String)))))`) short-circuits the fn to `Err`. Exercises
+  the full Block/Break emit path without runtime dispatch.
+- **Slice 2 (on top) — runtime `?` in expression position → `MatchSum { Ok → payload, Err → Core::Break }`
+  inside the wrapped `Core::Block`.** Turns `trr1`, `list-elem`, `mutual-rec` green. Reuses Slice 1's
+  emit-frame depth + Block wrap; adds only the runtime-operand MatchSum-with-Break in the generic
+  `Resolved::Try` arm (replacing the CDZ0900 decline for expression position).
+
+Keep the CDZ0900 safe floor for expression-position `?` until each slice lands green
+(reject-don't-miscompile — a decline is strictly better than a wrong value).
 
 ## 8. Seams / file anchors (landmarks at 2026-07-15)
 
