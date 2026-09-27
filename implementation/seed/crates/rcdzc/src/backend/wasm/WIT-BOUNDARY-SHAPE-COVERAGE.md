@@ -193,7 +193,24 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `emit_list_arg_marshal`'s `option_elem` detector + `collect_list_elem_ops` (recurses the payload's field ops).
   REMAINING (ARG-side only): an `option<list>`/`option<option>` list element (the option-to-mem writer has no arm
   for a nested-list / nested-option payload yet), and a mixed int↔float variant element (rolls into the
-  compound-variant-payload / mixed-join gaps above).
+  compound-variant-payload / mixed-join gaps above). ALSO: a `list<result<bytes, enum>>` element declines
+  (verified 2026-09-27 — no result-element in-place writer yet; distinct from the `result` record FIELD which
+  IS handled).
+- **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
+  record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
+  `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the
+  `field_boundary_abi` element recursion builds the `(list (record …))` field type and the marshal +
+  `collect_record_field_ops` recurse it in lockstep. (A record ARG with a `list<scalar>`/nested-record/tuple
+  field, and the reverse `list<record{…}>` whole-arg, were already covered.)
+- **[emit, register-path] `option<list<T>>` at ANY register position (top-level option ARG, or an
+  option<list> FIELD of a record/tuple arg) declines CDZ0903** (verified-by-probe 2026-09-27). Root:
+  `field_boundary_abi`'s option arm handles option<scalar|bytes|tuple-of-scalars|record-of-scalars-or-bytes>
+  but NOT option<list>, so the component `(option (list …))` type never builds. Closing it needs BOTH
+  `field_boundary_abi` (an `Option(List(elem))` abi) AND the register marshals (`emit_option_reg_flatten`'s
+  option-ARG + `emit_record_arg_marshal`'s option-FIELD arm) to marshal an `option<list>` payload as
+  `(disc, ptr, count)` — the list marshalled into `mem` via `emit_list_arg_marshal` on Some, `(0,0,0)` on None
+  — the register-path analogue of the already-handled option<bytes> `(disc, ptr, len)`. A whole FAMILY fix
+  (next v-wit-boundary unit).
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
 - **[emit, export] typed enum RESULT under a DECLARED world — ✅ DONE (SHAPE 60).** A payloadless-enum
