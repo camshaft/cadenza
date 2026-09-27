@@ -84,10 +84,43 @@ fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<(StructId, Vec<Str
     if hname == Some("try") && kids.len() == 2 {
         return Some((node, Vec::new()));
     }
+    // `#record` — its kids are `(= field value)` pairs: the field name is STATIC (not evaluated), the
+    // VALUE is the evaluated sub-expression. Descend into the FIRST pair whose VALUE holds a `?`, binding
+    // EARLIER pairs' impure VALUES (fields evaluate left-to-right) — NOT the pairs themselves, since a
+    // `(= k v)` pair is not a standalone expression the generic operand loop below could let-bind. A `map`
+    // stays excluded: its KEY is also evaluated, so a `?` there needs key-then-value ordering per entry — a
+    // later slice.
+    if ast.compound_ctor_leaf(node) == Some(CompoundCtor::Record) {
+        for i in 1..kids.len() {
+            let Struct::List(pk) = ast.get(kids[i]) else {
+                continue;
+            };
+            if pk.len() != 3 || ast.as_name(pk[0]) != Some("=") {
+                continue;
+            }
+            let val = pk[2];
+            if let Some((tn, inner_prefix)) = find_hoistable_try(ast, val) {
+                let mut prefix: Vec<StructId> = kids[1..i]
+                    .iter()
+                    .filter_map(|&p| match ast.get(p) {
+                        Struct::List(ppk) if ppk.len() == 3 && ast.as_name(ppk[0]) == Some("=") => {
+                            Some(ppk[2])
+                        }
+                        _ => None,
+                    })
+                    .filter(|&v| !is_pure_atom(ast, v))
+                    .collect();
+                prefix.extend(inner_prefix);
+                return Some((tn, prefix));
+            }
+        }
+        return None;
+    }
     // Descendable into its arguments/elements: a non-control NAME head (an application / constructor /
     // ascription), OR a FLAT compound-ctor head — `#list`/`#tuple`/`#set`, whose head is a `Leaf::Ctor`
     // (not a name), a pure container whose elements evaluate left-to-right exactly like operator operands.
-    // A `record`/`map` (paired `(= k v)` entries) or a non-name applied-lambda head is NOT descended.
+    // (`#record` is handled by the dedicated `(= k v)`-aware arm ABOVE; a `map` and a non-name
+    // applied-lambda head are NOT descended.)
     let descendable = match hname {
         Some(h) => !is_boundary_or_control_head(h),
         None => matches!(
