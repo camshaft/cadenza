@@ -8787,12 +8787,22 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 // token-delta verdict; if the pane is WORKING (or a progressing backgrounded wait) it is not
                 // stalled → SKIP the escalation. The PERMISSION-DIALOG wedge is EXEMPT: a Yes/No selector is a
                 // genuine human-needed block that a working-pane heuristic would wrongly clear.
+                // Capture the pane ONCE up front, reused for BOTH the 2-capture liveness verdict AND the
+                // cross-sweep token reading below. Skip the tmux I/O for a permission-dialog wedge (never
+                // gated on pane liveness — a Yes/No selector needs a human regardless).
+                let pane_now = if permission_wedge {
+                    None
+                } else {
+                    capture_pane(&session, &a.name)
+                };
                 let alive_working = !permission_wedge && {
-                    let p1 = capture_pane(&session, &a.name);
                     std::thread::sleep(std::time::Duration::from_secs(
                         DRAIN_STALL_CONFIRM_DELAY_SECS,
                     ));
-                    match (p1.as_deref(), capture_pane(&session, &a.name).as_deref()) {
+                    match (
+                        pane_now.as_deref(),
+                        capture_pane(&session, &a.name).as_deref(),
+                    ) {
                         (Some(x), Some(y)) => {
                             drain_stall_alive_by_verdict(&pane_liveness_verdict(x, y))
                         }
@@ -8810,12 +8820,51 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                     && check_lease_dir(&fleet.repo).is_some_and(|d| {
                         agent_holds_live_lease(&d, &a.name, check_lease_holder_alive)
                     });
+                // CROSS-SWEEP TOKEN-FREEZE gate (concierge 2026-09-27, completing the token-delta
+                // unification arc #9790 landed for the rearm-stale wedge): the in-scan 2-capture
+                // `alive_working` verdict above can MISS a long "thinking" turn as idle — its
+                // esc-to-interrupt footer isn't always in the ~3s frame — the SAME false-positive class that
+                // cost cycles on the wedge path TWICE this week (v-rust-backend, v-wit-boundary). So before
+                // escalating a (non-permission, non-lease-held) drain-stall NOTE, ALSO require the pane token
+                // count FROZEN ACROSS SWEEPS, reusing the exact discriminator the wedge uses
+                // (`wedge_token_confirmed_frozen`). A count that ADVANCED (working), a FIRST observation, an
+                // UNREADABLE count, or one NOT-YET-AGED past WAIT_FROZEN_MIN_SECS is NOT confirmed → SUPPRESS
+                // the note; a genuine stall's frozen count ages across sweeps and then escalates (a delay the
+                // note tolerates — it is already gated on `persist_window` ≫ 5min). The #9756 owned-live-lease
+                // exemption stays FIRST-LINE; this closes the no-lease long-thinking-turn residual on TOP of
+                // it. Permission-dialog wedges are EXEMPT (a human is genuinely needed — never token-gate
+                // them). Uses the DEDICATED `drain-token` clock (not the wedge's) so the two crons don't
+                // reset each other's freeze-age. Stamp on CHANGE so a real freeze's mtime ages.
+                let token_unconfirmed = !permission_wedge
+                    && !alive_working
+                    && !gate_blocked_lease
+                    && {
+                        let cur_tok = pane_now.as_deref().and_then(parse_pane_token_count);
+                        let prior_tok = last_drain_token_fingerprint(fleet, &a.name, now);
+                        let confirmed_frozen = wedge_token_confirmed_frozen(
+                            cur_tok.as_deref(),
+                            prior_tok.as_ref().map(|(t, ag)| (t.as_str(), *ag)),
+                            WAIT_FROZEN_MIN_SECS,
+                        );
+                        if !confirmed_frozen {
+                            let changed = !matches!((cur_tok.as_deref(), prior_tok.as_ref()), (Some(c), Some((p, _))) if c == p.as_str());
+                            if !dry_run
+                                && changed
+                                && let Some(c) = cur_tok.as_deref()
+                            {
+                                stamp_drain_token_fingerprint(fleet, &a.name, c);
+                            }
+                        }
+                        !confirmed_frozen
+                    };
                 let flagged = flagged_id.as_deref().unwrap_or("?");
-                if alive_working || gate_blocked_lease {
+                if alive_working || gate_blocked_lease || token_unconfirmed {
                     let why = if alive_working {
                         "pane WORKING/progressing — alive + holding an actionable as an open TODO, not a stall"
-                    } else {
+                    } else if gate_blocked_lease {
                         "holds a LIVE check-lease it owns — landing behind a gate (gate-blocked-actioning), not a stall"
+                    } else {
+                        "pane token count not confirmed frozen across sweeps — a long WORKING/thinking turn advances it, not a stall"
                     };
                     if dry_run {
                         println!(
@@ -10374,6 +10423,36 @@ fn last_wedge_token_fingerprint(fleet: &Fleet, name: &str, now: u64) -> Option<(
 /// = how long the token meter has been frozen (re-stamping every sweep would reset the age). Best-effort.
 fn stamp_wedge_token_fingerprint(fleet: &Fleet, name: &str, token_count: &str) {
     let dir = fleet.root.join("wedge-token");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), format!("{token_count}\n")).ok();
+}
+
+/// Cross-sweep token-count fingerprint for the watchdog's DRAIN-STALL escalation gate — a DEDICATED marker
+/// (`.claude/fleet/drain-token/<name>`) parallel to [`last_wedge_token_fingerprint`]. The rearm-stale
+/// SESSION-WEDGE (`fleet rearm-stale`) and the drain-stall NOTE (`fleet watchdog`) are DISTINCT crons at
+/// distinct cadences; giving each its OWN token clock keeps one cron's stamp from resetting the other's
+/// freeze-age (the same "never clobber each other's semantics" reason `wait-fingerprint` and `wedge-token`
+/// are already split). Semantics identical to the wedge pair: stores the pane token count last seen while
+/// the agent looked stalled; mtime = when first seen, so an UNCHANGED value AGES toward
+/// [`WAIT_FROZEN_MIN_SECS`] (see [`wedge_token_confirmed_frozen`], which BOTH paths reuse). No `clear`
+/// needed — a stale value simply mismatches the next reading (→ re-stamped), and a drained agent never
+/// re-enters the escalation block.
+fn last_drain_token_fingerprint(fleet: &Fleet, name: &str, now: u64) -> Option<(String, u64)> {
+    let path = fleet.root.join("drain-token").join(name);
+    let age = file_mtime_unix(&path).map(|m| now.saturating_sub(m))?;
+    let tc = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Some((tc, age))
+}
+
+/// Record the drain-stall token fingerprint (write to `.claude/fleet/drain-token/<name>`; mtime = when
+/// first seen). Called ONLY on a NEW/CHANGED value so an unchanged value's mtime ages = how long the token
+/// meter has been frozen (re-stamping every sweep would reset the age). Best-effort. Mirrors
+/// [`stamp_wedge_token_fingerprint`].
+fn stamp_drain_token_fingerprint(fleet: &Fleet, name: &str, token_count: &str) {
+    let dir = fleet.root.join("drain-token");
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(dir.join(name), format!("{token_count}\n")).ok();
 }
@@ -22721,6 +22800,69 @@ mod tests {
             Some(("76.4k", 999)),
             min
         ));
+    }
+
+    #[test]
+    fn drain_token_fingerprint_round_trips_and_feeds_the_cross_sweep_gate() {
+        // The drain-stall escalation (#9669) now reuses `wedge_token_confirmed_frozen` over a DEDICATED
+        // `drain-token` clock — separate from the rearm-stale wedge's, so the two crons don't reset each
+        // other's freeze-age. This exercises that clock end-to-end (stamp → read-back → the gate verdict),
+        // simulating the passage of sweeps by advancing `now` (no mtime backdating needed).
+        let root = std::env::temp_dir().join(format!("cdz-drain-token-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: root.join("worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let min = WAIT_FROZEN_MIN_SECS;
+
+        // No prior fingerprint → None → a FIRST observation cannot confirm a cross-sweep freeze (suppress + stamp).
+        assert!(last_drain_token_fingerprint(&fleet, "v-x", 1_000_000).is_none());
+        assert!(!wedge_token_confirmed_frozen(Some("42.0k"), None, min));
+
+        // Stamp it; read-back at ~now gives the value with a FRESH age → same count but NOT yet aged → suppress.
+        stamp_drain_token_fingerprint(&fleet, "v-x", "42.0k");
+        let path = root.join("drain-token").join("v-x");
+        let stamped = file_mtime_unix(&path).expect("just stamped");
+        let (val, age) =
+            last_drain_token_fingerprint(&fleet, "v-x", stamped).expect("just stamped");
+        assert_eq!(val, "42.0k");
+        assert!(
+            age < min,
+            "a just-stamped count has not aged into a confirmed freeze"
+        );
+        assert!(!wedge_token_confirmed_frozen(
+            Some("42.0k"),
+            Some((val.as_str(), age)),
+            min
+        ));
+
+        // Advance `now` past the freeze threshold (as if the fingerprint sat unchanged across sweeps).
+        let later = stamped + min + 60;
+        let (val2, age2) =
+            last_drain_token_fingerprint(&fleet, "v-x", later).expect("still present");
+        assert_eq!(val2, "42.0k");
+        assert!(
+            age2 >= min,
+            "an unchanged count ages into a freeze across sweeps"
+        );
+        // UNCHANGED + aged → confirmed frozen → the drain-stall note ESCALATES.
+        assert!(wedge_token_confirmed_frozen(
+            Some("42.0k"),
+            Some((val2.as_str(), age2)),
+            min
+        ));
+        // ADVANCED count (a long WORKING/thinking turn) → NOT confirmed → the gate SUPPRESSES (and re-stamps).
+        assert!(!wedge_token_confirmed_frozen(
+            Some("55.0k"),
+            Some((val2.as_str(), age2)),
+            min
+        ));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
