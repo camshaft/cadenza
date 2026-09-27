@@ -508,6 +508,154 @@ pub(super) fn desugar_ctor_record_payload_destructure(
     Some(core_of(db, rewritten))
 }
 
+/// PRE-PASS for `lower_match` (sum/nominal scrutinee): a ctor whose SINGLE payload is a REFUTABLE MAP
+/// pattern over a RUNTIME map — `((W.Mk #map((= k v)…)) body)`, binding a value by keyed read. The DIRECT
+/// runtime map match is wired (`desugar_runtime_map_match` / `lower_map_field_runtime`), but a map NESTED in
+/// a variant payload over a runtime scrutinee is not (`lower_map_field` declines "constant map only"). Rewrite
+/// it to the direct form: bind the ctor payload to a fresh `__cm` binder and re-match it as a DIRECT map
+/// match, with a KEY-PRESENCE guard so a MISSING key FALLS THROUGH to the outer catch-all (the map element is
+/// refutable) instead of trapping:
+///   `((Ctor #map((= k v)…)) body)`  ≡
+///   `((guard (Ctor __cm) (match __cm ((map (k _)…) true) (_ false)))
+///       (match __cm ((map (k v)…) body) (_ (trap …))))`
+/// The GUARD's wildcard-value map pattern gates on key presence (no binding); the BODY re-matches the SAME
+/// binder to bind the values `v…` via the direct map matcher. A user guard reading the value binders is
+/// evaluated at the innermost level of a value-binding content nest conjoined into the guard (mirrors the
+/// map-list-element / ctor-record-payload passes). Fires ONLY on a RUNTIME scrutinee — a CONSTANT map still
+/// folds via `fold_sum_path` (`lower_map_field`), unchanged — and only for a single map payload (the common
+/// `(Ctor #map…)` shape). NO new IR. Returns `Some(Core)` iff the rewrite fired.
+pub(super) fn desugar_ctor_map_payload_destructure(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // A CONSTANT map payload folds through the existing `fold_sum_path` path (const `MapNew`) — leave it be.
+    if is_const_value(db, scrutinee) {
+        return None;
+    }
+    // Whether `pat` (guard peeled) is a ctor with EXACTLY one payload arg that is a map pattern.
+    let ctor_map_payload = |db: &mut Db, pat: StructId| -> Option<StructId> {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let (_, args) = ctor_pattern_head_and_args(db, inner)?;
+        if args.len() == 1 && is_map_element_pattern(db, args[0]) {
+            Some(args[0])
+        } else {
+            None
+        }
+    };
+    let mut any = false;
+    for &(pat, _) in arms {
+        if ctor_map_payload(db, pat).is_some() {
+            any = true;
+        }
+    }
+    if !any {
+        return None;
+    }
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        let (inner_pat, existing_guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let Some((head, args)) = ctor_pattern_head_and_args(db, inner_pat) else {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        if !(args.len() == 1 && is_map_element_pattern(db, args[0])) {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        let map_pat = args[0]; // the original `(map (k v)…)` payload pattern (reused by the body re-match)
+        let name = format!("__cm{ai}");
+        // The rebuilt ctor pattern `(Ctor __cm)` — a FRESH head clone (the original head is reused inert by
+        // the body re-match's context; cloning keeps this a clean variant reference to re-resolve) + the
+        // fresh payload binder. `head` from `ctor_pattern_head_and_args` is the applied ctor's head node.
+        let head_clone = clone_ctor_head(db, head);
+        let pat_binder = db.push_name(&name);
+        let new_ctor_pat = db.push_list(vec![head_clone, pat_binder]);
+        // The KEY-PRESENCE guard: `(match __cm ((map (k _)…) true) (_ false))` — a wildcard-value map pattern
+        // tests only that the named keys are present (no value binding). A missing key → false → the arm
+        // falls through to the outer catch-all.
+        let presence_scrut = db.push_name(&name);
+        let presence_pat = map_pattern_with_wildcard_values(db, map_pat);
+        let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
+        let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
+        let presence_true_arm = db.push_list(vec![presence_pat, true_node]);
+        let wild = db.push_name("_");
+        let presence_false_arm = db.push_list(vec![wild, false_node]);
+        let presence_match_head = db.push_name("match");
+        let presence_test = db.push_list(vec![
+            presence_match_head,
+            presence_scrut,
+            presence_true_arm,
+            presence_false_arm,
+        ]);
+        // A user guard reads the value binders → evaluate it inside a value-binding content match on `__cm`
+        // (its binders now in scope), conjoined with the presence test: `(and <presence> (match __cm
+        // (<map-pat-clone> g) (_ false)))`. Omitted when there is no user guard.
+        let guard_cond = match existing_guard {
+            None => presence_test,
+            Some(g) => {
+                let g_scrut = db.push_name(&name);
+                let map_clone = clone_refutable_payload(db, map_pat);
+                let g_true_arm = db.push_list(vec![map_clone, g]);
+                let g_wild = db.push_name("_");
+                let g_false = db.push_atom(crate::ast::Leaf::Bool(false));
+                let g_false_arm = db.push_list(vec![g_wild, g_false]);
+                let g_match_head = db.push_name("match");
+                let g_in_scope = db.push_list(vec![g_match_head, g_scrut, g_true_arm, g_false_arm]);
+                let and_head = db.push_name("and");
+                db.push_list(vec![and_head, presence_test, g_in_scope])
+            }
+        };
+        let guard_head = db.push_name("guard");
+        let new_pat = db.push_list(vec![guard_head, new_ctor_pat, guard_cond]);
+        // The BODY re-match: `(match __cm (<map-pat> body) (_ (trap …)))` — the direct map matcher binds the
+        // value sub-patterns for the original body; the `_` arm is dead (the guard proved key presence). CLONE
+        // the map pattern AND the body: both were resolved+typed through the OLD composite `SumPayload → MapField`
+        // path in the original arm, so REUSING them would carry stale memos into the new context (an unsolved
+        // result type → "if result type has no machine representation"). Fresh clones re-resolve + re-type
+        // cleanly against the new direct map match on `__cm` (mirrors the ctor-record-payload lift).
+        let body_scrut = db.push_name(&name);
+        let map_pat_body = clone_refutable_payload(db, map_pat);
+        let body_clone = clone_refutable_payload(db, body);
+        let body_true_arm = db.push_list(vec![map_pat_body, body_clone]);
+        let trap_head = db.push_name("trap");
+        let trap_msg =
+            db.push_str("unreachable: ctor map payload keys already gated by the presence guard");
+        let trap = db.push_list(vec![trap_head, trap_msg]);
+        let wild_b = db.push_name("_");
+        let body_false_arm = db.push_list(vec![wild_b, trap]);
+        let body_match_head = db.push_name("match");
+        let new_body = db.push_list(vec![
+            body_match_head,
+            body_scrut,
+            body_true_arm,
+            body_false_arm,
+        ]);
+        new_arms.push(db.push_list(vec![new_pat, new_body]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms.iter().copied());
+    let rewritten = db.push_list(items);
+    // FORGET the rewritten arms' stale resolutions before re-resolving: the body + the map pattern are REUSED
+    // from the original arm, where the value binder was resolved through the OLD composite path
+    // (`SumPayload(Mk) → MapField`) the backend cannot wire. Forgetting forces `resolve_subtree` to re-resolve
+    // it against the NEW inner direct map match (via `__cm`, which wires). The scrutinee is a sibling (not
+    // inside the arms), so it is untouched.
+    for &arm in &new_arms {
+        crate::resolve::forget_subtree(db, arm);
+    }
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "ctor with a refutable map payload over a runtime map → fresh binder + key-presence guard + direct map re-match");
+    Some(core_of(db, rewritten))
+}
+
 pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // A ZERO-ARM match is the DEGENERATE base case of exhaustiveness: it is well-formed ONLY when the
     // scrutinee is UNINHABITED (`Never` — a diverging expression), for which no arm is needed to cover
@@ -640,6 +788,15 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
         // payload is already fine, so this fires ONLY on a record-destructure payload. Rebuilds the match and
         // recurses through `core_of`. Returns `None` (falls through unchanged) for every other shape.
         if let Some(core) = desugar_ctor_record_payload_destructure(db, scrutinee, arms) {
+            return core;
+        }
+        // A ctor whose single payload is a REFUTABLE MAP pattern over a RUNTIME map — `(W.Mk #map((= k v)…))`
+        // — binds a value by keyed read. A map nested in a variant payload over a runtime scrutinee is not
+        // wired in `lower_map_field` ("constant map only"), but the DIRECT runtime map match is; so bind the
+        // payload to a fresh `__cm` and re-match it as a direct map match under a key-presence guard (a missing
+        // key falls through to the outer catch-all). Fires only on a runtime scrutinee — a constant map still
+        // folds via `fold_sum_path` — and only for the single-map-payload shape. Rebuilds + recurses.
+        if let Some(core) = desugar_ctor_map_payload_destructure(db, scrutinee, arms) {
             return core;
         }
         return lower_match_sum(db, scrutinee, arms);

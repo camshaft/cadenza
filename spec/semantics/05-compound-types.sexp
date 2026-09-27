@@ -23433,12 +23433,15 @@
 ; --- The SUM-VARIANT-payload RUNTIME-map twin -----------------------------------------------------------
 ; The tuple-nested twins above fold a CONSTANT `#map` literal, and a DIRECT match over a runtime map already
 ; binds (the value-sub-pattern cases below). This pins the ONE residual coverage face: a map pattern nested
-; inside a SUM-VARIANT payload over a genuinely RUNTIME map (a `Map.insert` value, not a `#map` literal). The
-; variant payload routes the nested map pattern through the SELECT-DISPATCH lowering, whose `MapHasKeys`
-; key-presence gate would need a per-binder runtime keyed-read (a `map-lookup` per named key) — not yet wired,
-; so it DECLINES cleanly (CDZ0900 `wasm-map-pattern-runtime-map`), never a wrong value. Locks in the idealistic
-; binding; auto-flips Todo→PASS when the select-dispatch runtime keyed-read lands. Reverting the select fold
-; guard so it silently misfires would flip this Todo→Fail (a miscompile), so it guards the boundary either way.
+; inside a SUM-VARIANT payload over a genuinely RUNTIME map (a `Map.insert` value, not a `#map` literal). A
+; front-end pre-pass (`desugar_ctor_map_payload_destructure`) now rewrites the ctor-map-payload arm to the
+; DIRECT form on a runtime scrutinee: bind the payload to a fresh `__cm` and re-match it as a direct map
+; match under a KEY-PRESENCE guard, so a missing key falls through to the outer catch-all — reusing the
+; wired direct runtime map match (`desugar_runtime_map_match`) instead of a new nested-map path. `main 5`
+; inserts key 5 → the arm binds v=10 → 10; `main 7` leaves key 5 absent → the catch-all → -1. This is a
+; backend-agnostic desugar; it is verified PASS on wasm here, and stays a clean todo on rust / rust-async
+; pending confirmation that the rust backend runs the resulting direct runtime map match. A CONSTANT map
+; payload still folds via `fold_sum_path` (the desugar fires only on a non-const scrutinee), unchanged.
 (case
   "a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read"
   (doc
