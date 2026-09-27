@@ -5671,3 +5671,56 @@ cases
   (call perms (: #list((flags read write) (flags execute)) (List (Record (: read Bool) (: write Bool) (: execute Bool)))))
   (output (: 204 Int64))
   (live-objects 0))
+
+(case
+  "a typed result<ok,err> EXPORT result over a CUSTOM (non-prelude) sum with CONCRETE payloads crosses"
+  (doc
+    "SHAPE 120 — a typed `result<s64,s64>` EXPORT result whose guest is a CUSTOM monomorphic sum
+           `(type Res (Ok Int64) (Err Int64))`, NOT the generic prelude `Result a b`. Was a DECLINE:
+           `canon_write_of`'s Result arm resolved each arm's payload type via `dr.params.position(payload-type-
+           name)` — which only works for a GENERIC payload (a type PARAM instantiated via `args`); a concrete
+           `Int64` payload has no matching param, so the arm returned None → the result reached the provider path
+           → CDZ0900. Now the Result arm resolves each payload the SAME way the Variant arm does — via the
+           variant's ctor occ + `payload_ty_at_instantiation` — so a concrete custom-sum payload crosses too.
+           cl(x) = x>0 ? Res.Ok(x) : Res.Err(-x); x=5 -> Ok(5), x=-3 -> Err(3).")
+  (wit-world
+    (world w (export cadenza:demo/iface
+      (member cl (func (param x (s64)) (result (result (s64) (s64))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type Res (Ok Int64) (Err Int64))
+      (def (cl (: x Int64)) (if (> x 0) (Res.Ok x) (Res.Err (- 0 x))))
+      (export cl)))
+  (call cl (: 5 Int64))
+  (output (: (Ok 5) (Result Int64 Int64)))
+  (call cl (: -3 Int64))
+  (output (: (Err 3) (Result Int64 Int64)))
+  (live-objects 0))
+
+(case
+  "a typed result<T> EXPORT result with a NULLARY err arm crosses"
+  (doc
+    "SHAPE 121 — a typed `result<s64>` EXPORT result: the ok arm carries an `s64`, the err arm is ABSENT
+           (WIT `result<T>` = err unit), over a custom sum `(type Res (Ok Int64) (Err))` with a NULLARY Err
+           ctor. Was a DECLINE: `canon_write_of`'s Result arm required BOTH arms to carry a payload. Now it maps
+           each guest variant to its WIT arm BY NAME (`ok`->boundary disc 0 / `err`->1) with payload-presence
+           agreement — a guest payload arm iff the WIT arm carries a payload — and writes a nullary arm as the
+           disc ALONE (`VariantArm { payload: None }`), exactly like the general Variant arm; disc size + payload
+           offset from `variant_disc_layout` over the two (possibly-absent) arm WITs. cl(x) = x>0 ? Res.Ok(x) :
+           Res.Err; x=5 -> Ok(5), x=-3 -> Err (rendered `(Err unit)`, the boundary decodes the absent err arm as
+           unit). The nullary-arm sibling of SHAPE 120.")
+  (wit-world
+    (world w (export cadenza:demo/iface
+      (member cl (func (param x (s64)) (result (result (s64) (none))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type Res (Ok Int64) (Err))
+      (def (cl (: x Int64)) (if (> x 0) (Res.Ok x) (Res.Err)))
+      (export cl)))
+  (call cl (: 5 Int64))
+  (output (: (Ok 5) (Result Int64 Unit)))
+  (call cl (: -3 Int64))
+  (output (: (Err unit) (Result Int64 Unit)))
+  (live-objects 0))

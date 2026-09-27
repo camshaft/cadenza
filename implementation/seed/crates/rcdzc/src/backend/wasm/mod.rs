@@ -6191,67 +6191,60 @@ fn canon_write_of(
         // disc + the payload at `align_up(1, max(align(ok), align(err)))`). The both-payload sibling of the
         // option arm below (which handles the nullary+payload shape). A `result<_, E>`/`result<T, _>` with a
         // NULLARY arm, or a non-two-variant sum, declines to the option/general arms (a later slice).
-        Ty::Sum { decl, args, .. } if matches!(wty, WitType::Result { .. }) => {
+        Ty::Sum { decl, .. } if matches!(wty, WitType::Result { .. }) => {
             use crate::backend::common::export_name::kebab_extern_name;
             let WitType::Result { ok, err } = wty else {
                 unreachable!("guarded by the arm pattern");
             };
-            // Both WIT arms must carry a payload for this slice (`result<T, E>`); a bare `result<_, _>`/`_, E`
-            // (a nullary ok or err) is a later slice.
-            let (ok_wit, err_wit) = match (ok, err) {
-                (Some(o), Some(e)) => ((**o).clone(), (**e).clone()),
-                _ => return None,
-            };
-            let (params, variants): (Vec<String>, Vec<(String, Vec<crate::ast::StructId>)>) = {
+            // `result<ok, err>` where EITHER arm may be NULLARY (`result<T>` = err unit, `result<_, E>` = ok
+            // unit, bare `result` = both unit). Resolve each guest variant the SAME way as the Variant arm
+            // above — via its ctor occ + `payload_ty_at_instantiation` — so a CONCRETE custom-sum payload
+            // (`(type Res (Ok Int64) (Err))`) crosses too, not just a generic prelude `Result a b`; map it to
+            // its WIT arm BY NAME (`ok`→boundary disc 0, `err`→disc 1). A guest variant carries a payload IFF
+            // its WIT arm does — a payload arm writes recursively, a nullary arm writes ONLY the disc. Disc
+            // size + payload offset come from `variant_disc_layout` over the two (possibly-`None`) arm WITs.
+            let sum_ty = gty.strip_nominal().clone();
+            // Per guest variant (in decl-disc order): (kebab ctor name, nullary?, ctor occ).
+            let guest: Vec<(String, bool, Option<crate::ast::StructId>)> = {
                 let dr = db.type_decl_by_occ(*decl)?;
                 if dr.variants.len() != 2 {
                     return None;
                 }
-                (
-                    dr.params.clone(),
-                    dr.variants
-                        .iter()
-                        .map(|v| (kebab_extern_name(&v.name), v.payloads.clone()))
-                        .collect(),
-                )
+                dr.variants
+                    .iter()
+                    .map(|v| (kebab_extern_name(&v.name), v.payloads.is_empty(), v.ctor))
+                    .collect()
             };
-            // Resolve each guest variant's boundary disc (BY NAME) + its SINGLE generic payload type
-            // (instantiated against `args`, like the option arm) EAGERLY — separating the immutable `db.ast`
-            // reads from the `&mut db` `canon_write_of` recursion below (no overlapping borrow). Indexed by
-            // GUEST decl disc (the value `sum-disc` returns).
-            let mut resolved: Vec<(u32, Ty, WitType)> = Vec::with_capacity(2);
-            for (name, payloads) in &variants {
-                if payloads.len() != 1 {
-                    return None; // a nullary result arm — a later slice
-                }
-                let (boundary_disc, wit) = match name.as_str() {
-                    "ok" => (0u32, ok_wit.clone()),
-                    "err" => (1u32, err_wit.clone()),
+            // Arms in GUEST decl-disc order (`sum-disc` returns that); each maps to its WIT arm BY NAME.
+            let mut arms: Vec<VariantArm> = Vec::with_capacity(2);
+            for (gname, gnullary, ctor) in &guest {
+                let (boundary_disc, wit_arm) = match gname.as_str() {
+                    "ok" => (0u32, ok.as_deref()),
+                    "err" => (1u32, err.as_deref()),
                     _ => return None, // not an ok/err-named 2-variant sum
                 };
-                let occ = payloads[0];
-                let pname = db
-                    .ast
-                    .head_name(occ)
-                    .or_else(|| db.ast.as_name(occ))?
-                    .to_string();
-                let pi = params.iter().position(|p| *p == pname)?;
-                let payload_gty = args.get(pi)?.clone();
-                resolved.push((boundary_disc, payload_gty, wit));
-            }
-            let mut arms: Vec<VariantArm> = Vec::with_capacity(2);
-            for (boundary_disc, payload_gty, wit) in &resolved {
-                let write = canon_write_of(db, payload_gty, wit)?;
+                if *gnullary != wit_arm.is_none() {
+                    return None; // payload-presence mismatch (guest arm vs WIT arm)
+                }
+                let payload = match wit_arm {
+                    None => None,
+                    Some(pw) => {
+                        let ctor = (*ctor)?;
+                        let payload_gty =
+                            crate::infer::payload_ty_at_instantiation(db, ctor, &sum_ty)?;
+                        let pw = pw.clone();
+                        Some(Box::new(canon_write_of(db, &payload_gty, &pw)?))
+                    }
+                };
                 arms.push(VariantArm {
-                    boundary_disc: *boundary_disc,
-                    payload: Some(Box::new(write)),
+                    boundary_disc,
+                    payload,
                 });
             }
-            let payload_align =
-                wit_ctype::canonical_align(&ok_wit).max(wit_ctype::canonical_align(&err_wit));
-            let payload_offset = 1u32.div_ceil(payload_align) * payload_align;
+            let case_payloads: Vec<Option<&WitType>> = vec![ok.as_deref(), err.as_deref()];
+            let (disc_size, payload_offset) = wit_ctype::variant_disc_layout(&case_payloads);
             Some(CanonWrite::Variant {
-                disc_store: op::I32_STORE8,
+                disc_store: disc_store_of(disc_size),
                 payload_offset,
                 arms,
             })
