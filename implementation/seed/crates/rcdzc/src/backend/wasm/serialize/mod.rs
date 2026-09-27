@@ -1832,6 +1832,7 @@ fn core_module_impl(
                         import_realloc,
                         &imp,
                         scratch,
+                        &mut next_local,
                         &mut inner,
                     ); // → [sum-handle]
                     if *drop_after {
@@ -3606,11 +3607,20 @@ impl SumArgArm {
             }
             // An enum payload builds the inner all-nullary cell via `sum-new`.
             SumArmPayload::Enum => out("sum-new"),
-            // A list<scalar> payload builds a value-heap vec (per-element read/box/push).
+            // A list<scalar> payload builds a value-heap vec (per-element read/box/push). A BYTE-LEAF element
+            // (`list<string>`/`list<bytes>`, eop3) copies each element's bytes out of memory 0 via a per-byte
+            // `bytes-alloc`/`bytes-set` loop (`emit_list_level`'s hardcoded per-byte copy-in) instead of one
+            // `box_op` — its `box_op` is inert (empty), so it MUST take this branch, else the empty op name
+            // poisons the wrapper's import collection.
             SumArmPayload::List(elem) => {
                 out("vec-empty");
                 out("vec-push");
-                out(elem.box_op);
+                if elem.byte_leaf.is_some() {
+                    out("bytes-alloc");
+                    out("bytes-set");
+                } else {
+                    out(elem.box_op);
+                }
             }
         }
     }
@@ -3727,6 +3737,7 @@ fn emit_sum_arm(
     bulk_bytes: bool,
     imp: &dyn Fn(&str) -> u64,
     scratch: Option<(u32, u32)>,
+    next_local: &mut u32,
     out: &mut Vec<u8>,
 ) {
     use crate::backend::wasm::wasm_abi::op;
@@ -3793,18 +3804,21 @@ fn emit_sum_arm(
             uleb128(imp("sum-new"), out); // [disc, enum-cell]
         }
         SumArmPayload::List(elem) => {
-            // The `list<scalar>` payload crossed as `(ptr, len)` at the payload base; build a value-heap vec
-            // (exactly like a top-level `MemLeafKind::List` lift), leaving the vec handle as this arm's payload.
-            // Reuse the wrapper's scratch pair as the vec accumulator + element cursor (like the Bytes arm).
+            // The `list<scalar>`/`list<string>`/`list<bytes>` payload crossed as `(ptr, len)` at the payload
+            // base; build a value-heap vec (exactly like a top-level `MemLeafKind::List` lift), leaving the vec
+            // handle as this arm's payload. Reuse the wrapper's scratch pair as the OUTER vec accumulator +
+            // element cursor (like the Bytes arm). A BYTE-LEAF element (`list<string>`, eop3) additionally
+            // reads each element's `(ptr, len)` descriptor and copies its bytes into a fresh guest byte-leaf —
+            // `emit_list_leaf_lift` allocates four fresh locals for that from `next_local`, which is the
+            // wrapper's real local cursor (declared in `n_locals`), NOT a throwaway. A FLAT list<scalar>
+            // element allocates none (the count is byte-identical to before). Only a flat list
+            // (`nest_lists == 0`) is admitted; a nested list-in-option is a later slice.
             let (buf, ctr) = scratch.expect("a list sum arm needs the wrapper's scratch locals");
-            // A FLAT list (`nest_lists == 0`) allocates no extra locals, so a throwaway `next_local` suffices;
-            // the classifier admits only flat lists here (a nested list-in-option is a later slice).
             debug_assert_eq!(
                 elem.nest_lists, 0,
                 "only a flat list payload is admitted in a sum arm"
             );
-            let mut nl = 0u32;
-            emit_list_leaf_lift(elem, payload_param, buf, ctr, &mut nl, imp, out); // [disc, vec-handle]
+            emit_list_leaf_lift(elem, payload_param, buf, ctr, next_local, imp, out); // [disc, vec-handle]
         }
     }
     out.push(op::CALL);
@@ -3833,10 +3847,29 @@ fn emit_sum_arg_rebuild(
     out.push(op::IF);
     out.push(wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
     // Closure sum args carry scalar/nullary/compound payloads only (no `list<u8>`/enum arm) — no scratch.
-    // Closure sum-arg rebuild: no shared allocator at lower-time → per-byte (bulk_bytes=false).
-    emit_sum_arm(&rebuild.arm_true, payload_param, false, imp, None, out);
+    // Closure sum-arg rebuild: no shared allocator at lower-time → per-byte (bulk_bytes=false). A flat
+    // scalar-list arm allocates no fresh locals, so a throwaway `next_local` suffices here (a byte-leaf-list
+    // arm — which needs real locals — never reaches the closure path; it is a top-level entry param only).
+    let mut nl = 0u32;
+    emit_sum_arm(
+        &rebuild.arm_true,
+        payload_param,
+        false,
+        imp,
+        None,
+        &mut nl,
+        out,
+    );
     out.push(op::ELSE);
-    emit_sum_arm(&rebuild.arm_false, payload_param, false, imp, None, out);
+    emit_sum_arm(
+        &rebuild.arm_false,
+        payload_param,
+        false,
+        imp,
+        None,
+        &mut nl,
+        out,
+    );
     out.push(op::END);
     // stash for the post-dispatch drop; leaves [sum-handle] on the stack.
     out.push(op::LOCAL_TEE);
@@ -3853,6 +3886,7 @@ fn emit_sum_field(
     bulk_bytes: bool,
     imp: &dyn Fn(&str) -> u64,
     scratch: Option<(u32, u32)>,
+    next_local: &mut u32,
     out: &mut Vec<u8>,
 ) {
     use crate::backend::wasm::wasm_abi::op;
@@ -3871,6 +3905,7 @@ fn emit_sum_field(
         bulk_bytes,
         imp,
         scratch,
+        next_local,
         out,
     );
     out.push(op::ELSE);
@@ -3880,6 +3915,7 @@ fn emit_sum_field(
         bulk_bytes,
         imp,
         scratch,
+        next_local,
         out,
     );
     out.push(op::END); // → [sum-handle]
@@ -3977,7 +4013,11 @@ fn emit_cell_rebuild(
                 *cursor += 2; // the list flattened to (ptr, len)
             }
             FieldRebuild::Sum(rebuild) => {
-                emit_sum_field(rebuild, cursor, bulk_bytes, imp, scratch, out); // → [arr, i, sum-handle]
+                // A record-field sum's arms carry scalar/nullary/compound/Bytes/scalar-list payloads only (a
+                // byte-leaf-list arm is a top-level entry param only — this field's classifier declines it), so
+                // a flat-list arm allocates no fresh locals and a throwaway `next_local` suffices.
+                let mut nl = 0u32;
+                emit_sum_field(rebuild, cursor, bulk_bytes, imp, scratch, &mut nl, out); // → [arr, i, sum-handle]
             }
         }
         out.push(op::CALL);
