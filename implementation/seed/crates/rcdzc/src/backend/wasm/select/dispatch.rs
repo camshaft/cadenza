@@ -1373,16 +1373,57 @@ pub(super) fn emit_littest_probe(
                 out.push(Lir::I32Eq); // [bool]
             }
         }
-        crate::core::Probe::MapHasKeys { .. } => {
-            // A map-pattern payload over a RUNTIME map: the key-presence gate would need a runtime
-            // `map-lookup` per key (and the value binders a runtime keyed read), not yet wired — a
-            // CONSTANT map folds the `MapHasKeys` test instead (`build_tree`), never reaching here.
-            // Decline (like the runtime string-payload probe), never a miscompile.
-            return Err(Reject::declined(
-                crate::diag::DeclineId::WasmMapPatternRuntimeMap,
-                "matching a map-pattern payload against a runtime map needs the per-binder runtime \
-                 keyed-read (a constant map folds the key test instead)",
-            ));
+        crate::core::Probe::MapHasKeys { keys } => {
+            // A map-pattern payload over a RUNTIME map: gate on KEY PRESENCE. The path walk left the
+            // sub-value's map handle on the stack — BORROWED (the scrutinee owns it, and the arm body's
+            // value binders re-read it via their own `Map.lookup`, resolve Case MapField / runtime), so we
+            // stash it and NEVER drop it. For each named key, `map-lookup(map, key)` returns the value
+            // handle or NULL, borrowing both operands; the key is present iff the result is non-NULL. AND
+            // the per-key presence tests → the arm's bool. This mirrors the PRESENCE half of the
+            // `Core::MapLookup` emit (select/emit.rs) — key boxing/compaction/canonicalization + the
+            // owned-temporary key drop — minus the Some/None construction and the value `dup`. A CONSTANT
+            // map still folds the `MapHasKeys` test in `build_tree` and never reaches here.
+            let Ty::Map(key_ty, _) = cur.strip_nominal().clone() else {
+                return Err(Reject::decline(
+                    "a map-pattern payload probe over a non-map sub-value is a compiler bug",
+                ));
+            };
+            let key_ty = (*key_ty).clone();
+            let map_slot = *high;
+            let key_slot = *high + 1;
+            *high += 2;
+            scratch_ty.insert(map_slot, ValType::I32);
+            scratch_ty.insert(key_slot, ValType::I32);
+            out.push(Lir::LocalSet(map_slot)); // stash the borrowed map handle (read per key, never dropped)
+            for (i, &key) in keys.iter().enumerate() {
+                out.push(Lir::LocalGet(map_slot)); // [.., map]
+                emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [.., map, key-raw]
+                let key_boxed = box_op_for(db, key, &key_ty)?;
+                emit_heap_store_tail(db, key, key_boxed, out); // [.., map, key-handle]
+                if key_needs_compaction(db, key) {
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
+                }
+                if key_needs_canonicalize(db, key) {
+                    emit_key_canonicalize(db, key, &key_ty, high, scratch_ty, out)?;
+                }
+                // `map-lookup` BORROWS the key; drop it after ONLY when it is an owned temporary (a boxed
+                // scalar, a compacted rope, a fresh owned compound) — a borrowed param/projection key is
+                // left to its owner (dropping it would be a use-after-free), exactly as the MapLookup emit.
+                let key_owned = key_handle_is_owned_temporary(db, key, &key_ty)?
+                    || matchsum_view_operand_escaping_reclaim_ok(db, key);
+                out.push(Lir::LocalTee(key_slot)); // [.., map, key]
+                out.push(Lir::CallImport(OP_MAP_LOOKUP)); // [.., value-or-null] (borrows map + key)
+                if key_owned {
+                    out.push(Lir::LocalGet(key_slot));
+                    out.push(Lir::CallImport(OP_DROP)); // reclaim the owned key temporary
+                }
+                out.push(Lir::ConstI32(NULL_HANDLE));
+                out.push(Lir::I32Ne); // [.., present]
+                if i > 0 {
+                    out.push(Lir::I32And); // AND with the running accumulator below on the stack
+                }
+            }
+            // Stack is [present-and]. Fall through to the shared `if`.
         }
         crate::core::Probe::Wild => {
             return Err(Reject::decline("a wildcard literal test is a compiler bug"));

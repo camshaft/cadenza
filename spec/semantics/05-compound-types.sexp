@@ -23435,10 +23435,12 @@
 ; binds (the value-sub-pattern cases below). This pins the ONE residual coverage face: a map pattern nested
 ; inside a SUM-VARIANT payload over a genuinely RUNTIME map (a `Map.insert` value, not a `#map` literal). The
 ; variant payload routes the nested map pattern through the SELECT-DISPATCH lowering, whose `MapHasKeys`
-; key-presence gate would need a per-binder runtime keyed-read (a `map-lookup` per named key) — not yet wired,
-; so it DECLINES cleanly (CDZ0900 `wasm-map-pattern-runtime-map`), never a wrong value. Locks in the idealistic
-; binding; auto-flips Todo→PASS when the select-dispatch runtime keyed-read lands. Reverting the select fold
-; guard so it silently misfires would flip this Todo→Fail (a miscompile), so it guards the boundary either way.
+; key-presence gate now emits the per-binder runtime keyed-read on WASM: it stashes the borrowed map handle
+; and, per named key, tests `map-lookup(map, key) != null` (ANDing the presence tests), while the value
+; binders read each key via their own `Map.lookup` in the arm body. The RUST backend's parallel select path
+; is a separate follow-up (still declines there), so this case is PASS on wasm and stays a clean todo on rust.
+; Reverting the wasm gate so it silently misfires would flip this Todo→Fail (a miscompile), so it guards the
+; boundary either way.
 (case
   "a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read"
   (doc
