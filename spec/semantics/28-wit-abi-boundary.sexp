@@ -6783,3 +6783,32 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL list<option<list<s64>>> host-op arg writes each option element in place (nested-list payload) — Some + None"
+  (doc
+    "SHAPE 162 (v-wit-boundary) — a top-level `list<option<list<s64>>>` bare host-op arg: an option list element
+           whose payload is itself a `list`. `emit_option_to_mem` gained a list-payload branch (the list analogue
+           of its Bytes branch) — on Some it marshals the payload list into shared `mem` at the running cursor via
+           `emit_list_arg_marshal` (which leaves `(outer-ptr, count)`) and writes the canonical `option<list>`
+           payload `(ptr, count)` header at the payload offset; on None the payload area is left unwritten (a none
+           option's `(ptr,count)` is never read on lift). `list_elem_marshalable`'s option arm was widened to admit
+           a `list` payload whose element crosses, in lockstep with `emit_list_arg_marshal`'s `option_elem`
+           detector + `collect_list_elem_ops` (declares the payload's `vec-len`/`vec-get` + element ops). Each
+           element occupies the canonical `option<list<s64>>` stride (disc byte + 4-byte-aligned `(ptr,count)`);
+           the inner-list backings spill after the outer element array. run() builds [Some([1, 2]), None,
+           Some([3, 4, 5])], performs probe.push, returns the stub 55. Completes the option<list> family at the
+           list-ELEMENT position (arg/tuple/record-field were SHAPE 156-161).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (list (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Option (List Int64))) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some #list(1 2)) None (Some #list(3 4 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

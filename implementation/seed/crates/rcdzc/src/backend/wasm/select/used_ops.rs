@@ -159,17 +159,17 @@ pub(super) fn collect_list_elem_ops(
     } else if let Some(payload) =
         crate::backend::wasm::host::option_payload_ty(db, elem).filter(|p| valtype_of(p).is_some())
     {
-        // An OPTION<scalar|bytes|record|tuple> element (`emit_option_to_mem`): reads `sum-disc`, and on Some
+        // An OPTION<scalar|bytes|list|record|tuple> element (`emit_option_to_mem`): reads `sum-disc`, and on Some
         // `sum-payload` + the payload's own ops. A scalar payload unboxes with its get-op; a `Bytes` payload
-        // copies its rope (`bytes-len`/`bytes-get`); a RECORD/TUPLE payload is written via the product writer
-        // (`arr-get` per field + each field's ops). Declare exactly those via the shared recursive
-        // `collect_list_elem_ops` (its Bytes/Record/Tuple arms), else a compound-payload op resolves to an
-        // out-of-range func index.
+        // copies its rope (`bytes-len`/`bytes-get`); a `list` payload marshals via `emit_list_arg_marshal`
+        // (`vec-len`/`vec-get` + element ops); a RECORD/TUPLE payload is written via the product writer (`arr-get`
+        // per field + each field's ops). Declare exactly those via the shared recursive `collect_list_elem_ops`
+        // (its Bytes/List/Record/Tuple arms), else a compound-payload op resolves to an out-of-range func index.
         out.insert(OP_SUM_DISC);
         out.insert(OP_SUM_PAYLOAD);
         if matches!(
             payload.strip_nominal(),
-            Ty::Bytes | Ty::String | Ty::Record(_) | Ty::Tuple(_)
+            Ty::Bytes | Ty::String | Ty::List(_) | Ty::Record(_) | Ty::Tuple(_)
         ) {
             collect_list_elem_ops(db, &payload, out);
         } else if let Ok(Some(read)) = get_op_ty(db, &payload) {

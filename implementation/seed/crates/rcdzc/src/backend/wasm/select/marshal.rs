@@ -76,7 +76,7 @@ pub(super) fn emit_list_arg_marshal(
             crate::backend::wasm::host::abi_val_type(p).is_some()
                 || matches!(
                     p.strip_nominal(),
-                    Ty::Bytes | Ty::String | Ty::Record(_) | Ty::Tuple(_)
+                    Ty::Bytes | Ty::String | Ty::List(_) | Ty::Record(_) | Ty::Tuple(_)
                 )
         })
     {
@@ -773,6 +773,60 @@ pub(super) fn emit_option_to_mem(
         out.push(Lir::LocalGet(blen));
         out.push(Lir::I32Add);
         out.push(Lir::LocalSet(cursor)); // cursor += len
+        out.push(Lir::End); // if (no Else — a none option's payload area is left unwritten, never read on lift)
+        return Ok(());
+    }
+
+    // A `list<T>` payload (`list<option<list>>`): on Some, marshal the payload list into `mem` at the running
+    // cursor via `emit_list_arg_marshal` (which leaves `(outer-ptr, count)`) and write its `(ptr, count)` header
+    // at the payload offset; on None the payload area is left unwritten (a none option's `(ptr,count)` is never
+    // read on lift). The list analogue of the Bytes arm above — a HEADER at `payload_off` + the backing spilled at
+    // the cursor, NOT written in place like a record/tuple. The element WIT comes from `payload_wit`
+    // (`WitType::List(elem)`), so a record/nested element inside the list orders correctly.
+    if matches!(payload_ty.strip_nominal(), Ty::List(_)) {
+        let Ty::List(elem) = payload_ty.strip_nominal() else {
+            unreachable!("list payload by the guard")
+        };
+        let elem = (**elem).clone();
+        let elem_wit = match payload_wit {
+            Some(crate::wit_world::WitType::List(ew)) => Some(ew.as_ref()),
+            _ => None,
+        };
+        let list_slot = work_base + 1;
+        let lptr = work_base + 2;
+        let lcount = work_base + 3;
+        for s in [list_slot, lptr, lcount] {
+            scratch_ty.insert(s, ValType::I32);
+        }
+        *high = (*high).max(work_base + 4);
+        out.push(Lir::LocalGet(is_some));
+        out.push(Lir::If(BlockType::Empty)); // Some
+        out.push(Lir::LocalGet(opt_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload list handle] (borrows the option)
+        out.push(Lir::LocalSet(list_slot));
+        emit_list_arg_marshal(
+            db,
+            &elem,
+            elem_wit,
+            list_slot,
+            cursor,
+            work_base + 4,
+            high,
+            scratch_ty,
+            out,
+        )?; // leaves [outer-ptr, count]
+        out.push(Lir::LocalSet(lcount)); // count (top of stack)
+        out.push(Lir::LocalSet(lptr)); // ptr
+        out.push(Lir::LocalGet(dest_addr));
+        out.push(Lir::LocalGet(lptr));
+        out.push(Lir::I32Store {
+            offset: payload_off,
+        }); // ptr
+        out.push(Lir::LocalGet(dest_addr));
+        out.push(Lir::LocalGet(lcount));
+        out.push(Lir::I32Store {
+            offset: payload_off + 4,
+        }); // count
         out.push(Lir::End); // if (no Else — a none option's payload area is left unwritten, never read on lift)
         return Ok(());
     }
