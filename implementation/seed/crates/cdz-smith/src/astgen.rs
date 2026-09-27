@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(34);
+    let shape = c.variant(35);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -710,10 +710,24 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      wrong-width/wrong-truthiness marshal or a mis-resolved field corrupts the weighted sum. Also the
         //      Cadenza representation a WIT `flags{…}` lowers to (#9794); the plain export exercises the DEFAULT
         //      record marshal (not the WIT-world bitset packing, which needs a `.wit`-declared flags type).
-        _ => (
+        33 => (
             "(do (def (f (: r (Record (: read Bool) (: write Bool) (: exec Bool)))) (+ (if (. r read) 1 0) (+ (if (. r write) 2 0) (if (. r exec) 4 0)))) (export f))"
                 .to_string(),
             vec![rob_arg],
+        ),
+        // 34 — tdd1 RUNTIME-`?` DO-DEF entry param (the #9840 miscompile-fix corpus witness). A runtime-operand
+        //      `?`/`try` under the do-def idiom `(do (def h (try (half k))) (half h))`, INLINED into `main` — the
+        //      exact path that regressed: the do-def try was FRAGILE under inlining (a do-local ref misresolved
+        //      through the β-copy, missing the copied try's BRICK-3b core_override), miscompiling the failure leg
+        //      (n=5 gave 0, not -1). #9840's load-time try_desugar rewrites `(do (def x (try e)) body)` → `(let
+        //      ((x (try e))) body)` so the runtime-`?` is inlining-INVARIANT. `main(n)` chains two `half`s through
+        //      `?`: value = n/4 for n≡0 mod 4 (both halvings unwrap), else -1 (an odd intermediate → None → the
+        //      `?` short-circuits). Arg = `u` (0..60). Exercises the try-operator SHORT-CIRCUIT + the inline path —
+        //      a NEW dimension (no prior `?`/try shape). Verified rust/wasm AGREE (8→2, 6→-1, 5→-1, 12→3).
+        _ => (
+            "(do (def (half (: k Int64)) (if (= (% k 2) 0) (Some (/ k 2)) (None))) (def (quarter (: k Int64)) (do (def h (try (half k))) (half h))) (def (main (: n Int64)) (match (quarter n) ((Some v) v) ((None _u) -1))) (export main))"
+                .to_string(),
+            vec![u.to_string()],
         ),
     };
     ExportParam { source, args }
@@ -6151,13 +6165,14 @@ mod tests {
         // entry-param `f` + the tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f` + the chr1
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
-        // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f`.
-        let mut reached = [false; 34];
-        for seed in 0u64..2040 {
+        // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
+        // the tdd1 runtime-`?` do-def entry-param `main`.
+        let mut reached = [false; 35];
+        for seed in 0u64..2100 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(34) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-33 reuse e0/e1/e2/s0 — no new read.)
+            // variant(35) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-34 reuse e0/e1/e2/s0/u — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6254,11 +6269,13 @@ mod tests {
                 reached[32] = true; // shape 32 = eop3 option<list<string>> sum-holding-a-byte-leaf-list entry-param `f`
             } else if ep.source.contains("(: read Bool)") {
                 reached[33] = true; // shape 33 = rob1 record-of-bools bool-leaf entry-param `f`
+            } else if ep.source.contains("(def (quarter (: k Int64))") {
+                reached[34] = true; // shape 34 = tdd1 runtime-`?` do-def entry-param `main` (#9840)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all thirty-four export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all thirty-five export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
