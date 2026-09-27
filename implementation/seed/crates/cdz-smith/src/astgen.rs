@@ -732,7 +732,7 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(28);
+    let shape = c.variant(29);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -1141,9 +1141,21 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // self-loop admit — this is the MUTUAL-group admit). Value-CORRECT at tip (returns List.at xs 0 = a); a
         // regression that over-fires (frees `xs` mid-descent → go/helper read freed) or fails to admit corrupts
         // the value / traps. Content-observable (reads an ELEMENT). Returns the KNOWN `a`; verified rust==7 at a=7.
-        _ => format!(
+        27 => format!(
             "(do (def (go (: xs (List Int64)) (: d Int64)) (if (< d 1) (Option.expect (List.at xs 0) \"g\") (helper xs (- d 1)))) (def (helper (: xs (List Int64)) (: d Int64)) (if (< d 1) (Option.expect (List.at xs 0) \"h\") (go xs (- d 1)))) (def (caller (: xs (List Int64))) (go xs 2)) (def (main) (caller (list {a} {b} {d}))) (export main))"
         ),
+        // 28 — STRING.AT-ON-A-SLICE-VIEW source-reclaim tripwire (the #d055d7c495 c6469 VALUE counterpart). That
+        // fix added the `is_compacting_view_expect` disjunct to StrAt's source-reclaim gate: a `(String.at
+        // (Option.expect (String.slice s 1 4) …) i)` whose SOURCE is a direct SumExpect(StrSlice) VIEW (owned=false)
+        // was leaking its source Option shell (node#3). The corpus (13-strings) pins the LEAK side (live-objects);
+        // THIS pins the VALUE/UAF side: StrAt COMPACTS its char-slice payload to an independent flat leaf, so the
+        // fence must free the SOURCE shell WITHOUT freeing the live view. We read the extracted substring's char
+        // CONTENT via String.scalar-at → Char.to-int, so an over-drop that frees the compacted view (UAF) yields a
+        // wrong codepoint / trap, and a mis-compacted payload a wrong char. NULLARY (const "abcdef"), NON-entry.
+        // slice "abcdef" 1 4 → "bcd"; String.at 0 → "b"; scalar-at 0 → 'b' = 98. Verified rust==98. Distinct from
+        // shape 26 (nested-loop String.at ACCUMULATE on a bare string) — this is String.at on a SLICE VIEW.
+        _ => "(do (def (main) (match (String.at (Option.expect (String.slice \"abcdef\" 1 4) \"s\") 0) ((Some sub) (match (String.scalar-at sub 0) ((Some c) (Char.to-int c)) (None 0))) (None 0))) (export main))"
+            .to_string(),
     };
     Program { source }
 }
@@ -5949,8 +5961,8 @@ mod tests {
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
         // Distinctive, mutually-exclusive markers for the twenty-seven shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 28];
-        for seed in 0u64..1260 {
+        let mut reached = [false; 29];
+        for seed in 0u64..1305 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -6020,6 +6032,8 @@ mod tests {
                 reached[25] = true; // shape 25 = single-self-loop fresh-owned-arg caller-drop tripwire
             } else if src.contains("(def (inner (: s String) (: i Int64) (: acc Int64))") {
                 reached[26] = true; // shape 26 = nested-tail-loop String.at Some-shell accumulate tripwire
+            } else if src.contains("(String.slice \"abcdef\" 1 4)") {
+                reached[28] = true; // shape 28 = String.at-on-a-slice-view source-reclaim tripwire (c6469 value side)
             } else if src.contains("(type L (Nil) (Cons (List Int64) L))") {
                 reached[19] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
@@ -6028,7 +6042,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all twenty-eight reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all twenty-nine reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
