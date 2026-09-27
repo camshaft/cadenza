@@ -1207,10 +1207,15 @@ pub(super) fn collect_used_ops_into_seen(
                                     }
                                 }
                             } else if let Ty::Record(sub) = e.strip_nominal() {
-                                // A record-of-scalars element: `arr-get` (already inserted) + each field's op.
+                                // A record element: `arr-get` (already inserted) + each field's op — a scalar
+                                // unboxes via its read op, a `Bytes` field copies its rope (`bytes-len`/
+                                // `bytes-get`) into `mem` at the cursor.
                                 let ftys: Vec<Ty> = sub.values().cloned().collect();
                                 for fty in &ftys {
-                                    if let Ok(Some(read)) = get_op_ty(db, fty) {
+                                    if matches!(fty.strip_nominal(), Ty::Bytes) {
+                                        out.insert(OP_BYTES_LEN);
+                                        out.insert(OP_BYTES_GET);
+                                    } else if let Ok(Some(read)) = get_op_ty(db, fty) {
                                         out.insert(read);
                                     }
                                 }

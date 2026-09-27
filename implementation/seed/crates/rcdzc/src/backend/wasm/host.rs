@@ -1393,7 +1393,10 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                             }))
                                     || matches!(e.strip_nominal(), Ty::Record(sub)
                                         if !sub.is_empty()
-                                            && sub.values().all(|f| abi_val_type(f).is_some()))
+                                            && sub.values().all(|f| {
+                                                abi_val_type(f).is_some()
+                                                    || matches!(f.strip_nominal(), Ty::Bytes)
+                                            }))
                             }) =>
                     {
                         let elems = elems.to_vec();
@@ -1423,9 +1426,10 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                         .collect();
                                     RecordFieldAbi::Tuple(inner_abis)
                                 } else {
-                                    // a record-of-scalars element: build name-lex then REORDER to the element's
-                                    // WIT record order (`emit_record_arg_marshal` pushes in WIT order, so the
-                                    // component type + core flatten must match — a name-lex order mis-links).
+                                    // a record element (fields all scalar or `Bytes`): build name-lex then REORDER
+                                    // to the element's WIT record order (`emit_record_arg_marshal` pushes in WIT
+                                    // order, so the component type + core flatten must match — a name-lex order
+                                    // mis-links). A `Bytes` field flattens to `(ptr, len)` copied to `mem`.
                                     let Ty::Record(sub) = e.strip_nominal() else {
                                         unreachable!("tuple element is scalar/bytes/tuple/record by the guard")
                                     };
@@ -1433,12 +1437,11 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                     let fields: Vec<(String, RecordFieldAbi)> = sub
                                         .iter()
                                         .map(|(sym, fty)| {
-                                            (
-                                                sym.name.to_string(),
-                                                RecordFieldAbi::Scalar(
-                                                    abi_val_type(fty).expect("scalar field by the guard"),
-                                                ),
-                                            )
+                                            let fabi = match abi_val_type(fty) {
+                                                Some(pv) => RecordFieldAbi::Scalar(pv),
+                                                None => RecordFieldAbi::Bytes, // Bytes field by the guard
+                                            };
+                                            (sym.name.to_string(), fabi)
                                         })
                                         .collect();
                                     let fields = match elem_wits.as_ref().and_then(|ws| ws.get(i)) {
@@ -2001,7 +2004,10 @@ pub fn first_unrepresentable_host_op(
                                     || matches!(x.strip_nominal(), Ty::Bytes)
                             }))
                         || matches!(e.strip_nominal(), Ty::Record(sub)
-                            if !sub.is_empty() && sub.values().all(|f| abi_val_type(f).is_some()))
+                            if !sub.is_empty() && sub.values().all(|f| {
+                                abi_val_type(f).is_some()
+                                    || matches!(f.strip_nominal(), Ty::Bytes)
+                            }))
                 }));
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)

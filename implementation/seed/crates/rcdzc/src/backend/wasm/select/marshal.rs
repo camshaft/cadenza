@@ -1379,7 +1379,8 @@ pub(super) fn emit_tuple_reg_flatten(
         // DECLARATION order (so `elem_wit` must be the element's WIT record type, threaded from `tuple_wit`),
         // matching serialize's `RecordFieldAbi::Record` recursion + the component `tuple<…, record<…>, …>` type.
         // No capture/disc (a record is not a variant). Requires the tuple's WIT (else decline — a name-lex order
-        // would mis-link). Scoped to a record whose fields are all scalar this increment.
+        // would mis-link). A `Bytes` field flattens to `(ptr, len)` copied to `mem` at the cursor (the marshal
+        // handles it inline); a deeper nested-compound field is a later increment.
         if matches!(ety.strip_nominal(), Ty::Record(sub) if !sub.is_empty()) {
             let Ty::Record(sub) = ety.strip_nominal() else {
                 unreachable!("record element by the guard")
