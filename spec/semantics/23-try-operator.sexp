@@ -1117,6 +1117,38 @@
   (call main (: 0 Int64))
   (output (: -1 Int64)))
 
+(case
+  "trt1 expression-position `?`s as `#tuple` elements hoist left-to-right and short-circuit"
+  (doc
+    "The `#tuple` sibling of trl1 (BRICK 3 slice 2c compound-constructor descent): two `?`s appear as
+     ELEMENTS of a `#tuple` — `(Ok #tuple((try r) (try s)))` — under a `(Result (Tuple Int64 Int64) String)`
+     boundary. Like `#list`, a `#tuple` head is a `Leaf::Ctor` (not a name), so the hoist descends it as a
+     pure container whose elements evaluate left-to-right and, by fixpoint, lifts BOTH `?`s to nested
+     boundary `let`s in order — `(let ((a (try r))) (let ((b (try s))) (Ok #tuple(a b))))` — each riding the
+     inline-safe `lower_let` short-circuit. Both Ok → the tuple `(7 9)`, summed to 16; the FIRST failing `?`
+     short-circuits `mk` to its Err (mapped to -1), leaving the later `?` unevaluated (k=1: second Err; k=0:
+     first Err). Verified leak-clean (live-objects 0 every path). Pins the Tuple arm of the compound-ctor
+     descent beside the List arm (trl1); a `record`/`map` element `?` remains a clean CDZ0900 decline (their
+     `(= k v)` entries are a deliberate later slice — map-key evaluation order needs its own handling).")
+  (input
+    (do
+      (def
+        (mk (: r (Result Int64 String)) (: s (Result Int64 String)))
+        (: (Ok #tuple((try r) (try s))) (Result (Tuple Int64 Int64) String)))
+      (def
+        (main (: k Int64))
+        (match
+          (mk (if (> k 0) (Ok 7) (Err "a")) (if (> k 1) (Ok 9) (Err "b")))
+          ((Ok t) (+ (. t 0) (. t 1)))
+          ((Err _e) -1)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 16 Int64))
+  (call main (: 1 Int64))
+  (output (: -1 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
 ; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
 ; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return).
 ; FIXED (v-effects): previously REJECTED with `CDZ0101: unbound name #seed<n>` — under this conjunction
