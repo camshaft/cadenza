@@ -155,6 +155,21 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   variant list-element.
 - **[emit, ARG-side]** `option<compound>` host-op record-ARG FIELD — ✅ scalar/bytes (pre-existing) + **tuple-of-scalars (SHAPE 123)** + **record-of-scalars (SHAPE 124)** + **record-with-a-Bytes-field (SHAPE 126)**. `field_boundary_abi` recurses the payload; `emit_record_arg_marshal` SCRATCH-FLATTENS it (`(disc, flatten(payload))` — disc + one core slot per scalar payload field / TWO `(ptr,len)` slots per Bytes field, marshalled into N scratch slots since LIR blocks are single-value, pushed after the `if`; the Some arm recurses `emit_record_arg_marshal` on the payload record and captures its N pushed slots in reverse, the None arm zero-fills; a record payload reads each WIT field from its name-lex cell index, `reorder_record_fields_to_wit` recursing the `Option(Record)` to WIT order; a Bytes payload leaf copies its rope into shared mem at the reserved scratch cursor, `record_has_option_bytes_field` reserving the cursor in the emit.rs pre-scan). NB: the slot count checks `Ty::Bytes` BEFORE `valtype_of` (which is `Some(I32)` for a Bytes handle) so a byte leaf counts as 2 slots, not 1. REMAINING: a nested-compound (option/tuple/record-of-compound) payload field inside the option; the `option<compound>` LIST ELEMENT (`list<option<compound>>`, `list_elem_marshalable`). The RESULT side is DONE — SHAPE 66.
 - **[emit, ARG-side]** `option<compound>` host-op TOP-LEVEL arg (the bare param position, not nested in a record) — ✅ scalar/bytes (pre-existing) + **tuple-of-scalars, Some + None (SHAPE 127/128)** + **tuple-with-a-Bytes-element, Some (SHAPE 129)** + **record-of-scalars, Some + None (SHAPE 130/131)** + **record-with-a-Bytes-field, Some + None (SHAPE 132/133)**. The record branch of `emit_option_reg_flatten` takes a `payload_wit` (threaded from the caller's `wit_params[arg_i]`) and recurses `emit_record_arg_marshal` (WIT-order field push); the classifier REORDERS the payload record abi to WIT order (`reorder_record_fields_to_wit`) so the `(option (record …))` component type + core flatten agree with the marshal — SHAPE 130 uses distinct field widths (s64 lo, bool hi) so a missed reorder fails instantiation (proven: the pre-reorder build hit an `expected (i32 i32 i64) / found (i32 i64 i32)` codegen defect). `emit_option_reg_flatten`'s tuple branch: the component type + serialize flatten are already general over the payload abi (built from the declared WIT type / `flatten_record_field_abi`), so only the guest marshal + the two lockstep classifiers (`collect_host_imports_at`'s `HostParam::Option` arm + `first_unrepresentable_host_op`'s `arg_is_boundary_option`) + the emit.rs cursor pre-scan + `used_ops` were scoped. On Some it flattens the payload tuple POSITIONALLY via `emit_tuple_reg_flatten` (one core slot per SCALAR element, `(ptr,len)` = TWO slots per `Bytes` element with the rope copied into shared mem at the reserved cursor), captured into N scratch slots and pushed as `(disc, elem…)` after the single-value `if`; None zero-fills. Two traps: (a) `valtype_of`-is-`Some(I32)`-for-a-tuple → the tuple branch precedes the scalar branch, and the element guard is `abi_val_type OR Bytes` (not `valtype_of`, which would wrongly admit a nested-compound element); (b) a Bytes element expands to 2 scratch slots (the byte-leaf slot-count pin, same as the record byte-leaf field), and the cursor pre-scan reserves for an `option<tuple-with-bytes>` arg. REMAINING: a nested-compound (tuple/record/option) tuple or record element/field at the top level, and the `option<compound>` LIST element (`list<option<record/tuple>>`).
+- **[emit, ARG-side] a top-level `tuple<…>` host-op arg — ✅ DONE for the whole element algebra (SHAPE 139-147).**
+  A bare `tuple<T…>` arg crosses as the built-in WIT `tuple<T…>`; the guest flattens the value-heap tuple
+  POSITIONALLY via `emit_tuple_reg_flatten`. Element coverage (each with its marshal arm): a SCALAR (inline
+  slot), a `Bytes` leaf (`(ptr,len)` rope→mem at the cursor), a nested `tuple` (recurse; SHAPE 134, +Bytes leaf
+  139), a `record` (recurse `emit_record_arg_marshal`, whose fields cross via the shared `field_boundary_abi` —
+  so a record element carries ANY field that builder accepts: scalar/`Bytes`/nested-record/list/tuple/option/
+  result; SHAPE 135/140/141/142/143), a `list<T>` (whose element crosses at the boundary, marshalled by
+  `emit_list_arg_marshal`; SHAPE 144), an `option<T>` (payload scalar/`Bytes`/tuple/record via
+  `emit_option_reg_flatten`; SHAPE 145/146), and a scalar-payload `variant` (via `emit_variant_reg_flatten`;
+  SHAPE 147). The gate is the single `tuple_arg_crosses(db, ty)` helper (keyed to the marshal's element
+  capability), used by BOTH `first_unrepresentable_host_op` and the `collect_host_imports_at` classifier arm, so
+  they stay in lockstep by construction; `tuple_arg_needs_cursor` reserves the scratch cursor for ANY
+  rope-copying leaf (Bytes/list/result/option<bytes>) anywhere in the tuple tree. REMAINING: an option/variant
+  element whose payload is itself a nested compound beyond the shared marshals' reach, and the compound-payload
+  variant element (both roll into the general compound-variant-payload-at-ARG gap above).
 - **[emit] typed `list<COMPOUND>` EXPORT result element — ✅ DONE (SHAPE 69/70/71/72/73).** A typed
   `list<tuple<s64,s64>>` (69), `list<record{lo,hi}>` (70), NESTED-element `list<tuple<s64, list<s64>>>`
   (71), `list<variant{lo,hi(s64)}>` (72), and `list<tuple<s64, variant>>` (73) EXPORT result all cross by
@@ -164,8 +179,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   side — the doc's old `list<...> element with a nested record/list/tuple/variant field` gap is CLOSED.
   The typed-export twin of SHAPE 7 (untyped run/encode). All are `(live-objects known-leak)` — the spilled
   list result + boxed elements are not reclaimed (the SpillRecord-result reclaim class, SHAPE 60/62/63;
-  value-correct, routed to v-memory-safety). REMAINING (still open): the ARG-side (marshal) nested compound
-  list element (`list_elem_marshalable`, host→guest), a distinct direction from this RESULT-side write.
+  value-correct, routed to v-memory-safety). The ARG-side (host→guest) `list<COMPOUND>` element is ALSO ✅ DONE:
+  `list_elem_marshalable` + `emit_list_arg_marshal` write a `list<record>` (SHAPE 30/39), `list<tuple>` (SHAPE
+  33), `list<option<scalar>>` (SHAPE 38), and `list<variant<scalar>>` (SHAPE 43/52) element IN PLACE at its
+  canonical layout, recursing for a nested `list<list<…>>`. REMAINING (ARG-side only): a DEEPER nested-compound
+  list element whose leaf needs the widened marshals — a compound-payload option/variant element, or a mixed
+  int↔float variant element (rolls into the compound-variant-payload / mixed-join gaps above).
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
 - **[emit, export] typed enum RESULT under a DECLARED world — ✅ DONE (SHAPE 60).** A payloadless-enum
