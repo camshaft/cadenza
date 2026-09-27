@@ -1396,6 +1396,9 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                             && sub.values().all(|f| {
                                                 abi_val_type(f).is_some()
                                                     || matches!(f.strip_nominal(), Ty::Bytes)
+                                                    || matches!(f.strip_nominal(), Ty::Tuple(inner)
+                                                        if !inner.is_empty()
+                                                            && inner.iter().all(|x| abi_val_type(x).is_some()))
                                             }))
                             }) =>
                     {
@@ -1426,10 +1429,12 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                         .collect();
                                     RecordFieldAbi::Tuple(inner_abis)
                                 } else {
-                                    // a record element (fields all scalar or `Bytes`): build name-lex then REORDER
-                                    // to the element's WIT record order (`emit_record_arg_marshal` pushes in WIT
-                                    // order, so the component type + core flatten must match — a name-lex order
-                                    // mis-links). A `Bytes` field flattens to `(ptr, len)` copied to `mem`.
+                                    // a record element (fields scalar / `Bytes` / nested tuple-of-scalars): build
+                                    // name-lex then REORDER to the element's WIT record order
+                                    // (`emit_record_arg_marshal` pushes in WIT order, so the component type + core
+                                    // flatten must match — a name-lex order mis-links). A `Bytes` field flattens
+                                    // to `(ptr, len)` copied to `mem`; a nested tuple field flattens its elements
+                                    // inline (positional).
                                     let Ty::Record(sub) = e.strip_nominal() else {
                                         unreachable!("tuple element is scalar/bytes/tuple/record by the guard")
                                     };
@@ -1437,9 +1442,24 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                     let fields: Vec<(String, RecordFieldAbi)> = sub
                                         .iter()
                                         .map(|(sym, fty)| {
-                                            let fabi = match abi_val_type(fty) {
-                                                Some(pv) => RecordFieldAbi::Scalar(pv),
-                                                None => RecordFieldAbi::Bytes, // Bytes field by the guard
+                                            let fabi = if let Some(pv) = abi_val_type(fty) {
+                                                RecordFieldAbi::Scalar(pv)
+                                            } else if matches!(fty.strip_nominal(), Ty::Bytes) {
+                                                RecordFieldAbi::Bytes // Bytes field by the guard
+                                            } else if let Ty::Tuple(inner) = fty.strip_nominal() {
+                                                // nested tuple-of-scalars field (positional, no reorder)
+                                                let inner_abis = inner
+                                                    .iter()
+                                                    .map(|x| {
+                                                        RecordFieldAbi::Scalar(
+                                                            abi_val_type(x)
+                                                                .expect("scalar tuple-field element by the guard"),
+                                                        )
+                                                    })
+                                                    .collect();
+                                                RecordFieldAbi::Tuple(inner_abis)
+                                            } else {
+                                                unreachable!("record field is scalar/bytes/tuple by the guard")
                                             };
                                             (sym.name.to_string(), fabi)
                                         })
@@ -2007,6 +2027,9 @@ pub fn first_unrepresentable_host_op(
                             if !sub.is_empty() && sub.values().all(|f| {
                                 abi_val_type(f).is_some()
                                     || matches!(f.strip_nominal(), Ty::Bytes)
+                                    || matches!(f.strip_nominal(), Ty::Tuple(inner)
+                                        if !inner.is_empty()
+                                            && inner.iter().all(|x| abi_val_type(x).is_some()))
                             }))
                 }));
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)

@@ -6157,6 +6157,36 @@ cases
   (live-objects 0))
 
 (case
+  "a TOP-LEVEL tuple with a RECORD element that has a NESTED TUPLE field flattens the field inline"
+  (doc
+    "SHAPE 141 (v-wit-boundary) — a top-level `tuple<record{n: s64, pt: tuple<s64, bool>}, s64>` bare host-op
+           arg, extending the tuple record-element marshal (SHAPE 135 all-scalar fields, SHAPE 140 a Bytes
+           field) to a record element that carries a NESTED TUPLE field. `emit_tuple_reg_flatten` reads the
+           record element's handle (`arr-get`) and recurses `emit_record_arg_marshal`, whose tuple-field arm
+           reads the `pt` tuple handle and flattens its elements POSITIONALLY inline — a scalar element pushes
+           one slot. So the whole arg flattens to `(n: i64, pt0: i64, pt1: i32, outer1: i64)` = 4 core slots.
+           This is the tuple-element analogue of the DIRECT record-arg nested-tuple field (which already crosses
+           via `field_boundary_abi`): the classifier now maps a record element's tuple-of-scalars field to
+           `RecordFieldAbi::Tuple` (was scalar/`Bytes`-only, which would have declined the whole arg), matching
+           the marshal + the component `tuple<record<…, tuple<s64, bool>>, s64>` type. The MIXED nested widths
+           (pt0: s64 = i64, pt1: bool = i32) make the inline flatten load-bearing. run() builds ({n: 7, pt: (5,
+           true)}, 9), performs probe.push, returns the stub 55. Extends the tuple record-element family to a
+           nested-compound field.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (record (= n (s64)) (= pt (tuple (s64) (bool)))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Record (: n Int64) (: pt (Tuple Int64 Bool))) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple(#record((= n 7) (= pt #tuple(5 true))) 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
   "a payloadless enum as a FIELD of a typed record EXPORT result crosses BY NAME"
   (doc
     "SHAPE 136 — a payloadless `enum` as a FIELD of a typed `record` EXPORT result under a declared world:
