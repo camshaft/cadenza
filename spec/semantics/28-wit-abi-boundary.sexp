@@ -5860,3 +5860,51 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<tuple-of-scalars> host-op arg (not nested in a record) marshals its Some payload"
+  (doc
+    "SHAPE 127 — an `option<tuple<s64,s64>>` as the BARE top-level param of a host op (probe.push :
+           func(option<tuple<s64,s64>>) -> s64), the register-twin entry point of the option<tuple> record-FIELD
+           flatten (SHAPE 123). The component type + serialize flatten are already general over the payload abi
+           (built from the declared WIT `(option (tuple s64 s64))` / flatten_record_field_abi); the guest marshal
+           is `emit_option_reg_flatten`'s tuple branch: on Some it flattens the payload tuple POSITIONALLY via
+           `emit_tuple_reg_flatten` (one core slot per element), captured into N scratch slots and pushed as
+           `(disc=1, elem0, elem1)` after the single-value `if`. run() builds Some((7,8)), performs probe.push,
+           returns the stub 55. A VALID component that runs is the pin: a broken flatten (wrong slot count/order,
+           or reading a None payload) traps or mis-marshals at component validation.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (tuple (s64) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Tuple Int64 Int64)) Int64)))
+      (def (run) (host (probe) (probe.push (Some #tuple(7 8)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<tuple-of-scalars> host-op arg = None exercises the zero-fill flatten branch"
+  (doc
+    "SHAPE 128 — the NONE arm of the top-level option<tuple> arg marshal (SHAPE 127 exercised only Some). An
+           `option<tuple<s64,s64>>` bare arg that is None flattens to `(disc=0, 0, 0)` — `emit_option_reg_flatten`'s
+           tuple branch else-arm zero-fills every payload element scratch slot at its element width and pushes
+           disc=0. run() builds None, performs probe.push, returns the stub 42. A broken zero-fill (wrong slot
+           count/width, or reading an absent payload) would trap or mis-flatten. Complements SHAPE 127 (Some).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (tuple (s64) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Tuple Int64 Int64)) Int64)))
+      (def (run) (host (probe) (probe.push None)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))

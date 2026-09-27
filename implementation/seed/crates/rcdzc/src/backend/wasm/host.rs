@@ -1281,22 +1281,43 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             variant_scalar_payload_cases(db, &at).unwrap(),
                         ));
                     }
-                    // A top-level `option<scalar>` / `option<bytes>` arg crosses as the built-in WIT `option<T>`
-                    // (its own arm — `variant_scalar_payload_cases` above EXCLUDES option-shaped sums, since
-                    // option needs the distinct built-in type, not a `variant` DEFINED type). A SCALAR payload
-                    // flattens to `(disc, scalar)`; a `Bytes` payload flattens to `(disc, ptr, len)` — the
-                    // register twin of the `RecordFieldAbi::Scalar`/`::Bytes` field, copied into `mem` on Some
-                    // (`emit_option_reg_flatten`'s bytes branch). An `option<compound>` payload (record/list/…)
-                    // is a later increment (no `abi_val_type`, not `Bytes` → leaves `params` short → declined).
-                    // Checked BEFORE the scalar `_` arm (a Sum has no `abi_val_type`, so `_` would decline).
+                    // A top-level `option<scalar>` / `option<bytes>` / `option<tuple-of-scalars>` arg crosses as
+                    // the built-in WIT `option<T>` (its own arm — `variant_scalar_payload_cases` above EXCLUDES
+                    // option-shaped sums, since option needs the distinct built-in type, not a `variant` DEFINED
+                    // type). A SCALAR payload flattens to `(disc, scalar)`; a `Bytes` payload flattens to
+                    // `(disc, ptr, len)`; an `option<tuple-of-scalars>` flattens to `(disc, flatten(tuple))` =
+                    // disc + one core slot per POSITIONAL element — the register twin of the `RecordFieldAbi::
+                    // Option` field, marshalled by `emit_option_reg_flatten` (its scalar/bytes/tuple branches).
+                    // The component type + serialize flatten are already general over the payload abi (built from
+                    // the declared WIT type / `flatten_record_field_abi`), so only the guest marshal is scoped:
+                    // an `option<record>` / a nested/byte-leaf tuple payload is a later increment (leaves
+                    // `params` short → declined). Checked BEFORE the scalar `_` arm (a Sum has no `abi_val_type`,
+                    // so `_` would decline).
                     _ if !peer_bound
-                        && option_payload_ty(db, &at)
-                            .is_some_and(|p| abi_val_type(&p).is_some() || matches!(p, Ty::Bytes)) =>
+                        && option_payload_ty(db, &at).is_some_and(|p| {
+                            abi_val_type(&p).is_some()
+                                || matches!(p, Ty::Bytes)
+                                || matches!(p.strip_nominal(), Ty::Tuple(es)
+                                    if !es.is_empty() && es.iter().all(|e| abi_val_type(e).is_some()))
+                        }) =>
                     {
                         let payload = option_payload_ty(db, &at).unwrap();
                         let abi = match abi_val_type(&payload) {
                             Some(pv) => RecordFieldAbi::Scalar(pv),
-                            None => RecordFieldAbi::Bytes, // option<list<u8>> → (disc, ptr, len)
+                            None if matches!(payload, Ty::Bytes) => RecordFieldAbi::Bytes,
+                            // option<tuple-of-scalars> → the payload's `RecordFieldAbi::Tuple(…)` (scalars). The
+                            // guard above restricts this arm to a non-empty all-scalar tuple, so every element's
+                            // `abi_val_type` is `Some` and this cannot panic.
+                            None => {
+                                let Ty::Tuple(elems) = payload.strip_nominal() else {
+                                    unreachable!("option payload is a scalar/bytes/tuple-of-scalars by the guard")
+                                };
+                                let abis = elems
+                                    .iter()
+                                    .map(|e| RecordFieldAbi::Scalar(abi_val_type(e).unwrap()))
+                                    .collect();
+                                RecordFieldAbi::Tuple(abis)
+                            }
                         };
                         params.push(HostParam::Option(Box::new(abi)));
                     }
@@ -1832,17 +1853,21 @@ pub fn first_unrepresentable_host_op(
             let arg_is_boundary_variant = allow_option_bytes
                 && !peer_bound
                 && variant_scalar_payload_cases(db, &at).is_some();
-            // A top-level `option<scalar>` / `option<bytes>` arg crosses NATIVELY as the built-in WIT
-            // `option<T>` — the guest flattens the value-heap Option to `(disc, payload)` core slots
-            // (`select::emit_option_reg_flatten`, the register twin of the `option<scalar>`/`::bytes` record-
-            // FIELD flatten; a Bytes payload copies its rope into `mem` on Some). Same reducer/host-fused gating;
-            // an `option<record>`/`option<compound>` top-level arg is a later increment (no `abi_val_type`, not
-            // `Bytes`) so it is admitted here for a SCALAR OR `Bytes` payload — matching the classifier + the
-            // marshal, in lockstep.
+            // A top-level `option<scalar>` / `option<bytes>` / `option<tuple-of-scalars>` arg crosses NATIVELY
+            // as the built-in WIT `option<T>` — the guest flattens the value-heap Option to `(disc, payload)`
+            // core slots (`select::emit_option_reg_flatten`, the register twin of the `option<scalar>`/`::bytes`/
+            // `::tuple` record-FIELD flatten; a Bytes payload copies its rope into `mem` on Some, a tuple payload
+            // flattens each POSITIONAL element via `emit_tuple_reg_flatten`). Same reducer/host-fused gating; an
+            // `option<record>` / a nested/byte-leaf tuple payload is a later increment so it is admitted here for
+            // a SCALAR, `Bytes`, or all-scalar tuple payload — matching the classifier + the marshal, in lockstep.
             let arg_is_boundary_option = allow_option_bytes
                 && !peer_bound
-                && option_payload_ty(db, &at)
-                    .is_some_and(|p| abi_val_type(&p).is_some() || matches!(p, Ty::Bytes));
+                && option_payload_ty(db, &at).is_some_and(|p| {
+                    abi_val_type(&p).is_some()
+                        || matches!(p, Ty::Bytes)
+                        || matches!(p.strip_nominal(), Ty::Tuple(es)
+                            if !es.is_empty() && es.iter().all(|e| abi_val_type(e).is_some()))
+                });
             // A top-level `tuple<…>` arg crosses NATIVELY as the built-in WIT `tuple<T…>` — the guest flattens
             // the value-heap tuple positionally (`select::emit_tuple_reg_flatten`; a Bytes element copies its
             // rope into `mem`). Same reducer/host-fused gating; admitted for an ALL-SCALAR-OR-`Bytes` tuple (a

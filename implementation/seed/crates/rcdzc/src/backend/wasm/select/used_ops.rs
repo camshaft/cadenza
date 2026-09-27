@@ -1208,6 +1208,11 @@ pub(super) fn collect_used_ops_into_seen(
                             |p| {
                                 crate::backend::wasm::host::abi_val_type(&p).is_some()
                                     || matches!(p, Ty::Bytes)
+                                    || matches!(p.strip_nominal(), Ty::Tuple(es)
+                                    if !es.is_empty()
+                                        && es.iter().all(|e| {
+                                            crate::backend::wasm::host::abi_val_type(e).is_some()
+                                        }))
                             },
                         ) =>
                     {
@@ -1221,12 +1226,21 @@ pub(super) fn collect_used_ops_into_seen(
                             crate::backend::wasm::host::option_payload_ty(db, &at)
                         {
                             // A `Bytes` payload copies its rope into `mem` on Some (`bytes-len`/`bytes-get`); a
-                            // scalar payload unboxes with its get-op.
+                            // scalar payload unboxes with its get-op; a `tuple-of-scalars` payload is decomposed
+                            // by `emit_tuple_reg_flatten` — POSITIONAL `arr-get` + each element's unbox op.
                             if matches!(payload, Ty::Bytes) {
                                 out.insert(OP_BYTES_LEN);
                                 out.insert(OP_BYTES_GET);
                             } else if let Ok(Some(read)) = get_op_ty(db, &payload) {
                                 out.insert(read);
+                            } else if let Ty::Tuple(elems) = payload.strip_nominal() {
+                                out.insert(OP_ARR_GET);
+                                let elems = elems.to_vec();
+                                for e in &elems {
+                                    if let Ok(Some(read)) = get_op_ty(db, e) {
+                                        out.insert(read);
+                                    }
+                                }
                             }
                         }
                         collect_used_ops_into_seen(db, arg, out, visited);

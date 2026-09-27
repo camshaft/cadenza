@@ -1025,6 +1025,78 @@ pub(super) fn emit_option_reg_flatten(
         out.push(Lir::LocalGet(len_out));
         return Ok(());
     }
+    // A top-level `option<tuple-of-scalars>` arg flattens (canonical variant flatten) to `(disc:i32,
+    // flatten(tuple))` = disc + one core slot per tuple element (POSITIONAL, no name-lex/WIT-order ambiguity),
+    // the register twin of the `option<tuple>` record-FIELD flatten. `BlockType` is single-value, so the
+    // variable element count cannot be pushed from the `if`; instead marshal the payload tuple into N element
+    // scratch slots (Some → `emit_tuple_reg_flatten` on the SUM_PAYLOAD tuple handle, its N positional pushes
+    // captured in REVERSE; None → each element's width zero) and push `disc` + the N slots AFTER the `if`. MUST
+    // precede the scalar branch below: a tuple's `valtype_of` is `Some(I32)` (an opaque handle), so the scalar
+    // branch's guard would else match it and decline for "no unbox op".
+    if matches!(payload_ty.strip_nominal(), Ty::Tuple(es)
+        if !es.is_empty() && es.iter().all(|e| valtype_of(e).is_some()))
+    {
+        let Ty::Tuple(elems) = payload_ty.strip_nominal() else {
+            unreachable!("tuple payload by the guard")
+        };
+        let elems = elems.to_vec(); // release the borrow of `payload_ty` before the recursive marshal
+        let slot_vts: Vec<ValType> = elems.iter().map(|e| valtype_of(e).unwrap()).collect();
+        let n = slot_vts.len() as u32;
+        let disc_out = work_base;
+        let base_slot = work_base + 1;
+        scratch_ty.insert(disc_out, ValType::I32);
+        for (k, vt) in slot_vts.iter().enumerate() {
+            scratch_ty.insert(base_slot + k as u32, *vt);
+        }
+        *high = (*high).max(base_slot + n);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_DISC)); // [guest disc]
+        out.push(Lir::ConstI32(some_disc));
+        out.push(Lir::I32Eq);
+        out.push(Lir::If(BlockType::Empty)); // Some: marshal the payload tuple into the N element scratch slots
+        out.push(Lir::ConstI32(1)); // WIT `option` some = 1
+        out.push(Lir::LocalSet(disc_out));
+        // SUM_PAYLOAD yields the tuple handle (a borrow of the option — no separate drop, the caller reclaims
+        // the option); `emit_tuple_reg_flatten` pushes its N positional slots.
+        let pay_slot = base_slot + n;
+        scratch_ty.insert(pay_slot, ValType::I32);
+        *high = (*high).max(pay_slot + 1);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [tuple handle]
+        out.push(Lir::LocalSet(pay_slot));
+        emit_tuple_reg_flatten(
+            db,
+            pay_slot,
+            &payload_ty,
+            cursor,
+            pay_slot + 1,
+            high,
+            scratch_ty,
+            out,
+        )?;
+        // Capture the N pushed values into scratch in REVERSE (stack top = last element).
+        for k in (0..n).rev() {
+            out.push(Lir::LocalSet(base_slot + k));
+        }
+        out.push(Lir::Else); // None: zero-fill each element slot
+        out.push(Lir::ConstI32(0)); // WIT `option` none = 0
+        out.push(Lir::LocalSet(disc_out));
+        for (k, vt) in slot_vts.iter().enumerate() {
+            out.push(match vt {
+                ValType::I64 => Lir::ConstI64(0),
+                ValType::F64 => Lir::F64ConstBits(0),
+                ValType::F32 => Lir::F32ConstBits(0),
+                _ => Lir::ConstI32(0),
+            });
+            out.push(Lir::LocalSet(base_slot + k as u32));
+        }
+        out.push(Lir::End);
+        out.push(Lir::LocalGet(disc_out)); // push (disc, elem0, elem1, …)
+        for k in 0..n {
+            out.push(Lir::LocalGet(base_slot + k));
+        }
+        return Ok(());
+    }
     let pv = valtype_of(&payload_ty).ok_or_else(|| {
         Reject::decline("a top-level option arg payload is not a scalar/bytes this increment")
     })?;
