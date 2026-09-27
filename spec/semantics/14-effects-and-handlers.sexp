@@ -11057,12 +11057,16 @@
   (output (: 30 Int64)))
 
 (case
-  "a non-tail inner handle with a foreign perform sibling stays declined (needs frames)"
+  "a non-tail inner handle with a ONE-SHOT foreign perform sibling folds — the foreign op routes to the enclosing handler"
   (doc
-    "When the INNER handle is itself non-tail with a FOREIGN perform sibling in its body (`(A.a)` is
-           undischarged by B), B cannot reduce — its continuation is not pure (a foreign effect would be
-           duplicated by a multi-shot resume). This genuinely needs the frame vertical, so it declines
-           cleanly rather than miscompile.")
+    "The INNER handle B is non-tail (`(+ 2 (resume 20 t))`) and its continuation `C = (+ (A.a) □)`
+           contains a FOREIGN perform `(A.a)` undischarged by B. Because B's arm is ONE-SHOT (exactly one
+           unconditional resume), `C` is spliced EXACTLY ONCE — so the single `(A.a)` fires once and is kept
+           verbatim in B's reduced body `(+ 2 (+ (A.a) 20))`, where the enclosing A handler then discharges
+           it. B reduces (its own op `(B.b)` is folded past the foreign leading perform), then A's fold folds
+           the residual `(A.a)`: A resumes 10 → `(+ 1 (+ 2 (+ 10 20)))` = 33. Sound only for a one-shot arm —
+           a multi-shot resume would duplicate the foreign effect (that stays declined, needs the frame
+           vertical), and a foreign op with NO enclosing handler declines cleanly (no home).")
   (input
     (do
       (effect A (op a (-> Unit Int64)))

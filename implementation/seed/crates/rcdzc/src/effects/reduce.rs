@@ -1068,7 +1068,18 @@ pub fn reduce_handle(
     // `C` exactly once, so the inner perform in `C` runs exactly once (a multi-shot arm would duplicate it —
     // the frame vertical's job). The leading perform's ARGS are strongly pure (`leading_strict_hole` checks),
     // so they need no state threading; the state at the leading perform is the seed (nothing runs before it).
-    if let Some(perform) = do_aware_leading_hole(db, body, &ctx)
+    // Find the leading discharged-perform hole. Primary: `do_aware_leading_hole` (the leading strict-spine
+    // perform must be THIS handler's op). FALLBACK: the NESTED-HANDLER FOREIGN-SIBLING shape (11342) — a
+    // FOREIGN perform (an enclosing handler's op) precedes our own op on the strict spine; skip it (kept in
+    // `C`, discharged by the enclosing handler) and fold against our own op. The fallback is sound ONLY for a
+    // one-shot arm (`C` spliced once → the foreign effect fires once); the `count_resumes == 1` gate below
+    // enforces it (a foreign-reaching body requires one-shot there), so admitting the hole here cannot escape
+    // the multi-shot guard.
+    let (two_hole_perform, via_foreign_fallback) = match do_aware_leading_hole(db, body, &ctx) {
+        Some(p) => (Some(p), false),
+        None => (do_aware_leading_own_op_past_foreign(db, body, &ctx), true),
+    };
+    if let Some(perform) = two_hole_perform
         && let Resolved::Apply { head, args } = resolved_of(db, perform)
         && let Some((decl, idx)) = is_perform(db, head, &ctx)
         && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
@@ -1092,6 +1103,16 @@ pub fn reduce_handle(
         // (DESIGN §4.4: a reified continuation must not span a host call) forbids that, so require the body
         // to be free of any undischarged (foreign/host) perform when the arm resumes more than once.
         && (count_resumes(db, arm.body) == 1 || !body_reaches_foreign_perform(db, body, &ctx))
+        // FOREIGN-SIBLING FALLBACK (11342) soundness: when the hole was found PAST a foreign leading perform
+        // (`via_foreign_fallback`), that foreign perform is kept in `C` and discharged by the enclosing
+        // handler ONLY when `C` is actually spliced — so require the arm to resume UNCONDITIONALLY on the
+        // strict spine. A PARTIAL-resume arm (a resume under an `if`/`match` branch, e.g. fpr3's `(if …
+        // (List.len s) (resume …))`) splices `C` on only some paths, DROPPING the foreign perform on the
+        // abort path (an observable host-call-sequence miscompile). This is v-effects' condition 1
+        // (exactly-once, unconditional). Not required for the primary (own-op-leading) path, which the
+        // existing partial-resume handling already serves.
+        && (!via_foreign_fallback
+            || (count_resumes(db, arm.body) == 1 && resume_on_strict_spine(db, arm.body)))
     {
         // SILENT-MISCOMPILE GUARD (breaker pyth1). A nested closed HANDLE in the POST-RESUME TOLL position —
         // `(+ (resume v s') (handle E 40 … (+ (E.tick) 2)))` — is NOT reduced to its value by the refold; its
@@ -4383,4 +4404,150 @@ pub(crate) fn body_has_unsound_abortive_perform(
         }
         Struct::Atom(_) => false,
     }
+}
+
+/// Like [`do_aware_leading_hole`], but for the NESTED-HANDLER FOREIGN-SIBLING shape: find THIS handler's own
+/// leading op-perform hole even when a FOREIGN perform — an op of a DIFFERENT effect, discharged by a
+/// lexically-ENCLOSING handler, not by `ctx` — precedes it on the strict spine. Example (14-effects:11060,
+/// case 11342): `(handle A 0 ((a … (+ 1 (resume 10 s)))) (handle B 0 ((b … (+ 2 (resume 20 t)))) (+ (A.a)
+/// (B.b))))`. When B reduces (inner-first), the strict-spine leading perform is the FOREIGN `(A.a)`, so
+/// [`leading_strict_hole`] returns `None` (A.a is not B's op) and B declines. Here we SKIP a leading foreign
+/// perform (kept verbatim in the continuation `C`, so its position relative to any state read is preserved —
+/// order-preserving by construction) and return B's own `(B.b)` as the hole. The kept foreign perform is
+/// spliced into `C` exactly ONCE and is then discharged by the enclosing handler when the OUTER fold runs;
+/// this is sound ONLY for a ONE-SHOT arm (`C` spliced once → the foreign effect fires once), which the
+/// caller GATES (`count_resumes == 1`, reduce.rs). If the foreign op has NO enclosing handler, the residual
+/// perform simply fails to discharge in the outer fold and declines cleanly (never a miscompile). A foreign
+/// perform with a NON-pure argument is NOT skipped (its own arg hole would be an even-earlier hole this
+/// simple spine walk cannot thread) — decline instead.
+fn do_aware_leading_own_op_past_foreign(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+) -> Option<StructId> {
+    if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
+        let positions: Vec<StructId> = items
+            .into_iter()
+            .filter(|&it| !matches!(db.ast.head_name(it), Some("type") | Some("effect")))
+            .collect();
+        return leading_own_op_past_foreign_seq(db, positions.into_iter(), ctx);
+    }
+    leading_own_op_past_foreign_hole(db, node, ctx)
+}
+
+/// Whether `node` reaches its `resume` on the UNCONDITIONAL STRICT SPINE — every control-flow path evaluates
+/// it (it is not inside an `if`/`match`/short-circuit branch some path can skip). GATES the foreign-perform-
+/// in-`C` splice ([`do_aware_leading_own_op_past_foreign`]): the kept foreign perform is discharged only when
+/// `C` is actually spliced, so a CONDITIONAL resume (a PARTIAL-resume / abort arm — fpr3's `(if … (List.len s)
+/// (resume …))`) would splice `C` on only some paths and DROP the foreign perform on the abort path (an
+/// observable host-call-sequence miscompile). Combined with the caller's `count_resumes == 1`, this is
+/// v-effects' condition 1: the resume fires EXACTLY ONCE, UNCONDITIONALLY. Conservative: anything not on the
+/// recognized strict spine (an `if`/`match`/`and`/`or` branch, a `handle`, a leaf) yields `false`.
+fn resume_on_strict_spine(db: &mut Db, node: StructId) -> bool {
+    // A `do` resolves to `Ref{last}` (collapse), so test the raw form first: every item runs in sequence.
+    if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
+        return items.iter().any(|&it| resume_on_strict_spine(db, it));
+    }
+    if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
+        return true;
+    }
+    match resolved_of(db, node) {
+        Resolved::Not { operand }
+        | Resolved::Proj { operand, .. }
+        | Resolved::Member { operand, .. } => resume_on_strict_spine(db, operand),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            resume_on_strict_spine(db, expr)
+        }
+        Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
+            elems.iter().any(|&e| resume_on_strict_spine(db, e))
+        }
+        // A pure operator / effect-free call evaluates ALL its operands unconditionally.
+        Resolved::Apply { head, args } => {
+            (is_pure_operator_head(db, head) || call_is_effect_free_nonrecursive(db, head))
+                && args.iter().any(|&a| resume_on_strict_spine(db, a))
+        }
+        // `let` inits + body all run in sequence.
+        Resolved::Let { bindings, body } => {
+            bindings
+                .iter()
+                .any(|&(_n, i)| resume_on_strict_spine(db, i))
+                || resume_on_strict_spine(db, body)
+        }
+        // An `if`/`match`/`and`/`or` branch, a `handle`, or a leaf: a resume there is CONDITIONAL (some path
+        // skips it) — not the unconditional strict spine.
+        _ => false,
+    }
+}
+
+/// The single-node worker for [`do_aware_leading_own_op_past_foreign`] — mirrors [`leading_strict_hole`]'s
+/// strict-spine descent, but the SEQUENCE walker skips a leading foreign perform (see that function).
+fn leading_own_op_past_foreign_hole(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+) -> Option<StructId> {
+    // THIS handler's own discharged perform, with strongly-pure args, IS the leading hole.
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_some()
+    {
+        return if args.iter().all(|&a| strongly_pure(db, a, ctx)) {
+            Some(node)
+        } else {
+            None
+        };
+    }
+    match resolved_of(db, node) {
+        Resolved::Not { operand }
+        | Resolved::Proj { operand, .. }
+        | Resolved::Member { operand, .. } => leading_own_op_past_foreign_hole(db, operand, ctx),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            leading_own_op_past_foreign_hole(db, expr, ctx)
+        }
+        Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
+            leading_own_op_past_foreign_seq(db, elems.iter().copied(), ctx)
+        }
+        Resolved::Apply { head, args } => {
+            if is_pure_operator_head(db, head) || call_is_effect_free_nonrecursive(db, head) {
+                return leading_own_op_past_foreign_seq(db, args.iter().copied(), ctx);
+            }
+            None
+        }
+        Resolved::Let { bindings, body } => {
+            let mut positions: Vec<StructId> = bindings.iter().map(|&(_n, i)| i).collect();
+            positions.push(body);
+            leading_own_op_past_foreign_seq(db, positions.into_iter(), ctx)
+        }
+        Resolved::Match { scrutinee, .. } => leading_own_op_past_foreign_hole(db, scrutinee, ctx),
+        Resolved::If { cond, .. } => leading_own_op_past_foreign_hole(db, cond, ctx),
+        Resolved::And { lhs, .. } => leading_own_op_past_foreign_hole(db, lhs, ctx),
+        _ => None,
+    }
+}
+
+/// The sequence walker for [`do_aware_leading_own_op_past_foreign`]: left-to-right, skip a strongly-pure
+/// operand (no hole) AND a leading FOREIGN perform with pure args (kept in `C`), and return the first
+/// operand that begins with THIS handler's own op-perform hole. Any OTHER non-pure operand (a foreign
+/// perform with an impure arg, or a non-uniform performing position) → `None` (decline).
+fn leading_own_op_past_foreign_seq(
+    db: &mut Db,
+    items: impl Iterator<Item = StructId>,
+    ctx: &HandlerCtx,
+) -> Option<StructId> {
+    for it in items {
+        if strongly_pure(db, it, ctx) {
+            continue; // no effect here — the hole is later
+        }
+        // A FOREIGN perform (a DIFFERENT effect's op, not discharged by `ctx`) with strongly-pure args is
+        // kept verbatim in `C` and discharged by the enclosing handler — skip it, keep looking for our own op.
+        if let Resolved::Apply { head, args } = resolved_of(db, it)
+            && crate::eval::effect_op_of(db, head).is_some()
+            && is_perform(db, head, ctx).is_none()
+            && args.iter().all(|&a| strongly_pure(db, a, ctx))
+        {
+            continue;
+        }
+        // Otherwise this operand must itself begin with OUR OWN leading hole.
+        return leading_own_op_past_foreign_hole(db, it, ctx);
+    }
+    None
 }

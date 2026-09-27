@@ -11072,6 +11072,8 @@ pass	two record list elements with two fields each FALL THROUGH when a second-el
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 pass	two refutable literal fields in one record arm compose (both must match)
+pass	two refutable nested-list elements FALL THROUGH when the second element's literal differs
+pass	two refutable nested-list elements in one arm each refine
 pass	two refutable record list elements in one arm each refine (#8418)
 pass	two refutable tuple list elements in one arm each refine and bind (#8418)
 pass	two residuals from ONE curry source hold distinct first-stage captures
@@ -11341,7 +11343,7 @@ todo	a macro splices its quote-param list into an expansion via active unquote-s
 todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
 todo	a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read
 todo	a multi-shot whose host call completed before the perform is admitted once the detector tests the continuation
-todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
+pass	a non-tail inner handle with a ONE-SHOT foreign perform sibling folds — the foreign op routes to the enclosing handler
 todo	a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered
 todo	a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
@@ -11385,6 +11387,4 @@ todo	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGAT
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	two length-prefixed dependent frames chain at runtime
 todo	two map list elements in one arm each refine on a key (currently declines >1-per-arm)
-pass	two refutable nested-list elements in one arm each refine
-pass	two refutable nested-list elements FALL THROUGH when the second element's literal differs
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?

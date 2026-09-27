@@ -2946,7 +2946,7 @@ pass	a non-tail accumulable recursion runs to a large runtime N in constant stac
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail conditional abort hoists out of a strict operand and folds per branch
 pass	a non-tail conditional abort in the untaken branch folds to the pure sibling sum
-pass	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
+pass	a non-tail inner handle with a ONE-SHOT foreign perform sibling folds — the foreign op routes to the enclosing handler
 pass	a non-tail list fold over a large runtime list is accumulator-transformed to constant stack
 pass	a non-tail recursion with a fallible read in its base arm composes
 pass	a non-tail resume runs the continuation as a statement and the arm tail is the handle value
@@ -7966,7 +7966,7 @@ todo	a constructor pattern of the wrong arity is a type error naming the field c
 todo	a constructor selected at RUNTIME is a first-class value that is then applied
 todo	a constructor-pattern list element over a NON-SUM element type gets no spurious variant suggestion
 todo	a continuation call whose body ITSELF performs is not effect-free and declines
-todo	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
+todo	a continuation filed through a RECURSIVE pqueue insert (base arm) folds to the stored wake instant
 todo	a cross-arm perform with the handler nesting FLIPPED has no home — arm bodies resolve under the handlers enclosing their handle
 todo	a cross-dimension if-join clash stays a plain mismatch (no same-dimension scale tail)
 todo	a cross-function fold whose out-state is NOT observed stays single-return
