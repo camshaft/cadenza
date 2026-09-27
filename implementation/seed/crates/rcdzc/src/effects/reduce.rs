@@ -966,6 +966,42 @@ pub fn reduce_handle(
         }
         return Some(folded);
     }
+    // FOREIGN-PREFIX-LET HOIST (hcc1, 14b:13788). When a MULTI-SHOT arm is present and the handle body is
+    // `(let ((h P)) REST)` whose let-INIT `P` performs a FOREIGN/host op (an op NOT discharged by THIS
+    // handler) with a SCALAR result, BEFORE this handler's own perform (which lives in REST): the multi-shot
+    // fold below splices REST's continuation `C` once PER RESUME, and if the `(h P)` binding stayed inside
+    // `C` it would RE-RUN `P` — a DOUBLED host call (observable via the corpus host-call-COUNT gate; the
+    // VALUE looks right because `h`'s response is the same). HOIST it: fold the handle over REST ALONE (now
+    // foreign-free, so the existing multi-shot fold serves it), leaving `(let ((h P)) <folded>)` so `P` fires
+    // ONCE. Sound: `P` performs a DIFFERENT (enclosing-handled) effect, so it commutes out of this handle —
+    // it is the first thing evaluated on the strict spine either way, and `h` is a captured value, not
+    // re-performed, in the spliced continuations. GATED to a multi-shot handler (a ONE-shot arm splices `C`
+    // once → `P` runs once anyway, so the existing fold already serves it — do not perturb it), a FOREIGN
+    // (not own-op) scalar-result init (mrs1's PURE `(bld 3)` init reaches no foreign perform → NOT hoisted →
+    // stays declined, preserving its heap-safety pin; a heap-returning foreign prefix is a separate case).
+    // The recursive `reduce_handle` reparents its folded body under `body` (the `let`) at REST's slot, so
+    // `body` becomes the wrapped `(let ((h P)) folded)` we return.
+    {
+        let arm_bodies: Vec<StructId> = ctx.arms.values().map(|a| a.body).collect();
+        let has_multishot = arm_bodies.iter().any(|&b| count_resumes(db, b) > 1);
+        if has_multishot
+            && body_reaches_foreign_perform(db, body, &ctx)
+            && let Some((binder, prefix_init, rest)) = foreign_prefix_let_rest(db, body, &ctx)
+        {
+            let folded = reduce_handle(db, init, arms, rest, whole_fn_body)?;
+            // Rebuild `(let ((binder prefix_init)) folded)`, REUSING `binder`/`prefix_init` directly (a
+            // `copy_pure` of `prefix_init` would orphan its captures — e.g. `H.log`'s `(+ n 1)` reads main's
+            // `n`). reparent_under_handle_site restores the wrapper to the handle's lexical position so
+            // `prefix_init`'s foreign perform re-resolves to its ENCLOSING host/handler and `folded`'s
+            // `binder` refs re-resolve to this `let` (the seed-wrap idiom).
+            let pair = db.push_list(vec![binder, prefix_init]);
+            let bindings = db.push_list(vec![pair]);
+            let let_head = db.push_name("let");
+            let wrapped = db.push_list(vec![let_head, bindings, folded]);
+            reparent_under_handle_site(db, wrapped, body);
+            return Some(wrapped);
+        }
+    }
     // E5 ESCAPING-K over a RE-PERFORMING continuation (step-3 inc-2b / FACE-1 B2). A general `ctl`-style arm
     // that lets `k` ESCAPE (`cont: Some` carried here) whose delimited continuation `C` ITSELF re-performs
     // the handled effect — `(handle A 5 ((a () s k (use-k k))) (+ (A.a) (A.a)))`, where after the leading
@@ -3112,6 +3148,51 @@ pub(crate) fn abortive_perform_value_ty(
 /// resulting distributed match is the shape the reducer already folds correctly (proven: 43/5113). Returns
 /// the rewritten match, or `None` if the shape does not match (the guard then declines, as before). Gated by
 /// `init_is_foreign_arg_match_abort_call` — the exact def-boundary shape the safe-floor otherwise rejects.
+/// hcc1 (14b:13788): detect a handle body `(let ((h P)) REST)` whose single let-INIT `P` performs a
+/// FOREIGN/host op (an op NOT discharged by THIS handler) but NOT this handler's own op, and produces a
+/// SCALAR (`Int`/`Bool` — copied per splice, no heap-capture double-borrow). Returns `(binder, init, REST)`
+/// so the caller can HOIST `(binder init)` out of the per-resume splice and fold the handle over `REST`. A
+/// PURE prefix init (mrs1's `(bld 3)`) reaches no foreign perform → `None` (not hoisted). See the caller.
+fn foreign_prefix_let_rest(
+    db: &mut Db,
+    body: StructId,
+    ctx: &HandlerCtx,
+) -> Option<(StructId, StructId, StructId)> {
+    let form = db.ast.as_form(body, "let").map(<[StructId]>::to_vec)?;
+    if form.len() != 2 {
+        return None;
+    }
+    let (bindings_occ, rest) = (form[0], form[1]);
+    let Struct::List(pairs) = db.ast.get(bindings_occ).clone() else {
+        return None;
+    };
+    if pairs.len() != 1 {
+        return None;
+    }
+    let Struct::List(kv) = db.ast.get(pairs[0]).clone() else {
+        return None;
+    };
+    if kv.len() != 2 {
+        return None;
+    }
+    let (binder, init) = (kv[0], kv[1]);
+    // `P` must reach a FOREIGN/host perform (the effect we protect from per-resume duplication) but NOT this
+    // handler's OWN discharged op (else hoisting it out of the handle leaves that op unhandled).
+    if !body_reaches_foreign_perform(db, init, ctx) || subtree_reaches_discharged_op(db, init, ctx)
+    {
+        return None;
+    }
+    // Scalar result only (conservative: no heap-capture double-borrow question when `h` is copied into each
+    // spliced continuation). hcc1's `H.log` returns `Int64`.
+    if !matches!(
+        crate::infer::type_of(db, init),
+        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool
+    ) {
+        return None;
+    }
+    Some((binder, init, rest))
+}
+
 pub(crate) fn hoist_match_abort_let(
     db: &mut Db,
     body: StructId,

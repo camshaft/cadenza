@@ -11342,7 +11342,7 @@ todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environmen
 todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
 todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
 todo	a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read
-todo	a multi-shot whose host call completed before the perform is admitted once the detector tests the continuation
+pass	a multi-shot whose host call completed before the perform folds by hoisting the host prefix out of the per-resume splice
 pass	a non-tail inner handle with a ONE-SHOT foreign perform sibling folds — the foreign op routes to the enclosing handler
 todo	a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered
 todo	a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)

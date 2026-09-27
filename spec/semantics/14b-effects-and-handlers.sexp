@@ -13779,14 +13779,17 @@
 ; a strict prefix BEFORE the multi-shot perform, so the flip's delimited continuation
 ; `(+ h (* [] 10))` is PURE over the already-bound response: re-running it per resume re-issues NO
 ; boundary op (the host fires exactly once; §4.4's 'must not span a host call' is satisfied). Today
-; it still rejects CDZ0408 (v-effects ruling 2026-09-03: PRECISION GAP — the detector
-; one_handle_multishot_reaches_foreign scans the WHOLE handle body for a foreign perform, not
-; whether the perform sits inside the reified continuation). Idealistic value: log answers 100, the
-; two resumes see (100 + 1*10) + (100 + 2*10) = 230 at any n. Flips to PASS when the detector tests
-; the actual continuation; the four reject pins above (host IN the continuation) are unaffected and
-; must stay rejects. (breaker probe mh3.)
+; it rejected CDZ0408 (v-effects ruling 2026-09-03: PRECISION GAP — the body-scan detector saw the
+; host perform anywhere in the handle body, not whether it sits inside the reified continuation).
+; Idealistic value: log answers 100, the two resumes see (100 + 1*10) + (100 + 2*10) = 230 at any n.
+; FOLDS since the v-effects foreign-prefix-let hoist: the `(let ((h (H.log …))) …)` binding whose init
+; performs the FOREIGN/host op is HOISTED out of the handle so `H.log` fires exactly ONCE (the host-call
+; pin below is one `h.log`), and the multi-shot fold then splices the now-host-free continuation
+; `(+ h (* [] 10))` per resume. The four reject pins above (host IN the continuation) are unaffected and
+; must stay rejects — the hoist fires ONLY for a foreign/host perform in a strict PREFIX bound before the
+; discharged perform. (breaker probe mh3.)
 (case
-  "a multi-shot whose host call completed before the perform is admitted once the detector tests the continuation"
+  "a multi-shot whose host call completed before the perform folds by hoisting the host prefix out of the per-resume splice"
   (input
     (do
       (effect A (op flip (-> Int64)))
