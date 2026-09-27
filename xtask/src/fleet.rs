@@ -7702,9 +7702,11 @@ fn rearm_stale_scan(
             prior_tok.as_ref().map(|(t, ag)| (t.as_str(), *ag)),
             WAIT_FROZEN_MIN_SECS,
         );
-        let token_changed = !matches!((cur_tok.as_deref(), prior_tok.as_ref()), (Some(c), Some((p, _))) if c == p.as_str());
         if !dry_run
-            && token_changed
+            && token_should_restamp(
+                cur_tok.as_deref(),
+                prior_tok.as_ref().map(|(t, _)| t.as_str()),
+            )
             && let Some(c) = cur_tok.as_deref()
         {
             stamp_wedge_token_fingerprint(fleet, &a.name, c);
@@ -8854,10 +8856,8 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 // it. Permission-dialog wedges are EXEMPT (a human is genuinely needed — never token-gate
                 // them). Uses the DEDICATED `drain-token` clock (not the wedge's) so the two crons don't
                 // reset each other's freeze-age. Stamp on CHANGE so a real freeze's mtime ages.
-                let token_unconfirmed = !permission_wedge
-                    && !alive_working
-                    && !gate_blocked_lease
-                    && {
+                let token_unconfirmed =
+                    !permission_wedge && !alive_working && !gate_blocked_lease && {
                         let cur_tok = pane_now.as_deref().and_then(parse_pane_token_count);
                         let prior_tok = last_drain_token_fingerprint(fleet, &a.name, now);
                         let confirmed_frozen = wedge_token_confirmed_frozen(
@@ -8865,14 +8865,15 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                             prior_tok.as_ref().map(|(t, ag)| (t.as_str(), *ag)),
                             WAIT_FROZEN_MIN_SECS,
                         );
-                        if !confirmed_frozen {
-                            let changed = !matches!((cur_tok.as_deref(), prior_tok.as_ref()), (Some(c), Some((p, _))) if c == p.as_str());
-                            if !dry_run
-                                && changed
-                                && let Some(c) = cur_tok.as_deref()
-                            {
-                                stamp_drain_token_fingerprint(fleet, &a.name, c);
-                            }
+                        if !confirmed_frozen
+                            && !dry_run
+                            && token_should_restamp(
+                                cur_tok.as_deref(),
+                                prior_tok.as_ref().map(|(t, _)| t.as_str()),
+                            )
+                            && let Some(c) = cur_tok.as_deref()
+                        {
+                            stamp_drain_token_fingerprint(fleet, &a.name, c);
                         }
                         !confirmed_frozen
                     };
@@ -12397,6 +12398,19 @@ fn wedge_token_confirmed_frozen(
 /// the gate is unit-tested off fs/tmux.
 fn rearm_suppressed_by_live_token(cur: Option<&str>, confirmed_frozen: bool) -> bool {
     cur.is_some() && !confirmed_frozen
+}
+
+/// Should the cross-sweep token fingerprint be RE-STAMPED this sweep? True iff the current pane token count
+/// is READABLE (`Some`) and is NOT an unchanged repeat of the prior fingerprint's value. Stamping a
+/// NEW/CHANGED value (or a FIRST observation, `prior == None`) resets the marker mtime to "now"; deliberately
+/// NOT re-stamping an UNCHANGED value lets its mtime AGE = how long the meter has been frozen, which is what
+/// [`wedge_token_confirmed_frozen`] measures to fire only past the threshold. An UNREADABLE count (`None`) is
+/// never stamped (nothing to record — and the freeze-age must not reset just because one capture failed).
+/// SHARED by every cross-sweep token clock (the rearm-stale wedge #9790 + the watchdog drain-stall #9792) so
+/// the two stamp-on-change copies can never drift — a subtly-wrong copy would reset the age every sweep and
+/// the gate would NEVER fire. Pure so the age-mechanism's correctness is unit-tested off fs/tmux.
+fn token_should_restamp(cur: Option<&str>, prior: Option<&str>) -> bool {
+    matches!(cur, Some(c) if prior != Some(c))
 }
 
 /// Should a fresh-this-sweep agent (heartbeat within its stale window) have its consecutive-nudge streak
@@ -22834,6 +22848,22 @@ mod tests {
             Some(("76.4k", 999)),
             min
         ));
+    }
+
+    #[test]
+    fn token_should_restamp_stamps_new_or_first_but_ages_an_unchanged_count() {
+        // The freeze-age mechanism: stamp on a NEW/CHANGED value (or first-seen) → mtime resets; DON'T stamp
+        // an UNCHANGED value → its mtime ages toward the frozen threshold; never stamp an unreadable capture.
+        // First observation (no prior) → stamp (start the clock).
+        assert!(token_should_restamp(Some("44.2k"), None));
+        // Advanced (changed vs prior) → stamp (reset the clock; a live turn keeps moving).
+        assert!(token_should_restamp(Some("44.7k"), Some("44.2k")));
+        // UNCHANGED vs prior → do NOT stamp, so the mtime keeps aging = how long the meter has been frozen.
+        assert!(!token_should_restamp(Some("44.2k"), Some("44.2k")));
+        // Unreadable current capture → never stamp (nothing to record; must not reset a real freeze's age
+        // just because one capture failed).
+        assert!(!token_should_restamp(None, Some("44.2k")));
+        assert!(!token_should_restamp(None, None));
     }
 
     #[test]
