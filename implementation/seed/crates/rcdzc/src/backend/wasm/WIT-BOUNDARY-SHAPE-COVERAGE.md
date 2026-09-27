@@ -200,7 +200,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   gained a Result arm (a 2-variant both-payload sum → `CanonWrite::Variant`, mapping guest `Ok`→boundary
   disc 0 / `Err`→1 BY NAME, payload written recursively at the canonical result layout), reusing the
   existing `CanonWrite::Variant` emit (SHAPE 61) with no new writer. Both `(live-objects known-leak)`
-  (SpillRecord-result reclaim class). REMAINING: a `result<_, E>`/`result<T, _>` with a NULLARY arm.
+  (SpillRecord-result reclaim class). The Result arm now resolves each payload via the variant's ctor occ +
+  `payload_ty_at_instantiation` (unified with the Variant arm), so a CUSTOM (non-prelude) sum with CONCRETE
+  payloads (`(type Res (Ok Int64) (Err Int64))`) crosses too — ✅ **SHAPE 120** — not only a generic prelude
+  `Result a b`. A NULLARY arm (`result<T>` = err unit, `result<_, E>` = ok unit) is ✅ **DONE — SHAPE 121**:
+  payload-presence must agree (guest payload arm iff WIT arm carries a payload), a nullary arm writes the disc
+  alone (`VariantArm { payload: None }`), layout via `variant_disc_layout` over the two (possibly-absent) arms.
 - **[emit, export] flat single-scalar-field record result — ✅ DONE (SHAPE 76).** A `record{v: s64}` result
   flattens to ONE core value (returned directly, not by pointer), so the SpillRecord path (retptr) declined
   it. A `ResultLower::FlatScalarField` lower reads the one field off the def's record handle (`arr-get` +
