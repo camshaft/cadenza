@@ -716,10 +716,15 @@ pub(super) fn collect_used_ops_into_seen(
             // when the `string` source is an OWNED temporary the emit drops it after the If (the payload is a
             // COMPACTED-independent leaf, so the drop is UAF-safe; both branches leave it dead). A BORROWED
             // source (param/local) is left to its owner → no drop, no import.
+            // cve disjunct (c6469): mirror the emit's `|| is_compacting_view_expect(string)` StrAt
+            // source-reclaim gate so `drop` is imported iff emitted — a StrAt over a direct
+            // SumExpect(String.slice …) VIEW drops its source shell (owned=false), else UNDER-IMPORT →
+            // invalid module in a minimal function where this is the sole drop.
             if matches!(
                 heap_operand_ownership(db, string),
                 Ok(HandleOwnership::Owned)
-            ) {
+            ) || is_compacting_view_expect(db, string)
+            {
                 out.insert(OP_DROP);
             }
             collect_used_ops_into_seen(db, string, out, visited);
@@ -743,10 +748,15 @@ pub(super) fn collect_used_ops_into_seen(
             out.insert(OP_BYTES_COMPACT);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
+            // cve disjunct (c6469 symmetric fix): the emit's StrSlice source-reclaim gate ALREADY has
+            // `|| is_compacting_view_expect(string)` (a slice-of-a-slice-VIEW drops the inner SumExpect
+            // source shell), but this import companion was Owned-only — a latent UNDER-IMPORT mismatch.
+            // Mirror the emit exactly so `drop` is imported iff emitted.
             if matches!(
                 heap_operand_ownership(db, string),
                 Ok(HandleOwnership::Owned)
-            ) {
+            ) || is_compacting_view_expect(db, string)
+            {
                 out.insert(OP_DROP);
             }
             collect_used_ops_into_seen(db, string, out, visited);

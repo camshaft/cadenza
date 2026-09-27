@@ -2482,10 +2482,19 @@ pub(super) fn emit(
             // caller's original param ref, untouched); UAF-safe by the SAME compact fence as the Owned arm (the
             // view was flattened to an independent leaf). arms_tail_call is load-bearing — a NON-recursive multi-
             // use StrAt-over-param is NOT marked (its dup is already balanced), so no double-free.
+            // `is_compacting_view_expect` disjunct (v-memory-safety c6469, mirrors the StrSlice source-reclaim
+            // gate below): a StrAt whose SOURCE is a direct `SumExpect(String.slice …)` VIEW (owned=false, so
+            // the Owned arm misses it) still owns its compacted char-slice payload — the SumExpect source shell
+            // must be dropped or it leaks one cell (node#3, the `(match (String.at (Option.expect (String.slice
+            // s 1 4) …) i) …)` shape). UAF-safe by the SAME fence StrSlice relies on: the char payload is
+            // COMPACTED-INDEPENDENT (above), so freeing the source never frees the live view; a MULTI-use view
+            // is a kept `LocalRef`=Borrowed (not a direct `SumExpect`) → `is_compacting_view_expect` won't match
+            // → no double-free (its owner reclaims it).
             if matches!(
                 heap_operand_ownership(db, string),
                 Ok(HandleOwnership::Owned)
             ) || out.strat_selfloop_scrut_drop.contains(&id)
+                || is_compacting_view_expect(db, string)
             {
                 out.push(Lir::LocalGet(str_slot));
                 out.push(Lir::CallImport(OP_DROP));

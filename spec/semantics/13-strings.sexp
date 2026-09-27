@@ -6531,7 +6531,7 @@
   (output (: 4 Int64))
   (call main (: 3 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "a slice VIEW and a rope compare by content across the two non-flat reps"
