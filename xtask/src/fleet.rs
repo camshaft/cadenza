@@ -7685,21 +7685,56 @@ fn rearm_stale_scan(
         // needing an operator RESTART, instead of silently re-arming forever. We STILL send the re-arm below
         // (non-destructive, and harmless if the diagnosis is wrong); the surface just makes the wedge visible.
         if reissue_not_sticking(&action, ra, hb_age, wedge_frozen_floor(interval)) {
-            let key = format!("rearm-wedge.{}", a.name);
-            let surfaced_recently =
-                sat_notify_age_secs(fleet, &key, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
-            if dry_run {
-                println!(
-                    "  DRY-RUN would SURFACE wedge '{}' (re-issued but heartbeat frozen {age}s with no reset since re-arm → non-destructive levers exhausted, needs operator restart)",
-                    a.name
-                );
-            } else if !surfaced_recently {
-                surface_wedged_agent(fleet, &a.name, age, &a.interval, now);
-                stamp_sat_notify(fleet, &key);
-                eprintln!(
-                    "  ⚠ SURFACED wedge '{}' → concierge + watchdog.log (heartbeat frozen {age}s, re-arm not sticking — needs operator restart)",
-                    a.name
-                );
+            // Cross-sweep TOKEN-ADVANCE guard (concierge, v-wit-boundary false-positive 2026-09-27): a
+            // heartbeat frozen after a re-arm is ALSO the signature of a legit LONG single turn — an agent
+            // mid-turn on a 37min nix gate that simply hasn't reached its end-of-tick heartbeat stamp. The
+            // in-scan 2-capture verdict can misread such a "thinking" turn as IdlePrompt (its esc-to-interrupt
+            // footer isn't always in the captured frame). So before the DESTRUCTIVE-restart surface, require
+            // the token count FROZEN ACROSS SWEEPS — the same cross-sweep fingerprint the watchdog's
+            // backgrounded-wait wedge uses. A count that ADVANCED (or a first/unreadable reading) = WORKING or
+            // unconfirmed → SUPPRESS the surface; the non-destructive re-arm below still runs. Stamp on CHANGE
+            // so a genuine freeze's mtime ages toward WAIT_FROZEN_MIN_SECS across sweeps.
+            let cur_tok = pane1.as_deref().and_then(parse_pane_token_count);
+            let prior_tok = last_wedge_token_fingerprint(fleet, &a.name, now);
+            let confirmed_frozen = wedge_token_confirmed_frozen(
+                cur_tok.as_deref(),
+                prior_tok.as_ref().map(|(t, ag)| (t.as_str(), *ag)),
+                WAIT_FROZEN_MIN_SECS,
+            );
+            if confirmed_frozen {
+                let key = format!("rearm-wedge.{}", a.name);
+                let surfaced_recently =
+                    sat_notify_age_secs(fleet, &key, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
+                if dry_run {
+                    println!(
+                        "  DRY-RUN would SURFACE wedge '{}' (re-issued but heartbeat frozen {age}s AND token count frozen across sweeps → non-destructive levers exhausted, needs operator restart)",
+                        a.name
+                    );
+                } else if !surfaced_recently {
+                    surface_wedged_agent(fleet, &a.name, age, &a.interval, now);
+                    stamp_sat_notify(fleet, &key);
+                    eprintln!(
+                        "  ⚠ SURFACED wedge '{}' → concierge + watchdog.log (heartbeat frozen {age}s + token count frozen across sweeps, re-arm not sticking — needs operator restart)",
+                        a.name
+                    );
+                }
+            } else {
+                // Advancing / first-seen / unreadable token → WORKING or unconfirmed: SUPPRESS the surface.
+                // Stamp on CHANGE so a real freeze's mtime ages toward the threshold on the next sweep.
+                let changed = !matches!((cur_tok.as_deref(), prior_tok.as_ref()), (Some(c), Some((p, _))) if c == p.as_str());
+                if !dry_run
+                    && changed
+                    && let Some(c) = cur_tok.as_deref()
+                {
+                    stamp_wedge_token_fingerprint(fleet, &a.name, c);
+                }
+                if dry_run {
+                    println!(
+                        "  DRY-RUN would SUPPRESS wedge '{}' — token count not confirmed frozen across sweeps ({} now; a long WORKING turn advances it), NOT a wedge",
+                        a.name,
+                        cur_tok.as_deref().unwrap_or("?")
+                    );
+                }
             }
         }
         let drift = cadence_drift_ratio(age, interval);
@@ -10317,6 +10352,32 @@ fn clear_wait_fingerprint(fleet: &Fleet, name: &str) {
     let _ = std::fs::remove_file(fleet.root.join("wait-fingerprint").join(name));
 }
 
+/// Cross-sweep token-count fingerprint for the rearm-stale SESSION-WEDGE gate — a DEDICATED marker
+/// (`.claude/fleet/wedge-token/<name>`) parallel to the watchdog's [`last_wait_fingerprint`], so the two
+/// paths never clobber each other's semantics (backgrounded-wait vs idle-prompt-wedge). Stores the pane
+/// token count last seen while the agent looked frozen; mtime = when that value was FIRST seen, so an
+/// UNCHANGED value AGES toward [`WAIT_FROZEN_MIN_SECS`] (see [`wedge_token_confirmed_frozen`]). Mirrors the
+/// wait-fingerprint pair; no `clear` needed — a stale value simply mismatches the next reading (→ treated as
+/// advancing → re-stamped), and a recovered agent never reaches the wedge block (its heartbeat resets).
+fn last_wedge_token_fingerprint(fleet: &Fleet, name: &str, now: u64) -> Option<(String, u64)> {
+    let path = fleet.root.join("wedge-token").join(name);
+    let age = file_mtime_unix(&path).map(|m| now.saturating_sub(m))?;
+    let tc = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Some((tc, age))
+}
+
+/// Record the session-wedge token fingerprint (write to `.claude/fleet/wedge-token/<name>`; mtime = when
+/// first seen). Called ONLY on a NEW/CHANGED value — an unchanged value is NOT re-stamped, so its mtime ages
+/// = how long the token meter has been frozen (re-stamping every sweep would reset the age). Best-effort.
+fn stamp_wedge_token_fingerprint(fleet: &Fleet, name: &str, token_count: &str) {
+    let dir = fleet.root.join("wedge-token");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), format!("{token_count}\n")).ok();
+}
+
 /// The last auto drain-nudge we sent this agent, as `(flagged-message-id, age-in-secs)`, or `None`
 /// if never nudged. The marker file `.claude/fleet/drain-nudge/<name>` records the id of the OLDEST
 /// unconsumed message at nudge time in its body (mtime = when we nudged). Recording the id lets the
@@ -12207,6 +12268,22 @@ fn reissue_not_sticking(
         (_, None) => false,             // never re-armed → first contact, not "not sticking"
     };
     no_hb_since_rearm && hb_age.is_none_or(|hb| hb > min_frozen_secs)
+}
+
+/// Is the session-wedge TOKEN signal confirmed FROZEN across sweeps? True ONLY when the current pane token
+/// count is readable, a PRIOR fingerprint exists with the SAME value, and that value has been unchanged
+/// (mtime aged) past `min_frozen_secs`. A count that ADVANCED (differs), a first observation (no prior), or
+/// an unreadable count is NOT confirmed → the agent is treated as WORKING/unsure and the destructive-restart
+/// surface is suppressed. This is the cross-sweep liveness the in-scan 2-capture verdict can MISS on a long
+/// "thinking" turn whose esc-to-interrupt footer isn't in the captured frame (v-wit-boundary false-positive
+/// 2026-09-27: token 71.6k→76.4k over minutes, mis-read idle in one ~3s capture). Mirrors the watchdog's
+/// backgrounded-wait cross-sweep freeze test. Pure so the gate is unit-tested off fs/tmux.
+fn wedge_token_confirmed_frozen(
+    cur: Option<&str>,
+    prior: Option<(&str, u64)>,
+    min_frozen_secs: u64,
+) -> bool {
+    matches!((cur, prior), (Some(c), Some((p, age))) if c == p && age >= min_frozen_secs)
 }
 
 /// Should a fresh-this-sweep agent (heartbeat within its stale window) have its consecutive-nudge streak
@@ -22607,6 +22684,42 @@ mod tests {
             Some(240),
             Some(3000),
             floor
+        ));
+    }
+
+    #[test]
+    fn wedge_token_confirmed_frozen_requires_an_aged_unchanged_count_across_sweeps() {
+        let min = WAIT_FROZEN_MIN_SECS; // 300
+        // CONFIRMED wedge: same count as the prior fingerprint, aged past the frozen threshold.
+        assert!(wedge_token_confirmed_frozen(
+            Some("76.4k"),
+            Some(("76.4k", min)),
+            min
+        ));
+        assert!(wedge_token_confirmed_frozen(
+            Some("76.4k"),
+            Some(("76.4k", min + 100)),
+            min
+        ));
+        // WORKING (v-wit-boundary): the count ADVANCED since the prior sweep → NOT frozen → suppress.
+        assert!(!wedge_token_confirmed_frozen(
+            Some("76.4k"),
+            Some(("71.6k", 600)),
+            min
+        ));
+        // NOT yet: same count but the fingerprint hasn't aged past the threshold (a brief pause, not a freeze).
+        assert!(!wedge_token_confirmed_frozen(
+            Some("76.4k"),
+            Some(("76.4k", min - 1)),
+            min
+        ));
+        // First observation (no prior) → cannot confirm a cross-sweep freeze → suppress (stamp + wait).
+        assert!(!wedge_token_confirmed_frozen(Some("76.4k"), None, min));
+        // Unreadable current token → cannot confirm → suppress (never surface on an unreadable pane).
+        assert!(!wedge_token_confirmed_frozen(
+            None,
+            Some(("76.4k", 999)),
+            min
         ));
     }
 
