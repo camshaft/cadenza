@@ -7135,3 +7135,29 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level tuple<enum, s64> host-op arg crosses (enum element flattened as one i32 disc)"
+  (doc
+    "SHAPE 175 (v-wit-boundary) — a top-level `tuple<enum, s64>` bare host-op ARGUMENT (probe.push :
+           func(tuple<enum{red,green,blue}, s64>) -> s64). A payload-less `enum` as a tuple ELEMENT: extends the
+           record-FIELD enum support (SHAPE 174) to the tuple-element position. `tuple_arg_crosses` now admits an
+           enum element and the tuple-element classifier builds its `RecordFieldAbi::Enum` via the shared
+           `field_boundary_abi`; `emit_tuple_reg_flatten` flattens it positionally as one i32 disc via the
+           scalar-unbox path (a payloadless enum's in-guest rep is a bare disc), joined with the `s64` element's
+           slot. The `(tuple (enum …) s64)` component type carries the enum from the world WIT. run() builds
+           (Green, 5) and performs probe.push; a VALID component that runs is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (enum red green blue) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (effect probe (op push (-> (Tuple Col Int64) Int64)))
+      (def (run) (host (probe) (probe.push (tuple (Col.Green) 5))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

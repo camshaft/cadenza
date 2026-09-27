@@ -754,6 +754,10 @@ fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
             // ARG / a variant record FIELD uses) — pushes `(disc, payload-join)` inline. Checked AFTER option
             // (an option is a Sum but `variant_scalar_payload_cases` excludes the 2-case option shape).
             || variant_scalar_payload_cases(db, e.strip_nominal()).is_some()
+            // a payload-less `enum` element crosses as one i32 disc (the guest reads the value-heap sum's disc
+            // inline via the scalar-unbox path, the SAME as a record enum FIELD). Checked AFTER variant (both
+            // are Sums; `enum_cases` requires ALL-nullary, `variant_scalar_payload_cases` requires ≥1 payload).
+            || enum_cases(db, &e.strip_nominal().clone()).is_some()
             || is_boundary_record(db, e.strip_nominal())
     })
 }
@@ -1652,6 +1656,13 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                 // is a Sum but `variant_scalar_payload_cases` excludes the 2-case option shape).
                                 field_boundary_abi(db, e)
                                     .expect("variant element crosses by `tuple_arg_crosses`")
+                            } else if enum_cases(db, &e.strip_nominal().clone()).is_some() {
+                                // a payload-less `enum` element flattens to one i32 disc (the guest reads the
+                                // value-heap sum's disc inline via the scalar-unbox path). Its abi is the shared
+                                // `field_boundary_abi` (`RecordFieldAbi::Enum(cases)`). Checked before the record
+                                // else (an enum is a Sum, NOT a `Ty::Record`, so the else would panic).
+                                field_boundary_abi(db, e)
+                                    .expect("enum element crosses by `tuple_arg_crosses`")
                             } else {
                                 // a RECORD element: build each field's boundary abi via the shared recursive
                                 // builder (`field_boundary_abi` — scalar/`Bytes`/nested record/list/tuple/option/
