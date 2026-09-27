@@ -6842,3 +6842,57 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL result<list<u8>, enum> host-op arg crosses on the Ok arm (payload bytes copied into mem)"
+  (doc
+    "SHAPE 164 (v-wit-boundary) — a top-level `result<list<u8>, enum>` BARE host-op arg, the Ok arm. A `result`
+           at the param position (the register twin of the `result` record FIELD, SHAPE 17, and the list ELEMENT,
+           SHAPE 163). The classifier pushes `HostParam::Result(err-cases)`; the guest flattens the value-heap
+           Result to `(disc:i32, i32, i32)` core slots via `emit_result_arg_reg_flatten`: the guest sum-disc IS
+           the component result disc (Ok=0 declared first). On Ok it copies the `list<u8>` payload rope into shared
+           `mem` at the running cursor and passes `(0, ptr, len)`. The component `(result (list u8) (enum …))`
+           param type builds from the world's declared WIT via `add_wit_type_deduped`; the core functype adds the
+           3 i32 slots (`host_import_functype`). `first_unrepresentable_host_op` + `option_arg_crosses`/`variant`/
+           `enum` decline a result shape, so this is admitted by its own `result_bytes_enum` gate, in lockstep with
+           the emit dispatch + `collect_used_ops` (declares `sum-disc`/`sum-payload` + `bytes-len`/`bytes-get`).
+           run() builds Ok(b\"\\x01\\x02\\x03\") and performs probe.push; a VALID component that runs is the pin (a
+           wrong result/bytes layout traps at the host's result.lift). Err arm = SHAPE 165.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (u8)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type E (Bad) (Worse))
+      (effect probe (op push (-> (Result Bytes E) Int64)))
+      (def (run) (host (probe) (probe.push (Ok (Bytes.of #list(1 2 3))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL result<list<u8>, enum> host-op arg crosses on the Err arm (err enum disc + zero-pad)"
+  (doc
+    "SHAPE 165 (v-wit-boundary) — the Err arm of SHAPE 164. A top-level `result<list<u8>, enum>` bare host-op arg
+           that is Err(E.Worse): `emit_result_arg_reg_flatten` reads the guest sum-disc (≠0 → the component result
+           Err disc), reads the err enum payload's `sum-disc` as the component enum discriminant, and passes
+           `(disc, err-enum-disc, 0)` with no `mem` write. Completes the `result<list<u8>, enum>` bare-arg family
+           (Ok = SHAPE 164). run() builds Err(E.Worse) and performs probe.push; a VALID component that runs is the
+           pin (a wrong err-enum disc traps at the host's result.lift).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (u8)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type E (Bad) (Worse))
+      (effect probe (op push (-> (Result Bytes E) Int64)))
+      (def (run) (host (probe) (probe.push (Err E.Worse))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

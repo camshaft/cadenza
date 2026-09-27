@@ -1403,6 +1403,25 @@ pub(super) fn collect_used_ops_into_seen(
                         }
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
+                    // A top-level `result<list<u8>, enum>` arg is decomposed by `emit_result_arg_reg_flatten`:
+                    // `sum-disc` (the result disc), and on the Ok arm `sum-payload` + `bytes-len`/`bytes-get`
+                    // (the payload rope copy into `mem`) / on the Err arm `sum-payload` + `sum-disc` (the err
+                    // enum disc). Declare them (else the marshal's `CallImport` resolves to u32::MAX → an invalid
+                    // module), then descend to collect the ops that BUILD the result value. Checked BEFORE the
+                    // `_` fallthrough; option/variant above already declined a result shape.
+                    at if !peer_bound
+                        && crate::backend::wasm::host::result_bytes_enum(db, &at).is_some() =>
+                    {
+                        out.insert(OP_SUM_DISC);
+                        out.insert(OP_SUM_PAYLOAD);
+                        out.insert(OP_BYTES_LEN);
+                        out.insert(OP_BYTES_GET);
+                        // Import mirror of the marshaled-result-arg reclaim (emit.rs `HostCall` result arm): the
+                        // emit deep-drops the result cell iff `Owned` or a dup-site — declare `drop` for every
+                        // result host-arg (safe superset, same policy as the other compound arms).
+                        out.insert(OP_DROP);
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     _ => collect_used_ops_into_seen(db, arg, out, visited),
                 }
             }

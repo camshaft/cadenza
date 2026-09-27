@@ -99,6 +99,16 @@ pub enum HostParam {
     /// unbox per element). A `tuple` with a COMPOUND element (bytes/record/list) is a later increment
     /// (declined — the classifier only pushes this for an ALL-SCALAR tuple, leaving `params` short otherwise).
     Tuple(Vec<RecordFieldAbi>),
+    /// A bare `result<list<u8>, enum>` param (the top-level position, not nested in a record/list) — crosses as
+    /// the built-in WIT `result<list<u8>, err-enum>` type, referenced by a per-param structural `CRef` (like
+    /// [`Option`](HostParam::Option)). Its core form flattens (canonical variant flatten) to `(disc:i32, i32,
+    /// i32)` — the SAME core shape as a `result<list<u8>, enum>` record FIELD ([`RecordFieldAbi::Result`]): the
+    /// discriminant then the join of the Ok arm `(ptr,len)` and the Err arm `(enum-disc, 0)`. Carries the err
+    /// enum's case names (kebab, DECLARATION = discriminant order). The guest marshals it via a register flatten
+    /// (the twin of the result record-FIELD arm): Ok copies the Bytes rope into `mem` at the running cursor +
+    /// pushes `(ptr,len)`, Err pushes `(err-enum-disc, 0)`. A non-`Bytes` ok arm / a `variant` err arm is a later
+    /// increment (declined — the classifier only pushes this for `result_bytes_enum`).
+    Result(Vec<String>),
 }
 
 /// Whether a record-field ABI bottoms out at a `list<u8>` (`Bytes`) leaf — so a `list<T>` param carrying it
@@ -1436,6 +1446,17 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             variant_scalar_payload_cases(db, &at).unwrap(),
                         ));
                     }
+                    // A top-level `result<list<u8>, enum>` arg crosses as the built-in WIT
+                    // `result<list<u8>, <enum>>` — the answer-back envelope shape. It flattens to
+                    // `(disc:i32, ptr/errdisc:i32, len/0:i32)`: on Ok the guest writes the `list<u8>` payload
+                    // into `mem` and passes `(0, ptr, len)`; on Err it passes `(component-disc, err-enum-disc,
+                    // 0)`. Marshalled by `emit_result_arg_reg_flatten` (the register twin of the record `result`
+                    // FIELD arm, minus the array-get). Checked BEFORE the scalar `_` arm (a Sum has no
+                    // `abi_val_type`, so `_` would leave `params` short and decline); a `result<record,enum>` /
+                    // `result<_, variant>` is a later increment (`result_bytes_enum` declines it → `_` declines).
+                    _ if !peer_bound && result_bytes_enum(db, &at).is_some() => {
+                        params.push(HostParam::Result(result_bytes_enum(db, &at).unwrap()));
+                    }
                     // A top-level `option<scalar>` / `option<bytes>` / `option<tuple-of-scalars>` arg crosses as
                     // the built-in WIT `option<T>` (its own arm — `variant_scalar_payload_cases` above EXCLUDES
                     // option-shaped sums, since option needs the distinct built-in type, not a `variant` DEFINED
@@ -2010,6 +2031,11 @@ pub fn set_needs_memory(imports: &[HostImport]) -> bool {
             // tuple flattens with no mem → stays byte-identical).
             HostParam::Option(payload) => record_field_abi_needs_memory(payload),
             HostParam::Tuple(elems) => elems.iter().any(record_field_abi_needs_memory),
+            // A top-level `result<list<u8>, enum>` arg copies the Ok `list<u8>` payload's rope into `mem`
+            // (`emit_result_arg_reg_flatten`'s Ok arm), so it needs the shared-memory core module + the host
+            // op lower's `Memory(0)` option — else the lower is emitted memoryless and the component fails
+            // validation ("canonical option `memory` is required").
+            HostParam::Result(_) => true,
             _ => false,
         })
     })
@@ -2143,6 +2169,14 @@ pub fn first_unrepresentable_host_op(
             // keyed to the marshal's element capability, so the gate + the classifier stay in lockstep.
             let arg_is_boundary_tuple =
                 allow_option_bytes && !peer_bound && tuple_arg_crosses(db, &at);
+            // A top-level `result<list<u8>, enum>` arg crosses NATIVELY as the built-in WIT
+            // `result<list<u8>, <enum>>` — the guest flattens the value-heap result to `(disc, ptr/errdisc,
+            // len/0)` core slots (`select::emit_result_arg_reg_flatten`, the register twin of the record
+            // `result` FIELD flatten; the Ok `list<u8>` copies its rope into `mem`). Same reducer/host-fused
+            // gating; a `result<record,enum>` / `result<_, variant>` is a later increment (`result_bytes_enum`
+            // declines it), matching the classifier + the marshal, in lockstep.
+            let arg_is_boundary_result =
+                allow_option_bytes && !peer_bound && result_bytes_enum(db, &at).is_some();
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
@@ -2152,6 +2186,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_variant
                 && !arg_is_boundary_option
                 && !arg_is_boundary_tuple
+                && !arg_is_boundary_result
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }
