@@ -1162,25 +1162,47 @@ fn looped_invariant_param_caller_owned(
 /// caller-reuse guard fires on a DIRECT container compare (the find-at UAF shape) but NOT on a compare of a
 /// char-VIEW of the container (c862 / pr4-seqmatch: `(= (String.at s i) "0")` — the container is then safely
 /// loop-exit-reclaimable, since comparing an independent view of it creates no borrowed-and-reused hazard).
+///
+/// MEMOIZED (`cache`) exactly like [`occurs_in`] (which delegates to the cached `binder_occurs`): a bare
+/// recursive `core_child_ids` descent re-visits a SHARED Core subtree (a CSE'd / twice-referenced operand)
+/// once per path — worst-case exponential on a diamond DAG. The per-node cache collapses that to O(nodes),
+/// byte-identical (the predicate is pure and the operands here are acyclic — no cycle guard needed, matching
+/// the original). This restores the occurrence-walk memoization parity the view-producer variant had dropped
+/// (the same unmemoized-walk cliff `build_occurrence_bitsets` calls out for the sread-eval ~1360-def case).
 fn occurs_in_non_view_producer(db: &mut Db, id: StructId, binder: StructId) -> bool {
-    match core_of(db, id) {
+    let mut cache: HashMap<StructId, bool> = HashMap::new();
+    occurs_in_non_view_producer_rec(db, id, binder, &mut cache)
+}
+
+fn occurs_in_non_view_producer_rec(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    cache: &mut HashMap<StructId, bool>,
+) -> bool {
+    if let Some(&hit) = cache.get(&id) {
+        return hit;
+    }
+    let r = match core_of(db, id) {
         Core::Param { binder: b } | Core::LocalRef { binder: b } => b == binder,
         // View-producers: skip the borrowed CONTAINER operand; still check the scalar index/start/end.
         Core::StrAt { index, .. } | Core::StrScalarAt { index, .. } => {
-            occurs_in_non_view_producer(db, index, binder)
+            occurs_in_non_view_producer_rec(db, index, binder, cache)
         }
         Core::StrSlice { start, end, .. } => {
-            occurs_in_non_view_producer(db, start, binder)
-                || occurs_in_non_view_producer(db, end, binder)
+            occurs_in_non_view_producer_rec(db, start, binder, cache)
+                || occurs_in_non_view_producer_rec(db, end, binder, cache)
         }
         Core::BytesSlice { start, len, .. } => {
-            occurs_in_non_view_producer(db, start, binder)
-                || occurs_in_non_view_producer(db, len, binder)
+            occurs_in_non_view_producer_rec(db, start, binder, cache)
+                || occurs_in_non_view_producer_rec(db, len, binder, cache)
         }
         _ => core_child_ids(db, id)
             .into_iter()
-            .any(|c| occurs_in_non_view_producer(db, c, binder)),
-    }
+            .any(|c| occurs_in_non_view_producer_rec(db, c, binder, cache)),
+    };
+    cache.insert(id, r);
+    r
 }
 
 fn param_compared_in_loop_body(db: &mut Db, id: StructId, binder: StructId) -> bool {
