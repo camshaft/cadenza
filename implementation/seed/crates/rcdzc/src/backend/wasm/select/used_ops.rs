@@ -1238,6 +1238,16 @@ pub(super) fn collect_used_ops_into_seen(
                                 {
                                     collect_record_field_ops(db, &payload, out);
                                 }
+                            } else if crate::backend::wasm::host::variant_scalar_payload_cases(
+                                db, e,
+                            )
+                            .is_some()
+                            {
+                                // A scalar-payload `variant` element: `emit_variant_reg_flatten` reads
+                                // `sum-disc` + (on a payload case) `sum-payload` + the payload scalar's unbox
+                                // op — declare them via the shared `collect_record_field_ops` (its variant arm),
+                                // the used_ops twin.
+                                collect_record_field_ops(db, e, out);
                             } else if let Ok(Some(read)) = get_op_ty(db, e) {
                                 out.insert(read);
                             }

@@ -640,9 +640,10 @@ pub fn is_boundary_record(db: &mut Db, ty: &Ty) -> bool {
 /// [`emit_tuple_reg_flatten`]'s ELEMENT capability (the marshal), so the gate + classifier stay in lockstep: an
 /// element crosses iff it is a SCALAR (`abi_val_type`), a `Bytes` leaf, a nested `tuple<…>` whose inner leaves
 /// are all scalar/`Bytes` (recursed inline), a `list<T>` whose ELEMENT crosses at the boundary
-/// ([`field_boundary_abi`], marshalled into `mem` by `emit_list_arg_marshal`), OR a `record` whose EVERY field
-/// crosses at the boundary ([`is_boundary_record`], recursed by `emit_record_arg_marshal`). An option/variant
-/// ELEMENT (no such arm in `emit_tuple_reg_flatten`) does NOT cross this increment.
+/// ([`field_boundary_abi`], marshalled into `mem` by `emit_list_arg_marshal`), an `option<T>` whose payload
+/// crosses ([`option_arg_crosses`], flattened by `emit_option_reg_flatten`), a scalar-payload `variant`
+/// (flattened by `emit_variant_reg_flatten`), OR a `record` whose EVERY field crosses at the boundary
+/// ([`is_boundary_record`], recursed by `emit_record_arg_marshal`).
 /// Whether a value-heap `option<T>` crosses natively as the built-in WIT `option<T>` — its PAYLOAD is one
 /// [`emit_option_reg_flatten`] handles: a SCALAR (`abi_val_type`), a `Bytes` leaf, a `tuple` of scalars/`Bytes`,
 /// or a `record` of scalars/`Bytes`. A non-option `ty` yields `false` (no payload). Shared by the top-level
@@ -692,6 +693,10 @@ fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
             // an `option<T>` element crosses iff its payload crosses (`emit_option_reg_flatten`, the same twin a
             // top-level option ARG uses) — pushes `(disc, payload…)` inline into the tuple's positional flatten.
             || option_arg_crosses(db, e.strip_nominal())
+            // a scalar-payload `variant` element crosses via `emit_variant_reg_flatten` (the twin a bare-variant
+            // ARG / a variant record FIELD uses) — pushes `(disc, payload-join)` inline. Checked AFTER option
+            // (an option is a Sum but `variant_scalar_payload_cases` excludes the 2-case option shape).
+            || variant_scalar_payload_cases(db, e.strip_nominal()).is_some()
             || is_boundary_record(db, e.strip_nominal())
     })
 }
@@ -1534,6 +1539,14 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                     }
                                     (abi, _) => abi,
                                 }
+                            } else if variant_scalar_payload_cases(db, e).is_some() {
+                                // a scalar-payload `variant` element flattens to `(disc, payload-join)` via
+                                // `emit_variant_reg_flatten` (the twin a bare-variant ARG / a variant record
+                                // FIELD uses). Its abi is the shared `field_boundary_abi`
+                                // (`RecordFieldAbi::Variant(cases)`). Checked AFTER the option branch (an option
+                                // is a Sum but `variant_scalar_payload_cases` excludes the 2-case option shape).
+                                field_boundary_abi(db, e)
+                                    .expect("variant element crosses by `tuple_arg_crosses`")
                             } else {
                                 // a RECORD element: build each field's boundary abi via the shared recursive
                                 // builder (`field_boundary_abi` — scalar/`Bytes`/nested record/list/tuple/option/
