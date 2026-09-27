@@ -8017,3 +8017,56 @@ cases
     (call cadenza:platform/sys.materialize))
   (output 2)
   (live-objects 0))
+
+(case
+  "a bare result<f64, enum> host-op arg crosses on the Ok arm (float reinterpret join to the i64 slot)"
+  (doc
+    "SHAPE 209 (v-wit-boundary) — a FLOAT Ok in a `result<scalar, enum>` arg, the float counterpart of SHAPE 186
+           (s64 Ok). The result flatten joins the Ok's single slot with the `i32` err disc; for an `f64` the
+           canonical join is the reinterpret lattice `join(f64,i32)=i64`, so the core boundary is `(param i32 i64)`
+           — SAME core sig as the s64 case, but the Ok arm now bit-REINTERPRETS the `f64` payload into the `i64`
+           join slot (`I64ReinterpretF64`) rather than storing an integer, and the host lift reads the `i64` back
+           as the `f64`. `result_scalar_enum` now admits a float Ok (was excluded); `emit_result_scalar_arg_reg_
+           flatten` emits the reinterpret; `serialize` keys the join width off the Ok's core width (i64 for f64,
+           not just `== i64`). run() emits `(Ok 1.5)`; a VALID running component (live-objects=0) is the pin (the
+           reinterpret + join width are pinned by the module validating with `(param i32 i64)` — a wrong join slot
+           would fail validation). The f32 twin = SHAPE 210. Only the SLOT-0 float needs the reinterpret; a float
+           in a later record/tuple slot rides its own f-slot (SHAPE 206/207).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (f64) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result Float64 Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok 1.5))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
+
+(case
+  "a bare result<f32, enum> host-op arg crosses on the Ok arm (float reinterpret join to the i32 slot)"
+  (doc
+    "SHAPE 210 (v-wit-boundary) — the f32 twin of SHAPE 209. For an `f32` Ok the canonical join is
+           `join(f32,i32)=i32` (both 4-byte), so the core boundary is `(param i32 i32)` and the Ok arm
+           bit-reinterprets the `f32` payload into the `i32` join slot (`I32ReinterpretF32`); the Err arm stores
+           the err disc directly (no widen, the slot is already `i32`). run() emits `(Ok (: 1.5 Float32))` (the
+           `Float32` annotation pins the literal width — a bare `1.5` is `Float64`); a VALID running component
+           (live-objects=0) is the pin. Completes the `result<float-scalar, enum>` reinterpret-join arg.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (f32) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result Float32 Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok (: 1.5 Float32)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))

@@ -236,7 +236,11 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
             // shape. The component boundary type is the built-in `result<ok, err-enum>` (mod.rs
             // `host_op_comp_functype` builds it from the declared WIT type).
             HostParam::ResultScalar(ok, _) => {
-                let join = if ok.core_byte() == wasm_abi::CORE_I64 {
+                // The Ok slot joins the `i32` err disc. The join is 8-byte iff the Ok scalar is 8-byte — an
+                // `i64` OR an `f64` (a float reinterprets into the int join: `join(f64,i32)=i64`,
+                // `join(f32,i32)=i32`), so key off the core width, not just `== CORE_I64`.
+                let ob = ok.core_byte();
+                let join = if ob == wasm_abi::CORE_I64 || ob == wasm_abi::CORE_F64 {
                     wasm_abi::CORE_I64
                 } else {
                     wasm_abi::CORE_I32

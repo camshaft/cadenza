@@ -367,9 +367,9 @@ pub fn result_bytes_enum(db: &mut Db, ty: &Ty) -> Option<Vec<String>> {
 /// Whether `ty` is `result<scalar, enum>` — an Ok arm carrying an INTEGER-width scalar (not `Bytes`, whose own
 /// arm is [`result_bytes_enum`]) and an Err arm that is a PAYLOAD-LESS enum. Returns `(ok-scalar-abi, err-enum
 /// case names)` if so, else `None`. A `Sum` whose decl has exactly `Ok`/`Err` variants, instantiated at
-/// `[ok-scalar, err-enum]`. The Ok scalar must JOIN cleanly with the `i32` err discriminant — every integer
-/// width does (widening to `i64` if the Ok is 64-bit), so a FLOAT Ok is EXCLUDED (the canonical reinterpret
-/// join lattice is a later increment). The `(disc, join)` register flatten is `emit_result_scalar_arg_reg_
+/// `[ok-scalar, err-enum]`. The Ok scalar joins the `i32` err discriminant in the single value slot: an integer
+/// widens (to `i64` if 64-bit), and a FLOAT bit-reinterprets into the join int (`join(f64,i32)=i64` /
+/// `join(f32,i32)=i32`). The `(disc, join)` register flatten is `emit_result_scalar_arg_reg_
 /// flatten`. Reads through erased nominal wrappers, mirroring [`result_bytes_enum`].
 pub fn result_scalar_enum(db: &mut Db, ty: &Ty) -> Option<(AbiValType, Vec<String>)> {
     use crate::backend::common::export_name::kebab_extern_name;
@@ -380,11 +380,11 @@ pub fn result_scalar_enum(db: &mut Db, ty: &Ty) -> Option<(AbiValType, Vec<Strin
     if args.len() != 2 {
         return None;
     }
-    // The Ok arm (args[0]) must be an INTEGER scalar — a float needs the reinterpret join lattice (excluded).
+    // The Ok arm (args[0]) must be a scalar. A float Ok is admitted: the canonical result flatten joins the
+    // Ok's single slot with the `i32` err disc, and for a float that join is the reinterpret lattice —
+    // `join(f64,i32)=i64` / `join(f32,i32)=i32` — which the marshal emits by bit-reinterpreting the float
+    // into the (integer) join slot on the Ok arm (`emit_result_scalar_arg_reg_flatten`).
     let ok = abi_val_type(&args[0])?;
-    if matches!(ok, AbiValType::F32 | AbiValType::F64) {
-        return None;
-    }
     // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
     {
         let d = db.type_decl_by_occ(*decl)?;

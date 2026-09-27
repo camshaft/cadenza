@@ -219,19 +219,25 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   result arg copies a rope into `mem`, so the host set routes to the `_mem` assembler; without it the host op lower
   was emitted memoryless → CDZ0910 "canonical option `memory` is required"). REMAINING: a `result<record,enum>` /
   `result<_, variant>` (`result_bytes_enum` requires a `list<u8>` Ok + a payloadless-enum Err).
-- **[emit, register-path] a top-level `result<scalar, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 186/187/188).**
-  The scalar-Ok sibling of the Bytes-Ok result arg: a new `HostParam::ResultScalar(ok-abi, err-cases)` (detector
-  `result_scalar_enum`, admitting an INTEGER-width Ok scalar + a payloadless-enum Err; a FLOAT Ok / `variant` err
-  is a later increment — the reinterpret join lattice). It flattens to just 2 slots `(disc:i32, join)` with NO
-  `mem` (no rope): `emit_result_scalar_arg_reg_flatten` reads the result disc, unboxes the Ok scalar into the join
-  slot on Ok, reads the err enum's disc into it on Err. The join is `i64` iff the Ok scalar is 64-bit (the `i32`
-  err disc widens via `i64.extend_i32_u`), else `i32` — SHAPE 186/187 (s64 Ok, `(param i32 i64)`) vs 188 (bool Ok,
-  `(param i32 i32)`) pin both widths + both arms. Widened in LOCKSTEP: the classifier arm, `first_unrepresentable_
-  host_op`'s `arg_is_boundary_result_scalar`, the emit dispatch (+ Owned/dup-site reclaim drop), `collect_used_ops`
-  (`sum-disc`/`sum-payload` + the Ok unbox `get-*` + `drop`), `serialize` (`(i32, join)` core flatten), and
-  `host_imports.rs` (the structural-CRef param reference + `host_param_abi` decline). NOT the cursor pre-scan and
-  NOT `set_needs_memory` (no rope → no `mem`, unlike the Bytes result). REMAINING: `result<record/list/tuple,enum>`
-  (a compound Ok needs the in-mem arg marshal) and `result<_, variant>` / a float Ok.
+- **[emit, register-path] a top-level `result<scalar, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 186/187/188
+  int; 209/210 float).** The scalar-Ok sibling of the Bytes-Ok result arg: a `HostParam::ResultScalar(ok-abi,
+  err-cases)` (detector `result_scalar_enum`, admitting any scalar Ok + a payloadless-enum Err). It flattens to
+  just 2 slots `(disc:i32, join)` with NO `mem` (no rope): `emit_result_scalar_arg_reg_flatten` reads the result
+  disc, unboxes the Ok scalar into the join slot on Ok, reads the err enum's disc into it on Err. The join slot is
+  `i64` iff the Ok scalar is 8-byte (an `i64` OR an `f64`), else `i32`; the `i32` err disc widens via
+  `i64.extend_i32_u` for an i64 join. SHAPE 186/187 (s64 Ok, `(param i32 i64)`) vs 188 (bool Ok, `(param i32 i32)`)
+  pin the int widths + both arms. **FLOAT Ok (SHAPE 209/210):** the canonical join for a float is the reinterpret
+  lattice — `join(f64,i32)=i64` / `join(f32,i32)=i32` — so `result_scalar_enum` now admits a float Ok, and the Ok
+  arm bit-REINTERPRETS the float payload into the (integer) join slot (`I64ReinterpretF64` for f64 → the `(param
+  i32 i64)` sig, `I32ReinterpretF32` for f32 → `(param i32 i32)`); the host lift reads the join int back as the
+  float. `serialize` keys the join width off the Ok's core width (i64 for f64, not just `== i64`). SHAPE 209
+  (`result<f64>`) + 210 (`result<f32>`, the Ok payload annotated `(: 1.5 Float32)` since a bare literal is f64).
+  Widened in LOCKSTEP: the classifier arm, `first_unrepresentable_host_op`'s `arg_is_boundary_result_scalar`, the
+  emit dispatch (+ Owned/dup-site reclaim drop), `collect_used_ops` (`sum-disc`/`sum-payload` + the Ok unbox
+  `get-*` — `get_op_ty` returns `get-float`/`get-float32` for a float — + `drop`), `serialize`, and `host_imports.rs`.
+  NOT the cursor pre-scan and NOT `set_needs_memory` (no rope → no `mem`). REMAINING: `result<_, variant>` (variant
+  err arm); a float in SLOT 0 of a `result<record/tuple>` (the reorder/reverse-capture reinterpret — the scalar
+  float-slot-0 is the standalone piece done here; a float in a LATER record/tuple slot already crosses, SHAPE 206/207).
 - **[emit, register-path] a top-level `result<record-of-scalars, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
   189/190/191).** The record-Ok sibling of the scalar-Ok result: a new `HostParam::ResultRecord(ok-fields, err-
   cases)` (detector `result_record_enum`, admitting a record every field of which is a SCALAR + a payloadless-enum
