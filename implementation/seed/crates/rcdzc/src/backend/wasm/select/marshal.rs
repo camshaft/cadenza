@@ -1658,17 +1658,24 @@ pub(super) fn emit_record_arg_marshal(
                     out.push(Lir::LocalGet(base_slot + k as u32));
                 }
             }
-            // An `option<record-of-scalars>` field flattens to `(disc:i32, flatten(record))` = disc + one core
-            // slot per record field IN THE PAYLOAD WIT'S DECLARATION ORDER (matching `reorder_record_fields_to_
-            // wit`'s recursion into the `Option(Record)` payload + `record_field_cref`'s `(option (record …))`).
-            // Each WIT field is read from its NAME-LEX cell index (the value-heap record cell is name-lex).
-            // Scratch-flatten (single-value blocks): Some → per-field arr-get+unbox; None → the field's width
-            // zero; push disc + the N slots (WIT order) after the `if`. The record twin of the option<tuple>
-            // arm above (positional); MUST also precede the option<scalar> arm (a record's `valtype_of` is
-            // `Some(I32)`). A nested-compound / byte-leaf payload field is a later slice.
+            // An `option<record>` field whose payload record's fields are each a scalar OR a `Bytes`
+            // (`list<u8>`). It flattens to `(disc:i32, flatten(record))` = disc + the payload record's own
+            // flattened slots IN WIT DECLARATION ORDER (a scalar → one core slot, a `Bytes` → `(ptr,len)` = two,
+            // matching `reorder_record_fields_to_wit`'s recursion into the `Option(Record)` payload +
+            // `record_field_cref`'s `(option (record …))`). `BlockType` is single-value, so we scratch-flatten:
+            // on Some, RECURSIVELY marshal the payload via `emit_record_arg_marshal` (which pushes the N slots in
+            // WIT order, doing each scalar's arr-get+unbox and each `Bytes`'s rope→`mem` copy at the shared
+            // `cursor` — all the existing record-marshal logic) and capture the N pushed values into scratch (in
+            // REVERSE, since the last-pushed is on top); on None, zero-fill every slot; then push `disc` + the N
+            // slots after the `if`. Reusing `emit_record_arg_marshal` handles a `Bytes` payload field for free
+            // (its mem copy + `(ptr,len)`), not just scalars. MUST precede the option<scalar> arm (a record's
+            // `valtype_of` is `Some(I32)`). A nested-compound payload field is still a later slice (excluded by
+            // the guard, so this stays in strict agreement with `field_boundary_abi`).
             None if crate::backend::wasm::host::option_payload_ty(db, fty).is_some_and(|p| {
                 matches!(p.strip_nominal(), Ty::Record(sub)
-                    if !sub.is_empty() && sub.values().all(|f| valtype_of(f).is_some()))
+                    if !sub.is_empty()
+                        && sub.values().all(|f| valtype_of(f).is_some()
+                            || matches!(f.strip_nominal(), Ty::Bytes)))
             }) =>
             {
                 let payload_ty = crate::backend::wasm::host::option_payload_ty(db, fty)
@@ -1681,16 +1688,17 @@ pub(super) fn emit_record_arg_marshal(
                 let crate::wit_world::WitType::Option(inner) = fwit else {
                     return Err(Reject::decline("an option field's WIT is not option<…>"));
                 };
-                let crate::wit_world::WitType::Record(pwit_fields) = inner.as_ref() else {
+                let payload_wit = inner.as_ref();
+                let crate::wit_world::WitType::Record(pwit_fields) = payload_wit else {
                     return Err(Reject::decline(
                         "an option<record> payload WIT is not a record",
                     ));
                 };
-                // Guest field names in name-lex (cell) order.
+                // The payload's flattened core-slot valtypes IN WIT ORDER (scalar → 1 slot, `Bytes` → `(ptr,len)`
+                // = two i32) — the exact sequence `emit_record_arg_marshal` pushes for this payload record, so
+                // the capture-into-scratch below matches slot-for-slot.
                 let names: Vec<String> = sub.keys().map(|s| s.name.to_string()).collect();
-                // Per WIT field (declaration order): (name-lex cell index, core valtype, unbox op).
-                let mut reads: Vec<(u32, ValType, &'static str)> =
-                    Vec::with_capacity(pwit_fields.len());
+                let mut slot_vts: Vec<ValType> = Vec::with_capacity(pwit_fields.len());
                 for (pfname, _) in pwit_fields {
                     let idx = names.iter().position(|n| n == pfname).ok_or_else(|| {
                         Reject::decline(
@@ -1698,13 +1706,22 @@ pub(super) fn emit_record_arg_marshal(
                         )
                     })?;
                     let fgty = sub.values().nth(idx).expect("name-lex index in range");
-                    let pv = valtype_of(fgty)
-                        .ok_or_else(|| Reject::decline("an option<record> field has no valtype"))?;
-                    let read = get_op_ty(db, fgty)?.ok_or_else(|| {
-                        Reject::decline("an option<record> field has no unbox op")
-                    })?;
-                    reads.push((idx as u32, pv, read));
+                    // Check `Bytes` FIRST: `valtype_of(Bytes)` is `Some(I32)` (a byte-leaf handle), but a Bytes
+                    // field flattens to `(ptr,len)` = TWO slots (the recursive marshal copies its rope + pushes
+                    // both), not one — so a `valtype_of`-first test would under-count it and leave a value on the
+                    // stack.
+                    if matches!(fgty.strip_nominal(), Ty::Bytes) {
+                        slot_vts.push(ValType::I32); // ptr
+                        slot_vts.push(ValType::I32); // len
+                    } else if let Some(pv) = valtype_of(fgty) {
+                        slot_vts.push(pv);
+                    } else {
+                        return Err(Reject::decline(
+                            "an option<record> payload field is neither scalar nor Bytes",
+                        ));
+                    }
                 }
+                let n = slot_vts.len() as u32;
                 let some_disc = {
                     let crate::ty::Ty::Sum { decl, .. } = fty.strip_nominal() else {
                         unreachable!("option is a Sum")
@@ -1719,17 +1736,17 @@ pub(super) fn emit_record_arg_marshal(
                         as i32
                 };
                 let ans = work_base + 4; // option handle
-                let pay = work_base + 5; // payload record handle
+                let pay = work_base + 5; // payload record handle (i32, distinct from the typed payload slots)
                 let disc_out = work_base + 6;
-                let base_slot = work_base + 7; // first of N field slots
+                let base_slot = work_base + 7; // first of N payload slots
                 scratch_ty.insert(ans, ValType::I32);
                 scratch_ty.insert(pay, ValType::I32);
                 scratch_ty.insert(disc_out, ValType::I32);
-                for (k, (_, pv, _)) in reads.iter().enumerate() {
-                    scratch_ty.insert(base_slot + k as u32, *pv);
+                for (k, vt) in slot_vts.iter().enumerate() {
+                    scratch_ty.insert(base_slot + k as u32, *vt);
                 }
-                *high = (*high).max(base_slot + reads.len() as u32);
-                let zero = |pv: ValType| match pv {
+                *high = (*high).max(base_slot + n);
+                let zero = |vt: ValType| match vt {
                     ValType::I64 => Lir::ConstI64(0),
                     ValType::F64 => Lir::F64ConstBits(0),
                     ValType::F32 => Lir::F32ConstBits(0),
@@ -1749,27 +1766,34 @@ pub(super) fn emit_record_arg_marshal(
                 out.push(Lir::LocalGet(ans));
                 out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload record handle]
                 out.push(Lir::LocalSet(pay));
-                for (k, &(idx, pv, read)) in reads.iter().enumerate() {
-                    out.push(Lir::LocalGet(pay));
-                    out.push(Lir::ConstI32(idx as i32));
-                    out.push(Lir::CallImport(OP_ARR_GET)); // [field] (borrows pay)
-                    out.push(Lir::CallImport(read)); // [scalar]
-                    if read == OP_GET_INT && matches!(pv, ValType::I32) {
-                        out.push(Lir::I32WrapI64); // a narrow int / char field narrows to its i32 slot
-                    }
-                    out.push(Lir::LocalSet(base_slot + k as u32));
+                // Recursively marshal the payload record: pushes its N slots in WIT order (scalars + Bytes copies
+                // at the shared cursor). Its work_base is ABOVE our scratch (base_slot + n) so it can't collide.
+                emit_record_arg_marshal(
+                    db,
+                    pay,
+                    &sub,
+                    payload_wit,
+                    cursor,
+                    base_slot + n,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+                // Capture the N pushed slots into scratch (reverse: last-pushed is on top).
+                for k in (0..n).rev() {
+                    out.push(Lir::LocalSet(base_slot + k));
                 }
                 out.push(Lir::Else); // None → (0, zeros…)
                 out.push(Lir::ConstI32(0)); // WIT `option` none = 0
                 out.push(Lir::LocalSet(disc_out));
-                for (k, (_, pv, _)) in reads.iter().enumerate() {
-                    out.push(zero(*pv));
+                for (k, vt) in slot_vts.iter().enumerate() {
+                    out.push(zero(*vt));
                     out.push(Lir::LocalSet(base_slot + k as u32));
                 }
                 out.push(Lir::End);
-                out.push(Lir::LocalGet(disc_out)); // push disc, then the N field slots (WIT order)
-                for k in 0..reads.len() {
-                    out.push(Lir::LocalGet(base_slot + k as u32));
+                out.push(Lir::LocalGet(disc_out)); // push disc, then the N payload slots (WIT order)
+                for k in 0..n {
+                    out.push(Lir::LocalGet(base_slot + k));
                 }
             }
             // An `option<scalar>` field flattens (canonical variant flatten) to `(disc:i32, payload)`. Branch on

@@ -459,15 +459,18 @@ fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
                     let inner = field_boundary_abi(db, &payload)?;
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
                 }
-                // An `option<record-of-scalars>` payload crosses as `option<record<…>>`. Unlike the tuple case,
-                // a record's fields are name-lex in the value-heap cell but DECLARATION-ordered in the host WIT,
-                // so `reorder_record_fields_to_wit` recurses into this `Option(Record)` payload (reordering the
-                // inner record's abi to the option payload's WIT record order) and the marshal reads each WIT
-                // field from its name-lex cell index. Restricted to a FLAT all-scalar record this increment (a
-                // nested-compound / byte-leaf field is a later slice) — MUST agree with the marshal arm's guard.
+                // An `option<record>` payload (each field a scalar OR `Bytes`) crosses as `option<record<…>>`.
+                // Unlike the tuple case, a record's fields are name-lex in the value-heap cell but DECLARATION-
+                // ordered in the host WIT, so `reorder_record_fields_to_wit` recurses into this `Option(Record)`
+                // payload (reordering the inner record's abi to the option payload's WIT record order) and the
+                // marshal recursively marshals the payload record (each scalar → one slot, each `Bytes` →
+                // `(ptr,len)` copied to `mem`). A nested-compound payload field is a later slice — MUST agree
+                // with the marshal arm's guard (`scalar OR Bytes`).
                 if let Ty::Record(sub) = payload.strip_nominal()
                     && !sub.is_empty()
-                    && sub.values().all(|f| abi_val_type(f).is_some())
+                    && sub.values().all(|f| {
+                        abi_val_type(f).is_some() || matches!(f.strip_nominal(), Ty::Bytes)
+                    })
                 {
                     let inner = field_boundary_abi(db, &payload)?;
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
@@ -692,9 +695,12 @@ pub fn record_has_option_bytes_field(db: &mut Db, ty: &Ty) -> bool {
     };
     let fields = (**fields).clone(); // release the borrow of `ty` before the recursive `&mut db` calls
     fields.values().any(|f| {
-        option_payload_ty(db, f)
-            .is_some_and(|p| matches!(p.strip_nominal(), Ty::Bytes | Ty::String))
-            || record_has_option_bytes_field(db, f)
+        option_payload_ty(db, f).is_some_and(|p| {
+            // A direct `option<bytes>`/`option<string>` field, OR an `option<record>` whose payload record
+            // carries a `Bytes` field (the byte-leaf option<record> marshal copies that rope into `mem` on
+            // Some) — both reserve the running scratch cursor.
+            matches!(p.strip_nominal(), Ty::Bytes | Ty::String) || record_has_bytes_field(&p)
+        }) || record_has_option_bytes_field(db, f)
     })
 }
 
