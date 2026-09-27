@@ -954,7 +954,7 @@
   (error CDZ0301 (no-other-errors)))
 
 (case
-  "a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands"
+  "a runtime-DISC `?` inside a stored closure applies per-call"
   (doc
     "A runtime-DISC `?` inside a STORED closure applied twice, under the closure's OWN Option
            boundary: `(try (find m q))` — the operand's VARIANT is decided at run time by the lookup.
