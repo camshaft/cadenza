@@ -7559,3 +7559,77 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a bare result<tuple-of-scalars, enum> host-op arg crosses on the Ok arm (positional multi-slot join)"
+  (doc
+    "SHAPE 192 (v-wit-boundary) — a top-level `result<tuple, enum>` ARG, the tuple-Ok sibling of the
+           record-Ok result (SHAPE 189). Like the record case it flattens to `(disc, elem0, elem1, …)` — the
+           discriminant then the Ok tuple's elements, but POSITIONALLY (element order, NO name-lex/WIT reorder — a
+           tuple is positional), the `i32` err disc riding the FIRST element's slot on Err.
+           `emit_result_tuple_arg_reg_flatten` recurses `emit_tuple_reg_flatten` on Ok (the N pushes captured into
+           the join slots) and puts the err enum's disc in slot 0 on Err. Every Ok element is a non-float SCALAR,
+           so each is one register slot and NO memory is needed. Here `tuple<s64, s64>` gives the core import sig
+           `(param i32 i64 i64)`. run() emits `(Ok #tuple(3 4))`; a VALID component that runs and crosses is the
+           pin. The Err arm = SHAPE 193; a mixed-width tuple = SHAPE 194.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (s64) (s64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Int64 Int64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple(3 4)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare result<tuple-of-scalars, enum> host-op arg crosses on the Err arm (err disc in slot 0)"
+  (doc
+    "SHAPE 193 (v-wit-boundary) — the Err-arm counterpart of SHAPE 192. On Err the result disc is non-zero
+           and `emit_result_tuple_arg_reg_flatten` writes the err ENUM's discriminant (here `worse` = decl-disc 1)
+           into slot 0 (widened to that slot's `i64` width to match the first s64 element) and zero-fills the
+           remaining element slots (a tuple's Ok elements are never read on the Err arm). run() emits
+           `(Err (Worse))`; the host stub returns 42. Same `result<tuple<s64,s64>, enum>` boundary as SHAPE 192.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (s64) (s64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Int64 Int64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Err (Worse)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
+
+(case
+  "a bare result<tuple{bool,s64}, enum> host-op arg crosses on the Ok arm (mixed element widths)"
+  (doc
+    "SHAPE 194 (v-wit-boundary) — a mixed-width-tuple counterpart of SHAPE 192. A `tuple<bool, s64>` Ok
+           flattens to `(disc:i32, e0:i32, e1:i64)` — the core sig `(param i32 i32 i64)`. The leading `bool`
+           element is `i32`-width, so slot 0 (which also carries the `i32` err disc on Err) stays `i32`; the
+           trailing `s64` element is `i64`. Pins that `emit_result_tuple_arg_reg_flatten` derives each slot width
+           from its own element across differing widths. run() emits `(Ok #tuple(true 9))`; a VALID component that
+           runs and crosses is the pin. Completes the `result<tuple-of-scalars, enum>` bare-arg family.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (bool) (s64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Bool Int64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple(true 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

@@ -558,7 +558,10 @@ pub(super) fn host_op_comp_functype(
             // STRUCTURAL (anonymous-allowed), NOT nominal, so it rides the same per-param structural-CRef path as
             // `option`/`tuple`/`list`. The Ok arm (list<u8> vs scalar) only changes the built structural type,
             // not the CRef mechanism.
-            HostParam::Result(_) | HostParam::ResultScalar(..) | HostParam::ResultRecord(..) => {
+            HostParam::Result(_)
+            | HostParam::ResultScalar(..)
+            | HostParam::ResultRecord(..)
+            | HostParam::ResultTuple(..) => {
                 let cref = list_param_crefs
                     .get(i)
                     .cloned()
@@ -687,6 +690,7 @@ pub(super) fn build_host_result_types(
                     | host::HostParam::Result(_)
                     | host::HostParam::ResultScalar(..)
                     | host::HostParam::ResultRecord(..)
+                    | host::HostParam::ResultTuple(..)
             ) && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
             {
                 per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
@@ -1111,7 +1115,8 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::Tuple(_)
         | host::HostParam::Result(_)
         | host::HostParam::ResultScalar(..)
-        | host::HostParam::ResultRecord(..) => None,
+        | host::HostParam::ResultRecord(..)
+        | host::HostParam::ResultTuple(..) => None,
     }
 }
 

@@ -248,7 +248,23 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `arr-get` + each field's unbox + `drop`), `serialize` (disc + each field's flattened slots), and `host_imports.rs`
   (structural-CRef param reference + `host_param_abi` decline). NOT the cursor pre-scan / `set_needs_memory` (all-
   scalar → registers, no rope). REMAINING (result family): a record with a COMPOUND field (Bytes/list/nested →
-  needs `mem`); `result<list/tuple,enum>`; `result<_, variant>` / a float Ok.
+  needs `mem`); `result<list,enum>`; `result<_, variant>` / a float Ok.
+- **[emit, register-path] a top-level `result<tuple-of-scalars, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
+  192/193/194).** The tuple-Ok sibling of the record-Ok result: a new `HostParam::ResultTuple(elem-abis, err-
+  cases)` (detector `result_tuple_enum`, admitting a tuple every element of which is a non-float SCALAR + a
+  payloadless-enum Err). It flattens to `(disc:i32, elem0, elem1, …)` — the discriminant then the Ok tuple's
+  elements POSITIONALLY (element order, NO reorder — a tuple is positional, unlike the record's WIT reorder), the
+  `i32` err disc riding the FIRST element's slot on Err. Every element is a non-float scalar → one register slot
+  each, joining the first with the `i32` err disc never widens past its own width — the slot widths ARE the
+  element widths, no `mem`. `emit_result_tuple_arg_reg_flatten` recurses `emit_tuple_reg_flatten` on Ok (N pushes
+  captured in reverse) and puts the err enum's disc in slot 0 on Err. SHAPE 192/193 (`tuple<s64,s64>`, core
+  `(param i32 i64 i64)`, both arms) + 194 (`tuple<bool,s64>`, mixed `(param i32 i32 i64)`) pin the join + widths.
+  Widened in LOCKSTEP: classifier, `first_unrepresentable_host_op`, emit dispatch (+ reclaim), `collect_used_ops`,
+  `serialize`, `host_imports.rs` (all four `Result*` arms — the structural-CRef `matches!` MUST list every
+  `Result*` variant or a `ResultRecord`/`ResultTuple` param silently falls back to the wrong CRef → CDZ0910
+  component-validation failure; this bit once when a codemod dropped `ResultRecord` from that `matches!`). NOT the
+  cursor pre-scan / `set_needs_memory`. REMAINING (result family): a compound/float tuple element; a record with a
+  compound field; `result<list,enum>`; `result<_, variant>`.
 - **[emit, register-path] a top-level `option<variant>` host-op ARG — ✅ DONE (SHAPE 167/168).** The option
   payload is a scalar-payload `variant`: `option_arg_crosses` now admits it, and `emit_option_reg_flatten`'s
   variant branch flattens the value-heap option to `(opt-disc, var-disc, payload-join)` = the option disc + the
