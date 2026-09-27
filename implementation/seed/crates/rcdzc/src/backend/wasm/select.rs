@@ -6773,9 +6773,19 @@ fn arm_borrows_heap_subvalue_seen(
             arm_borrows_heap_subvalue_seen(db, key, true, seen)
                 || arm_borrows_heap_subvalue_seen(db, map, false, seen)
         }
+        // `Set.contains set elem` is the ONLY bool-returning CHAMP op: `op_set_contains` BORROWS both operands
+        // and returns PRESENCE (a scalar bool), retaining NO handle (champ.rs "returning presence instead of a
+        // value handle") — so the `set` operand is only READ, exactly SetLen-class. Relax it to `borrowed`
+        // (v-core-opt, node#6 CHAMP-asymmetry sweep, GAP-4 — v-mem-safety's REACHABLE `Result<Set,_>`-via-`try`
+        // leak): at `false` a matched-scrutinee Set payload read by `Set.contains` was mis-classified as
+        // CONSUMED → blocked the enclosing `MatchSum` shell-reclaim → the re-wrapped Err husk leaked (same
+        // signature as the MapSize/SetLen fix). The `elem` stays borrowed (a probe key, dropped after the
+        // descent). DISTINCT from `MapLookup` below (`map` KEPT at `false`): `Map.lookup` returns an
+        // `Option<value>` whose `Some` can ALIAS a heap value handle OUT of the map (the interior-view escape),
+        // so consuming is the correct-conservative there — `Set.contains` has no such alias (scalar bool).
         Core::SetContains { set, elem, .. } => {
             arm_borrows_heap_subvalue_seen(db, elem, true, seen)
-                || arm_borrows_heap_subvalue_seen(db, set, false, seen)
+                || arm_borrows_heap_subvalue_seen(db, set, true, seen)
         }
         Core::MapRemove { map, key, .. } => {
             arm_borrows_heap_subvalue_seen(db, key, true, seen)
