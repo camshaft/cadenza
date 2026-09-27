@@ -11354,7 +11354,7 @@ todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly,
 todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
 todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
 todo	a symbol interned from a DECOMPOSED (NFD) String.from-bytes canonicalizes to NFC — equals its composed twin
-todo	a try over a mutual-recursive callee short-circuits out of the converted loop once BRICK 3b lands
+pass	a try over a mutual-recursive callee short-circuits out of the converted loop
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 todo	an entrypoint delegating two distinct host effects performs both and returns its computed value

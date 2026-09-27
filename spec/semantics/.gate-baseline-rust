@@ -11003,7 +11003,7 @@ todo	a spilled record EXPORT result RECLAIMS the def's result handle — ZERO li
 todo	a string argument crosses to a peer and the doubled result byte-len is read
 todo	a string result chained through two peers escapes the entrypoint via the methods envelope
 todo	a symbol argument crosses to and from a peer as a runtime handle like a string
-todo	a try over a mutual-recursive callee short-circuits out of the converted loop once BRICK 3b lands
+pass	a try over a mutual-recursive callee short-circuits out of the converted loop
 todo	a tuple PARAM member whose element is a list<u8>/Bytes leaf rebuilds the compound element in-cell
 todo	a tuple PARAM member whose element is a nested record rebuilds the compound element in-cell
 todo	a tuple splat inside an effect-handler body spreads its elements
