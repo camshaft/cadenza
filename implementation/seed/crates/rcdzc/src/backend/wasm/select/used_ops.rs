@@ -1415,6 +1415,21 @@ pub(super) fn collect_used_ops_into_seen(
                                 {
                                     out.insert(read);
                                 }
+                            } else if crate::backend::wasm::host::option_payload_ty(db, &payload)
+                                .is_some_and(|pp| valtype_of(&pp).is_some())
+                            {
+                                // A nested `option<option<scalar>>` payload is flattened by the RECURSIVE
+                                // `emit_option_reg_flatten`: the inner option's `sum-disc`/`sum-payload` + the
+                                // inner scalar's unbox op (the OUTER option's `sum-disc`/`sum-payload` are already
+                                // declared above). Mirrors the top-level option<scalar> arm, one level in.
+                                out.insert(OP_SUM_DISC);
+                                out.insert(OP_SUM_PAYLOAD);
+                                if let Some(inner_scalar) =
+                                    crate::backend::wasm::host::option_payload_ty(db, &payload)
+                                    && let Ok(Some(read)) = get_op_ty(db, &inner_scalar)
+                                {
+                                    out.insert(read);
+                                }
                             }
                         }
                         collect_used_ops_into_seen(db, arg, out, visited);

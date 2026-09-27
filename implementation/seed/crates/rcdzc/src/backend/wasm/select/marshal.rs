@@ -1799,6 +1799,77 @@ pub(super) fn emit_option_reg_flatten(
         }
         return Ok(());
     }
+    // A nested `option<option<scalar>>` arg flattens to `(outer-disc:i32, inner-disc:i32, scalar)` = the outer
+    // disc + the inner option's own `(inner-disc, scalar)` flatten (RECURSED via `emit_option_reg_flatten`). On
+    // outer Some: read the inner option handle (SUM_PAYLOAD, a borrow of the outer option) and flatten it
+    // recursively, its 2 pushed slots captured in REVERSE; outer None: zero-fill both. Scoped to a SCALAR inner
+    // payload (no `mem`). MUST precede the scalar fallthrough (an option handle's `valtype_of` is `Some(I32)`,
+    // so that arm would else treat the inner option as a scalar and miscompile).
+    if let Some(inner_pv) = crate::backend::wasm::host::option_payload_ty(db, &payload_ty)
+        .filter(|pp| crate::backend::wasm::host::abi_val_type(pp).is_some())
+        .and_then(|pp| valtype_of(&pp))
+    {
+        let slot_vts = [ValType::I32, inner_pv]; // (inner-disc, scalar)
+        let n = slot_vts.len() as u32;
+        let disc_out = work_base;
+        let base_slot = work_base + 1;
+        scratch_ty.insert(disc_out, ValType::I32);
+        for (k, vt) in slot_vts.iter().enumerate() {
+            scratch_ty.insert(base_slot + k as u32, *vt);
+        }
+        *high = (*high).max(base_slot + n);
+        // The inner option's declared WIT (`payload_wit` is `WitType::Option(inner)`), threaded to the recursion.
+        let inner_wit = match payload_wit {
+            Some(crate::wit_world::WitType::Option(iw)) => Some(iw.as_ref()),
+            _ => None,
+        };
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_DISC)); // [outer opt disc]
+        out.push(Lir::ConstI32(some_disc));
+        out.push(Lir::I32Eq);
+        out.push(Lir::If(BlockType::Empty)); // outer Some: flatten the inner option into the 2 scratch slots
+        out.push(Lir::ConstI32(1)); // WIT `option` some = 1
+        out.push(Lir::LocalSet(disc_out));
+        let inner_slot = base_slot + n;
+        scratch_ty.insert(inner_slot, ValType::I32);
+        *high = (*high).max(inner_slot + 1);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [inner option handle] (borrow — caller reclaims the outer)
+        out.push(Lir::LocalSet(inner_slot));
+        emit_option_reg_flatten(
+            db,
+            inner_slot,
+            &payload_ty,
+            inner_wit,
+            cursor,
+            inner_slot + 1,
+            high,
+            scratch_ty,
+            out,
+        )?;
+        // Capture the 2 pushed values (inner-disc, scalar) in REVERSE (stack top = the scalar).
+        for k in (0..n).rev() {
+            out.push(Lir::LocalSet(base_slot + k));
+        }
+        out.push(Lir::Else); // outer None: zero-fill both inner slots
+        out.push(Lir::ConstI32(0)); // WIT `option` none = 0
+        out.push(Lir::LocalSet(disc_out));
+        for (k, vt) in slot_vts.iter().enumerate() {
+            out.push(match vt {
+                ValType::I64 => Lir::ConstI64(0),
+                ValType::F64 => Lir::F64ConstBits(0),
+                ValType::F32 => Lir::F32ConstBits(0),
+                _ => Lir::ConstI32(0),
+            });
+            out.push(Lir::LocalSet(base_slot + k as u32));
+        }
+        out.push(Lir::End);
+        out.push(Lir::LocalGet(disc_out)); // push (outer-disc, inner-disc, scalar)
+        for k in 0..n {
+            out.push(Lir::LocalGet(base_slot + k));
+        }
+        return Ok(());
+    }
     let pv = valtype_of(&payload_ty).ok_or_else(|| {
         Reject::decline("a top-level option arg payload is not a scalar/bytes this increment")
     })?;
@@ -2903,6 +2974,41 @@ pub(super) fn emit_record_arg_marshal(
                 out.push(Lir::LocalGet(disc_out)); // push (opt-disc, var-disc, payload-join)
                 out.push(Lir::LocalGet(var_disc));
                 out.push(Lir::LocalGet(pval));
+            }
+            None if crate::backend::wasm::host::option_payload_ty(db, fty)
+                .and_then(|p| crate::backend::wasm::host::option_payload_ty(db, &p))
+                .is_some_and(|pp| crate::backend::wasm::host::abi_val_type(&pp).is_some()) =>
+            {
+                // An option<option<scalar>> field flattens to `(outer-disc, inner-disc, scalar)`. Read the
+                // field's OUTER option handle (arr-get, borrows the record) into a slot, then delegate to the
+                // shared `emit_option_reg_flatten` (whose nested-option branch recurses on the inner option
+                // handle) — the SAME helper the top-level option arg uses, so field + arg stay in lockstep. No
+                // `mem` (scalar inner). MUST precede the option<scalar> arm below (an inner option handle's
+                // `valtype_of` is `Some(I32)`, so that arm's guard would else match + miscompile it).
+                let opt_slot = work_base;
+                scratch_ty.insert(opt_slot, ValType::I32);
+                *high = (*high).max(work_base + 1);
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [outer option handle] (borrows rec)
+                out.push(Lir::LocalSet(opt_slot));
+                // `fwit` is the field's `option<option<T>>` WIT; `emit_option_reg_flatten` wants the OPTION's
+                // inner-payload WIT (`option<T>`), so unwrap one `Option` layer.
+                let payload_wit = match fwit {
+                    crate::wit_world::WitType::Option(inner) => Some(inner.as_ref()),
+                    _ => None,
+                };
+                emit_option_reg_flatten(
+                    db,
+                    opt_slot,
+                    fty,
+                    payload_wit,
+                    cursor,
+                    work_base + 1,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
             }
             None if crate::backend::wasm::host::option_payload_ty(db, fty)
                 .is_some_and(|p| valtype_of(&p).is_some()) =>

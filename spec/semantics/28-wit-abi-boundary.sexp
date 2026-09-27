@@ -7291,3 +7291,72 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a nested option<option<s64>> host-op arg crosses on the Some(Some) arm (recursive option flatten)"
+  (doc
+    "SHAPE 181 (v-wit-boundary) — a top-level `option<option<s64>>` bare host-op ARGUMENT (probe.push), the
+           Some(Some) arm. A NESTED option: the payload is itself an `option<scalar>`. Flattens to `(outer-disc,
+           inner-disc, scalar)` via `emit_option_reg_flatten`'s new nested-option branch, which on outer Some
+           reads the inner option handle (sum-payload) and RECURSES `emit_option_reg_flatten` on it (pushing the
+           inner `(disc, scalar)`), capturing in reverse. `field_boundary_abi` + `option_arg_crosses` gained a
+           nested-option arm (scalar inner), the classifier builds `RecordFieldAbi::Option(Option(Scalar))`, and
+           `flatten_record_field_abi` already flattens it to the 3 slots; the `(option (option s64))` component
+           type builds from the world WIT. Widened in LOCKSTEP so the shared tuple-element path stays consistent.
+           run() emits Some(Some(7)) and performs probe.push; a VALID component that runs is the pin. Other arms =
+           SHAPE 182 (Some(None)) / 183 (None).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (option (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Option Int64)) Int64)))
+      (def (run) (host (probe) (probe.push (Some (Some 7)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a nested option<option<s64>> host-op arg crosses on the Some(None) arm (inner None zero-fills the payload)"
+  (doc
+    "SHAPE 182 (v-wit-boundary) — the Some(None) arm of SHAPE 181. Outer Some, inner None: flattens to
+           `(1, 0, 0)` — the outer disc 1 (WIT some), then the inner option's `(inner-disc=0, scalar=0)` from the
+           recursive `emit_option_reg_flatten` on the inner None. run() emits Some(None) and performs probe.push;
+           a VALID component that runs is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (option (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Option Int64)) Int64)))
+      (def (run) (host (probe) (probe.push (Some None))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a nested option<option<s64>> host-op arg crosses on the outer None arm (all slots zero)"
+  (doc
+    "SHAPE 183 (v-wit-boundary) — the outer-None arm of SHAPE 181. Outer None flattens to `(0, 0, 0)` — the
+           outer disc 0 (WIT none) with both inner slots (inner-disc, scalar) zero-filled (a none option never
+           reads its payload). Completes the `option<option<s64>>` bare-arg family (Some(Some) = 181, Some(None)
+           = 182). run() performs probe.push None; the host stub returns 42.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (option (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Option Int64)) Int64)))
+      (def (run) (host (probe) (probe.push None)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
