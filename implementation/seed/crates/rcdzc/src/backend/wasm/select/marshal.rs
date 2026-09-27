@@ -1564,16 +1564,19 @@ pub(super) fn emit_result_record_arg_reg_flatten(
 /// POSITIONALLY (element order, NO reorder — a tuple is positional), the `i32` err disc riding the FIRST slot on
 /// Err. On Ok (disc 0) recurse `emit_tuple_reg_flatten` on the payload tuple handle, its N pushes captured into
 /// the slots in REVERSE; on Err (disc≠0) the err enum's disc goes into slot 0 (widened to its width) and the rest
-/// zero-fill. Every Ok element is a non-float SCALAR, so each is ONE slot and joining the first with the `i32`
-/// err disc never widens beyond the element's own width — `slot_vts` is exactly the tuple's element widths, NO
-/// `mem`. `ok_wit` is the Ok arm's declared WIT tuple type (passed through to `emit_tuple_reg_flatten`).
-/// `work_base` is the first free scratch slot.
+/// zero-fill. Each Ok element flattens by its boundary ABI — a scalar rides one slot, a compound element
+/// (bytes/list/nested record/tuple) marshals into `mem` at `cursor` and rides its `(ptr,len…)` slots. Joining
+/// the first slot with the `i32` err disc never widens past that slot's own width (an integer/ptr fits `i32`).
+/// `ok_wit` is the Ok arm's declared WIT tuple type (passed through to `emit_tuple_reg_flatten`). `cursor` is the
+/// running `mem` write slot for a compound element (None for an all-scalar tuple); `work_base` the first free
+/// scratch slot.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_result_tuple_arg_reg_flatten(
     db: &mut Db,
     result_slot: u32,
     ok_tuple_ty: &Ty,
     ok_wit: Option<&crate::wit_world::WitType>,
+    cursor: Option<u32>,
     work_base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
@@ -1584,15 +1587,25 @@ pub(super) fn emit_result_tuple_arg_reg_flatten(
             "a result<tuple,enum> Ok arm is not a tuple",
         ));
     };
-    // Slot valtypes in element (= positional = component) order — the SAME order + count `emit_tuple_reg_flatten`
-    // pushes. Every element is a non-float scalar (the detector's scope), so each is one slot of its own width;
-    // the first also holds the `i32` err disc on Err, which fits (an integer scalar joins `i32` without widening).
-    let mut slot_vts: Vec<ValType> = Vec::with_capacity(elems.len());
+    let elems = elems.to_vec();
+    // Slot valtypes in element (= positional = component) order — the SAME order + per-element slot count
+    // `emit_tuple_reg_flatten` pushes. Each element flattens by its boundary ABI: a scalar → one slot of its own
+    // width; a compound element (bytes/list/nested record/tuple) → its in-mem `(ptr,len…)` core slots. The first
+    // slot also holds the `i32` err disc on Err, which fits (an integer/ptr scalar joins `i32` without widening).
+    // Derived from `flatten_record_field_abi` to stay in lockstep with the element marshal.
+    let mut slot_vts: Vec<ValType> = Vec::new();
     for ety in elems.iter() {
-        slot_vts.push(
-            valtype_of(ety)
-                .ok_or_else(|| Reject::decline("a result Ok tuple element has no valtype"))?,
-        );
+        let abi = crate::backend::wasm::host::field_boundary_abi(db, ety)
+            .ok_or_else(|| Reject::decline("a result Ok tuple element does not cross"))?;
+        let mut bytes = Vec::new();
+        crate::backend::wasm::serialize::flatten_record_field_abi(&abi, &mut bytes);
+        for b in bytes {
+            slot_vts.push(ValType::from_byte(b).ok_or_else(|| {
+                Reject::decline(
+                    "a flattened result Ok tuple element slot is not a numeric core type",
+                )
+            })?);
+        }
     }
     let n = slot_vts.len() as u32;
     let disc_out = work_base;
@@ -1635,7 +1648,7 @@ pub(super) fn emit_result_tuple_arg_reg_flatten(
         tup_slot,
         ok_tuple_ty,
         ok_wit,
-        None, // all-scalar elements → no rope → no cursor
+        cursor, // a bytes/list/compound element copies into `mem` at the cursor; None for an all-scalar tuple
         tup_slot + 1,
         high,
         scratch_ty,

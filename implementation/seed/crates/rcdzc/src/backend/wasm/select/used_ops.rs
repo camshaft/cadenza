@@ -1528,9 +1528,9 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_DROP);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
-                    // A top-level `result<tuple-of-scalars, enum>` arg is decomposed by
+                    // A top-level `result<tuple, enum>` arg is decomposed by
                     // `emit_result_tuple_arg_reg_flatten`: `sum-disc` (result disc), `sum-payload`, and on Ok
-                    // `arr-get` + each element's unbox `get-*` (the tuple marshal), on Err a further `sum-disc`
+                    // `arr-get` + each element's marshal ops (the tuple marshal), on Err a further `sum-disc`
                     // (the err enum disc). Declare them (else a marshal `CallImport` resolves to u32::MAX →
                     // invalid module), then descend. Checked BEFORE the `_` fallthrough; the other result arms are
                     // mutually exclusive by the Ok shape.
@@ -1540,15 +1540,18 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_SUM_DISC);
                         out.insert(OP_SUM_PAYLOAD);
                         out.insert(OP_ARR_GET);
+                        // Each Ok tuple element's marshal ops — `collect_record_field_ops` per element (the SAME
+                        // helper the direct `Ty::Tuple` arg + the result-record arm use), so a bytes element's
+                        // `bytes-len`/`bytes-get`, a list element's `vec-len`/`vec-get` + element ops, a nested
+                        // compound's ops, etc. are all declared (a scalar-only `get_op_ty` would miss them → the
+                        // marshal's `CallImport` resolves to u32::MAX → invalid module).
                         if let Some((ok_tuple, _)) =
                             crate::backend::wasm::host::result_tuple_enum(db, &at)
                             && let Ty::Tuple(elems) = ok_tuple.strip_nominal()
                         {
                             let etys: Vec<Ty> = elems.to_vec();
                             for ety in etys {
-                                if let Ok(Some(read)) = get_op_ty(db, &ety) {
-                                    out.insert(read);
-                                }
+                                collect_record_field_ops(db, &ety, out);
                             }
                         }
                         out.insert(OP_DROP);

@@ -254,15 +254,15 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                     flatten_record_field_abi(abi, &mut params);
                 }
             }
-            // A bare `result<tuple-of-scalars, enum>` param flattens to `(disc:i32, elem0, elem1, …)` — the
-            // discriminant then one core slot per Ok tuple element, POSITIONALLY. Every element is a non-float
-            // scalar, so joining the first with the `i32` err disc never widens beyond that element's own width;
-            // the element slots are exactly the tuple's element widths. Component type = the built-in
+            // A bare `result<tuple<T…>, enum>` param flattens to `(disc:i32, flatten(elem0), flatten(elem1), …)` —
+            // the discriminant then the Ok tuple's elements POSITIONALLY, each flattened by its boundary ABI (a
+            // scalar → one slot; a compound element → its in-mem `(ptr,len…)` slots). Joining the first slot with
+            // the `i32` err disc never widens past that slot's own width. Component type = the built-in
             // `result<tuple<T…>, err-enum>` (from the declared WIT).
             HostParam::ResultTuple(elems, _) => {
                 params.push(wasm_abi::CORE_I32); // the result discriminant
-                for e in elems {
-                    params.push(e.core_byte());
+                for abi in elems {
+                    flatten_record_field_abi(abi, &mut params);
                 }
             }
             // A bare `result<list<scalar>, enum>` param flattens to `(disc:i32, ptr/errdisc:i32, count/0:i32)` —

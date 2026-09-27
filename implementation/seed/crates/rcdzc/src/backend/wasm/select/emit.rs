@@ -6539,6 +6539,12 @@ pub(super) fn emit(
                             || crate::backend::wasm::host::record_has_option_field_needing_mem(db, &ok)
                             || crate::backend::wasm::host::record_has_tuple_field(&ok)
                     })
+                    // A top-level `result<tuple, enum>` arg whose Ok tuple has a runtime-compound ELEMENT
+                    // (bytes/list/nested-compound) copies that element's bytes into `mem` on the Ok arm
+                    // (`emit_result_tuple_arg_reg_flatten` → `emit_tuple_reg_flatten`) → needs the cursor, exactly
+                    // like the direct `tuple<…>` arg above (a missing reservation panics the marshal's cursor).
+                    || crate::backend::wasm::host::result_tuple_enum(db, &at)
+                        .is_some_and(|(ok, _)| crate::backend::wasm::host::tuple_arg_needs_cursor(db, &ok))
                     // A top-level `tuple<…>` arg needs the cursor when SOME leaf (recursing nested tuples +
                     // record elements) copies runtime bytes into `mem` — a `Bytes` element, or a record
                     // element with a `Bytes` / `list` / `result` / `option<bytes>` field. Broader than the
@@ -7023,8 +7029,10 @@ pub(super) fn emit(
                     // HANDLE into a slot, then decomposes it into `(disc, elem0, elem1, …)` via
                     // `emit_result_tuple_arg_reg_flatten` (the tuple-Ok twin of the record-Ok result) — Ok
                     // marshals the payload tuple's elements into the join slots (positional), Err puts the err
-                    // enum's disc in the first slot. No rope, so NO cursor. Checked BEFORE the scalar `_` arm; the
-                    // other result arms above are mutually exclusive by the Ok shape.
+                    // enum's disc in the first slot. A bytes/list/compound element copies into `mem` at the
+                    // scratch cursor (the `has_runtime_compound` pre-scan reserves it iff the Ok tuple has such an
+                    // element; None for an all-scalar tuple). Checked BEFORE the scalar `_` arm; the other result
+                    // arms above are mutually exclusive by the Ok shape.
                     _ if crate::backend::wasm::host::result_tuple_enum(db, &at).is_some() => {
                         let res_slot = arg_base.max(*high);
                         scratch_ty.insert(res_slot, ValType::I32);
@@ -7045,6 +7053,7 @@ pub(super) fn emit(
                             res_slot,
                             &ok_tuple,
                             ok_wit.as_ref(),
+                            scratch_cursor_slot,
                             work_base,
                             high,
                             scratch_ty,

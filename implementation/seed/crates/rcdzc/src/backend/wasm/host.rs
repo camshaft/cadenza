@@ -148,8 +148,11 @@ pub enum HostParam {
     /// The guest marshals it via `select::emit_result_tuple_arg_reg_flatten`: Ok recurses `emit_tuple_reg_flatten`
     /// on the payload tuple (its N pushes captured into the join slots), Err puts the err enum's disc in the
     /// first slot + zero-fills the rest. A tuple with a COMPOUND / float element is a later increment; the
-    /// classifier only pushes this for `result_tuple_enum` (all-non-float-scalar Ok elements).
-    ResultTuple(Vec<AbiValType>, Vec<String>),
+    /// classifier only pushes this for `result_tuple_enum`. Carries each Ok element's boundary ABI (positional,
+    /// no field names — a tuple is positional) so the core flatten + component type derive from it; an element may
+    /// be a scalar OR any compound `emit_tuple_reg_flatten` handles (Bytes/list/record/nested-tuple/option), a
+    /// mem-writing element forcing `set_needs_memory` + the cursor like the record result.
+    ResultTuple(Vec<RecordFieldAbi>, Vec<String>),
     /// A bare `result<list<scalar>, enum>` param (the top-level position, not nested) — crosses as the built-in
     /// WIT `result<list<T>, err-enum>` type, referenced by a per-param structural `CRef`. The list-Ok sibling of
     /// the Bytes-Ok result ([`Result`](HostParam::Result)): its core form flattens to the SAME 3 slots
@@ -535,19 +538,18 @@ pub fn result_tuple_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
     if args.len() != 2 {
         return None;
     }
-    // The Ok arm (args[0]) must be a TUPLE with ≥1 element, every element a non-float scalar (this increment's
-    // scope — a float element needs the reinterpret join at slot 0; a compound element needs the in-mem marshal).
+    // The Ok arm (args[0]) must be a TUPLE with ≥1 element, every element a boundary-marshalable
+    // field (any shape `field_boundary_abi` admits — scalar, bytes, list, or a nested compound —
+    // symmetric with the record Ok arm; a compound element rides the in-mem marshal via a cursor).
     let Ty::Tuple(elems) = args[0].strip_nominal() else {
         return None;
     };
     if elems.is_empty() {
         return None;
     }
+    let elems = elems.clone(); // release the borrow of `args`/`ty` before the `&mut db` calls
     for ety in elems.iter() {
-        match abi_val_type(ety) {
-            Some(v) if !matches!(v, AbiValType::F32 | AbiValType::F64) => {}
-            _ => return None,
-        }
+        field_boundary_abi(db, ety)?;
     }
     // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
     {
@@ -1838,12 +1840,14 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                         }
                     }
                     // A top-level `result<tuple-of-scalars, enum>` arg crosses as the built-in WIT
-                    // `result<tuple<T…>, err-enum>`. It flattens to `(disc:i32, elem0, elem1, …)` — the
-                    // discriminant then the Ok tuple's elements POSITIONALLY (no reorder — a tuple is positional),
-                    // the `i32` err disc riding the first element's slot on Err. Marshalled by
-                    // `emit_result_tuple_arg_reg_flatten` (Ok recurses `emit_tuple_reg_flatten`; no rope → NO
-                    // `mem`). Checked BEFORE the scalar `_` arm; a compound/float element is a later increment
-                    // (`result_tuple_enum` declines it → `_` declines).
+                    // `result<tuple<T…>, err-enum>`. It flattens to `(disc:i32, flatten(elem0), flatten(elem1), …)`
+                    // — the discriminant then the Ok tuple's elements POSITIONALLY (no reorder — a tuple is
+                    // positional), each element flattened by its `RecordFieldAbi` (scalar → one slot; a compound
+                    // element → its in-mem `(ptr,len)` slots via the scratch cursor), the `i32` err disc riding
+                    // the first element's slot on Err. Marshalled by `emit_result_tuple_arg_reg_flatten` (Ok
+                    // recurses `emit_tuple_reg_flatten`). Checked BEFORE the scalar `_` arm; a float element
+                    // (needing the reinterpret join at slot 0) is a later increment (`result_tuple_enum` declines
+                    // it → `_` declines).
                     _ if !peer_bound && result_tuple_enum(db, &at).is_some() => {
                         let (ok_tuple, err_cases) = result_tuple_enum(db, &at).unwrap();
                         if let Ty::Tuple(elems) = ok_tuple.strip_nominal() {
@@ -1851,7 +1855,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             let mut elem_abis = Vec::with_capacity(elems.len());
                             let mut all_ok = !elems.is_empty();
                             for ety in &elems {
-                                match abi_val_type(ety) {
+                                match field_boundary_abi(db, ety) {
                                     Some(v) => elem_abis.push(v),
                                     None => {
                                         all_ok = false;
@@ -2498,6 +2502,10 @@ pub fn set_needs_memory(imports: &[HostImport]) -> bool {
             HostParam::ResultRecord(fields, _) => {
                 fields.iter().any(|(_, f)| record_field_abi_needs_memory(f))
             }
+            // A `result<tuple, enum>` needs `mem` iff its Ok tuple has an element that marshals into memory (a
+            // bytes/list/compound element — a tuple of only scalars flattens to registers). Mirrors the direct
+            // `HostParam::Tuple` arm's per-element check.
+            HostParam::ResultTuple(elems, _) => elems.iter().any(record_field_abi_needs_memory),
             _ => false,
         })
     })
