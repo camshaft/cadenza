@@ -659,6 +659,12 @@ pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
             && es.iter().all(|e| {
                 abi_val_type(e).is_some() || matches!(e.strip_nominal(), Ty::Bytes)
             }))
+        // a `list<T>` payload crosses iff its ELEMENT crosses at the boundary (`field_boundary_abi`) — the same
+        // admit set a `list<T>` ARG / a record list FIELD use. `emit_option_reg_flatten`'s list branch marshals
+        // the payload list into `mem` via `emit_list_arg_marshal` and pushes `(disc, ptr, count)`, the register
+        // analogue of the option<bytes> `(disc, ptr, len)` branch.
+        || matches!(p.strip_nominal(), Ty::List(inner)
+            if field_boundary_abi(db, &(**inner).clone()).is_some())
         // a `record` payload crosses iff EVERY field crosses at the boundary ([`is_boundary_record`] /
         // `field_boundary_abi`) — the same admit set the direct record ARG uses, so an `option<record>`
         // accepts a `list`/nested-record/tuple field exactly where a bare record ARG does.
@@ -1427,6 +1433,15 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             RecordFieldAbi::Scalar(pv)
                         } else if matches!(payload, Ty::Bytes) {
                             RecordFieldAbi::Bytes
+                        } else if let Ty::List(elem) = payload.strip_nominal() {
+                            // option<list<T>> → `RecordFieldAbi::Option(List(<elem abi>))`; the element abi is the
+                            // shared `field_boundary_abi` (crosses by the arm guard). Marshalled by
+                            // `emit_option_reg_flatten`'s list branch: `(disc, ptr, count)`, the list written into
+                            // `mem` on Some. The `(option (list <elem>))` component type builds from this abi.
+                            let elem = (**elem).clone();
+                            let einner = field_boundary_abi(db, &elem)
+                                .expect("option<list> element crosses by the arm guard");
+                            RecordFieldAbi::List(Box::new(einner))
                         } else if let Ty::Tuple(elems) = payload.strip_nominal() {
                             // option<tuple-of-scalars-or-bytes> → the payload's `RecordFieldAbi::Tuple(…)`; each
                             // element is a scalar OR `Bytes` by the guard, so this cannot panic.
@@ -1510,14 +1525,28 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                 // list FIELD. `tuple_arg_crosses` guarantees the element crosses.
                                 field_boundary_abi(db, e)
                                     .expect("list element crosses by `tuple_arg_crosses`")
-                            } else if option_payload_ty(db, e).is_some() {
+                            } else if let Some(opt_payload) = option_payload_ty(db, e) {
                                 // an `option<T>` element flattens to `(disc, payload…)` via
                                 // `emit_option_reg_flatten` (the register twin of the top-level option ARG). Its
-                                // abi is the shared `field_boundary_abi` (`RecordFieldAbi::Option(<payload>)`);
-                                // an `option<record>` payload is REORDERED to the element's option WIT record
-                                // order (the marshal reads WIT order), exactly as the top-level option arg does.
-                                let abi = field_boundary_abi(db, e)
-                                    .expect("option element crosses by `tuple_arg_crosses`");
+                                // abi is `RecordFieldAbi::Option(<payload>)`; an `option<record>` payload is
+                                // REORDERED to the element's option WIT record order (the marshal reads WIT order),
+                                // exactly as the top-level option arg does. An `option<list>` payload is built
+                                // INLINE here (`field_boundary_abi` deliberately does NOT admit `option<list>`, to
+                                // keep an `option<list>` RECORD FIELD — whose inline marshal has no list arm —
+                                // declining; the top-level option ARG + this tuple element build it inline, both
+                                // marshalled by `emit_option_reg_flatten`'s list branch).
+                                let abi = if let Ty::List(lelem) = opt_payload.strip_nominal() {
+                                    let lelem = (**lelem).clone();
+                                    let einner = field_boundary_abi(db, &lelem).expect(
+                                        "option<list> element crosses by `tuple_arg_crosses`",
+                                    );
+                                    RecordFieldAbi::Option(Box::new(RecordFieldAbi::List(Box::new(
+                                        einner,
+                                    ))))
+                                } else {
+                                    field_boundary_abi(db, e)
+                                        .expect("option element crosses by `tuple_arg_crosses`")
+                                };
                                 match (abi, elem_wits.as_ref().and_then(|ws| ws.get(i))) {
                                     (
                                         RecordFieldAbi::Option(inner),

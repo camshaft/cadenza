@@ -6637,3 +6637,76 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<list<s64>> host-op arg flattens (disc, ptr, count) — Some marshals the payload list into mem"
+  (doc
+    "SHAPE 156 (v-wit-boundary) — a top-level `option<list<s64>>` bare host-op arg: an option whose payload is a
+           `list`. `emit_option_reg_flatten` gained a list-payload branch — the register analogue of the
+           option<bytes> `(disc, ptr, len)` branch: on Some it marshals the payload list into shared `mem` at the
+           running scratch cursor via `emit_list_arg_marshal` (which leaves `(outer-ptr, count)`), captures them,
+           and pushes `(disc=1, ptr, count)`; on None all three slots are 0. `option_arg_crosses` was widened to
+           admit a `list<T>` payload whose element crosses (`field_boundary_abi`), in lockstep with the classifier
+           option-arg build (`RecordFieldAbi::Option(List(<elem>))`), the emit dispatch, the cursor pre-scan, and
+           `used_ops` (which declares `vec-len`/`vec-get` + the element ops). `field_boundary_abi` itself is NOT
+           widened — an `option<list>` RECORD FIELD (whose inline marshal has no list arm) still declines, so no
+           miscompile. run() builds Some([1, 2, 3]), performs probe.push, returns the stub 55. A VALID component
+           that runs is the pin (a wrong option/list flatten traps at the host's option/list lift).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (list (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (List Int64)) Int64)))
+      (def (run) (host (probe) (probe.push (Some #list(1 2 3)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<list<s64>> host-op arg = None flattens to (0, 0, 0)"
+  (doc
+    "SHAPE 157 (v-wit-boundary) — the NONE arm of SHAPE 156. An `option<list<s64>>` that is None flattens to
+           `(disc=0, ptr=0, count=0)` — `emit_option_reg_flatten`'s list branch else-fills the three slots (a none
+           option never reads its payload, so the list is not marshalled). run() builds None, performs probe.push,
+           returns the stub 42. Complements SHAPE 156 (Some).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (list (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (List Int64)) Int64)))
+      (def (run) (host (probe) (probe.push None)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL tuple<option<list<s64>>, s64> host-op arg flattens the option<list> element inline — Some"
+  (doc
+    "SHAPE 158 (v-wit-boundary) — a top-level `tuple<option<list<s64>>, s64>` bare host-op arg: an `option<list>`
+           as a tuple ELEMENT. `emit_tuple_reg_flatten`'s option-element arm routes through the SAME
+           `emit_option_reg_flatten` list branch as the top-level arg, so `tuple_arg_crosses` (which uses
+           `option_arg_crosses` for an option element) admits it in lockstep. The tuple-element abi build
+           constructs the `Option(List(<elem>))` abi INLINE (mirroring the top-level arg; `field_boundary_abi`
+           stays unwidened). The arg flattens to `(opt_disc, opt_ptr, opt_count, outer1: i64)`. run() builds
+           (Some([5, 6]), 9), performs probe.push, returns the stub 55. Pins the option<list> tuple-element path.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (option (list (s64))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Option (List Int64)) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Some #list(5 6)) 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
