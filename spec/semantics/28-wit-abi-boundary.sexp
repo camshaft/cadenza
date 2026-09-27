@@ -7264,3 +7264,30 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a RECORD host-op arg with a NESTED record that has an ENUM field crosses (enum disc flattened inline at depth)"
+  (doc
+    "SHAPE 180 (v-wit-boundary) — a record host-op ARGUMENT `record{ inner: record{ e: enum, n: s64 }, k: s64 }`
+           — a payload-less `enum` FIELD one level DEEP (inside a nested record). Composes the nested-record arg
+           support (a record field recurses `emit_record_arg_marshal`) with the record enum FIELD (SHAPE 174):
+           `field_boundary_abi` builds the inner record's `Enum` field abi, `is_boundary_record` accepts the
+           outer record (every field, recursively, crosses), and the inner record flattens inline into the
+           parent's core run — the enum field's disc as one i32 via the scalar-unbox path. The `(record (inner
+           (record … (enum …) …)) …)` component type builds from the world WIT. run() builds { inner: { e:
+           Green, n: 5 }, k: 9 } and performs probe.push; a VALID component that runs is the pin. Locks in the
+           value round-trip for an enum at record depth (previously untested).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= inner (record (= e (enum red green blue)) (= n (s64)))) (= k (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (effect probe (op push (-> (Record (: inner (Record (: e Col) (: n Int64))) (: k Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= inner #record((= e (Col.Green)) (= n 5))) (= k 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
