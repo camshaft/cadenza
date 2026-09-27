@@ -1221,16 +1221,18 @@
   (output (: 5000000000 Int64)))
 
 (case
-  "a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles"
+  "a continuation filed through a RECURSIVE pqueue insert (base arm) folds to the stored wake instant"
   (doc
     "The DES inc-4 recursive-insert reach. A boxed continuation `(KBox (fn (_u) (resume unit wake)))`
            is filed into a pqueue via a RECURSIVE sorted-insert `pins`, then popped + applied by `sched-step`.
-           The direct-entry companion already folds to 5e9 (the multi-payload pqueue case above); this variant
+           The direct-entry companion also folds to 5e9 (the multi-payload pqueue case above); this variant
            differs only in that the entry flows through `pins`'s recursion before the pop. The concrete arg
-           `(PQ.PQNil ())` selects `pins`'s NON-recursive base arm, so the stored KBox survives to the pop —
-           its oracle is the same 5e9. Today the deferred-resume fold refuses to symbolically evaluate a
-           recursive helper, so this DECLINES cleanly (a folds-or-declines-never-miscompiles guard); when the
-           base-arm unfold lands it must fold to exactly 5e9.")
+           `(PQ.PQNil ())` selects `pins`'s NON-recursive base arm, so the stored KBox survives to the pop.
+           The deferred-resume fold unfolds the recursive helper's base arm one level and inlines the one-shot
+           continuation-box into the directly-constructed pqueue entry, exposing the buried resume — so this
+           folds to exactly 5e9. The genuinely-recursion-TAKEN companion below still declines cleanly (a
+           folds-or-declines-never-miscompiles guard), since the base-arm unfold accepts only when no residual
+           self-call remains.")
   (input
     (do
       (type Instant (Instant UInt64))
