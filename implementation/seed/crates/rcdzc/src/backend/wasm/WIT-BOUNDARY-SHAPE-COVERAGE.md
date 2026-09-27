@@ -256,9 +256,14 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   the tuple-ELEMENT position: `tuple_arg_crosses` now admits an enum element and the tuple-element classifier
   builds its `RecordFieldAbi::Enum` via the shared `field_boundary_abi`; `emit_tuple_reg_flatten` flattens it
   positionally as one i32 disc via the scalar-unbox path (a payloadless enum's in-guest rep is a bare disc). The
-  `(tuple (enum …) …)` component type carries the enum from the world WIT. REMAINING enum gaps: `option<enum>`
-  and `list<enum>` (their element gates — `option_arg_crosses` / `list_elem_marshalable` — don't yet admit a
-  bare enum payload/element).
+  `(tuple (enum …) …)` component type carries the enum from the world WIT.
+- **[emit, ARG-side] a top-level `option<enum>` host-op arg — ✅ DONE (SHAPE 176/177).** Extends the nested-enum
+  support to the option-PAYLOAD position. An enum's disc reads inline as one i32 (the scalar-unbox path), so
+  `option<enum>` flattens to `(opt-disc, enum-disc)` EXACTLY like `option<scalar>`: `option_arg_crosses` now
+  admits an enum payload, the classifier builds `RecordFieldAbi::Option(Enum)` (so the component type is
+  `(option (enum …))`, matching the world), and `emit_option_reg_flatten`'s scalar branch marshals it with NO
+  dedicated arm (None zero-fills). REMAINING enum gap: `list<enum>` (`list_elem_marshalable` + the element
+  in-mem writer don't yet admit a bare enum element).
 - **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
   record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
   `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the

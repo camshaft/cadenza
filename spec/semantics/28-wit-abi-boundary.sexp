@@ -205,7 +205,7 @@
            in-crate wasmtime test `a_record_result_guest_compiles_and_runs_via_result_spill` (v-rb feed 5).")
   (input (do (def (f (: m (Record (: x Int64)))) #record((= a m.x) (= b (+ m.x m.x)))) (export f)))
   (call f (: #record((= x 21)) (Record (: x Int64))))
-  (output (: (record (= a 21) (= b 42)) (Record (: a Int64) (: b Int64))))
+  (output (: #record((= a 21) (= b 42)) (Record (: a Int64) (: b Int64))))
   (live-objects 0))
 
 (case
@@ -7071,7 +7071,7 @@ cases
     (do
       (type Sig (Go) (Stop Int64))
       (effect probe (op push (-> (Tuple Sig Int64) Int64)))
-      (def (run) (host (probe) (probe.push (tuple (Sig.Stop 7) 5))))
+      (def (run) (host (probe) (probe.push #tuple((Sig.Stop 7) 5))))
       (export run)))
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
@@ -7154,10 +7154,59 @@ cases
     (do
       (type Col (Red) (Green) (Blue))
       (effect probe (op push (-> (Tuple Col Int64) Int64)))
-      (def (run) (host (probe) (probe.push (tuple (Col.Green) 5))))
+      (def (run) (host (probe) (probe.push #tuple((Col.Green) 5))))
       (export run)))
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level option<enum> host-op arg crosses on the Some arm (enum disc in the payload slot)"
+  (doc
+    "SHAPE 176 (v-wit-boundary) — a top-level `option<enum>` bare host-op ARGUMENT (probe.push :
+           func(option<enum{red,green,blue}>) -> s64), the Some arm. Extends the nested payload-less `enum`
+           support (record FIELD SHAPE 174, tuple ELEMENT SHAPE 175) to the option-PAYLOAD position. An enum's
+           disc reads inline as one i32 (the scalar-unbox path), so `option<enum>` flattens to `(opt-disc,
+           enum-disc)` EXACTLY like `option<scalar>` — `option_arg_crosses` now admits an enum payload, the
+           classifier builds `RecordFieldAbi::Option(Enum)` (so the component type is `(option (enum …))`,
+           matching the world), and `emit_option_reg_flatten`'s scalar branch marshals it with NO dedicated arm.
+           run() emits Some(Green) and performs probe.push; a VALID component that runs is the pin. None arm =
+           SHAPE 177.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (enum red green blue))) (result (s64)))))))
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (effect probe (op push (-> (Option Col) Int64)))
+      (def (run) (host (probe) (probe.push (Some (Col.Green)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level option<enum> host-op arg crosses on the None arm (both slots zero)"
+  (doc
+    "SHAPE 177 (v-wit-boundary) — the None arm of SHAPE 176. A top-level `option<enum>` bare host-op arg that is
+           None flattens to `(0, 0)` — the option disc 0 (WIT none) with the enum-disc payload slot zero-filled
+           (a none option never reads its payload). Completes the `option<enum>` bare-arg family (Some = SHAPE
+           176). run() performs probe.push None; the host stub returns 42.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (enum red green blue))) (result (s64)))))))
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (effect probe (op push (-> (Option Col) Int64)))
+      (def (run) (host (probe) (probe.push None)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
   (live-objects 0))
