@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(38);
+    let shape = c.variant(39);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -765,8 +765,23 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      Distinct from shape 36 (FLAT `#list` elements). Both Ok -> tuple ({a=3},[4]) read as 3+len[4]=4;
         //      the FIRST failing `?` (record's, then list's) short-circuits -> -1. Arg = a (a>=2 -> 4, a<2 ->
         //      -1). Verified rust/wasm AGREE (2->4, 1->-1, 0->-1, 9->4).
-        _ => (
+        37 => (
             "(do (def (mk (: r (Result Int64 String)) (: s (Result Int64 String))) (: (Ok #tuple(#record((= a (try r))) #list((try s)))) (Result (Tuple (Record (: a Int64)) (List Int64)) String))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok 3) (Err \"a\")) (if (> k 1) (Ok 4) (Err \"b\"))) ((Ok t) (+ (. (. t 0) a) (List.len (. t 1)))) ((Err _e) -1))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 38 — trc1 CALL-ARGUMENT `?` entry param (the #9901/#9906-era BRICK-3 corpus witness). Two `?`s are
+        //      ARGUMENTS of an ordinary function call — `(Ok (sum2 (try r) (try s)))` — under a `(Result Int64
+        //      Int64)` boundary in `mk`, INLINED into `main`. find_hoistable_try descends the NAME-HEAD
+        //      APPLICATION operands left-to-right and the fixpoint lifts BOTH `?`s to nested boundary lets in
+        //      argument order. This is the GENERIC operand-descent path — distinct from shapes 34/35 (do-def /
+        //      expression-position single) and 36/37 (COMPOUND-CTOR element descent): here the `?`s are
+        //      call ARGUMENTS, not constructor elements. Uses `(Result Int64 Int64)` (Int64 Err, unlike the
+        //      String-Err shapes 35-37) with DISTINCT Err payloads to pin LEFT-TO-RIGHT order: both Ok -> add
+        //      3 4 = 7; first `?` fails -> Err 111; second `?` fails -> Err 222. Arg = a (a>=2 -> 7, a==1 ->
+        //      222, a<=0 -> 111). Verified rust/wasm AGREE (0->111, 1->222, 2->7, 9->7).
+        _ => (
+            "(do (def (sum2 (: a Int64) (: b Int64)) (+ a b)) (def (mk (: r (Result Int64 Int64)) (: s (Result Int64 Int64))) (: (Ok (sum2 (try r) (try s))) (Result Int64 Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok 3) (Err 111)) (if (> k 1) (Ok 4) (Err 222))) ((Ok v) v) ((Err e) e))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6207,13 +6222,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main`.
-        let mut reached = [false; 38];
-        for seed in 0u64..2280 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main`.
+        let mut reached = [false; 39];
+        for seed in 0u64..2340 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(38) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-37 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(39) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-38 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6327,11 +6342,14 @@ mod tests {
                 reached[33] = true; // shape 33 = rob1 record-of-bools bool-leaf entry-param `f`
             } else if ep.source.contains("(def (quarter (: k Int64))") {
                 reached[34] = true; // shape 34 = tdd1 runtime-`?` do-def entry-param `main` (#9840)
+            } else if ep.source.contains("(Ok (sum2 (try r) (try s)))") {
+                reached[38] = true; // shape 38 = trc1 call-argument `?` entry-param `main` (Int64-Err, no
+                // collision with shape 20's `(Result Int64 String)` marker)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all thirty-eight export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all thirty-nine export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
