@@ -4641,6 +4641,29 @@
           ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues corpusCadenzaFileAggs)}
           echo "ok: corpus-cadenza — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→cadenza-build→exec caching graph" > "$out"
         '';
+        # The BOUNDED-ADVISORY corpus-cadenza subset (v-cadenza-ci, concierge 085166; re-emit-parity gate owned by
+        # v-cadenza-backend). PHASE 1 = 09-functions + 13-strings ONLY: both GREEN on the re-emit-parity gate on
+        # clean main and re-emit-heavy (09 = closures/mutual-SCC/caller-reclaim incl the 711 caesar; 13 = String.at
+        # reclaim), so a NEW re-emit regression on those paths is a clean advisory signal. DELIBERATELY EXCLUDES
+        # 05-compound-types + 14b/14c-effects — those are RED-on-main today (known standing v-core-opt-owned re-emit
+        # divergences, NOT cadenza-tolerate-marked); folding any in would make the advisory red-on-main = useless as a
+        # regression detector (corpusCadenzaAll is red-on-main for that reason → stays nightly/manual). Exposed as
+        # checks.<sys>.corpus-cadenza-subset ADVISORY, NOT in localGate (the opt-sweep exposed-but-not-gating
+        # pattern). Phase 2 adds 14c+05+14b once v-core-opt fixes their reds or they get cadenza-tolerate-marked.
+        corpusCadenzaSubset =
+          let
+            subsetStems = [ "09-functions" "13-strings" ];
+            aggs = map
+              (stem:
+                let key = "corpus-cadenza-${stem}"; in
+                assert (builtins.hasAttr key corpusCadenzaFileAggs);
+                corpusCadenzaFileAggs.${key})
+              subsetStems;
+          in
+          pkgs.runCommand "corpus-cadenza-subset" { } ''
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') aggs}
+            echo "ok: corpus-cadenza-subset — 09-functions+13-strings re-emit-parity (bounded advisory; full corpus-cadenza-all stays nightly)" > "$out"
+          '';
 
         # ── quote-corpus: the QUOTE binary-AST round-trip pass (v-quote-corpus, design
         # DESIGN-quote-corpus-roundtrip-pass.md) ─────────────────────────────────────────────────────────
@@ -9071,6 +9094,12 @@
             # (program.ast → cadenza → wasm), graded vs the SAME wasm baseline so a value-miscompile in the
             # round-trip shows as a grade divergence. Per-file `corpus-cadenza-<file>` aggregates spread below.
             corpus-cadenza = corpusCadenzaAll;
+            # The BOUNDED-ADVISORY corpus-cadenza subset (09-functions + 13-strings, both green-on-clean-main;
+            # v-cadenza-ci / concierge 085166). ADVISORY — exposed here but NOT folded into localGate (the opt-sweep
+            # exposed-but-not-gating pattern), so a NEW re-emit-parity regression on those two re-emit-heavy chapters
+            # is a clean signal without gating on the known standing 05/14b/14c reds that keep corpus-cadenza(-all)
+            # red-on-main. Phase 2 widens it once those are fixed or cadenza-tolerate-marked.
+            corpus-cadenza-subset = corpusCadenzaSubset;
             # The QUOTE binary-AST round-trip pass (v-quote-corpus, DESIGN-quote-corpus-roundtrip-pass): for
             # each eligible case, a §2 two-export component whose `encode-quoted()`→`decode-check(bytes)`
             # round-trip is threaded across the caller boundary by `cdz-run --quote-roundtrip` (+ a
