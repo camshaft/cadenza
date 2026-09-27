@@ -216,6 +216,13 @@ pub(super) fn param_field_rebuild(
         // lifts through the same throwaway-`next_local` field cell-lift the top-level `list<option<scalar>>`
         // param (lpo1) uses.
         Ty::List(elem) => {
+            // A `list<flags>` (or an element CONTAINING a flags) would be read by the guest-only
+            // `list_scalar_elem` with the record-of-bools layout, but the WIT element is a PACKED flags bitset —
+            // a wrong-layout miscompile. Decline (WIT-aware) until the list-element reader learns the flags
+            // bitset unpack (a later slice).
+            if matches!(wty, WitType::List(inner) if crate::wit_world::wit_contains_flags(inner)) {
+                return None;
+            }
             let le = list_scalar_elem(elem).or_else(|| list_sum_elem(db, elem))?;
             if le.nest_lists != 0 {
                 return None;

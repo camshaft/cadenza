@@ -5620,3 +5620,27 @@ cases
   (call f (: None (Option (Record (: read Bool) (: write Bool) (: execute Bool)))))
   (output (: -1 Int64))
   (live-objects 0))
+
+(case
+  "a WIT list<flags> RESULT writes each element as a packed bitset"
+  (doc
+    "SHAPE 118 — a WIT `list<flags{read,write,execute}>` RESULT. The guest returns a list of record-of-bools;
+           `canon_write_of` recurses WIT-aware into each element (CanonWrite::Flags), packing it into the
+           element's canonical flags bitset at the list element stride. Guest returns
+           [(read=T,write=F,execute=T), (read=F,write=T,execute=F)], rendering `#list((flags read execute)
+           (flags write))`. NOTE: the list<flags> PARAM direction is DECLINED for now (the guest-only
+           list-element reader would misread the packed bitset as a 3-field record — a wrong-layout miscompile,
+           guarded by `wit_contains_flags`); its WIT-aware element unpack is a later slice. The result direction
+           works because the canonical WRITER threads the WIT element type. `live-objects 0`.")
+  (wit-world
+    (world w (export iface (member g (func (result (list (flags read write execute))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (g)
+        #list(#record((= read true) (= write false) (= execute true))
+              #record((= read false) (= write true) (= execute false))))
+      (export g)))
+  (call g)
+  (output #list((flags read execute) (flags write)))
+  (live-objects 0))

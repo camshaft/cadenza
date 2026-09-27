@@ -8207,6 +8207,15 @@ fn record_interface_export(
                         // descriptor; a nested/compound element (list<list>, list<record>) declines via `?`.
                         // A `Ty::List(UInt8)` crossing WIT `list<u8>` is a genuine `List UInt8` (boxed-u8 vec),
                         // NOT `Bytes` (packed byte-leaf) — distinct value reps behind the same WIT type.
+                        // A `list<flags>` (or a list whose element CONTAINS a flags) would be read by the
+                        // guest-only `list_scalar_elem` with the record-of-bools layout, but the WIT element is
+                        // a PACKED flags bitset — a wrong-layout miscompile. Decline it (WIT-aware) until the
+                        // list-element reader learns the flags-element bitset unpack (a later slice).
+                        (Ty::List(_), WitType::List(inner))
+                            if crate::wit_world::wit_contains_flags(inner) =>
+                        {
+                            return None;
+                        }
                         (Ty::List(elem), WitType::List(_)) => {
                             serialize::MemLeafKind::List(list_scalar_elem(elem)?)
                         }
