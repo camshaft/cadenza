@@ -6095,26 +6095,55 @@ fn canon_write_of(
         // (§1 nominal identity). `boundary_disc` = the matched WIT case index. Belt-and-suspenders: each arm's
         // payload-presence must still agree (guest-nullary iff WIT-case-nullary). A payload arm resolves its
         // type via the ctor + `payload_ty_at_instantiation` (concrete payloads, e.g. a `closed` record, too).
-        // A payloadless `enum` (all-nullary sum) result FIELD — the guest value is a BARE i32 discriminant
-        // (`db.is_enum_disc`, NOT a heap `sum`, unlike a payload-carrying variant handled below), so store the
-        // disc DIRECTLY (no unbox). Accepts a WIT `enum` OR an all-nullary `variant` (both the disc-only
-        // shape). Gated on the guest decl-order MATCHING the WIT case-order by name, so the guest's raw disc
-        // IS the WIT case index (no runtime remap; a reordering declines this increment — a later slice). The
-        // guest-export result-side twin of a host-import enum arg/result (bare-i32 enum-disc).
         // A payloadless `enum` (all-nullary sum) as a SPILLED FIELD/ELEMENT (a record-result field, a list
-        // element) — DECLINES this increment. The `CanonWrite::EnumDisc` lowering here is a KNOWN MISCOMPILE:
-        // in a nested/spilled position it stores garbage (verified — `record{c: enum, n: s64}` yields the wrong
-        // case and traps "discriminant N out of range [0..0)" with N = the sibling scalar's value; `list<enum>`
-        // traps identically), i.e. the `enum` DEFINED type is not emitted for the nested position (0 cases) AND
-        // the disc read is wrong. Until the projection is root-caused + fixed (corpus TODO SHAPE 136, owned by
-        // v-wit-boundary), DECLINE rather than mis-emit (decline-don't-miscompile): a coded CDZ0900 at the typed
-        // export is safe, a silent wrong-case/trap is not. The TOP-LEVEL enum result/param are UNAFFECTED — they
-        // cross via `record_result_lower`'s Passthrough/`ResultLower::EnumRemap`, not this canon-write arm
-        // (SHAPE 60/64/67/68). A payloadless enum reaching here matches a WIT `enum` OR an all-nullary `variant`.
+        // element). The field VALUE is a BOXED int in the value-heap cell (`arr-get` yields the box), so
+        // `CanonWrite::EnumDisc` UNBOXES it (`get-int` + wrap) to recover the guest disc before storing — unlike
+        // a TOP-LEVEL enum result, whose def returns the raw i32 disc (`record_result_lower` Passthrough). The
+        // enum crosses BY CASE NAME (kebab-normalized, §1 nominal identity): when the guest decl-order case
+        // names EQUAL the WIT order, `remap = None` (the guest disc IS the WIT index); when they MISMATCH (a
+        // REORDER), `guest_to_wit[guest_disc] = wit_disc` (the WIT index of the guest case's name) so the emit
+        // remaps the disc by name — the canon-write twin of the top-level `ResultLower::EnumRemap` (SHAPE 64).
+        // A guest case name ABSENT from the WIT (not a mere reorder) declines. Accepts a WIT `enum` OR an
+        // all-nullary `variant` (both the disc-only shape).
         Ty::Sum { decl, .. }
             if db.is_enum_disc(*decl) && matches!(wty, WitType::Enum(_) | WitType::Variant(_)) =>
         {
-            None
+            use crate::backend::common::export_name::kebab_extern_name;
+            let wit_cases: Vec<String> = match wty {
+                WitType::Enum(cs) => cs.clone(),
+                WitType::Variant(cs) if cs.iter().all(|(_, p)| p.is_none()) => {
+                    cs.iter().map(|(n, _)| n.clone()).collect()
+                }
+                _ => return None,
+            };
+            let guest_cases: Vec<String> = {
+                let dr = db.type_decl_by_occ(*decl)?;
+                dr.variants
+                    .iter()
+                    .map(|v| kebab_extern_name(&v.name))
+                    .collect()
+            };
+            if guest_cases.len() != wit_cases.len() {
+                return None; // a case-count mismatch is not a reorder — not this boundary
+            }
+            let remap = if guest_cases == wit_cases {
+                None // order matches → the guest disc IS the WIT index
+            } else {
+                // Reorder: `guest_to_wit[guest_disc] = wit_disc` (the guest case's position in the WIT order,
+                // matched BY NAME). A guest case name absent from the WIT declines (a genuine mismatch).
+                let mut guest_to_wit: Vec<u32> = Vec::with_capacity(guest_cases.len());
+                for gc in &guest_cases {
+                    guest_to_wit.push(wit_cases.iter().position(|wc| wc == gc)? as u32);
+                }
+                Some(guest_to_wit)
+            };
+            let (disc_size, _) = wit_ctype::variant_disc_layout(&vec![None; wit_cases.len()]);
+            let store = match disc_size {
+                1 => op::I32_STORE8,
+                2 => op::I32_STORE16,
+                _ => op::I32_STORE,
+            };
+            Some(CanonWrite::EnumDisc { store, remap })
         }
         Ty::Sum { decl, .. } if matches!(wty, WitType::Variant(_)) => {
             use crate::backend::common::export_name::kebab_extern_name;
@@ -6329,8 +6358,9 @@ fn canon_write_ops(
     use crate::backend::wasm::serialize::CanonWrite;
     match cw {
         CanonWrite::Scalar { read, .. } => out(read),
-        // A bare-i32 enum disc is stored directly (no unbox / heap op) — registers nothing.
-        CanonWrite::EnumDisc { .. } => {}
+        // A spilled enum-disc field/element is a BOXED int in the cell — unboxed with `get-int` (the remap, if
+        // any, is pure const/select/ne, no import).
+        CanonWrite::EnumDisc { .. } => out("get-int"),
         // MUST MATCH `emit_canon_write`'s `CanonWrite::Bytes` gate: one bulk `bytes-read` where the shared
         // allocator + bytes-read canon-lower exist (bulk_bytes), else the per-byte `bytes-len` + `bytes-get`.
         CanonWrite::Bytes if bulk_bytes => out("bytes-read"),

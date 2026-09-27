@@ -1277,13 +1277,15 @@ pub enum CanonWrite {
         wrap_i64: bool,
         store: u8,
     },
-    /// A payloadless `enum` (all-nullary sum): the guest value is a BARE i32 discriminant (`db.is_enum_disc`
-    /// — no heap box, unlike a payload-carrying variant which is a heap `sum`). So store that i32 DIRECTLY at
-    /// the field offset with NO unbox `read` (a `Scalar`'s `get-int` would wrongly treat the bare disc as a
-    /// heap handle). `store` is the disc width (`i32.store8`/`16`/`32` by case count). The guest's raw disc IS
-    /// the WIT case index (the arm is gated on decl-order == WIT-case-order, so no remap). The guest-export
-    /// result-side twin of a host-import enum arg/result (bare-i32 enum-disc).
-    EnumDisc { store: u8 },
+    /// A payloadless `enum` (all-nullary sum) at a SPILLED position (a record-result field, a list element):
+    /// the field VALUE is a BOXED int in the value-heap cell (`arr-get` yields the box, like any scalar field),
+    /// so UNBOX it (`get-int` + `i32.wrap_i64`) to recover the guest discriminant, then `store` it at the disc
+    /// width (`i32.store8`/`16`/`32` by case count). (This differs from a TOP-LEVEL enum result, where the def
+    /// returns the raw i32 disc unboxed via `record_result_lower`'s Passthrough — a spilled enum is boxed.)
+    /// When `remap` is `None` the guest decl-order case names EQUAL the WIT order, so the guest disc IS the WIT
+    /// index; when `Some(guest_to_wit)` (a REORDER, matched BY NAME) the guest disc is remapped to the WIT case
+    /// index via a `select`-fold before the store (the canon-write twin of the top-level `ResultLower::EnumRemap`).
+    EnumDisc { store: u8, remap: Option<Vec<u32>> },
     /// A fixed record (an `arr` cell): per field, `arr-get(handle, index)` → write recursively at the field's
     /// canonical offset.
     Record { fields: Vec<CanonField> },
@@ -5002,10 +5004,38 @@ fn emit_canon_write(
             out.push(0x00); // align hint (conservative)
             uleb128(offset as u64, out);
         }
-        CanonWrite::EnumDisc { store } => {
-            // store(dst_base + offset) = handle (the BARE i32 discriminant, stored directly — no unbox).
-            get(dst_base, out);
-            get(handle, out);
+        CanonWrite::EnumDisc { store, remap } => {
+            // store(dst_base + offset) = the WIT disc. `handle` is the BOXED enum value in the arr cell, so
+            // UNBOX it (`get-int` → i64, `i32.wrap` → the guest disc). Then, on a reorder, remap guest->WIT.
+            get(dst_base, out); // [base] (store addr, stays at the stack bottom)
+            match remap {
+                // Order matches: the guest disc IS the WIT case index — unbox and store it.
+                None => {
+                    get(handle, out); // [base, box]
+                    call("get-int", out); // [base, i64 disc]
+                    out.push(op::I32_WRAP_I64); // [base, i32 guest disc = WIT index]
+                }
+                // Reorder: unbox into a temp local `g`, then remap g -> WIT disc BY NAME via a `select`-fold.
+                // Seed acc=0; for each guest disc `gi`: acc = (g != gi) ? acc : guest_to_wit[gi] (select pops
+                // [a,b,cond] → cond?a:b). Exactly one `gi` matches a valid disc, so the seed is irrelevant.
+                Some(guest_to_wit) => {
+                    let g = *next_local;
+                    *next_local += 1;
+                    get(handle, out);
+                    call("get-int", out);
+                    out.push(op::I32_WRAP_I64);
+                    set(g, out); // g = guest disc (i32)
+                    const_i32(0, out); // [base, acc=0]
+                    for (gi, &wit_disc) in guest_to_wit.iter().enumerate() {
+                        const_i32(wit_disc as i64, out); // [base, acc, wit_gi]
+                        get(g, out); // [base, acc, wit_gi, g]
+                        const_i32(gi as i64, out); // [base, acc, wit_gi, g, gi]
+                        out.push(op::I32_NE); // [base, acc, wit_gi, cond=(g!=gi)]
+                        out.push(op::SELECT); // [base, acc']
+                    }
+                    // [base, remapped WIT disc]
+                }
+            }
             out.push(*store);
             out.push(0x00); // align hint (conservative)
             uleb128(offset as u64, out);

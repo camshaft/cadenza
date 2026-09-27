@@ -6095,23 +6095,20 @@ cases
   (live-objects 0))
 
 (case
-  "a payloadless enum as a FIELD of a typed record EXPORT result crosses BY NAME (corpus TODO — canon_write gap)"
+  "a payloadless enum as a FIELD of a typed record EXPORT result crosses BY NAME"
   (doc
-    "SHAPE 136 (v-wit-boundary corpus TODO) — a payloadless `enum` as a FIELD of a typed `record` EXPORT
-           result under a declared world: f(x:s64) -> record{c: enum{red,green,blue}, n: s64}, guest returns
-           {c: Red|Green, n: x}. The idealistic behavior: the enum field crosses BY CASE NAME (guest Red ->
-           `red`, Green -> `green`), so f(0) -> {c: red, n: 0} and f(5) -> {c: green, n: 5} — the nested/spilled
-           twin of the top-level enum result (SHAPE 60/64), placing the case by name like a record field
-           (SHAPE 20). It DECLINES CDZ0900 TODAY: the `canon_write_of` payloadless-enum arm (used at every
-           SPILLED position — a record-result field, a list element) was a MISCOMPILE — it stored garbage (the
-           enum DEFINED type was not emitted for the nested position → runtime `discriminant N out of range
-           [0..0)`, N = the sibling scalar's value) — so it now DECLINES rather than mis-emitting
-           (decline-don't-miscompile), which the imposed-world contract guard surfaces as CDZ0900. Grades Todo
-           now (CDZ0900 is a coded compile error) and auto-locks to Pass when the canon_write enum projection is
-           root-caused + fixed (emit the nested `enum` defined type + read the field's disc correctly, then
-           remap guest-disc -> WIT-disc BY NAME like `ResultLower::EnumRemap`). The `list<enum>` twin traps
-           identically (same arm). Owned by v-wit-boundary. The TOP-LEVEL enum result/param are UNAFFECTED
-           (SHAPE 60/64/67/68, a different lowering path).")
+    "SHAPE 136 — a payloadless `enum` as a FIELD of a typed `record` EXPORT result under a declared world:
+           f(x:s64) -> record{c: enum{red,green,blue}, n: s64}, guest returns {c: Red|Green, n: x}. The enum
+           field crosses BY CASE NAME (order matches here: guest Red -> `red`, Green -> `green`), so f(0) ->
+           {c: red, n: 0} and f(5) -> {c: green, n: 5} — the nested/spilled twin of the top-level enum result
+           (SHAPE 60/64), placing the case by name like a record field (SHAPE 20). `canon_write_of`'s
+           payloadless-enum arm lowers via `CanonWrite::EnumDisc`, which UNBOXES the boxed enum value in the
+           value-heap cell (`get-int` + wrap — a spilled enum field is BOXED like any scalar field, unlike a
+           top-level enum result whose def returns the raw i32 disc) and stores the WIT disc. (History: this
+           originally MISCOMPILED — the arm stored the box HANDLE raw with no unbox → runtime `discriminant N out
+           of range`, N = the box handle — then briefly DECLINED CDZ0900 decline-don't-miscompile; the unbox fix
+           closed it.) The REORDER twin is SHAPE 137, the `list<enum>` twin SHAPE 138. The TOP-LEVEL enum
+           result/param are a different lowering path (SHAPE 60/64/67/68).")
   (wit-world
     (world
       w
@@ -6126,3 +6123,53 @@ cases
   (output #record((= c (red unit)) (= n 0)))
   (call f (: 5 Int64))
   (output #record((= c (green unit)) (= n 5))))
+
+(case
+  "an enum FIELD of a typed record result whose GUEST case order MISMATCHES the WIT remaps by NAME"
+  (doc
+    "SHAPE 137 — the REORDER twin of SHAPE 136 (the canon-write nested analogue of the top-level enum-result
+           reorder SHAPE 64). Guest `(type Color (Red)(Green)(Blue))` in a record result field `c` under a world
+           declaring the field `(enum green red blue)` [red/green REVERSED]. The enum field crosses BY CASE NAME:
+           `canon_write_of`'s enum arm builds `guest_to_wit[guest_disc] = wit_disc` (the WIT index of the guest
+           case's kebab name — here guest Red(0)->WIT `red`(1), Green(1)->WIT `green`(0), Blue(2)->`blue`(2)),
+           and `CanonWrite::EnumDisc` UNBOXES the boxed disc then remaps it via a `select`-fold before the store.
+           So f(0)->Red crosses as WIT `red` and f(5)->Green as WIT `green` — IDENTICAL semantics to the
+           order-MATCHING SHAPE 136, the enum being the degenerate name-keyed variant (§1 nominal identity). A
+           broken remap (raw guest disc, or a mis-permuted fold) would render the wrong case. The `list<enum>`
+           twin is SHAPE 138.")
+  (wit-world
+    (world
+      w
+      (export cadenza:demo/iface (member f (func (param x (s64)) (result (record (= c (enum green red blue)) (= n (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (f (: x Int64)) #record((= c (if (= x 0) Color.Red Color.Green)) (= n x)))
+      (export f)))
+  (call f (: 0 Int64))
+  (output #record((= c (red unit)) (= n 0)))
+  (call f (: 5 Int64))
+  (output #record((= c (green unit)) (= n 5))))
+
+(case
+  "a typed list<enum> EXPORT result writes each element's disc BY NAME (canon_write EnumDisc as a list element)"
+  (doc
+    "SHAPE 138 — the LIST-ELEMENT twin of SHAPE 136/137: a typed `list<enum{red,green,blue}>` EXPORT result.
+           `canon_write_of`'s List arm composes with its payloadless-enum arm (`CanonWrite::List{ elem =
+           EnumDisc }`), writing each element's disc at the canonical `enum` element stride — UNBOXED (`get-int`
+           + wrap, each element is a boxed value-heap cell) and, here, order-matching so the guest disc IS the
+           WIT index. getColors(x) = [Red, Green]; x=0 -> [red, green]. A broken element write (box handle raw,
+           or missing per-element unbox) traps `discriminant out of range` — the exact miscompile this closes.")
+  (wit-world
+    (world
+      w
+      (export cadenza:demo/iface (member f (func (param x (s64)) (result (list (enum red green blue))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (f (: _x Int64)) #list(Color.Red Color.Green))
+      (export f)))
+  (call f (: 0 Int64))
+  (output #list((red unit) (green unit))))
