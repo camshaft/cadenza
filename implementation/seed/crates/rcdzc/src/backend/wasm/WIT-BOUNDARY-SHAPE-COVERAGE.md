@@ -229,6 +229,14 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   component type builds from the world's WIT. Widened in LOCKSTEP: `option_arg_crosses` (shared with the
   tuple-element-option gate), the classifier option arm, `emit_option_reg_flatten`, and `collect_used_ops`'s
   option-payload dispatch. No cursor needed (a scalar-payload variant does not touch `mem`).
+- **[emit, register-path] a RECORD host-op ARG with an `option<variant>` FIELD — ✅ DONE (SHAPE 169/170).** The
+  record-FIELD composition of the top-level `option<variant>` arg (SHAPE 167): `field_boundary_abi`'s option arm
+  now admits a scalar-payload variant payload (→ `Option(Variant)`), so `is_boundary_record` accepts the record,
+  and `emit_record_arg_marshal` gains an option<variant> field arm flattening the field to `(opt-disc, var-disc,
+  payload-join)` via the shared `emit_variant_reg_flatten` (None zero-fills), placed BEFORE the option<scalar>
+  arm (a variant handle's `valtype_of` is `Some(I32)`, so that arm's guard would else miscompile it).
+  `flatten_record_field_abi` (`Option(Variant)` → 3 slots) and `collect_record_field_ops`'s option arm (recurses
+  into the variant payload) were already general. No cursor needed (scalar-payload variant does not touch `mem`).
 - **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
   record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
   `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the
