@@ -1561,6 +1561,103 @@ pub(super) fn emit_record_arg_marshal(
                 out.push(Lir::LocalGet(p0));
                 out.push(Lir::LocalGet(p1));
             }
+            // An `option<tuple-of-scalars>` field flattens (canonical variant flatten) to `(disc:i32,
+            // flatten(tuple))` = disc + one core slot per tuple element (POSITIONAL, so no name-lex/WIT order
+            // ambiguity — matching `field_boundary_abi`'s option<tuple-of-scalars> admission + `record_field_
+            // cref`'s `(option (tuple …))`). `BlockType` is single-value, so we cannot push the variable element
+            // count from the `if`; instead marshal into N element scratch slots (Some → per-element arr-get+unbox;
+            // None → the element's width zero) and push `disc` + the N slots AFTER the `if` — the option<scalar>
+            // field shape generalized to an N-slot tuple payload. MUST precede the option<scalar> arm: a tuple's
+            // `valtype_of` is `Some(I32)` (an opaque handle), so the scalar arm's guard would else match it.
+            None if crate::backend::wasm::host::option_payload_ty(db, fty).is_some_and(|p| {
+                matches!(p.strip_nominal(), Ty::Tuple(es)
+                    if !es.is_empty() && es.iter().all(|e| valtype_of(e).is_some()))
+            }) =>
+            {
+                let payload_ty = crate::backend::wasm::host::option_payload_ty(db, fty)
+                    .expect("option-shaped by the guard");
+                let Ty::Tuple(elems) = payload_ty.strip_nominal() else {
+                    unreachable!("tuple payload by the guard")
+                };
+                let elems = elems.to_vec();
+                // Per element: its core valtype + unbox op (narrow ints wrap to i32 like a scalar field).
+                let mut reads: Vec<(ValType, &'static str)> = Vec::with_capacity(elems.len());
+                for e in &elems {
+                    let pv = valtype_of(e).ok_or_else(|| {
+                        Reject::decline("an option<tuple> element has no valtype")
+                    })?;
+                    let read = get_op_ty(db, e)?.ok_or_else(|| {
+                        Reject::decline("an option<tuple> element has no unbox op")
+                    })?;
+                    reads.push((pv, read));
+                }
+                let some_disc = {
+                    let crate::ty::Ty::Sum { decl, .. } = fty.strip_nominal() else {
+                        unreachable!("option is a Sum")
+                    };
+                    let d = db.type_decl_by_occ(*decl).ok_or_else(|| {
+                        Reject::decline("the option field's sum decl was not found")
+                    })?;
+                    d.variants
+                        .iter()
+                        .position(|v| v.payloads.len() == 1)
+                        .ok_or_else(|| Reject::decline("the option field has no payload variant"))?
+                        as i32
+                };
+                let ans = work_base + 4; // option handle
+                let pay = work_base + 5; // payload tuple handle
+                let disc_out = work_base + 6;
+                let base_slot = work_base + 7; // first of N element slots
+                scratch_ty.insert(ans, ValType::I32);
+                scratch_ty.insert(pay, ValType::I32);
+                scratch_ty.insert(disc_out, ValType::I32);
+                for (k, (pv, _)) in reads.iter().enumerate() {
+                    scratch_ty.insert(base_slot + k as u32, *pv);
+                }
+                *high = (*high).max(base_slot + reads.len() as u32);
+                let zero = |pv: ValType| match pv {
+                    ValType::I64 => Lir::ConstI64(0),
+                    ValType::F64 => Lir::F64ConstBits(0),
+                    ValType::F32 => Lir::F32ConstBits(0),
+                    _ => Lir::ConstI32(0),
+                };
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [option handle] (borrows rec)
+                out.push(Lir::LocalSet(ans));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_DISC));
+                out.push(Lir::ConstI32(some_disc));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty)); // Some
+                out.push(Lir::ConstI32(1)); // WIT `option` some = 1
+                out.push(Lir::LocalSet(disc_out));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload tuple handle]
+                out.push(Lir::LocalSet(pay));
+                for (k, &(pv, read)) in reads.iter().enumerate() {
+                    out.push(Lir::LocalGet(pay));
+                    out.push(Lir::ConstI32(k as i32));
+                    out.push(Lir::CallImport(OP_ARR_GET)); // [element] (borrows pay)
+                    out.push(Lir::CallImport(read)); // [scalar]
+                    if read == OP_GET_INT && matches!(pv, ValType::I32) {
+                        out.push(Lir::I32WrapI64); // a narrow int / char element narrows to its i32 slot
+                    }
+                    out.push(Lir::LocalSet(base_slot + k as u32));
+                }
+                out.push(Lir::Else); // None → (0, zeros…)
+                out.push(Lir::ConstI32(0)); // WIT `option` none = 0
+                out.push(Lir::LocalSet(disc_out));
+                for (k, (pv, _)) in reads.iter().enumerate() {
+                    out.push(zero(*pv));
+                    out.push(Lir::LocalSet(base_slot + k as u32));
+                }
+                out.push(Lir::End);
+                out.push(Lir::LocalGet(disc_out)); // push disc, then the N element slots (positional)
+                for k in 0..reads.len() {
+                    out.push(Lir::LocalGet(base_slot + k as u32));
+                }
+            }
             // An `option<scalar>` field flattens (canonical variant flatten) to `(disc:i32, payload)`. Branch on
             // the value-heap Option's discriminant: Some (the guest decl's single-payload arm) → `(1, unbox(
             // payload))`; None → `(0, 0)`. `BlockType` is single-value, so the `if` arms SIDE-EFFECT into scratch
@@ -1651,8 +1748,8 @@ pub(super) fn emit_record_arg_marshal(
             None => {
                 return Err(Reject::decline(
                     "a record host-arg field has no boundary read (only scalar, list<u8>, list<T>, \
-                     option<scalar>, variant<scalar>, nested-record, and result<list<u8>, enum> fields cross \
-                     this increment)",
+                     option<scalar>, option<tuple-of-scalars>, variant<scalar>, nested-record, and \
+                     result<list<u8>, enum> fields cross this increment)",
                 ));
             }
         }
