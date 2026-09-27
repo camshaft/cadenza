@@ -1394,8 +1394,9 @@ pub(super) fn emit_result_scalar_arg_reg_flatten(
         .ok_or_else(|| Reject::decline("a result Ok scalar has no unbox op"))?;
     let ok_vt =
         valtype_of(&ok_ty).ok_or_else(|| Reject::decline("a result Ok scalar has no valtype"))?;
-    // The join widens the `i32` err disc to `i64` iff the Ok scalar is 64-bit; otherwise the slot is `i32`.
-    let join_vt = if ok_vt == ValType::I64 {
+    // The join slot is 8-byte (`i64`) iff the Ok scalar is 8-byte — an `i64` OR an `f64` (a float
+    // bit-reinterprets into the integer join: `join(f64,i32)=i64`, `join(f32,i32)=i32`); otherwise `i32`.
+    let join_vt = if matches!(ok_vt, ValType::I64 | ValType::F64) {
         ValType::I64
     } else {
         ValType::I32
@@ -1423,8 +1424,14 @@ pub(super) fn emit_result_scalar_arg_reg_flatten(
     out.push(Lir::LocalGet(result_slot));
     out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [Ok value handle]
     out.push(Lir::CallImport(ok_read));
-    if ok_read == OP_GET_INT && join_vt == ValType::I32 {
-        out.push(Lir::I32WrapI64); // a narrow int / char payload narrows to its i32 join slot
+    match ok_vt {
+        // A float bit-reinterprets into the integer join slot (`join(f64,i32)=i64`, `join(f32,i32)=i32`); the
+        // host lift reads the join int back as the float. No value coercion — the bits ARE the float.
+        ValType::F64 => out.push(Lir::I64ReinterpretF64),
+        ValType::F32 => out.push(Lir::I32ReinterpretF32),
+        // A narrow int / char payload (read as i64 by `get-int`) narrows to its i32 join slot.
+        _ if ok_read == OP_GET_INT && join_vt == ValType::I32 => out.push(Lir::I32WrapI64),
+        _ => {}
     }
     out.push(Lir::LocalSet(join));
     out.push(Lir::End);
