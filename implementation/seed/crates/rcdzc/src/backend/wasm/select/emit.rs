@@ -6286,11 +6286,22 @@ pub(super) fn emit(
                     // flatten`) → needs the cursor, like the `tuple<…,bytes,…>` arg one line down.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
                         .is_some_and(|p| crate::backend::wasm::host::tuple_has_bytes_element(&p))
-                    // A top-level `option<record-with-a-bytes-field>` arg copies the payload record's Bytes
-                    // ropes into `mem` on Some (`emit_option_reg_flatten`'s record branch → `emit_record_arg_
-                    // marshal`) → needs the cursor, like the `record`-with-a-Bytes-field arg above.
+                    // A top-level `option<record>` arg whose payload record has a runtime-compound FIELD copies
+                    // that field's bytes into `mem` on Some (`emit_option_reg_flatten`'s record branch →
+                    // `emit_record_arg_marshal`) → needs the cursor, exactly like the direct `record` arg above.
+                    // Cover every runtime-compound field the direct-record pre-scan reserves for (Bytes / list /
+                    // option<bytes> / tuple), so an `option<record-with-list>` reserves the cursor its list-field
+                    // marshal consumes (a missing reservation panics the marshal's cursor `expect`); an
+                    // over-reservation is a harmless unused slot.
+                    || crate::backend::wasm::host::option_payload_ty(db, &at).is_some_and(|p| {
+                        crate::backend::wasm::host::record_has_bytes_field(&p)
+                            || crate::backend::wasm::host::record_has_list_field(&p)
+                            || crate::backend::wasm::host::record_has_option_bytes_field(db, &p)
+                            || crate::backend::wasm::host::record_has_tuple_field(&p)
+                    })
+                    // A top-level `option<list<T>>` arg marshals the payload list into `mem` on Some → cursor.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
-                        .is_some_and(|p| crate::backend::wasm::host::record_has_bytes_field(&p))
+                        .is_some_and(|p| matches!(p.strip_nominal(), Ty::List(_)))
                     // A top-level `tuple<…>` arg needs the cursor when SOME leaf (recursing nested tuples +
                     // record elements) copies runtime bytes into `mem` — a `Bytes` element, or a record
                     // element with a `Bytes` / `list` / `result` / `option<bytes>` field. Broader than the
@@ -6300,7 +6311,13 @@ pub(super) fn emit(
             });
             let scratch_cursor_slot = if has_runtime_compound {
                 let slot = base.max(*high);
-                *high = (*high).max(slot);
+                // The cursor OCCUPIES `slot`, so `*high` (the exclusive top of this call's declared scratch run,
+                // which `select_function_of` turns into `declared = base..high`) must be `slot + 1` — else the
+                // cursor slot is excluded from the declared locals and `coalesce_func`'s remap indexes out of
+                // bounds (a `LocalSet(slot)` referencing an undeclared local → panic). A following arg's marshal
+                // usually bumps `*high` past `slot` anyway, but a cursor-only reservation (no arg raises it
+                // further) leaves it at `slot` without this `+ 1`.
+                *high = (*high).max(slot + 1);
                 scratch_ty.insert(slot, ValType::I32);
                 // Seed the cursor at the fixed scratch base once, before any arg is marshalled.
                 out.push(Lir::ConstI32(host_arg_scratch_base(layout) as i32));
@@ -6583,25 +6600,7 @@ pub(super) fn emit(
                     // mapping the guest some-disc to WIT `option` some=1 / none=0. Checked BEFORE the variant arm
                     // (option is a Sum EXCLUDED from `variant_scalar_payload_cases`) and the scalar `_` arm (a
                     // Sum's `emit` yields a HANDLE, not the flattened slots the built-in `option` param expects).
-                    _ if crate::backend::wasm::host::option_payload_ty(db, &at).is_some_and(
-                        |p| {
-                            crate::backend::wasm::host::abi_val_type(&p).is_some()
-                                || matches!(p, Ty::Bytes)
-                                || matches!(p.strip_nominal(), Ty::Tuple(es)
-                                if !es.is_empty()
-                                    && es.iter().all(|e| {
-                                        crate::backend::wasm::host::abi_val_type(e).is_some()
-                                            || matches!(e.strip_nominal(), Ty::Bytes)
-                                    }))
-                                || matches!(p.strip_nominal(), Ty::Record(sub)
-                                if !sub.is_empty()
-                                    && sub.values().all(|f| {
-                                        crate::backend::wasm::host::abi_val_type(f).is_some()
-                                            || matches!(f.strip_nominal(), Ty::Bytes)
-                                    }))
-                        },
-                    ) =>
-                    {
+                    _ if crate::backend::wasm::host::option_arg_crosses(db, &at) => {
                         let opt_slot = arg_base.max(*high);
                         scratch_ty.insert(opt_slot, ValType::I32);
                         *high = (*high).max(opt_slot + 1);

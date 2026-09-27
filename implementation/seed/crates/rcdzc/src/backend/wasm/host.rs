@@ -395,7 +395,7 @@ pub fn variant_liftable_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(Strin
 /// ([`result_bytes_enum`], the answer-back envelope). A narrow-int/`Char`/`Qty`/`String`, or a not-yet-mapped
 /// compound, is a LATER slice → `None`. The guard's admit set + the classifier's `HostParam::Record`
 /// production stay in lockstep (no arity skew between the boundary sig and the args).
-fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
+pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
     // A SCALAR field of ANY aliased width crosses NATIVELY as one core slot + its inline component primitive
     // — bool, s8..s64 / u8..u64 (every int width, not just 64), char, f32/f64, and a `Qty` over any of those.
     // Read via `abi_val_type` (general over width), so a record host-arg field is no longer pinned to 64-bit
@@ -648,21 +648,21 @@ pub fn is_boundary_record(db: &mut Db, ty: &Ty) -> bool {
 /// [`emit_option_reg_flatten`] handles: a SCALAR (`abi_val_type`), a `Bytes` leaf, a `tuple` of scalars/`Bytes`,
 /// or a `record` of scalars/`Bytes`. A non-option `ty` yields `false` (no payload). Shared by the top-level
 /// option-ARG gate + the option-ELEMENT-of-a-tuple gate, so they stay in lockstep with the marshal.
-fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
-    option_payload_ty(db, ty).is_some_and(|p| {
-        abi_val_type(&p).is_some()
-            || matches!(p, Ty::Bytes)
-            || matches!(p.strip_nominal(), Ty::Tuple(es)
-            if !es.is_empty()
-                && es.iter().all(|e| {
-                    abi_val_type(e).is_some() || matches!(e.strip_nominal(), Ty::Bytes)
-                }))
-            || matches!(p.strip_nominal(), Ty::Record(sub)
-            if !sub.is_empty()
-                && sub.values().all(|f| {
-                    abi_val_type(f).is_some() || matches!(f.strip_nominal(), Ty::Bytes)
-                }))
-    })
+pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
+    let Some(p) = option_payload_ty(db, ty) else {
+        return false;
+    };
+    abi_val_type(&p).is_some()
+        || matches!(p, Ty::Bytes)
+        || matches!(p.strip_nominal(), Ty::Tuple(es)
+        if !es.is_empty()
+            && es.iter().all(|e| {
+                abi_val_type(e).is_some() || matches!(e.strip_nominal(), Ty::Bytes)
+            }))
+        // a `record` payload crosses iff EVERY field crosses at the boundary ([`is_boundary_record`] /
+        // `field_boundary_abi`) — the same admit set the direct record ARG uses, so an `option<record>`
+        // accepts a `list`/nested-record/tuple field exactly where a bare record ARG does.
+        || is_boundary_record(db, p.strip_nominal())
 }
 
 fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
@@ -1410,24 +1410,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     // an `option<record>` / a nested/byte-leaf tuple payload is a later increment (leaves
                     // `params` short → declined). Checked BEFORE the scalar `_` arm (a Sum has no `abi_val_type`,
                     // so `_` would decline).
-                    _ if !peer_bound
-                        && option_payload_ty(db, &at).is_some_and(|p| {
-                            abi_val_type(&p).is_some()
-                                || matches!(p, Ty::Bytes)
-                                || matches!(p.strip_nominal(), Ty::Tuple(es)
-                                    if !es.is_empty()
-                                        && es.iter().all(|e| {
-                                            abi_val_type(e).is_some()
-                                                || matches!(e.strip_nominal(), Ty::Bytes)
-                                        }))
-                                || matches!(p.strip_nominal(), Ty::Record(sub)
-                                    if !sub.is_empty()
-                                        && sub.values().all(|f| {
-                                            abi_val_type(f).is_some()
-                                                || matches!(f.strip_nominal(), Ty::Bytes)
-                                        }))
-                        }) =>
-                    {
+                    _ if !peer_bound && option_arg_crosses(db, &at) => {
                         let payload = option_payload_ty(db, &at).unwrap();
                         let abi = if let Some(pv) = abi_val_type(&payload) {
                             RecordFieldAbi::Scalar(pv)
@@ -1445,27 +1428,27 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                 .collect();
                             RecordFieldAbi::Tuple(abis)
                         } else {
-                            // option<record-of-scalars-or-bytes> → the payload's `RecordFieldAbi::Record(…)`,
-                            // each field a scalar OR `Bytes` by the guard. Built name-lex, then REORDERED to the
-                            // option payload WIT record's DECLARATION order (`reorder_record_fields_to_wit`) —
-                            // the emitted `(option (record …))` component type + its core flatten must be WIT
-                            // order to match `emit_option_reg_flatten`'s WIT-order marshal (a name-lex order
-                            // silently fails the component-linker structural match — a codegen defect the runtime
-                            // rejects).
+                            // option<record> → the payload's `RecordFieldAbi::Record(…)`, each field's abi from
+                            // the shared recursive `field_boundary_abi` (scalar / Bytes / nested record / list /
+                            // tuple / option / …) — the SAME builder the direct record ARG uses, so an
+                            // `option<record>` accepts a `list`/nested field exactly where a bare record ARG does.
+                            // Built name-lex, then REORDERED to the option payload WIT record's DECLARATION order
+                            // (`reorder_record_fields_to_wit`) — the emitted `(option (record …))` component type +
+                            // its core flatten must be WIT order to match `emit_option_reg_flatten`'s WIT-order
+                            // marshal (a name-lex order silently fails the component-linker structural match).
                             let Ty::Record(sub) = payload.strip_nominal() else {
                                 unreachable!("option payload is scalar/bytes/tuple/record by the guard")
                             };
                             let sub = sub.clone();
-                            let fields: Vec<(String, RecordFieldAbi)> = sub
-                                .iter()
-                                .map(|(sym, fty)| {
-                                    let abi = match abi_val_type(fty) {
-                                        Some(pv) => RecordFieldAbi::Scalar(pv),
-                                        None => RecordFieldAbi::Bytes, // Bytes field by the guard
-                                    };
-                                    (sym.name.to_string(), abi)
-                                })
-                                .collect();
+                            let mut fields: Vec<(String, RecordFieldAbi)> = Vec::with_capacity(sub.len());
+                            for (sym, fty) in sub.iter() {
+                                // Each field crosses by `option_arg_crosses` → `is_boundary_record`, so
+                                // `field_boundary_abi` returns `Some`; treat a `None` as unreachable rather than
+                                // silently dropping a field (which would desync the marshal from the abi).
+                                let abi = field_boundary_abi(db, fty)
+                                    .expect("option<record> field crosses by the arm guard");
+                                fields.push((sym.name.to_string(), abi));
+                            }
                             let fields = match wit_params.as_ref().and_then(|ps| ps.get(arg_i)) {
                                 Some(crate::wit_world::WitType::Option(pw)) => {
                                     reorder_record_fields_to_wit(fields, pw.as_ref())

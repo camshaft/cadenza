@@ -37,6 +37,20 @@ impl ValType {
             ValType::F64 => wasm_abi::CORE_F64,
         }
     }
+
+    /// The inverse of [`ValType::byte`] — the `ValType` a core valtype byte encodes, or `None` for a byte
+    /// that is not one of the four numeric core types. Used to read back the core slots a flattened
+    /// [`RecordFieldAbi`](crate::backend::wasm::host::RecordFieldAbi) run occupies (the marshal's capture
+    /// slots), keeping the byte flattening the single source of truth for the slot widths.
+    pub fn from_byte(b: u8) -> Option<ValType> {
+        match b {
+            wasm_abi::CORE_I64 => Some(ValType::I64),
+            wasm_abi::CORE_I32 => Some(ValType::I32),
+            wasm_abi::CORE_F32 => Some(ValType::F32),
+            wasm_abi::CORE_F64 => Some(ValType::F64),
+            _ => None,
+        }
+    }
 }
 
 /// The type of a wasm structured block (`if`/`block`/`loop`): it leaves no value (`Empty`) or leaves

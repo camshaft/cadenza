@@ -6424,3 +6424,60 @@ cases
       (export f)))
   (call f (: 0 Int64))
   (output #list((red unit) (green unit))))
+
+(case
+  "a TOP-LEVEL option<record{n: s64, xs: list<s64>}> host-op arg marshals the payload record (list field into mem) — Some"
+  (doc
+    "SHAPE 148 (v-wit-boundary) — a top-level `option<record{n: s64, xs: list<s64>}>` bare host-op arg: the
+           option<record> arm now accepts a record payload whose field is itself compound (a `list<s64>`), the
+           record twin of SHAPE 143's tuple-record-list-field at the OPTION-arg position. Three fixes compose:
+           (1) `option_arg_crosses` admits a record payload iff every field crosses (`is_boundary_record` /
+           `field_boundary_abi`) — the SAME admit set the direct record ARG uses — so the classifier, the
+           representability gate, the emit dispatch, and used-ops all widen in lockstep; (2) `emit_option_reg_
+           flatten`'s record branch derives its capture `slot_vts` from each field's flattened boundary ABI
+           (`field_boundary_abi` -> `flatten_record_field_abi`), so a `list<s64>` field is counted as its 2
+           `(ptr, count)` core slots — a `valtype_of`-based count treated the list handle as one i32 slot and
+           left a value on the operand stack (CDZ0910); (3) the option-arg cursor pre-scan reserves the running
+           scratch cursor for an `option<record-with-a-list-field>` (the list marshals its backing array into
+           shared `mem`), and the cursor-slot reservation now bumps the declared-locals top past the cursor slot
+           (a cursor-only reservation formerly excluded it, panicking `coalesce_func`'s remap). On Some the
+           marshal flattens `(disc=1, n: i64, xs_ptr: i32, xs_count: i32)` = 4 core slots (WIT declaration order),
+           `n` riding the operand stack beneath the list field's Block/Loop (an empty-type block is net-neutral).
+           run() builds Some({n: 7, xs: [5, 6]}), performs probe.push, returns the stub 55. A VALID component
+           that runs is the pin (a mis-counted/mis-ordered option<record> arg fails component validation).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= n (s64)) (= xs (list (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: n Int64) (: xs (List Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= n 7) (= xs #list(5 6)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<record{n: s64, xs: list<s64>}> host-op arg = None zero-fills the payload slots"
+  (doc
+    "SHAPE 149 (v-wit-boundary) — the NONE arm of SHAPE 148. An `option<record-with-a-list-field>` that is None
+           flattens to `(disc=0, n=0: i64, xs_ptr=0: i32, xs_count=0: i32)` — the marshal's else branch zero-fills
+           every payload field scratch slot at its OWN width (the `n` field's i64, the list field's two i32s), a
+           none `option` never reading its payload. The per-slot zero width is the pin: a broken zero-fill (wrong
+           slot count/width, or reading an absent payload) traps or mis-flattens. run() builds None, performs
+           probe.push, returns the stub 42. Complements SHAPE 148 (Some).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= n (s64)) (= xs (list (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: n Int64) (: xs (List Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push None)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
