@@ -10925,6 +10925,7 @@ pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive row
 pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
 pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
+pass	trt1 expression-position `?`s as `#tuple` elements hoist left-to-right and short-circuit
 pass	trm1 a NESTED tuple-rest re-match peels two layers, through an if-selected scrutinee, with a RUNTIME element
 pass	trm1 an export returns a two-element Set (one reachable cell, constructor-application render)
 pass	trm2 an EXACT-arity tuple leaves the rest binder EMPTY, and a rest-only pattern gathers the whole tuple
