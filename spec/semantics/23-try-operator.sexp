@@ -1010,11 +1010,18 @@
     "Idealistic TODO fence (corpus policy; breaker minimal pair 2026-09-01, GO from v-deferral):
      `(do (def h (try (half k))) (half h))` must compute exactly like the `(let ((h (try (half k)))))`
      twin — this file's header documents BOTH as the landed boundary-tail idiom, and the let twin
-     computes exactly with the same runtime user-fn operand. Today the do-def lowering handles only
-     a constant operand (codeless decline at compute.rs:1132, routed v-compiler-primitives).
+     computes exactly with the same runtime user-fn operand. Today this DECLINES CDZ0900 (`the ?/try
+     operator lowers only a constant operand`) — a FALSE decline, not a miscompile (try-operator lane).
+     RCA (2026-09-27, verified by lowering trace): the STANDALONE `quarter` body DOES lower via BRICK 3b
+     — the `(do (def x e?) …)` fold routes through `lower_let`, building the runtime `?`→`Core::MatchSum`
+     short-circuit — but when `quarter` is INLINED into `main` the copied MatchSum's SUCCESS arm re-lowers
+     the try-node body through the GENERIC `Resolved::Try` path (lower/compute.rs) to a `Poison`, because
+     the copy's body refs do not resolve to the `core_override` BRICK 3b installed on the copy's try init
+     (the inline-copy/override reference-resolution divergence). The `(let …)` twin escapes it (its refs
+     resolve to the override on the SAME node) and runs 2/-1/-1 NATIVELY (emit+cdz-run, confirmed).
      Derivation (matching the verified let twin): half halves evens else None; quarter chains two
      halvings through `?`: n=8 -> 2 (unwrap twice), n=6 -> -1 (3 is odd: inner fail), n=5 -> -1
-     (short-circuit at the first `?`). Auto-flips when the do-def runtime lowering lands.")
+     (short-circuit at the first `?`). Auto-flips when the inline-copy override-resolution is fixed.")
   (input
     (do
       (def (half (: k Int64)) (if (= (% k 2) 0) (Some (/ k 2)) (None)))
