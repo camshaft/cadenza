@@ -83,7 +83,10 @@ fn import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
 /// (`core_byte`); a `Bytes` → 2 slots `(ptr,len)`; a NESTED record → its fields' flattening inline
 /// (recursively — a nested record does NOT spill, its fields join the parent's flattened run). The count +
 /// order MUST match the canonical ABI flattening of the component `record` param, or the module is invalid.
-fn flatten_record_field_abi(f: &crate::backend::wasm::host::RecordFieldAbi, out: &mut Vec<u8>) {
+pub(crate) fn flatten_record_field_abi(
+    f: &crate::backend::wasm::host::RecordFieldAbi,
+    out: &mut Vec<u8>,
+) {
     use crate::backend::wasm::host::RecordFieldAbi;
     match f {
         RecordFieldAbi::Scalar(v) => out.push(v.core_byte()),

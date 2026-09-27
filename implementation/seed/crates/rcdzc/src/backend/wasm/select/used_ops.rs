@@ -1260,24 +1260,7 @@ pub(super) fn collect_used_ops_into_seen(
                     // the ops that BUILD the option value. Checked BEFORE the variant arm (option is excluded
                     // from `variant_scalar_payload_cases`), mirroring the emit-side dispatch order.
                     at if !peer_bound
-                        && crate::backend::wasm::host::option_payload_ty(db, &at).is_some_and(
-                            |p| {
-                                crate::backend::wasm::host::abi_val_type(&p).is_some()
-                                    || matches!(p, Ty::Bytes)
-                                    || matches!(p.strip_nominal(), Ty::Tuple(es)
-                                    if !es.is_empty()
-                                        && es.iter().all(|e| {
-                                            crate::backend::wasm::host::abi_val_type(e).is_some()
-                                                || matches!(e.strip_nominal(), Ty::Bytes)
-                                        }))
-                                    || matches!(p.strip_nominal(), Ty::Record(sub)
-                                    if !sub.is_empty()
-                                        && sub.values().all(|f| {
-                                            crate::backend::wasm::host::abi_val_type(f).is_some()
-                                                || matches!(f.strip_nominal(), Ty::Bytes)
-                                        }))
-                            },
-                        ) =>
+                        && crate::backend::wasm::host::option_arg_crosses(db, &at) =>
                     {
                         out.insert(OP_SUM_DISC);
                         out.insert(OP_SUM_PAYLOAD);
@@ -1308,20 +1291,14 @@ pub(super) fn collect_used_ops_into_seen(
                                         out.insert(read);
                                     }
                                 }
-                            } else if let Ty::Record(sub) = payload.strip_nominal() {
-                                // A `record-of-scalars-or-bytes` payload is decomposed by `emit_record_arg_
-                                // marshal` — `arr-get` per field + each SCALAR field's unbox op / each `Bytes`
-                                // field's `bytes-len`/`bytes-get` rope copy.
-                                out.insert(OP_ARR_GET);
-                                let ftys: Vec<Ty> = sub.values().cloned().collect();
-                                for fty in &ftys {
-                                    if matches!(fty.strip_nominal(), Ty::Bytes) {
-                                        out.insert(OP_BYTES_LEN);
-                                        out.insert(OP_BYTES_GET);
-                                    } else if let Ok(Some(read)) = get_op_ty(db, fty) {
-                                        out.insert(read);
-                                    }
-                                }
+                            } else if matches!(payload.strip_nominal(), Ty::Record(_)) {
+                                // A `record` payload is decomposed by `emit_record_arg_marshal` — declare exactly
+                                // its per-field ops via the shared recursive `collect_record_field_ops` (the
+                                // used_ops twin of `field_boundary_abi`/the marshal): `arr-get` per field + each
+                                // field's own ops for ANY field shape (a scalar's unbox, a `Bytes`/`list` field's
+                                // `bytes-*`/`vec-*` copy, a nested record/tuple's fields, …). A scalar/Bytes-only
+                                // manual list would drop a `list`/nested field's ops → an out-of-range func index.
+                                collect_record_field_ops(db, &payload, out);
                             }
                         }
                         collect_used_ops_into_seen(db, arg, out, visited);

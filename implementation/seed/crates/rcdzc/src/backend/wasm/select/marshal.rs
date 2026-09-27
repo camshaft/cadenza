@@ -1128,13 +1128,9 @@ pub(super) fn emit_option_reg_flatten(
     // scalar branch below: a record's `valtype_of` is `Some(I32)` (an opaque handle), so the scalar branch's
     // guard would else match it. The field guard is `abi_val_type OR Bytes` (a nested-compound field is a later
     // slice) — MUST agree with the classifier + gate, in lockstep.
-    if matches!(payload_ty.strip_nominal(), Ty::Record(sub)
-        if !sub.is_empty()
-            && sub.values().all(|f| crate::backend::wasm::host::abi_val_type(f).is_some()
-                || matches!(f.strip_nominal(), Ty::Bytes)))
-    {
+    if crate::backend::wasm::host::is_boundary_record(db, payload_ty.strip_nominal()) {
         let Ty::Record(sub) = payload_ty.strip_nominal() else {
-            unreachable!("record payload by the guard")
+            unreachable!("record payload by is_boundary_record")
         };
         let sub = sub.clone(); // release the borrow of `payload_ty` before the recursive marshal
         let Some(wit @ crate::wit_world::WitType::Record(wit_fields)) = payload_wit else {
@@ -1142,25 +1138,40 @@ pub(super) fn emit_option_reg_flatten(
                 "a top-level option<record> arg has no matching WIT record payload type (needed to order fields)",
             ));
         };
-        // Slot valtypes in WIT declaration order (matching `emit_record_arg_marshal`'s push order); each SCALAR
-        // field → 1 slot, each `Bytes` field → 2 `(ptr,len)` slots. The Bytes expansion is the byte-leaf
-        // slot-count pin (`valtype_of(Bytes)` is `Some(I32)`, a handle — a scalar-first count under-reserves and
-        // leaves a value on the stack, CDZ0910); check `Ty::Bytes` BEFORE `valtype_of`.
+        // Slot valtypes in WIT declaration order (the SAME order + per-field slot count `emit_record_arg_marshal`
+        // pushes). Each field's core slots are the flattening of its boundary ABI (`field_boundary_abi` →
+        // `flatten_record_field_abi`): a SCALAR → 1 slot, a `Bytes`/`list<T>` field → 2 `(ptr,len)`/`(ptr,count)`
+        // slots, a nested record/tuple → its fields' slots inline, etc. Deriving the widths from the SAME
+        // flattening the direct record arg uses keeps this capture in lockstep with the marshal for ANY field
+        // shape — a `valtype_of`-based count treats a list/handle field as one i32 slot and under-reserves,
+        // leaving a value on the stack (CDZ0910). The `wit_fields` iteration order IS the push order.
+        let wit_fields = wit_fields.clone();
         let names: Vec<String> = sub.keys().map(|s| s.name.to_string()).collect();
-        let mut slot_vts: Vec<ValType> = Vec::with_capacity(wit_fields.len());
-        for (fname, _) in wit_fields {
+        let mut slot_vts: Vec<ValType> = Vec::new();
+        for (fname, _) in &wit_fields {
             let Some(idx) = names.iter().position(|n| n == fname) else {
                 return Err(Reject::decline(
                     "a WIT record field is absent from the guest option payload record",
                 ));
             };
-            let fty = sub.values().nth(idx).expect("name-lex index in range");
-            if matches!(fty.strip_nominal(), Ty::Bytes) {
-                slot_vts.push(ValType::I32); // ptr
-                slot_vts.push(ValType::I32); // len
-            } else {
-                slot_vts.push(valtype_of(fty).ok_or_else(|| {
-                    Reject::decline("an option<record> payload field has no valtype")
+            let fty = sub
+                .values()
+                .nth(idx)
+                .expect("name-lex index in range")
+                .clone();
+            let abi =
+                crate::backend::wasm::host::field_boundary_abi(db, &fty).ok_or_else(|| {
+                    Reject::decline(
+                        "an option<record> payload field does not cross at the boundary",
+                    )
+                })?;
+            let mut bytes = Vec::new();
+            crate::backend::wasm::serialize::flatten_record_field_abi(&abi, &mut bytes);
+            for b in bytes {
+                slot_vts.push(ValType::from_byte(b).ok_or_else(|| {
+                    Reject::decline(
+                        "a flattened option<record> field slot is not a numeric core type",
+                    )
                 })?);
             }
         }
