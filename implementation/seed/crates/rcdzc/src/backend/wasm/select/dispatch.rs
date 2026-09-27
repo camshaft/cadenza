@@ -467,9 +467,27 @@ pub(super) fn emit_arm_body(
         return Ok(());
     }
     match tp {
-        TailPos::Tail(tl) => emit_tail(db, body, slots, base, high, scratch_ty, layout, out, tl),
-        TailPos::NonTail => emit(db, body, slots, base, high, scratch_ty, layout, out),
+        TailPos::Tail(tl) => emit_tail(db, body, slots, base, high, scratch_ty, layout, out, tl)?,
+        TailPos::NonTail => emit(db, body, slots, base, high, scratch_ty, layout, out)?,
     }
+    // MATCH-JOIN OWNERSHIP-EQUALIZE dup (v-memory-safety, node#6): this arm body is a bare ALIAS
+    // (`LocalRef`/`Param{B}`) of a divergent-ownership heap Match that is a length-op BORROW operand; the
+    // borrow-op gate planned a dup here (`matchjoin_dup_arms`) so the joined temp is uniformly OWNED and its
+    // forced post-borrow drop is sound on this arm. Emit an rc-aware `dup(B)` (`LocalGet B_slot; OP_DUP` —
+    // stack-neutral, pops the copy after rc++) AFTER the arm body's own emit. PEEK (`contains`, not `remove`):
+    // if two admitted alias arms ever SHARE a body StructId (the compiler shares nodes across arms, core.rs:1054),
+    // consume-once would dup only the first-emitted arm and the second's forced post-borrow drop would
+    // double-free — `contains` dups BOTH (each path net-zero); a stray dup on a hypothetical re-emit is a LEAK
+    // not a UAF (leak-over-UAF; v-core-opt RED-review). Net-zero on B (dup +1 balances the single post-borrow
+    // drop -1), so B's own reclaim is untouched. Mirror of the FIX-A `Core::If` arm-dup (emit.rs).
+    if out.matchjoin_dup_arms.contains(&body)
+        && let Core::LocalRef { binder } | Core::Param { binder } = core_of(db, body)
+        && let Some(&bslot) = slots.get(&binder)
+    {
+        out.push(Lir::LocalGet(bslot));
+        out.push(Lir::CallImport(OP_DUP));
+    }
+    Ok(())
 }
 
 /// Emit a runtime LIST match's arms as a length-dispatch `if`-chain, each ARM BODY at [`TailPos`] `tail`.

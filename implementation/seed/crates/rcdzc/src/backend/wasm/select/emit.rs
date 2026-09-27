@@ -83,6 +83,70 @@ fn ifjoin_arm_dead(
     true
 }
 
+/// MATCH-JOIN OWNERSHIP-EQUALIZE detector (v-memory-safety co-design, node#6; the `Core::Match` analogue of
+/// the FIX-A `Core::If` ownership-equalize). When a heap `Core::Match` is a BORROW operand of a length-op
+/// (`Core::BytesLen`), its arm-blind ownership join (`heap_operand_ownership` → `join_arm_ownership`) reads
+/// `Borrowed` the moment ONE arm is a bare alias (a `LocalRef`/`Param`), which SUPPRESSES the borrow-op's
+/// post-borrow owned-operand drop → an OWNED-FRESH sibling arm's allocation LEAKS (node#6 = the mode-2
+/// `String.concat`). This detects the DIVERGENT-OWNERSHIP case that is safe to equalize. Admit iff EVERY arm
+/// is one of: (i) OWNED-FRESH (`heap_operand_ownership==Owned`); (ii) a bare-ALIAS `LocalRef`/`Param{B}` of an
+/// OWNED+LIVE-AFTER binder `B`, dup-safe iff `keep_scope_drop_despite_body_escape(fn_body, B, dup_sites)` (my
+/// c2236 predicate: TRUE = arm-result alias re-borrowed post-body = B has its own surviving reclaim; FALSE = a
+/// real transfer, e.g. #8976 / the src-not-live-after DFBAR → NOT admitted); or (iii) a WHITELISTED STATIC
+/// literal (`returns_immortal_singleton` or a `ConstStr`/`ConstBytes` — a POSITIVE whitelist, never a fallback:
+/// a borrowed VIEW arm must NOT read as static, else the forced drop double-frees its source). AND there is
+/// ≥1 owned-fresh arm AND ≥1 dup-safe-alias arm (genuinely divergent; a uniform match is unaffected).
+/// Returns the bare-alias arm-BODY ids to `dup` (so the joined temp becomes uniformly OWNED and the
+/// borrow-op's forced post-borrow drop is sound on every path — net-zero on `B`). ANY unclassifiable arm →
+/// `None` (conservative leak, never a guess). The dup is emitted at [`emit_arm_body`] (keyed by body id);
+/// the caller sets `reclaim=true`. LOAD-BEARING: force-reclaim ⟺ every non-owned-fresh arm dup'd/static.
+fn divergent_match_borrow_dupable(
+    db: &mut Db,
+    operand: StructId,
+    slots: &HashMap<StructId, u32>,
+    fn_body: Option<StructId>,
+    dup_sites: &HashSet<StructId>,
+) -> Option<Vec<StructId>> {
+    let Core::Match { arms, .. } = core_of(db, operand) else {
+        return None;
+    };
+    let fn_body = fn_body?;
+    let mut alias_ids: Vec<StructId> = Vec::new();
+    let mut has_owned_fresh = false;
+    for a in arms.iter() {
+        let body = a.body;
+        if matches!(heap_operand_ownership(db, body), Ok(HandleOwnership::Owned)) {
+            has_owned_fresh = true;
+            continue;
+        }
+        if let Core::LocalRef { binder } | Core::Param { binder } = core_of(db, body) {
+            // Dup-safe ⟺ B is OWNED+LIVE-AFTER (has its own surviving reclaim so the dup+forced-drop is
+            // net-zero on B) AND B has a materialized slot to `LocalGet` at the arm. Otherwise (a transfer,
+            // or no slot) → conservative decline (leak-over-UAF).
+            if slots.contains_key(&binder)
+                && keep_scope_drop_despite_body_escape(db, fn_body, binder, dup_sites)
+            {
+                alias_ids.push(body);
+                continue;
+            }
+            return None;
+        }
+        // POSITIVE whitelist for a drop-safe static arm (immortal singleton / Const producer). NOT a
+        // catch-all: a borrowed-view arm (SumPayload/Proj/StrAt/SumExpect) is NOT static → decline.
+        if returns_immortal_singleton(db, body)
+            || matches!(core_of(db, body), Core::ConstStr(_) | Core::ConstBytes(_))
+        {
+            continue;
+        }
+        return None;
+    }
+    if has_owned_fresh && !alias_ids.is_empty() {
+        Some(alias_ids)
+    } else {
+        None
+    }
+}
+
 /// NESTED IF-JOIN per-arm drop planner (v-memory-safety, join-liveness aware). Walk the If-subtree at
 /// `node` and, for the `slot`'s handle (alias set = the binding ∪ the bare ref its value materializes — a
 /// runtime bin-match scrutinee's `Let{(inner, Param(p))}`, whose return arms reference `Param(p)` directly
@@ -1091,6 +1155,25 @@ pub(super) fn emit(
                 core_of(db, operand),
                 Core::Param { .. } | Core::LocalRef { .. }
             ) && out.dup_sites.contains(&operand);
+            // MATCH-JOIN OWNERSHIP-EQUALIZE (node#6): a divergent-ownership heap Match borrow-operand whose
+            // arm-blind join reads Borrowed (an alias arm) would leak its owned-fresh arm. Detect the
+            // dup-safe divergent case, plan the per-arm dups (emitted at emit_arm_body), and FORCE reclaim so
+            // the post-borrow owned-operand drop below fires (sound on every arm once equalized). Runs BEFORE
+            // the reclaim decision + BEFORE the operand emit so the arm-dup plan is in place when the Match's
+            // arms emit. keep_scope's scope = out.fn_body (no enclosing let for the inlined match result).
+            let matchjoin_equalize = match divergent_match_borrow_dupable(
+                db,
+                operand,
+                slots,
+                out.fn_body,
+                &out.dup_sites,
+            ) {
+                Some(ids) => {
+                    out.matchjoin_dup_arms.extend(ids);
+                    true
+                }
+                None => false,
+            };
             let reclaim =
                 matches!(
                     heap_operand_ownership(db, operand),
@@ -1098,7 +1181,8 @@ pub(super) fn emit(
                 ) || owned_proj_child_dupd(db, operand, slots, &out.sumexpect_shell_reclaim)
                     || out.sumexpect_view_reclaim.contains(&operand)
                     || child_dup_borrowed_view
-                    || b2_dup_borrowed_binder;
+                    || b2_dup_borrowed_binder
+                    || matchjoin_equalize;
             if reclaim {
                 let bytes_slot = base;
                 *high = (*high).max(bytes_slot + 1);

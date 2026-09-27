@@ -189,6 +189,8 @@ pub struct Emit {
     /// self-keyed row-op materialize-borrow the gate protects, breaker #45). Populated + consumed within the
     /// same `Core::Let` handler (a binder is here iff `ifjoin_arm_dups` got a plan for its value-If).
     ifjoin_forced_drops: HashSet<StructId>,
+    /// node#6 match-join equalize dup set (mechanism: [`divergent_match_borrow_dupable`]).
+    matchjoin_dup_arms: HashSet<StructId>,
     /// 05:18721 SURPLUS keep-alive sites: the SUBSET of `dup_sites` occurrences (`Core::LocalRef`/`Core::Param`)
     /// whose retain `dup` is PROVABLY REDUNDANT and may be skipped — the narrowed replacement for the too-broad
     /// `body_is_boundary_owned`-alone trial gate that caused 159 corpus UAFs. An occurrence of binder `b` is
