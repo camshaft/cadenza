@@ -3738,6 +3738,22 @@ fn fold_ctor_match_through_lets(db: &mut Db, node: StructId) -> Option<StructId>
         let bindings = parts[0];
         let body = parts[1];
         let folded_body = fold_ctor_match_through_lets(db, body)?;
+        // RE-BIND the folded body's references to THESE binders before the single-use inline. The only
+        // caller — block (c) of [`reduce_arm_deferred_resume`] — `forget_subtree`s the unfolded node (so
+        // `fold_ctor_match`'s scrutinee-identity gate re-resolves against the copy), and `fold_ctor_match`
+        // then DETACHES the folded arm body from this `let`. Both drop the folded body's resolution to this
+        // `let`'s binders, so the resolution-keyed `count_param_refs`/`beta_reduce` below would see ZERO refs
+        // and DROP a binding WITHOUT substituting it — orphaning the bound name (the recpq-base
+        // continuation-box `kb`, left a bare atom the downstream pop-fold cannot resolve → a spurious
+        // CDZ0907 decline of the recursive-pqueue base-arm case). Re-wrapping the folded body under the
+        // unchanged bindings and re-resolving the scope re-binds those refs, so the inline substitutes for
+        // real. (No-op when the refs already resolve; this only repairs the forgotten-resolution case.)
+        {
+            let let_head = db.push_name("let");
+            let rewrapped = db.push_list(vec![let_head, bindings, folded_body]);
+            crate::resolve::forget_subtree(db, rewrapped);
+            crate::resolve::resolve_subtree(db, rewrapped);
+        }
         // Try to inline each single-use binding into the folded body.
         if let Struct::List(pairs) = db.ast.get(bindings).clone() {
             let mut subst: HashMap<StructId, StructId> = HashMap::default();
@@ -3745,9 +3761,20 @@ fn fold_ctor_match_through_lets(db: &mut Db, node: StructId) -> Option<StructId>
             for &pair in &pairs {
                 if let Struct::List(kv) = db.ast.get(pair).clone()
                     && kv.len() == 2
-                    && count_param_refs(db, folded_body, kv[0]) <= 1
+                    // Count refs against BOTH the binding NAME (`kv[0]`) and its VALUE (`kv[1]`): a `let`-body
+                    // reference resolves (via `resolved_of`) to a `Ref` reaching the bound VALUE node, NOT the
+                    // name occurrence, so a name-only count reports 0 for a genuinely-referenced binding — the
+                    // recpq-base bug where the single use of the continuation-box `kb` was missed, the binding
+                    // dropped, and the name left orphaned. A given reference resolves to one node, so summing
+                    // the two counts does not double-count.
+                    && count_param_refs(db, folded_body, kv[0])
+                        + count_param_refs(db, folded_body, kv[1])
+                        <= 1
                 {
+                    // Substitute for the reference however it resolves: `kv[0] -> kv[1]` (a name-binder ref) and
+                    // `kv[1] -> kv[1]` (a ref reaching the value node) both yield the bound value inlined.
                     subst.insert(kv[0], kv[1]);
+                    subst.insert(kv[1], kv[1]);
                 } else {
                     kept.push(pair);
                 }
