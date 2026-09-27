@@ -216,10 +216,20 @@ pub(super) fn param_field_rebuild(
         // lifts through the same throwaway-`next_local` field cell-lift the top-level `list<option<scalar>>`
         // param (lpo1) uses.
         Ty::List(elem) => {
-            // A `list<flags>` (or an element CONTAINING a flags) would be read by the guest-only
-            // `list_scalar_elem` with the record-of-bools layout, but the WIT element is a PACKED flags bitset —
-            // a wrong-layout miscompile. Decline (WIT-aware) until the list-element reader learns the flags
-            // bitset unpack (a later slice).
+            // A `list<flags>` FIELD: the WIT element is a PACKED bitset while the guest models it as a
+            // record-of-bools, so the guest-only `list_scalar_elem` would misread it. Lift each element via the
+            // WIT-aware `list_flags_elem` (needs no fresh locals, so the field cell-lift's throwaway `next_local`
+            // suffices — like the compound/sum element branches). Only a DIRECTLY-flags element is supported;
+            // flags nested DEEPER (`list<option<flags>>`) still declines (the sum/nested readers do not yet
+            // unpack a flags leaf — a later slice).
+            if let WitType::List(inner) = wty
+                && let WitType::Flags(labels) = inner.as_ref()
+            {
+                let le = list_flags_elem(elem, labels)?;
+                param_vts.push(ValType::I32.byte());
+                param_vts.push(ValType::I32.byte());
+                return Some(FieldRebuild::ListLeaf(le));
+            }
             if matches!(wty, WitType::List(inner) if crate::wit_world::wit_contains_flags(inner)) {
                 return None;
             }

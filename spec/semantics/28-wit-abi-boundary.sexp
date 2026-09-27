@@ -5628,10 +5628,9 @@ cases
            `canon_write_of` recurses WIT-aware into each element (CanonWrite::Flags), packing it into the
            element's canonical flags bitset at the list element stride. Guest returns
            [(read=T,write=F,execute=T), (read=F,write=T,execute=F)], rendering `#list((flags read execute)
-           (flags write))`. NOTE: the list<flags> PARAM direction is DECLINED for now (the guest-only
-           list-element reader would misread the packed bitset as a 3-field record — a wrong-layout miscompile,
-           guarded by `wit_contains_flags`); its WIT-aware element unpack is a later slice. The result direction
-           works because the canonical WRITER threads the WIT element type. `live-objects 0`.")
+           (flags write))`. The result direction works because the canonical WRITER threads the WIT element type;
+           the list<flags> PARAM direction (whose element READER must unpack the packed bitset WIT-awarely) is
+           SHAPE 119. `live-objects 0`.")
   (wit-world
     (world w (export iface (member g (func (result (list (flags read write execute))))))))
   (component-name "cadenza:demo/iface")
@@ -5643,4 +5642,32 @@ cases
       (export g)))
   (call g)
   (output #list((flags read execute) (flags write)))
+  (live-objects 0))
+
+(case
+  "a WIT list<flags> PARAM unpacks each element's packed bitset into an Option of record-of-bools"
+  (doc
+    "SHAPE 119 — a WIT `list<flags{read,write,execute}>` entry PARAM: the READER twin of SHAPE 118. Each
+           element is a PACKED bitset at the list-element stride (canonical flags width), while the guest models
+           `flags` as `record{read,write,execute}` of bools. The guest-only list-element reader
+           (`list_scalar_elem`) would misread the packed byte as a 3-field record — a wrong-layout miscompile —
+           so the WIT-aware `list_flags_elem` builds each element's record-of-bools cell (`arr-alloc`/`box-bool`,
+           bit i -> the i-th declared label, matched by name), the list twin of the top-level flags param
+           (SHAPE 113). Borrow-only 0-leak lift (the wrapper drops the vec after the call). Guest perms(xs) =
+           100*List.len(xs) + bitsum(xs[1]) — reading ELEMENT 1 (not 0) proves the per-element stride + bitset
+           unpack: [(read,write),(execute)] -> 100*2 + execute(4) = 204; a broken stride or a bitset misread as a
+           record would return a different value. `live-objects 0`.")
+  (wit-world
+    (world w (export iface (member perms (func (param xs (list (flags read write execute))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (perms (: xs (List (Record (: read Bool) (: write Bool) (: execute Bool)))))
+        (+ (* 100 (List.len xs))
+           (match (List.at xs 1)
+             ((Option.Some p) (+ (if (. p read) 1 0) (+ (if (. p write) 2 0) (if (. p execute) 4 0))))
+             ((Option.None) -1))))
+      (export perms)))
+  (call perms (: #list((flags read write) (flags execute)) (List (Record (: read Bool) (: write Bool) (: execute Bool)))))
+  (output (: 204 Int64))
   (live-objects 0))
