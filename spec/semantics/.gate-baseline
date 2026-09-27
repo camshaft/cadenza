@@ -3745,6 +3745,7 @@ pass	a multi-shot continuation spanning a host call is rejected, never doubling 
 pass	a multi-shot ctl arm reading an enclosing param with NO let frame folds (mv no-let control)
 pass	a multi-shot ctl arm whose continuation reads an ENCLOSING-fn param folds
 pass	a multi-shot handle SEEDED by the enclosing param folds with a let-bound body
+pass	a multi-shot whose host call completed before the perform folds by hoisting the host prefix out of the per-resume splice
 pass	a multi-site arm folds while the handle BODY reads an enclosing binding (the re-anchored free var)
 pass	a multi-site arm's resume value routes through a pure helper call
 pass	a multi-step kernel derivation composes several primitive rules into one theorem
@@ -4128,6 +4129,7 @@ pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail conditional abort hoists out of a strict operand and folds per branch
 pass	a non-tail conditional abort in the untaken branch folds to the pure sibling sum
 pass	a non-tail cross-function conditional abort declines cleanly
+pass	a non-tail inner handle with a ONE-SHOT foreign perform sibling folds — the foreign op routes to the enclosing handler
 pass	a non-tail list fold over a large runtime list is accumulator-transformed to constant stack
 pass	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold
 pass	a non-tail recursion with a fallible read in its base arm composes
@@ -5306,6 +5308,7 @@ pass	a runtime width NESTED in a compound annotation is rejected
 pass	a runtime wrap never traps at the widest input boundary and reads the low byte
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime zero denominator PRODUCED BY ARITHMETIC traps at construction
+pass	a runtime-DISC `?` inside a stored closure applies per-call
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
 pass	a runtime-assembled tree round-trips equal to its quoted twin
 pass	a runtime-branched tuple returned from a callee is projected in the caller
@@ -5918,6 +5921,7 @@ pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
 pass	a try early-return unwinds a handle with a list seed and a match-shaped arm
+pass	a try over a mutual-recursive callee short-circuits out of the converted loop
 pass	a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm
 pass	a tuple = with differing const-divisor Bool elements compares unequal
 pass	a tuple ARGUMENT with one too many elements carries a delete fix on the trailing element
@@ -10414,6 +10418,7 @@ pass	take-while where every element satisfies the predicate keeps the whole run
 pass	take-while where the first element fails the predicate returns the empty run
 pass	tax1 PROGRESSIVE tax brackets with a seed-shaped edge — assess splits the income into three bands via chained match binders over clamped compounds (ten twenty and thirty percent truncating), accumulating into the audit total, and the WIDER bracket taxes every income LESS while the sub-bracket income taxes to zero on both
 pass	tb1 a def RETURNS a tuple of two draws — the caller destructures the multi-value result of a performing helper
+pass	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)
 pass	tdr1 a RESERVOIR gate with a ratcheting threshold — inflow raises the level, gate releases HALF truncating only above the threshold (which ratchets up by one after every release), and the LOWER starting threshold releases on the very first gate while the higher one holds, the runs re-converging on the final held gate
 pass	tel1 a TELESCOPE tracker with a slew-rate limit — track names a target locking within five degrees (else a nine-hundred miss with the gap's low digits), slew moves the azimuth toward the target by at most SEVEN degrees (a two-sided inline clamp of the signed difference) tagging an exact arrival, the read packs azimuth lock and arrival, and one seed starts within locking range so every row down to the read disagrees with the far-parked run
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
@@ -10919,6 +10924,7 @@ pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive rows each route distinctly
 pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
+pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
 pass	trm1 a NESTED tuple-rest re-match peels two layers, through an if-selected scrutinee, with a RUNTIME element
 pass	trm1 an export returns a two-element Set (one reachable cell, constructor-application render)
 pass	trm2 an EXACT-arity tuple leaves the rest binder EMPTY, and a rest-only pattern gathers the whole tuple
@@ -10926,6 +10932,8 @@ pass	trm2 an export returns a one-entry Map (one reachable cell)
 pass	trm3 an export returns a BigInt built from the scalar param (one reachable cell)
 pass	trm4 an export returns an exact Rational from the scalar param (three reachable cells)
 pass	trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepening negative count), push passes and relocks or bounces (bounces answer their own negative count), the seed decides whether the gate STARTS unlocked, and the first push diverges the runs from the very first row
+pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
+pass	trr2 an expression-position `?` in a TAIL if-arm hoists into the arm and short-circuits
 pass	true is greater than false
 pass	true is not less than false
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
@@ -11046,6 +11054,8 @@ pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two literal list elements in one arm conjoin — both must match
 pass	two literal-payload arms of the same ctor variant each fire on their own literal
+pass	two map list elements FALL THROUGH when the second element's key is absent
+pass	two map list elements in one arm each refine on a key
 pass	two maps of different sizes are unequal, not a type error
 pass	two maps with different keys are unequal, not a type error
 pass	two module exports are selected by a runtime branch and applied as values
@@ -11342,19 +11352,15 @@ todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environmen
 todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
 todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
 todo	a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read
-pass	a multi-shot whose host call completed before the perform folds by hoisting the host prefix out of the per-resume splice
-pass	a non-tail inner handle with a ONE-SHOT foreign perform sibling folds — the foreign op routes to the enclosing handler
 todo	a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered
 todo	a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
-pass	a runtime-DISC `?` inside a stored closure applies per-call
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
 todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
 todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
 todo	a symbol interned from a DECOMPOSED (NFD) String.from-bytes canonicalizes to NFC — equals its composed twin
-pass	a try over a mutual-recursive callee short-circuits out of the converted loop
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 todo	an entrypoint delegating two distinct host effects performs both and returns its computed value
@@ -11380,14 +11386,8 @@ todo	prr1 a RUNTIME print-then-read Ast round-trip declines pending runtime Ast.
 todo	sbn2 a runtime utf8 CONSTRUCTION segment declines pending the encode increment (utf8 is pattern-only)
 todo	srm2 a NESTED set-rest re-match peels two residual layers (should-work: the residual is a first-class set)
 todo	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
-pass	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)
 todo	the try spelling of the performing bin-parse folds once try-under-effects lands
-pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
-pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
-pass	trr2 an expression-position `?` in a TAIL if-arm hoists into the arm and short-circuits
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	two length-prefixed dependent frames chain at runtime
-pass	two map list elements in one arm each refine on a key
-pass	two map list elements FALL THROUGH when the second element's key is absent
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
