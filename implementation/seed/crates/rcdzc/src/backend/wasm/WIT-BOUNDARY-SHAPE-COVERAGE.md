@@ -145,8 +145,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   the effect name with no imposed world (byte-identical). WIT-dump verified (`import cadenza:probe/probe`).
   REMAINING: the 5 resource-escape assembler sites (`assemble_host_runtime_resource*`) still name by effect —
   fold this same helper in when B2 wires compound results there.
-- **[emit]** multi-payload variant case (≥2 payloads); mixed int↔float / f32↔f64 single-payload
-  variant join — see `variant_scalar_payload_cases` / `variant_liftable_payload_cases`.
+- **[emit]** a multi-payload variant case (≥2 payloads) RESULT is ✅ **DONE — SHAPE 122**: a guest ctor with
+  ≥2 payloads (`(type V (Pair Int64 Int64) …)`) crosses as a WIT variant case with a `tuple<…>` payload
+  (`canon_write_of`'s Variant arm resolves the case payload via the ctor + `payload_ty_at_instantiation`, which
+  yields the tuple of the ctor's payload types, then writes it through the Tuple arm). REMAINING: the multi-
+  payload case at the ARG (register-flatten) position; and a mixed int↔float / f32↔f64 single-payload variant
+  join — see `variant_scalar_payload_cases` / `variant_liftable_payload_cases`.
 - **[emit]** compound variant payload at the ARG (register-flatten) position; compound-payload
   variant list-element.
 - **[emit, ARG-side]** `option<compound>` host-op record-ARG field / list element (only `option<scalar>`/`option<bytes>` marshalable). The RESULT side is DONE — SHAPE 66; this is the marshal side (`field_boundary_abi`/`list_elem_marshalable`).
