@@ -1374,6 +1374,24 @@ pub(super) fn collect_used_ops_into_seen(
                                 // `bytes-*`/`vec-*` copy, a nested record/tuple's fields, …). A scalar/Bytes-only
                                 // manual list would drop a `list`/nested field's ops → an out-of-range func index.
                                 collect_record_field_ops(db, &payload, out);
+                            } else if let Some(cases) =
+                                crate::backend::wasm::host::variant_scalar_payload_cases(
+                                    db, &payload,
+                                )
+                            {
+                                // A `variant` payload is flattened by `emit_variant_reg_flatten`: `sum-disc`, and
+                                // on a payload case `sum-payload` + the payload scalar's unbox op — the SAME ops
+                                // the bare-variant ARG / a record variant FIELD declares (mirrors the variant-arm
+                                // pattern in `collect_record_field_ops`).
+                                out.insert(OP_SUM_DISC);
+                                out.insert(OP_SUM_PAYLOAD);
+                                if let Some(pd) = cases.iter().position(|(_, p)| p.is_some())
+                                    && let Some(pty) =
+                                        variant_payload_ty_at(db, &payload, pd as u32)
+                                    && let Ok(Some(read)) = get_op_ty(db, &pty)
+                                {
+                                    out.insert(read);
+                                }
                             }
                         }
                         collect_used_ops_into_seen(db, arg, out, visited);

@@ -6923,3 +6923,56 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level option<variant> host-op arg crosses on the Some arm (variant flattened in the payload)"
+  (doc
+    "SHAPE 167 (v-wit-boundary) — a top-level `option<variant>` bare host-op ARGUMENT (probe.push :
+           func(option<variant{go, stop(s64)}>) -> s64), the Some arm. The option payload is a scalar-payload
+           `variant` — `option_arg_crosses` now admits it, and `emit_option_reg_flatten`'s variant branch
+           flattens the value-heap option to `(opt-disc:i32, var-disc:i32, payload-join)` = the option disc +
+           the payload variant's own `(disc, join)` flatten (via the shared `emit_variant_reg_flatten`, the SAME
+           helper the bare-variant ARG (SHAPE 93) / a record variant FIELD (SHAPE 166) uses). The classifier
+           builds `RecordFieldAbi::Option(Variant(cases))` via the shared `field_boundary_abi` Variant arm;
+           `flatten_record_field_abi` already flattens `Option(Variant)` to the 3 core slots, and the
+           `(option (variant …))` component type builds from the world's WIT. Widened in lockstep:
+           `option_arg_crosses`, the classifier option arm, `emit_option_reg_flatten`, and `collect_used_ops`'s
+           option-payload dispatch (declares the variant's `sum-disc`/`sum-payload` + payload unbox). run() emits
+           Some(Stop(7)) and performs probe.push; a VALID component that runs is the pin (a wrong variant flatten
+           traps at the host's option.lift). None arm = SHAPE 168.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (variant (go) (stop (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (Option Sig) Int64)))
+      (def (run) (host (probe) (probe.push (Some (Sig.Stop 7)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level option<variant> host-op arg crosses on the None arm (all slots zero)"
+  (doc
+    "SHAPE 168 (v-wit-boundary) — the None arm of SHAPE 167. A top-level `option<variant>` bare host-op arg that
+           is None flattens to `(0, 0, 0)` — the option disc 0 (WIT none) with both the variant-disc and the
+           payload-join slots zero-filled (a none option never reads its payload). Completes the `option<variant>`
+           bare-arg family (Some = SHAPE 167). run() performs probe.push None; the host stub returns 42.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (variant (go) (stop (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (Option Sig) Int64)))
+      (def (run) (host (probe) (probe.push None)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))

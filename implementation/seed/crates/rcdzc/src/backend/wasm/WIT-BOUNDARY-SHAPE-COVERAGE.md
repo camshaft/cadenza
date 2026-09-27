@@ -219,6 +219,16 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   result arg copies a rope into `mem`, so the host set routes to the `_mem` assembler; without it the host op lower
   was emitted memoryless → CDZ0910 "canonical option `memory` is required"). REMAINING: a `result<record,enum>` /
   `result<_, variant>` (`result_bytes_enum` requires a `list<u8>` Ok + a payloadless-enum Err).
+- **[emit, register-path] a top-level `option<variant>` host-op ARG — ✅ DONE (SHAPE 167/168).** The option
+  payload is a scalar-payload `variant`: `option_arg_crosses` now admits it, and `emit_option_reg_flatten`'s
+  variant branch flattens the value-heap option to `(opt-disc, var-disc, payload-join)` = the option disc + the
+  payload variant's own `(disc, join)` flatten via the shared `emit_variant_reg_flatten` (the SAME helper the
+  bare-variant ARG (SHAPE 93) / a record variant FIELD (SHAPE 166) uses); None zero-fills. The classifier builds
+  `RecordFieldAbi::Option(Variant(cases))` via the shared `field_boundary_abi` Variant arm;
+  `flatten_record_field_abi` already flattens `Option(Variant)` to the 3 core slots, and the `(option (variant …))`
+  component type builds from the world's WIT. Widened in LOCKSTEP: `option_arg_crosses` (shared with the
+  tuple-element-option gate), the classifier option arm, `emit_option_reg_flatten`, and `collect_used_ops`'s
+  option-payload dispatch. No cursor needed (a scalar-payload variant does not touch `mem`).
 - **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
   record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
   `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the
