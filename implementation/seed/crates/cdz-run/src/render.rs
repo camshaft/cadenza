@@ -234,7 +234,17 @@ fn build_val(b: &mut Builder, v: &Val, ty: Option<(&Arenas, StructId)>) -> Struc
             let u = unit_atom(b);
             b.list(vec![h, u])
         }
-        // An unhandled `Val` (Flags / Resource / …) — a debug fallback, as the old renderer did.
+        // A FLAGS value renders as `(flags <enabled-label>…)` — the SET of set labels, kebab-named (the same
+        // form `coerce_one`'s `Type::Flags` arm accepts, so a rendered flags result round-trips as an arg). An
+        // empty set renders `(flags)`. The subset twin of the `Val::Enum` `(<case> unit)` single-choice form.
+        Val::Flags(names) => {
+            let mut items = vec![name_atom(b, "flags")];
+            for n in names {
+                items.push(name_atom(b, n));
+            }
+            b.list(items)
+        }
+        // An unhandled `Val` (Resource / …) — a debug fallback, as the old renderer did.
         other => b.atom_leaf(Leaf::Str(Arc::from(format!("{other:?}").as_str()))),
     }
 }

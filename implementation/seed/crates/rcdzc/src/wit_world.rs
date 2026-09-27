@@ -355,8 +355,20 @@ pub fn wit_type_to_ty(db: &crate::db::Db, t: &WitType) -> Option<Ty> {
             };
             prelude_sum(db, "Result", vec![ok_ty, err_ty])?
         }
+        // WIT `flags { a, b, … }` is a PRODUCT — each label an independent on/off — so it models EXACTLY as a
+        // Cadenza record with one `bool` field per label (field name = label). No synthesized nominal decl is
+        // needed (unlike enum/variant): `record` already carries its identity structurally. The boundary rep is
+        // a single packed i32 bitset (bit i = the i-th declared label), NOT the record's natural per-field
+        // flattening — the flags-specific marshal maps bit i ⇄ the field named by declaration-order label i.
+        WitType::Flags(names) => {
+            let mut map = std::collections::BTreeMap::new();
+            for name in names {
+                map.insert(crate::resolved::Symbol::plain(name.as_str()), Ty::Bool);
+            }
+            Ty::Record(std::rc::Rc::new(map))
+        }
         // A nominal sum needs a SYNTHESIZED decl (Cadenza sums carry a decl identity) — a later increment.
-        WitType::Variant(_) | WitType::Enum(_) | WitType::Flags(_) => return None,
+        WitType::Variant(_) | WitType::Enum(_) => return None,
     })
 }
 
@@ -560,7 +572,20 @@ fn wit_type_to_type_expr_with_sums(
             let name = sums.get(&set)?;
             nm(ast, &name.clone())
         }
-        WitType::Flags(_) => return None,
+        // `flags { a, b, … }` is a PRODUCT of independent on/off labels, so it emits the SAME `(Record (: a
+        // Bool)…)` type expr its `wit_type_to_ty` maps to — one `Bool` field per label. Unlike enum/variant it
+        // needs no `sums` lookup (a record carries its identity structurally); the flags-specific boundary
+        // marshal maps the packed i32 bitset ⇄ this record's bool fields by declaration-order label name.
+        WitType::Flags(names) => {
+            let mut items = vec![nm(ast, "Record")];
+            for name in names {
+                let colon = nm(ast, ":");
+                let fname = nm(ast, name.as_str());
+                let ft = nm(ast, "Bool");
+                items.push(push_list(ast, vec![colon, fname, ft]));
+            }
+            push_list(ast, items)
+        }
     })
 }
 

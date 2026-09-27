@@ -4664,6 +4664,26 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
             };
             Val::Variant(case, payload)
         }
+        // A FLAGS argument (WIT `flags{…}` — a subset/bitset of independent on/off labels; the guest models it
+        // as a record-of-bools). The arg is the SET of ENABLED labels: `(flags read execute)` (a leading
+        // `flags` head is optional, so `(read execute)` works too) — an empty `(flags)` / `()` sets none. Each
+        // named label is validated against the declared flags; the boundary packs bit i per the label's
+        // declaration order. The subset twin of the `Type::Enum` arm (one choice → a set of choices).
+        Type::Flags(ft) => {
+            let mut parts = parse_tuple_fields(s).unwrap_or_default();
+            if parts.first().map(String::as_str) == Some("flags") {
+                parts.remove(0);
+            }
+            for label in &parts {
+                if !ft.names().any(|n| n == label) {
+                    return Err(anyhow!(
+                        "argument `{s}`: `{label}` is not a label of the flags (declared labels: {})",
+                        ft.names().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+            }
+            Val::Flags(parts)
+        }
         other => {
             return Err(anyhow!(
                 "argument `{s}`: compound parameter type {other:?} is not supported by cdz-run yet"
