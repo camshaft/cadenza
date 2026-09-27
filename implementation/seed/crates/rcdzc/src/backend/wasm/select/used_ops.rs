@@ -1177,10 +1177,11 @@ pub(super) fn collect_used_ops_into_seen(
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
                     // A top-level `tuple<…>` arg is decomposed by `emit_tuple_reg_flatten`: `arr-get` per element
-                    // + a SCALAR element's unbox op OR a `Bytes` element's `bytes-len`/`bytes-get` rope copy.
-                    // Declare them (else the marshal's `CallImport` resolves to u32::MAX → an invalid module),
-                    // then descend to collect the ops that BUILD the tuple value. Mirrors the emit-side dispatch
-                    // (a concrete `Ty::Tuple` arm).
+                    // + a SCALAR element's unbox op OR a `Bytes` element's `bytes-len`/`bytes-get` rope copy OR a
+                    // NESTED tuple element's `arr-get` + its inner scalars' unbox ops. Declare them (else the
+                    // marshal's `CallImport` resolves to u32::MAX → an invalid module), then descend to collect
+                    // the ops that BUILD the tuple value. Mirrors the emit-side dispatch (a concrete `Ty::Tuple`
+                    // arm).
                     Ty::Tuple(elems) if !peer_bound => {
                         let elems: Vec<Ty> = elems.iter().cloned().collect();
                         out.insert(OP_ARR_GET);
@@ -1192,6 +1193,14 @@ pub(super) fn collect_used_ops_into_seen(
                             if matches!(e.strip_nominal(), Ty::Bytes) {
                                 out.insert(OP_BYTES_LEN);
                                 out.insert(OP_BYTES_GET);
+                            } else if let Ty::Tuple(inner) = e.strip_nominal() {
+                                // A nested tuple element: `arr-get` (already inserted) + each inner scalar's op.
+                                let inner: Vec<Ty> = inner.iter().cloned().collect();
+                                for x in &inner {
+                                    if let Ok(Some(read)) = get_op_ty(db, x) {
+                                        out.insert(read);
+                                    }
+                                }
                             } else if let Ok(Some(read)) = get_op_ty(db, e) {
                                 out.insert(read);
                             }

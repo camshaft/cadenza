@@ -1338,8 +1338,35 @@ pub(super) fn emit_tuple_reg_flatten(
             out.push(Lir::LocalGet(len_slot));
             continue;
         }
+        // A NESTED tuple element (`tuple<…, tuple<…>, …>`): read its handle (`arr-get i`, borrows the outer
+        // tuple) and RECURSE — its elements flatten POSITIONALLY inline onto the operand stack, matching
+        // serialize's `RecordFieldAbi::Tuple` recursion + the component `tuple<tuple<…>>` type. No capture/disc:
+        // a tuple has no discriminant, so the inline pushes are already in the flatten order. `work_base + 1`
+        // gives the recursion a disjoint scratch region above `sub_slot`.
+        if matches!(ety.strip_nominal(), Ty::Tuple(_)) {
+            let sub_slot = work_base;
+            scratch_ty.insert(sub_slot, ValType::I32);
+            *high = (*high).max(work_base + 1);
+            out.push(Lir::LocalGet(tup_slot));
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::CallImport(OP_ARR_GET)); // [nested tuple handle] (borrows the outer tuple)
+            out.push(Lir::LocalSet(sub_slot));
+            emit_tuple_reg_flatten(
+                db,
+                sub_slot,
+                ety,
+                cursor,
+                work_base + 1,
+                high,
+                scratch_ty,
+                out,
+            )?;
+            continue;
+        }
         let read = get_op_ty(db, ety)?.ok_or_else(|| {
-            Reject::decline("a top-level tuple arg element is not a scalar/bytes this increment")
+            Reject::decline(
+                "a top-level tuple arg element is not a scalar/bytes/tuple this increment",
+            )
         })?;
         out.push(Lir::LocalGet(tup_slot));
         out.push(Lir::ConstI32(i as i32));
