@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(35);
+    let shape = c.variant(36);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -724,10 +724,23 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      `?`: value = n/4 for n≡0 mod 4 (both halvings unwrap), else -1 (an odd intermediate → None → the
         //      `?` short-circuits). Arg = `u` (0..60). Exercises the try-operator SHORT-CIRCUIT + the inline path —
         //      a NEW dimension (no prior `?`/try shape). Verified rust/wasm AGREE (8→2, 6→-1, 5→-1, 12→3).
-        _ => (
+        34 => (
             "(do (def (half (: k Int64)) (if (= (% k 2) 0) (Some (/ k 2)) (None))) (def (quarter (: k Int64)) (do (def h (try (half k))) (half h))) (def (main (: n Int64)) (match (quarter n) ((Some v) v) ((None _u) -1))) (export main))"
                 .to_string(),
             vec![u.to_string()],
+        ),
+        // 35 — trr1 EXPRESSION-POSITION `?` entry param (the #9859 BRICK-3-slice-1 corpus witness). An
+        //      expression-position `?`/try — `(Ok (+ 1 (try r)))`, NOT a binding tail — in a fallible-boundary
+        //      fn `step` INLINED into `main`. #9859 hoists `C[(try e)]` -> `(let ((x (try e))) C[x])` so it rides
+        //      the inline-safe lower_let runtime-`?`; it previously DECLINED CDZ0900. Result-typed (shape 34 is
+        //      Option-typed) + expression-position (shape 34 is do-def): the OTHER main `?` form. `?` UNWRAPS the
+        //      Ok (k>0 -> Ok 41 -> 42) and PROPAGATES the Err (k<=0 -> Err -> step short-circuits -> main -1).
+        //      Arg = a (a>0 -> 42, a<=0 -> -1). Exercises the expression-position hoist + Result short-circuit +
+        //      inline path. Verified rust/wasm AGREE (1->42, 0->-1, 5->42).
+        _ => (
+            "(do (def (step (: r (Result Int64 String))) (: (Ok (+ 1 (try r))) (Result Int64 String))) (def (main (: k Int64)) (match (step (if (> k 0) (Ok 41) (Err \"nope\"))) ((Ok v) v) ((Err _s) -1))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
         ),
     };
     ExportParam { source, args }
@@ -6166,13 +6179,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main`.
-        let mut reached = [false; 35];
-        for seed in 0u64..2100 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main`.
+        let mut reached = [false; 36];
+        for seed in 0u64..2160 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(35) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-34 reuse e0/e1/e2/s0/u — no new read.)
+            // variant(36) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-35 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6232,6 +6245,13 @@ mod tests {
                 reached[18] = true; // shape 18 = #9714 rpp8/rpp9 nested-Tuple `f`
             } else if ep.source.contains("(: o (Option String))") {
                 reached[19] = true; // shape 19 = #9718/#9742 eos1 option<String> sum-entry-param `f`
+            } else if ep
+                .source
+                .contains("(def (step (: r (Result Int64 String)))")
+            {
+                reached[35] = true; // shape 35 = trr1 expression-position `?` entry-param `main` (#9859) —
+            // checked BEFORE shape 20 since its `step` source CONTAINS shape 20's
+            // `(: r (Result Int64 String))` marker (shape 20 is `(def (f (: r …`)
             } else if ep.source.contains("(: r (Result Int64 String))") {
                 reached[20] = true; // shape 20 = #9747 rpp21/22 result<Int64,String> two-payload-sum-entry-param `f`
             } else if ep.source.contains("(: o (Option Bytes))") {
@@ -6275,7 +6295,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all thirty-five export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all thirty-six export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
