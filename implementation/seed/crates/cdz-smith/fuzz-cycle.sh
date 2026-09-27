@@ -37,7 +37,9 @@
 #   CDZ_SMITH_DIFF_CAP    differential-sweep wall-clock backstop, s (default: fit under the tick after
 #                         the campaign — a KILL mid-sweep is safe, findings file incrementally to disk)
 #   CDZ_SMITH_CDZ         the `cdz` binary for the differential rust side (default: auto-discover)
-#   CDZ_SMITH_STORE       the value-heap runtime store for the differential wasm side (default: <root>/target/cadenza-store)
+#   CDZ_SMITH_STORE       the value-heap runtime store for the differential wasm side (default: NIX-CANONICAL —
+#                         `nix build .#store`, matching the cdz-stamped REQUIRED_RUNTIME_HASH; falls back to
+#                         <root>/target/cadenza-store if nix is unavailable. See the store-resolution block below.)
 #   CDZ_SMITH_OPT_COUNT   opt-invariance-sweep programs/cycle (default: 100; 0 disables the sweep)
 #   CDZ_SMITH_OPT_CAP     opt-invariance-sweep wall-clock backstop, s (default: 1/4 of the tick's
 #                         post-campaign budget — a KILL mid-sweep is safe)
@@ -154,6 +156,27 @@ else
       --timeout "$TIMEOUT_S" --findings "$FINDINGS"
 fi
 
+# ── NIX-CANONICAL store resolution (shared by all differential/opt/reclaim/effect sweeps) ────────
+# The wasm side runs each guest against a content-addressed runtime store. The `cdz` that COMPILES the
+# guests stamps the COMMITTED `REQUIRED_RUNTIME_HASH` (a pure compile-time constant, NOT per-shape — the
+# runtime import is `{iface}@0.0.0+{REQUIRED_RUNTIME_HASH}`) — i.e. the NIX runtime (e.g. 05hbD…), which the
+# corpus witnesses + every gate track. A NATIVE `cargo xtask build` store bakes an EPHEMERAL native runtime
+# hash (05ccG0W6…) that will NOT match, so a nix-stamped guest declines "runtime not in store" — a SILENT
+# HOLLOW (the shape maps Declined→Agree and pins nothing). So resolve the store NIX-CANONICAL by default
+# (v-nix 2026-09-27: `nix build .#store` = packages.store/componentStore; cheap when already realized), and
+# fall back to the native store only if nix is unavailable. `CDZ_SMITH_STORE` still overrides.
+if [ -n "$CDZ_SMITH_STORE" ]; then
+  RESOLVED_STORE="$CDZ_SMITH_STORE"
+else
+  RESOLVED_STORE="$( (cd "$ROOT" && timeout 180 nix build .#store --no-link --print-out-paths 2>/dev/null | tail -1) )"
+  if [ -z "$RESOLVED_STORE" ] || [ ! -d "$RESOLVED_STORE" ]; then
+    RESOLVED_STORE="$ROOT/target/cadenza-store"
+    log "store: nix .#store unavailable — falling back to native $RESOLVED_STORE (nix-stamped guests may decline runtime-not-in-store)"
+  else
+    log "store: nix-canonical $RESOLVED_STORE"
+  fi
+fi
+
 # ── differential-oracle sweep (SEPARATE, lower-cadence pass) ─────────────────────────────────────
 # After the crash/invalid-wasm campaign, run the DIFFERENTIAL oracle over a modest batch of seeds:
 # each program is run on BOTH backends (wasm in-process via cdz-run; rust by shelling `cdz run-rust`)
@@ -173,7 +196,7 @@ if [ "$DIFF_COUNT" -gt 0 ]; then
       [ -x "$cand" ] && { DIFF_CDZ="$cand"; break; }
     done
   fi
-  DIFF_STORE="${CDZ_SMITH_STORE:-$ROOT/target/cadenza-store}"
+  DIFF_STORE="$RESOLVED_STORE"
   if [ -z "$DIFF_CDZ" ] || [ ! -x "$DIFF_CDZ" ]; then
     log "differential: no cdz binary found (build \`cargo build --release --bin cdz\` or set CDZ_SMITH_CDZ); skipping sweep"
   elif [ ! -d "$DIFF_STORE" ]; then
@@ -242,7 +265,7 @@ fi
 # or the featured build fails.
 OPT_COUNT="${CDZ_SMITH_OPT_COUNT:-100}"
 if [ "$OPT_COUNT" -gt 0 ]; then
-  OPT_STORE="${CDZ_SMITH_STORE:-$ROOT/target/cadenza-store}"
+  OPT_STORE="$RESOLVED_STORE"
   if [ ! -d "$OPT_STORE" ]; then
     log "opt-invariance: runtime store $OPT_STORE absent (\`cargo xtask build\`); skipping sweep"
   else
@@ -320,7 +343,7 @@ if [ "$RECLAIM_COUNT" -gt 0 ]; then
       "$RC_BIN" determinism --reclaim --count "$RECLAIM_COUNT" --seed "$(date +%s)" \
         --findings "$FINDINGS" 2>&1 | tail -3 || true
     # (b) opt-invariance --reclaim — O0-vs-O1/O2/O3 VALUE + per-level validity; needs the store (skip cleanly if absent).
-    RECLAIM_STORE="${CDZ_SMITH_STORE:-$ROOT/target/cadenza-store}"
+    RECLAIM_STORE="$RESOLVED_STORE"
     if [ -d "$RECLAIM_STORE" ]; then
       log "reclaim mini-pass (opt-invariance) | count $RECLAIM_COUNT | store $RECLAIM_STORE | cap ${RECLAIM_CAP}s"
       CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$RECLAIM_CAP" \
@@ -358,7 +381,7 @@ if [ "$EFFECT_COUNT" -gt 0 ]; then
       "$EF_BIN" determinism --effect --count "$EFFECT_COUNT" --seed "$(date +%s)" \
         --findings "$FINDINGS" 2>&1 | tail -3 || true
     # (b) opt-invariance --effect — O0-vs-O1/O2/O3 VALUE + per-level validity; needs the store (skip cleanly if absent).
-    EFFECT_STORE="${CDZ_SMITH_STORE:-$ROOT/target/cadenza-store}"
+    EFFECT_STORE="$RESOLVED_STORE"
     if [ -d "$EFFECT_STORE" ]; then
       log "effect mini-pass (opt-invariance) | count $EFFECT_COUNT | store $EFFECT_STORE | cap ${EFFECT_CAP}s"
       CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$EFFECT_CAP" \
