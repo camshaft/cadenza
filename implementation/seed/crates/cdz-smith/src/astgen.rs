@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(32);
+    let shape = c.variant(33);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -361,6 +361,21 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         format!("\"{ch}bc\"")
     } else {
         "\"\"".to_string()
+    };
+    // An option<list<string>> value-form for the eop3 SUM-HOLDING-A-BYTE-LEAF-LIST shape (32) — UNBLOCKED by
+    // #9791 (the wasm entry-param crosses an `option<list<string>>`/`option<list<bytes>>`, the byte-leaf-element
+    // sibling of the eop2 flat scalar-list-in-option). Alternates by e2 parity: `(Some #list("xxx…" ""))` — a
+    // sum cell whose PAYLOAD is a LIST OF BYTE-LEAVES (each element a String, copied byte-for-byte out of the
+    // wrapper's memory 0) vs the payload-less `None`. DISTINCT from shape 19 (option<String> — a byte-leaf
+    // DIRECTLY in the sum), shape 23/25 (option<tuple>/option<record> — a value-COMPOUND payload), and shape 22
+    // (list<string> at TOP LEVEL, not inside a sum): this crosses a HEAP LIST whose ELEMENTS are byte-leaves,
+    // NESTED inside a sum discriminant. The head element's byte-len is returned, so a mis-copied per-element
+    // bytes payload (the eop3 local-collision the #9791 next_local threading fixed) or a mis-read discriminant
+    // corrupts the value. Value = byte-len of element 0 (= max(e0,1)) for Some, 0 for a Some-empty list, -1 for None.
+    let opt_list_str_arg = if e2 % 2 == 0 {
+        format!("(Some #list(\"{s0}\" \"\"))")
+    } else {
+        "None".to_string()
     };
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
@@ -660,10 +675,21 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      shape 26's String.at (Option STRING substring); its Some carries a CHAR shell decoded from the
         //      string's UTF-8. A mis-decoded first scalar (wrong codepoint / byte-offset) corrupts the to-int.
         //      Arg alternates a non-empty `"Xbc"` (first char A..Z, so the codepoint varies) / empty `""` (None→0).
-        _ => (
+        31 => (
             "(do (def (f (: s String)) (match (String.scalar-at s 0) ((Some c) (Char.to-int c)) (None 0))) (export f))"
                 .to_string(),
             vec![scalar_at_str_arg],
+        ),
+        // 32 — eop3 option<list<string>> SUM-HOLDING-A-BYTE-LEAF-LIST entry param (UNBLOCKED by #9791): a
+        //      `(: xs (Option (List String)))` param whose Some payload is a LIST of byte-leaves. Returns the
+        //      head element's byte-len (or 0 for a Some-empty list, -1 for None), so the per-element bytes
+        //      copy-in (the eop3 local-collision #9791 fixed) is value-observable. Distinct from shape 19
+        //      (byte-leaf directly in a sum), shape 22 (list<string> at top level), shape 23/25 (compound
+        //      sum payload): this is a HEAP list of BYTE-LEAVES nested inside a sum discriminant cell.
+        _ => (
+            "(do (def (f (: xs (Option (List String)))) (match xs ((Some l) (match (List.at l 0) ((Some h) (String.byte-len h)) (None 0))) (None -1))) (export f))"
+                .to_string(),
+            vec![opt_list_str_arg],
         ),
     };
     ExportParam { source, args }
@@ -6050,13 +6076,14 @@ mod tests {
         // (heap-list-of-heap-lists) entry-param `f` + the rrf1 record-with-a-record-field nested-product
         // entry-param `f` + the tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f` + the chr1
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
-        // String.scalar-at char-extraction entry-param `f`.
-        let mut reached = [false; 32];
-        for seed in 0u64..1920 {
+        // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
+        // sum-holding-a-byte-leaf-list entry-param `f`.
+        let mut reached = [false; 33];
+        for seed in 0u64..1980 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(32) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-31 reuse e0/e1/e2/s0/a — no new read.)
+            // variant(33) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-32 reuse e0/e1/e2/s0 — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6149,11 +6176,13 @@ mod tests {
                 reached[30] = true; // shape 30 = big1 BigInt heap-bignum scalar-entry-param `f`
             } else if ep.source.contains("(String.scalar-at s 0)") {
                 reached[31] = true; // shape 31 = ssa1 String.scalar-at char-extraction entry-param `f`
+            } else if ep.source.contains("(: xs (Option (List String)))") {
+                reached[32] = true; // shape 32 = eop3 option<list<string>> sum-holding-a-byte-leaf-list entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all thirty-two export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all thirty-three export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
