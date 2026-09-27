@@ -275,7 +275,11 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   enum field (via `enum_cases`), so `list_elem_marshalable` accepts the record element; `emit_record_to_mem`'s
   scalar-field path writes the enum field's disc at the field's canonical offset+width (`disc_size(n_cases)`) —
   no dedicated writer arm (the enum rides the scalar store). (A nested record with an enum field already crossed
-  via the register path — `emit_record_arg_marshal` recurses.)
+  via the register path — `emit_record_arg_marshal` recurses; locked in as SHAPE 180.)
+- **[emit, ARG-side] a NESTED record with an `enum` field — ✅ TESTED (SHAPE 180).** `record{ inner: record{ e:
+  enum, n: s64 }, k: s64 }` — an enum at record depth. Composes the nested-record arg support (`emit_record_arg_
+  marshal` recurses a record field) with the record enum FIELD (174); the inner record flattens inline, the enum
+  disc as one i32 via the scalar-unbox path. Already reachable; SHAPE 180 locks in the value round-trip.
 - **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
   record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
   `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the
