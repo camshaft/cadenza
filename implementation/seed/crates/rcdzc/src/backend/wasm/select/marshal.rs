@@ -926,14 +926,18 @@ pub(super) fn emit_variant_reg_flatten(
 /// `option<scalar>` arm of `emit_record_arg_marshal`): read the value-heap Option's guest discriminant, map its
 /// SOME arm (the single-payload variant, found dynamically so it is robust to the `Option` decl order) to the
 /// WIT `option` some=1 (unbox the payload) and NONE to none=0 (payload-width zero), side-effecting into scratch
-/// so the `(disc, payload)` push happens AFTER the `if` (single-value `BlockType`). Scoped to a SCALAR payload
-/// (`abi_val_type`) — an `option<bytes>`/`option<compound>` top-level arg needs a mem cursor (a later
-/// increment) and is declined at classification. `work_base` is the first free scratch slot for this marshal.
+/// so the `(disc, payload)` push happens AFTER the `if` (single-value `BlockType`). Handles a SCALAR payload
+/// (`abi_val_type`, `(disc, scalar)`), a `Bytes` payload (`(disc, ptr, len)`, rope copied on Some), a
+/// `tuple-of-scalars-or-bytes` payload (POSITIONAL, via `emit_tuple_reg_flatten`), and a
+/// `record-of-scalars` payload (via `emit_record_arg_marshal`, which reorders the value-heap name-lex fields to
+/// the host WIT declaration order — so `payload_wit` MUST be the payload's declared WIT record type). `work_base`
+/// is the first free scratch slot for this marshal.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_option_reg_flatten(
     db: &mut Db,
     var_slot: u32,
     fty: &Ty,
+    payload_wit: Option<&crate::wit_world::WitType>,
     cursor: Option<u32>,
     work_base: u32,
     high: &mut u32,
@@ -1108,6 +1112,97 @@ pub(super) fn emit_option_reg_flatten(
         }
         out.push(Lir::End);
         out.push(Lir::LocalGet(disc_out)); // push (disc, elem0, elem1, …)
+        for k in 0..n {
+            out.push(Lir::LocalGet(base_slot + k));
+        }
+        return Ok(());
+    }
+    // A top-level `option<record-of-scalars>` arg flattens to `(disc, flatten(record))` = disc + one core slot
+    // per record field, in the host WIT DECLARATION order (`emit_record_arg_marshal` reorders the value-heap
+    // name-lex cells to WIT order — so `payload_wit` must be the payload's declared WIT record type). Some →
+    // recurse `emit_record_arg_marshal` on the SUM_PAYLOAD record handle, its N pushes captured in REVERSE;
+    // None → each field's width zero; push `disc` + the N slots AFTER the single-value `if`. MUST precede the
+    // scalar branch below: a record's `valtype_of` is `Some(I32)` (an opaque handle), so the scalar branch's
+    // guard would else match it. Scoped to an all-scalar payload record this increment (a Bytes/nested field is
+    // a later slice) — the guard MUST agree with the classifier + gate, in lockstep.
+    if matches!(payload_ty.strip_nominal(), Ty::Record(sub)
+        if !sub.is_empty() && sub.values().all(|f| crate::backend::wasm::host::abi_val_type(f).is_some()))
+    {
+        let Ty::Record(sub) = payload_ty.strip_nominal() else {
+            unreachable!("record payload by the guard")
+        };
+        let sub = sub.clone(); // release the borrow of `payload_ty` before the recursive marshal
+        let Some(wit @ crate::wit_world::WitType::Record(wit_fields)) = payload_wit else {
+            return Err(Reject::decline(
+                "a top-level option<record> arg has no matching WIT record payload type (needed to order fields)",
+            ));
+        };
+        // Slot valtypes in WIT declaration order (matching `emit_record_arg_marshal`'s push order); each field a
+        // scalar → 1 slot this increment.
+        let names: Vec<String> = sub.keys().map(|s| s.name.to_string()).collect();
+        let mut slot_vts: Vec<ValType> = Vec::with_capacity(wit_fields.len());
+        for (fname, _) in wit_fields {
+            let Some(idx) = names.iter().position(|n| n == fname) else {
+                return Err(Reject::decline(
+                    "a WIT record field is absent from the guest option payload record",
+                ));
+            };
+            let fty = sub.values().nth(idx).expect("name-lex index in range");
+            slot_vts.push(valtype_of(fty).ok_or_else(|| {
+                Reject::decline("an option<record> payload field has no valtype")
+            })?);
+        }
+        let wit = wit.clone();
+        let n = slot_vts.len() as u32;
+        let disc_out = work_base;
+        let base_slot = work_base + 1;
+        scratch_ty.insert(disc_out, ValType::I32);
+        for (k, vt) in slot_vts.iter().enumerate() {
+            scratch_ty.insert(base_slot + k as u32, *vt);
+        }
+        *high = (*high).max(base_slot + n);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_DISC)); // [guest disc]
+        out.push(Lir::ConstI32(some_disc));
+        out.push(Lir::I32Eq);
+        out.push(Lir::If(BlockType::Empty)); // Some: marshal the payload record into the N field scratch slots
+        out.push(Lir::ConstI32(1)); // WIT `option` some = 1
+        out.push(Lir::LocalSet(disc_out));
+        let pay_slot = base_slot + n;
+        scratch_ty.insert(pay_slot, ValType::I32);
+        *high = (*high).max(pay_slot + 1);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [record handle] (borrow — caller reclaims the option)
+        out.push(Lir::LocalSet(pay_slot));
+        emit_record_arg_marshal(
+            db,
+            pay_slot,
+            &sub,
+            &wit,
+            cursor,
+            pay_slot + 1,
+            high,
+            scratch_ty,
+            out,
+        )?;
+        // Capture the N pushed values into scratch in REVERSE (stack top = last WIT field).
+        for k in (0..n).rev() {
+            out.push(Lir::LocalSet(base_slot + k));
+        }
+        out.push(Lir::Else); // None: zero-fill each field slot
+        out.push(Lir::ConstI32(0)); // WIT `option` none = 0
+        out.push(Lir::LocalSet(disc_out));
+        for (k, vt) in slot_vts.iter().enumerate() {
+            out.push(match vt {
+                ValType::I64 => Lir::ConstI64(0),
+                ValType::F64 => Lir::F64ConstBits(0),
+                ValType::F32 => Lir::F32ConstBits(0),
+                _ => Lir::ConstI32(0),
+            });
+            out.push(Lir::LocalSet(base_slot + k as u32));
+        }
+        out.push(Lir::End);
+        out.push(Lir::LocalGet(disc_out)); // push (disc, field0, field1, …) in WIT order
         for k in 0..n {
             out.push(Lir::LocalGet(base_slot + k));
         }

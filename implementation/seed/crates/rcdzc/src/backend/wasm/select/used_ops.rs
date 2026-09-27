@@ -1214,6 +1214,11 @@ pub(super) fn collect_used_ops_into_seen(
                                             crate::backend::wasm::host::abi_val_type(e).is_some()
                                                 || matches!(e.strip_nominal(), Ty::Bytes)
                                         }))
+                                    || matches!(p.strip_nominal(), Ty::Record(sub)
+                                    if !sub.is_empty()
+                                        && sub.values().all(|f| {
+                                            crate::backend::wasm::host::abi_val_type(f).is_some()
+                                        }))
                             },
                         ) =>
                     {
@@ -1243,6 +1248,16 @@ pub(super) fn collect_used_ops_into_seen(
                                         out.insert(OP_BYTES_LEN);
                                         out.insert(OP_BYTES_GET);
                                     } else if let Ok(Some(read)) = get_op_ty(db, e) {
+                                        out.insert(read);
+                                    }
+                                }
+                            } else if let Ty::Record(sub) = payload.strip_nominal() {
+                                // A `record-of-scalars` payload is decomposed by `emit_record_arg_marshal` —
+                                // `arr-get` per field + each field's scalar unbox op.
+                                out.insert(OP_ARR_GET);
+                                let ftys: Vec<Ty> = sub.values().cloned().collect();
+                                for fty in &ftys {
+                                    if let Ok(Some(read)) = get_op_ty(db, fty) {
                                         out.insert(read);
                                     }
                                 }
