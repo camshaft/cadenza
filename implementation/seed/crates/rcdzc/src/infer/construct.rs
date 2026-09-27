@@ -1191,11 +1191,14 @@ pub(crate) fn enclosing_boundary_ty(db: &mut Db, try_node: StructId) -> Option<T
         if db.def_index_by_body(cur).is_some() {
             return Some(type_of(db, cur));
         }
-        // `cur` is a `(fn params body)` lambda's BODY — position 1 of a `fn` form. Its type is the
-        // lambda's result, the boundary for a `?` in the lambda body.
+        // `cur` is a `(fn params body)` lambda's BODY — element 2 of the `fn` form (`kids[0]` is the
+        // `fn` head, `kids[1]` the params list, `kids[2]` the body; see `modules.rs`' `push_list(vec![
+        // fn_head, params_list, body])`). Its type is the lambda's result, the boundary for a `?` in the
+        // lambda body — resolved HERE, before the walk reaches the enclosing `def`, so a `?` inside a
+        // stored closure binds to the closure's own `Option`/`Result` result, not the outer def's.
         if db.ast.head_name(parent) == Some("fn")
             && let crate::ast::Struct::List(kids) = db.ast.get(parent)
-            && kids.get(1) == Some(&cur)
+            && kids.get(2) == Some(&cur)
         {
             return Some(type_of(db, cur));
         }
