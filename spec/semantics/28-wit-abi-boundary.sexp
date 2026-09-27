@@ -5831,3 +5831,32 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a host-op record ARG with an option<record-with-a-Bytes-field> FIELD marshals the byte-leaf payload"
+  (doc
+    "SHAPE 126 — an `option<record{data: list<u8>, n: s64}>` FIELD of a RECORD host-op argument (probe.push :
+           func(record{opt: option<record{data: Bytes, n: s64}>, k: s64}) -> s64), extending SHAPE 124's
+           option<record-of-scalars> to a payload record whose leaf is a BYTES field. The option<compound>
+           marshal recurses into the payload record via the shared record-field marshal, which flattens the
+           Bytes field to (ptr, len) — TWO core slots — after copying its rope into the shared linear memory at
+           the reserved scratch cursor; the scalar `n` field flattens to one slot. So the whole field flattens
+           to (disc, ptr, len, n) = FOUR core slots on Some. The pin this case guards is byte-leaf slot COUNT:
+           the option marshal must reserve/capture exactly as many scratch slots as the payload marshal pushes
+           (Bytes=2, not 1 — `valtype_of(Bytes)` is a handle, so a scalar-first slot count would leave a value
+           on the stack and fail component validation, CDZ0910). run() builds {opt: Some({data: b\"hi\", n: 9}),
+           k: 5}, performs probe.push, returns the stub. Complements SHAPE 124 (option<record-of-scalars>) and
+           SHAPE 125 (None).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= opt (option (record (= data (list (u8))) (= n (s64))))) (= k (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: opt (Option (Record (: data Bytes) (: n Int64)))) (: k Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= opt (Some #record((= data b"hi") (= n 9)))) (= k 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

@@ -83,13 +83,15 @@ pub(super) fn collect_record_field_ops(
             out.insert(OP_ARR_GET);
             out.insert(OP_SUM_DISC);
             out.insert(OP_SUM_PAYLOAD);
+            // The Some arm marshals the payload — RECURSE `collect_record_field_ops` so it declares exactly the
+            // payload's ops for ANY payload kind: a scalar's unbox op, a `Bytes` payload's `bytes-len`/
+            // `bytes-get` rope copy, or (for an `option<record>`/`option<tuple>` payload) the payload's own
+            // field ops incl. any `Bytes` field's `bytes-len`/`bytes-get`. Without this recursion an
+            // `option<record-with-a-Bytes-field>` field emitted an unregistered `bytes-*` → an out-of-range
+            // func index (a scalar/all-scalar payload happened to work only because the OUTER record marshal
+            // already declared `arr-get`/the get-op).
             if let Some(payload) = crate::backend::wasm::host::option_payload_ty(db, fty) {
-                if matches!(payload.strip_nominal(), Ty::Bytes | Ty::String) {
-                    out.insert(OP_BYTES_LEN);
-                    out.insert(OP_BYTES_GET);
-                } else if let Ok(Some(read)) = get_op_ty(db, &payload) {
-                    out.insert(read);
-                }
+                collect_record_field_ops(db, &payload, out);
             }
         }
         // A general `variant<scalar>` field: the marshal `arr-get`s the variant, reads `sum-disc`, and on a
