@@ -10934,6 +10934,7 @@ pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
 pass	trc1 two `?`s as CALL ARGUMENTS hoist left-to-right and short-circuit at the FIRST failure
 pass	trmc1 a `?` as the argument of a MODULE-MEMBER call unwraps then calls
+pass	trmd1 `?`s as `#map` KEY and VALUE hoist KEY-BEFORE-VALUE and short-circuit in evaluation order
 pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
 pass	trn1 two `?`s NESTED across compound constructors (record + list inside a tuple) each short-circuit
 pass	trmp1 a `?`-bound value in a `(Ok #map)` Ok arm reclaims on the Err short-circuit and the Ok path
@@ -10948,6 +10949,7 @@ pass	trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepe
 pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
 pass	trr2 an expression-position `?` in a TAIL if-arm hoists into the arm and short-circuits
 pass	trr3 expression-position `?`s as `#record` FIELD values hoist left-to-right and short-circuit
+pass	trsd1 two `?`s as `#set` elements hoist left-to-right and short-circuit at the FIRST failure
 pass	trt1 expression-position `?`s as `#tuple` elements hoist left-to-right and short-circuit
 pass	true is greater than false
 pass	true is not less than false

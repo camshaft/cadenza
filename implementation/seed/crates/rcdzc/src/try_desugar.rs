@@ -111,9 +111,7 @@ fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<(StructId, Vec<Str
     // `#record` — its kids are `(= field value)` pairs: the field name is STATIC (not evaluated), the
     // VALUE is the evaluated sub-expression. Descend into the FIRST pair whose VALUE holds a `?`, binding
     // EARLIER pairs' impure VALUES (fields evaluate left-to-right) — NOT the pairs themselves, since a
-    // `(= k v)` pair is not a standalone expression the generic operand loop below could let-bind. A `map`
-    // stays excluded: its KEY is also evaluated, so a `?` there needs key-then-value ordering per entry — a
-    // later slice.
+    // `(= k v)` pair is not a standalone expression the generic operand loop below could let-bind.
     if ast.compound_ctor_leaf(node) == Some(CompoundCtor::Record) {
         for i in 1..kids.len() {
             let Struct::List(pk) = ast.get(kids[i]) else {
@@ -140,11 +138,43 @@ fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<(StructId, Vec<Str
         }
         return None;
     }
+    // `#map` — its kids are `(= key value)` pairs where BOTH the key and value are evaluated (unlike a
+    // `#record`, whose field name is static), KEY before VALUE, entries left-to-right (the runtime builds a
+    // `Map.insert(…, k, v)` chain whose args evaluate left-to-right — confirmed empirically: a key-`?`
+    // short-circuits BEFORE a value-`?` in the same entry). Flatten the entries to their eval-order positions
+    // `[k0, v0, k1, v1, …]` and treat them like operator operands: descend the FIRST position holding a `?`,
+    // binding earlier IMPURE positions as the prefix — uniformly handling a `?` in a key OR a value with
+    // correct ordering. (The re-wrapped Err husk on the short-circuit path is reclaimed since the CHAMP
+    // MapSize/SetLen borrow fix, 62750d2b57.)
+    if ast.compound_ctor_leaf(node) == Some(CompoundCtor::Map) {
+        let mut positions: Vec<StructId> = Vec::with_capacity(kids.len().saturating_sub(1) * 2);
+        for &pair in &kids[1..] {
+            if let Struct::List(pk) = ast.get(pair)
+                && pk.len() == 3
+                && ast.as_name(pk[0]) == Some("=")
+            {
+                positions.push(pk[1]); // key
+                positions.push(pk[2]); // value
+            }
+        }
+        for i in 0..positions.len() {
+            if let Some((tn, inner_prefix)) = find_hoistable_try(ast, positions[i]) {
+                let mut prefix: Vec<StructId> = positions[..i]
+                    .iter()
+                    .copied()
+                    .filter(|&p| !is_pure_atom(ast, p))
+                    .collect();
+                prefix.extend(inner_prefix);
+                return Some((tn, prefix));
+            }
+        }
+        return None;
+    }
     // Descendable into its arguments/elements: a non-control NAME head (an application / constructor /
     // ascription), OR a FLAT compound-ctor head — `#list`/`#tuple`/`#set`, whose head is a `Leaf::Ctor`
     // (not a name), a pure container whose elements evaluate left-to-right exactly like operator operands.
-    // (`#record` is handled by the dedicated `(= k v)`-aware arm ABOVE; a `map` and a non-name
-    // applied-lambda head are NOT descended.)
+    // (`#record` and `#map` are handled by the dedicated `(= k v)`-aware arms ABOVE; a non-name
+    // applied-lambda head is NOT descended.)
     let descendable = match hname {
         Some(h) => !is_boundary_or_control_head(h),
         None => matches!(
