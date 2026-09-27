@@ -301,12 +301,12 @@ fi
 # sweeps seeds in order until the cap, so a higher count reaches more shapes before the backstop). Findings
 # file into the SAME fleet queue (`determinism-*` / `opt-invariance-*`, tagged `reclaim-shapes`).
 # NOTE: bump this in step with generate_reclaim_shapes's `variant(N)` whenever a new shape lands (was 100
-# for the original 5-shape family; 500 ≈ 29×~17 as of the 29-shape generator). This count sizes the
+# for the original 5-shape family; 500 ≈ 30×~16 as of the 30-shape generator). This count sizes the
 # COMPILE-ONLY determinism pass (fast: it saturates the full 500 well inside the cap). The opt-invariance
 # pass is SLOWER (~78ms/prog): at 500 it is intentionally SIGKILLed by the RECLAIM_CAP after ~385 seeds —
 # that is BY DESIGN (it sweeps seeds in order until the cap) and loses NOTHING, since findings stream to
 # the FindingStore incrementally per program (driver.rs file_and_tally) and only the cosmetic end tally is
-# dropped; all 29 shapes are still reached (~15x) before the cap. So do NOT lower this count to "make opt
+# dropped; all 30 shapes are still reached (~15x) before the cap. So do NOT lower this count to "make opt
 # finish under the cap" — that would shrink the determinism pass's full-count reach for no gain. Raise
 # RECLAIM_CAP (budget permitting) if you want opt to sweep more seeds per cycle.
 RECLAIM_COUNT="${CDZ_SMITH_RECLAIM_COUNT:-500}"
