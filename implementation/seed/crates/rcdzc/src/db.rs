@@ -2809,6 +2809,12 @@ impl Db {
         // `(. E op)` projections resolve like hand-written member access. A handle already in internal
         // shape (4 children) is left untouched, so a hand-authored internal program still compiles.
         crate::effects::desugar_handles(&mut ast);
+        // Desugar a two-form `(do (def x (try e)) body)` to `(let ((x (try e))) body)` — so a runtime-`?`
+        // do-def uses the inline-ROBUST `let` lowering path (a do-def reference misresolves through a nested
+        // β-copy, missing the copied `try`'s BRICK-3b override; the `let` binder does not). Runs BEFORE the
+        // parent index + resolution so the rewritten `let` resolves like hand-written source. TRY-SPECIFIC +
+        // two-form-only, so every other do-block is untouched (`try_desugar` module docs).
+        crate::try_desugar::desugar_try_do_defs(&mut ast);
         // Reify every well-formed `(quote FORM)` into the `Ast` constructor application that BUILDS its
         // value (`(quote 42)` -> `(Ast.Int 42)`, `(quote (+ 1 2))` -> `(Ast.List (list …))`), so a quote
         // result and a hand-written `Ast.*` value are the SAME sum value (`metaprogramming.md` §Quote
