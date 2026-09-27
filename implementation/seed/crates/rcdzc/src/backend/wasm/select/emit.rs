@@ -652,6 +652,24 @@ pub(super) fn emit(
             // (fires iff the emit's per-occurrence retain fired); `vec-len` borrows → the dup is always
             // unbalanced; `Param`/`LocalRef` is Borrowed → disjoint from the Owned branch; O2-specific (at O0/O1
             // the operand is a fresh Owned producer, not a binder in dup_sites).
+            // MATCH-JOIN OWNERSHIP-EQUALIZE (node#6 sibling): same as the Core::BytesLen gate — a
+            // divergent-ownership heap Match borrow-operand whose arm-blind join reads Borrowed leaks its
+            // owned-fresh arm. Plan the per-arm dups (emitted at emit_arm_body) + FORCE reclaim so the
+            // post-borrow OP_DROP below fires. List handle dup/drop are the polymorphic header rc ops
+            // (rc++/rc--, element-recursion only at rc=0) — identical pairing to BytesLen/StrScalarLen.
+            let matchjoin_equalize = match divergent_match_borrow_dupable(
+                db,
+                operand,
+                slots,
+                out.fn_body,
+                &out.dup_sites,
+            ) {
+                Some(ids) => {
+                    out.matchjoin_dup_arms.extend(ids);
+                    true
+                }
+                None => false,
+            };
             let reclaim =
                 matches!(
                     heap_operand_ownership(db, operand),
@@ -661,7 +679,8 @@ pub(super) fn emit(
                     || (matches!(
                         core_of(db, operand),
                         Core::Param { .. } | Core::LocalRef { .. }
-                    ) && out.dup_sites.contains(&operand));
+                    ) && out.dup_sites.contains(&operand))
+                    || matchjoin_equalize;
             if reclaim {
                 let list_slot = base;
                 *high = (*high).max(list_slot + 1);
@@ -1150,7 +1169,7 @@ pub(super) fn emit(
             // borrow-site dup is ALWAYS unbalanced → drop ⟺ dup, never a drop-without-dup double-free. A
             // `Param`/`LocalRef` is `heap_operand_ownership==Borrowed` → DISJOINT from the Owned branch (no
             // double-drop). Covers the fldirect O2/O3 divergence v-core-opt assigned to this lane (the B2/CSE dup
-            // source); the sibling length-prims (ListLen/StrScalarLen/MapSize/SetLen) are a separate follow-up.
+            // source); StrScalarLen/ListLen wired the node#6 equalize; MapSize/SetLen remain a follow-up.
             let b2_dup_borrowed_binder = matches!(
                 core_of(db, operand),
                 Core::Param { .. } | Core::LocalRef { .. }
