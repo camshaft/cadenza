@@ -150,6 +150,18 @@ pub enum HostParam {
     /// first slot + zero-fills the rest. A tuple with a COMPOUND / float element is a later increment; the
     /// classifier only pushes this for `result_tuple_enum` (all-non-float-scalar Ok elements).
     ResultTuple(Vec<AbiValType>, Vec<String>),
+    /// A bare `result<list<scalar>, enum>` param (the top-level position, not nested) — crosses as the built-in
+    /// WIT `result<list<T>, err-enum>` type, referenced by a per-param structural `CRef`. The list-Ok sibling of
+    /// the Bytes-Ok result ([`Result`](HostParam::Result)): its core form flattens to the SAME 3 slots
+    /// `(disc:i32, ptr/errdisc:i32, count/0:i32)` — on Ok the guest marshals the value-heap `List` into shared
+    /// `mem` (an outer `count`-slot array at the running cursor, each element inline) via `emit_list_arg_marshal`
+    /// and passes `(outer-ptr, count)`; on Err it passes `(err-enum-disc, 0)`. Unlike the register-only
+    /// scalar/record/tuple results, this DOES need `mem` + the scratch cursor (it copies the list into linear
+    /// memory, like the Bytes result copies a rope). Carries the err enum's case names; the element `Ty` +
+    /// component `result<list<T>, err>` type come from the arg type / declared WIT. The guest marshals it via
+    /// `select::emit_result_list_arg_reg_flatten`. A non-scalar list element (`list<record/tuple/bytes/list>`) is
+    /// a later increment; the classifier only pushes this for `result_list_enum` (scalar element).
+    ResultList(Vec<String>),
 }
 
 /// Whether a record-field ABI bottoms out at a `list<u8>` (`Bytes`) leaf — so a `list<T>` param carrying it
@@ -451,6 +463,55 @@ pub fn result_record_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
         .map(|v| kebab_extern_name(&v.name))
         .collect();
     Some((args[0].clone(), err_cases))
+}
+
+/// Whether `ty` is `result<list<scalar>, enum>` — an Ok arm that is a `list<T>` whose ELEMENT is a SCALAR (so the
+/// list marshals into `mem` with a fixed element stride; a compound element is a later increment) and an Err arm
+/// that is a PAYLOAD-LESS enum. Returns `(the element Ty, err-enum case names)` if so, else `None`. A `Sum` whose
+/// decl has exactly `Ok`/`Err` variants, instantiated at `[list, enum]`. The 3-slot `(disc, ptr/errdisc, count/0)`
+/// flatten is `emit_result_list_arg_reg_flatten` (the list-Ok twin of the Bytes-Ok `emit_result_arg_reg_flatten`).
+/// Reads through erased nominal wrappers, mirroring [`result_tuple_enum`]. NB: a `list<u8>` Ok is `Bytes` → that
+/// is [`result_bytes_enum`]'s job (checked first), so this admits only a NON-`u8` scalar element.
+pub fn result_list_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let stripped = ty.strip_nominal();
+    let Ty::Sum { decl, args } = stripped else {
+        return None;
+    };
+    if args.len() != 2 {
+        return None;
+    }
+    // The Ok arm (args[0]) must be a `list<scalar>` — a `list<u8>` (Bytes) is `result_bytes_enum`'s job, and a
+    // compound element needs the per-element in-mem marshal (a later increment).
+    let Ty::List(elem) = args[0].strip_nominal() else {
+        return None;
+    };
+    let elem = (**elem).clone();
+    abi_val_type(&elem)?; // a SCALAR element only (a compound element is a later increment)
+    // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
+    {
+        let d = db.type_decl_by_occ(*decl)?;
+        if !(d.variants.len() == 2
+            && d.variants.iter().any(|v| v.name == "Ok")
+            && d.variants.iter().any(|v| v.name == "Err"))
+        {
+            return None;
+        }
+    }
+    // The err arm (args[1]) must be a payload-less enum — a `Sum` whose every variant is nullary.
+    let Ty::Sum { decl: err_decl, .. } = args[1].strip_nominal() else {
+        return None;
+    };
+    let ed = db.type_decl_by_occ(*err_decl)?;
+    if ed.variants.is_empty() || ed.variants.iter().any(|v| !v.payloads.is_empty()) {
+        return None;
+    }
+    let err_cases = ed
+        .variants
+        .iter()
+        .map(|v| kebab_extern_name(&v.name))
+        .collect();
+    Some((elem, err_cases))
 }
 
 /// Whether `ty` is `result<tuple-of-scalars, enum>` — an Ok arm that is a TUPLE every element of which is a
@@ -1798,6 +1859,17 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             }
                         }
                     }
+                    // A top-level `result<list<scalar>, enum>` arg crosses as the built-in WIT
+                    // `result<list<T>, err-enum>`. It flattens to the SAME 3 slots as the Bytes-Ok result —
+                    // `(disc, ptr/errdisc, count/0)` — but the Ok arm marshals the value-heap list into `mem`
+                    // (`emit_result_list_arg_reg_flatten` → `emit_list_arg_marshal`) instead of copying a rope.
+                    // Checked BEFORE the scalar `_` arm; a compound list element is a later increment
+                    // (`result_list_enum` declines it → `_` declines). NB: `list<u8>` Ok = Bytes → `result_bytes_
+                    // enum` above (a `list<u8>` arg type is `Ty::Bytes`, not `Ty::List`, so this never sees it).
+                    _ if !peer_bound && result_list_enum(db, &at).is_some() => {
+                        let (_elem, err_cases) = result_list_enum(db, &at).unwrap();
+                        params.push(HostParam::ResultList(err_cases));
+                    }
                     // A top-level `option<scalar>` / `option<bytes>` / `option<tuple-of-scalars>` arg crosses as
                     // the built-in WIT `option<T>` (its own arm — `variant_scalar_payload_cases` above EXCLUDES
                     // option-shaped sums, since option needs the distinct built-in type, not a `variant` DEFINED
@@ -2410,7 +2482,11 @@ pub fn set_needs_memory(imports: &[HostImport]) -> bool {
             // (`emit_result_arg_reg_flatten`'s Ok arm), so it needs the shared-memory core module + the host
             // op lower's `Memory(0)` option — else the lower is emitted memoryless and the component fails
             // validation ("canonical option `memory` is required").
-            HostParam::Result(_) => true,
+            // A `result<list<u8>, enum>` (rope copy) / a `result<list<scalar>, enum>` (the list marshalled into
+            // `mem` by `emit_list_arg_marshal`) both write into linear memory on the Ok arm → need the shared-
+            // memory core module + the host op lower's `Memory(0)`. The register-only scalar/record/tuple results
+            // do NOT (they flatten to slots), so they fall to `_ => false`.
+            HostParam::Result(_) | HostParam::ResultList(_) => true,
             _ => false,
         })
     })
@@ -2571,6 +2647,12 @@ pub fn first_unrepresentable_host_op(
             // later increment (`result_tuple_enum` declines it), matching the classifier + marshal, in lockstep.
             let arg_is_boundary_result_tuple =
                 allow_option_bytes && !peer_bound && result_tuple_enum(db, &at).is_some();
+            // A top-level `result<list<scalar>, enum>` arg crosses NATIVELY as the built-in WIT
+            // `result<list<T>, err-enum>` — the guest marshals the Ok list into `mem` and flattens to
+            // `(disc, ptr/errdisc, count/0)` (`select::emit_result_list_arg_reg_flatten`). A compound list element
+            // is a later increment (`result_list_enum` declines it), matching the classifier + marshal, in lockstep.
+            let arg_is_boundary_result_list =
+                allow_option_bytes && !peer_bound && result_list_enum(db, &at).is_some();
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
@@ -2584,6 +2666,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_result_scalar
                 && !arg_is_boundary_result_record
                 && !arg_is_boundary_result_tuple
+                && !arg_is_boundary_result_list
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }

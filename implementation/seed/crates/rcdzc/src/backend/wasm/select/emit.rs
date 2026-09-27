@@ -6527,6 +6527,9 @@ pub(super) fn emit(
                     // A top-level `result<list<u8>, enum>` arg copies the Ok `list<u8>` payload's rope into
                     // `mem` on the Ok arm (`emit_result_arg_reg_flatten`) → needs the running scratch cursor.
                     || crate::backend::wasm::host::result_bytes_enum(db, &at).is_some()
+                    // A top-level `result<list<scalar>, enum>` arg marshals the Ok payload list into `mem` on the
+                    // Ok arm (`emit_result_list_arg_reg_flatten` → `emit_list_arg_marshal`) → needs the cursor too.
+                    || crate::backend::wasm::host::result_list_enum(db, &at).is_some()
                     // A top-level `tuple<…>` arg needs the cursor when SOME leaf (recursing nested tuples +
                     // record elements) copies runtime bytes into `mem` — a `Bytes` element, or a record
                     // element with a `Bytes` / `list` / `result` / `option<bytes>` field. Broader than the
@@ -7030,6 +7033,57 @@ pub(super) fn emit(
                         // MARSHALED-ARG RECLAIM (result-tuple twin): the flatten borrowed the handle — no dup, no
                         // handle moved out — so the Result handle in `res_slot` is DEAD. Deep-drop iff Owned / a
                         // dup-site. Import mirror in `collect_used_ops`.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(res_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
+                    // A top-level `result<list<scalar>, enum>` argument: the guest emits the value-heap Result
+                    // HANDLE into a slot, then decomposes it into `(disc, ptr/errdisc, count/0)` via
+                    // `emit_result_list_arg_reg_flatten` (the list-Ok twin of the Bytes-Ok result) — Ok marshals
+                    // the payload list into `mem` at the cursor (→ `(ptr, count)`), Err yields `(err-disc, 0)`.
+                    // Needs the scratch cursor (the list copy). Checked BEFORE the scalar `_` arm; the other result
+                    // arms above are mutually exclusive by the Ok shape.
+                    _ if crate::backend::wasm::host::result_list_enum(db, &at).is_some() => {
+                        let res_slot = arg_base.max(*high);
+                        scratch_ty.insert(res_slot, ValType::I32);
+                        *high = (*high).max(res_slot + 1);
+                        emit(db, arg, slots, res_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(res_slot));
+                        let (elem, _errs) =
+                            crate::backend::wasm::host::result_list_enum(db, &at).unwrap();
+                        // The list element's declared WIT (the arg WIT is `result<list<T>, enum>`; the Ok arm
+                        // carries the `list<T>` whose element type orders a record element — `None` for a scalar).
+                        let elem_wit = match wit_params.as_ref().and_then(|p| p.get(arg_i)) {
+                            Some(crate::wit_world::WitType::Result { ok: Some(w), .. }) => {
+                                match w.as_ref() {
+                                    crate::wit_world::WitType::List(ew) => Some((**ew).clone()),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        let cursor = scratch_cursor_slot.expect(
+                            "a result<list,enum> arg reserves the scratch cursor (pre-scan)",
+                        );
+                        let work_base = *high;
+                        emit_result_list_arg_reg_flatten(
+                            db,
+                            res_slot,
+                            &elem,
+                            elem_wit.as_ref(),
+                            cursor,
+                            work_base,
+                            high,
+                            scratch_ty,
+                            out,
+                        )?;
+                        // MARSHALED-ARG RECLAIM (result-list twin): the flatten borrowed the handle (sum-disc/
+                        // sum-payload + the list marshal's vec-len/vec-get) — no dup, no handle moved out — so the
+                        // Result handle in `res_slot` is DEAD. Deep-drop iff Owned / a dup-site. Import mirror in
+                        // `collect_used_ops`.
                         if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
                             || out.dup_sites.contains(&arg)
                         {

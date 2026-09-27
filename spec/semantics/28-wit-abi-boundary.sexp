@@ -7633,3 +7633,54 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a bare result<list<scalar>, enum> host-op arg crosses on the Ok arm (list marshalled into mem)"
+  (doc
+    "SHAPE 195 (v-wit-boundary) — a top-level `result<list<T>, enum>` ARG, the list-Ok sibling of the
+           Bytes-Ok result (SHAPE 164). It flattens to the SAME 3 slots `(disc:i32, ptr:i32, count:i32)`, but where
+           the Bytes result copies a rope into `mem`, a `result<list<scalar>, enum>` MARSHALS the value-heap list
+           into `mem` (an outer `count`-slot array at the running cursor, each element inline) via
+           `emit_result_list_arg_reg_flatten` → `emit_list_arg_marshal`, passing `(outer-ptr, count)` on Ok. So
+           unlike the register-only scalar/record/tuple results, this needs `mem` + the scratch cursor
+           (`set_needs_memory` + the emit.rs cursor pre-scan admit it). The core import sig is `(param i32 i32 i32)`.
+           run() emits `(Ok #list(3 4 5))`; a VALID component that runs and crosses the boundary is the pin. The
+           Err arm = SHAPE 196.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (s64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (List Int64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #list(3 4 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare result<list<scalar>, enum> host-op arg crosses on the Err arm (err disc, count 0)"
+  (doc
+    "SHAPE 196 (v-wit-boundary) — the Err-arm counterpart of SHAPE 195. On Err the result disc is non-zero
+           and `emit_result_list_arg_reg_flatten` passes `(err-enum-disc, 0)` for the `(ptr/errdisc, count)` slots
+           (the list is never marshalled on the Err arm — no `mem` write, so the cursor is untouched), here
+           `worse` = decl-disc 1. run() emits `(Err (Worse))`; the host stub returns 42. Same
+           `result<list<s64>, enum>` boundary as SHAPE 195, other arm. live-objects=0 confirms the Err arm leaks
+           no list.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (s64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (List Int64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Err (Worse)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))

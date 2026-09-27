@@ -1553,6 +1553,27 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_DROP);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
+                    // A top-level `result<list<scalar>, enum>` arg is decomposed by
+                    // `emit_result_list_arg_reg_flatten`: `sum-disc` (result disc), `sum-payload`, and on Ok the
+                    // list marshal's `vec-len`/`vec-get` + the element ops (`collect_list_elem_ops`), on Err a
+                    // further `sum-disc` (the err enum disc). Declare them (else a marshal `CallImport` → u32::MAX
+                    // invalid module), then descend. Checked BEFORE the `_` fallthrough; the other result arms are
+                    // mutually exclusive by the Ok shape.
+                    at if !peer_bound
+                        && crate::backend::wasm::host::result_list_enum(db, &at).is_some() =>
+                    {
+                        out.insert(OP_SUM_DISC);
+                        out.insert(OP_SUM_PAYLOAD);
+                        out.insert(OP_VEC_LEN);
+                        out.insert(OP_VEC_GET);
+                        if let Some((elem, _)) =
+                            crate::backend::wasm::host::result_list_enum(db, &at)
+                        {
+                            collect_list_elem_ops(db, &elem, out);
+                        }
+                        out.insert(OP_DROP);
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     _ => collect_used_ops_into_seen(db, arg, out, visited),
                 }
             }
