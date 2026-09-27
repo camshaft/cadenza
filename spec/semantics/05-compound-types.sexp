@@ -9382,17 +9382,15 @@
       (export main)))
   (output (: -1 Int64)))
 
-; multi-nlist-elem (breaker, the NESTED-LIST leg of the deferred N-per-arm follow-up #8430): #8428 generalized
-; the TUPLE + RECORD value-refinement desugars to the ctor's N-position loop (>1 refutable element per arm), but
-; #8430 (docs(lower)) explicitly DEFERRED the same generalization for the NESTED-LIST + MAP refutable-element
-; desugars. So TWO refutable nested-list elements in one arm `(list (list 1 a) (list 2 b))` still DECLINE 'a list
-; arm with more than one refutable nested-list element is not supported (match one nested list per arm)' — while
-; a SINGLE nested-list element refines (#8348). Consistent decline wasm+rust+cadenza. SHOULD refine both like the
-; now-N-per-arm ctor/tuple/record: `xs = [[1,5],[2,3]]` → element 0 `(list 1 a)` → a=5, element 1 `(list 2 b)` →
-; b=3 → 8. Idealistic-todo; auto-flips when #8430's deferred nested-list N-per-arm lands (owner: v-inference, the
-; #8428 arc). The nested-list twin of multi-tup-elem #8418 / multi-rec-elem #8422.
+; multi-nlist-elem (breaker, the NESTED-LIST leg of the N-per-arm follow-up #8430): #8428 generalized the
+; TUPLE + RECORD value-refinement desugars to the ctor's N-position loop (>1 refutable element per arm), and
+; the nested-list leg now matches it — TWO refutable nested-list elements in one arm `(list (list 1 a)
+; (list 2 b))` each refine, like the ctor/tuple/record N-loop: `xs = [[1,5],[2,3]]` → element 0 `(list 1 a)`
+; → a=5, element 1 `(list 2 b)` → b=3 → 8. Each position gets a fresh binder + a conjoined `(len_test AND
+; content_match)` guard; the body re-matches inside-out so both binders scope it. The nested-list twin of
+; multi-tup-elem #8418 / multi-rec-elem #8422; the MAP leg (multi-map-elem below) is its own #8430 flip-guard.
 (case
-  "two refutable nested-list elements in one arm each refine (currently declines >1-per-arm)"
+  "two refutable nested-list elements in one arm each refine"
   (input
     (do
       (def
@@ -9401,6 +9399,21 @@
       (def (main) (f #list(#list(1 5) #list(2 3))))
       (export main)))
   (output (: 8 Int64)))
+
+; multi-nlist-elem FALL-THROUGH (the #8358-class hazard for the N-per-arm nested-list desugar): when the
+; SECOND element's literal differs (`(list 9 3)` vs the arm's `(list 2 b)`), the arm must FALL THROUGH to the
+; catch-all → -1, NOT trap in the inside-out body re-match. Pins that refutation composes across the N-loop —
+; a per-position content guard that only tested the FIRST element would silently trap here.
+(case
+  "two refutable nested-list elements FALL THROUGH when the second element's literal differs"
+  (input
+    (do
+      (def
+        (f (: xs (List (List Int64))))
+        (match xs (#list(#list(1 a) #list(2 b)) (+ a b)) (_ -1)))
+      (def (main) (f #list(#list(1 5) #list(9 3))))
+      (export main)))
+  (output (: -1 Int64)))
 
 ; multi-map-elem (breaker, the MAP leg of the deferred N-per-arm follow-up #8430): the MAP-element twin of
 ; multi-nlist-elem above. TWO map elements in one arm `(list (map (= 1 a)) (map (= 2 b)))` — each refines on its

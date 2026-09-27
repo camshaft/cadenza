@@ -11164,7 +11164,8 @@ todo	two do-def-bound performs whose sum mixes handler-state width with a narrow
 todo	two effects bound to the same interface share one peer instance (both ops run)
 todo	two length-prefixed dependent frames chain at runtime
 todo	two map list elements in one arm each refine on a key (currently declines >1-per-arm)
-todo	two refutable nested-list elements in one arm each refine (currently declines >1-per-arm)
+pass	two refutable nested-list elements in one arm each refine
+pass	two refutable nested-list elements FALL THROUGH when the second element's literal differs
 todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact
 todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
 todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)
