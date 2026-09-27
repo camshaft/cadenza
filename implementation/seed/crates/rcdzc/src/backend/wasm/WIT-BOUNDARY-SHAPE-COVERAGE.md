@@ -193,10 +193,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   widened from scalar-only to also admit a `Bytes`/`list` payload + a record/tuple payload whose fields are
   `product_field_marshalable`, in lockstep with `emit_list_arg_marshal`'s `option_elem` detector +
   `collect_list_elem_ops` (recurses the payload's field ops).
-  REMAINING (ARG-side only): an `option<option>` list element (the option-to-mem writer has no nested-option arm),
-  and a mixed int↔float variant element (rolls into the compound-variant-payload / mixed-join gaps above). ALSO: a `list<result<bytes, enum>>` element declines
-  (verified 2026-09-27 — no result-element in-place writer yet; distinct from the `result` record FIELD which
-  IS handled).
+  A `list<result<list<u8>, enum>>` element is ALSO ✅ DONE — SHAPE 163: a new in-place writer `emit_result_to_mem`
+  writes each element (disc byte + payload at `align_up(1,4)`; Ok copies the Bytes rope at the cursor + writes
+  `(ptr,len)`, Err writes the err enum's disc), `list_elem_marshalable` gained a `result_bytes_enum` arm, and the
+  element dispatch + `collect_list_elem_ops` widened in lockstep. REMAINING (ARG-side only): an `option<option>`
+  list element (the option-to-mem writer has no nested-option arm), and a mixed int↔float variant element (rolls
+  into the compound-variant-payload / mixed-join gaps above).
 - **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
   record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
   `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the

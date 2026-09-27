@@ -131,7 +131,15 @@ pub(super) fn collect_list_elem_ops(
     elem: &Ty,
     out: &mut std::collections::BTreeSet<&'static str>,
 ) {
-    if matches!(elem.strip_nominal(), Ty::Bytes | Ty::String) {
+    if crate::backend::wasm::host::result_bytes_enum(db, elem).is_some() {
+        // A `result<list<u8>, enum>` element (`emit_result_to_mem`): `sum-disc` (result) + `sum-payload` (both
+        // arms); on Err `sum-disc` (the err enum), on Ok `bytes-len`/`bytes-get` (the rope copy). Detected before
+        // Bytes (a result is not Bytes) — declared exactly so a result element's `CallImport` resolves in-range.
+        out.insert(OP_SUM_DISC);
+        out.insert(OP_SUM_PAYLOAD);
+        out.insert(OP_BYTES_LEN);
+        out.insert(OP_BYTES_GET);
+    } else if matches!(elem.strip_nominal(), Ty::Bytes | Ty::String) {
         out.insert(OP_BYTES_LEN);
         out.insert(OP_BYTES_GET);
     } else if let Ty::List(inner) = elem.strip_nominal() {

@@ -1033,6 +1033,12 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
         Ty::Tuple(elems) => {
             !elems.is_empty() && elems.iter().all(|e| product_field_marshalable(db, e))
         }
+        // A `result<list<u8>, enum>` element (`list<result<list<u8>, enum>>`): written in place at its canonical
+        // result layout (disc byte + payload join) by `select::emit_result_to_mem` — Ok copies the Bytes rope at
+        // the cursor + writes `(ptr,len)`, Err writes the err enum's disc. Detected before the option/variant arms
+        // (a result is a 2-variant Sum but its Ok payload is `Bytes`, excluded from both). A non-Bytes ok / a
+        // variant (non-enum) err is a later slice (`result_bytes_enum` declines it).
+        ref other if result_bytes_enum(db, other).is_some() => true,
         // An `option<scalar|bytes|list|record|tuple>` element (`list<option<s64>>`, `list<option<bytes>>`,
         // `list<option<list>>`, `list<option<record>>`, `list<option<tuple>>`): written in place at its canonical
         // option layout (disc byte + payload) by `select::emit_option_to_mem`. A SCALAR payload writes its width

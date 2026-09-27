@@ -6812,3 +6812,33 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL list<result<list<u8>, enum>> host-op arg writes each result element in place (Ok bytes / Err enum)"
+  (doc
+    "SHAPE 163 (v-wit-boundary) — a top-level `list<result<list<u8>, enum>>` bare host-op arg: a `result` as a list
+           ELEMENT. A new in-place writer `emit_result_to_mem` writes each element per its canonical result layout
+           (disc byte at 0, payload at `payload_off = align_up(1, 4) = 4`): the guest sum-disc IS the component
+           result disc (Ok=0 declared first, matching the result-FIELD flatten arm); Ok copies the Bytes payload
+           rope into shared `mem` at the running cursor and writes `(ptr@off, len@off+4)`, advancing the cursor;
+           Err writes the err enum's discriminant at `off` (at its canonical width) with `off+4` zero-padded.
+           `list_elem_marshalable` gained a result arm (`result_bytes_enum`), in lockstep with the element dispatch
+           in `emit_list_arg_marshal` + `collect_list_elem_ops` (declares `sum-disc`/`sum-payload` + the Ok
+           `bytes-len`/`bytes-get`). `field_boundary_abi` already builds the `(list (result …))` component type.
+           run() builds [Ok(b\"\\x01\\x02\\x03\"), Err(bad), Ok(b\"\\x09\")], performs probe.push, returns the stub 55.
+           A VALID component that runs is the pin (a wrong result/enum layout traps at the host's list.lift). The
+           result-ELEMENT sibling of the `result<list<u8>, enum>` record FIELD (already covered).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (result (list (u8)) (enum bad worse)))) (result (s64)))))))
+  (input
+    (do
+      (type E (Bad) (Worse))
+      (effect probe (op push (-> (List (Result Bytes E)) Int64)))
+      (def (run) (host (probe) (probe.push #list((Ok (Bytes.of #list(1 2 3))) (Err E.Bad) (Ok (Bytes.of #list(9)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

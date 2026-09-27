@@ -92,15 +92,28 @@ pub(super) fn emit_list_arg_marshal(
         None
     };
     let is_option = option_elem.is_some();
+    // A `result<list<u8>, enum>` element (`list<result<list<u8>, enum>>`): written in place at its canonical
+    // result layout (disc byte + payload join) by `emit_result_to_mem` — Ok copies the Bytes rope at the cursor +
+    // writes `(ptr,len)`, Err writes the enum disc. Carries the err enum's case count (its disc width). Detected
+    // BEFORE the general variant (a result is a 2-variant Sum, but its Ok payload is `Bytes`, so
+    // `variant_scalar_payload_cases` excludes it — still, detect it in its own arm).
+    let result_err_cases: Option<Vec<String>> =
+        if is_bytes || is_nested_list || is_record || is_tuple || is_option {
+            None
+        } else {
+            crate::backend::wasm::host::result_bytes_enum(db, elem)
+        };
+    let is_result = result_err_cases.is_some();
     // A general `variant<scalar>` element (`list<variant{a, b(s64), …}>`): written in place at its canonical
     // variant layout (disc + uniform scalar payload) by `emit_variant_to_mem` — the N-case generalization of
     // the option element. Detected AFTER option/result (they take their own arms), so this is the residual
     // general variant. Scoped to a uniform single scalar payload (the #3368 record-field variant shape).
-    let is_variant: bool = if is_bytes || is_nested_list || is_record || is_tuple || is_option {
-        false
-    } else {
-        crate::backend::wasm::host::variant_scalar_payload_cases(db, elem).is_some()
-    };
+    let is_variant: bool =
+        if is_bytes || is_nested_list || is_record || is_tuple || is_option || is_result {
+            false
+        } else {
+            crate::backend::wasm::host::variant_scalar_payload_cases(db, elem).is_some()
+        };
     // The store for a scalar element, by its slot valtype + canonical size: i64→i64.store, f64→f64.store,
     // f32→f32.store, i32 → 4-byte i32.store / 2-byte store16 / 1-byte store8.
     let scalar_store: Option<Lir> = if is_bytes
@@ -109,6 +122,7 @@ pub(super) fn emit_list_arg_marshal(
         || is_tuple
         || is_option
         || is_variant
+        || is_result
     {
         None
     } else {
@@ -144,7 +158,14 @@ pub(super) fn emit_list_arg_marshal(
     } else {
         canonical_layout(db, elem).1
     };
-    let read = if is_bytes || is_nested_list || is_record || is_tuple || is_option || is_variant {
+    let read = if is_bytes
+        || is_nested_list
+        || is_record
+        || is_tuple
+        || is_option
+        || is_variant
+        || is_result
+    {
         None
     } else {
         Some(get_op_ty(db, elem)?.ok_or_else(|| {
@@ -340,6 +361,22 @@ pub(super) fn emit_list_arg_marshal(
             *some_disc,
             cursor,
             payload_wit,
+            work_base + 9,
+            high,
+            scratch_ty,
+            out,
+        )?;
+    } else if let Some(err_cases) = &result_err_cases {
+        // RESULT element (`list<result<list<u8>, enum>>`): write the value-heap Result IN PLACE into the outer
+        // slot at `slotaddr` per its canonical result layout (disc byte + payload join), via `emit_result_to_mem`
+        // — Ok copies the Bytes rope at the `cursor` + writes `(ptr,len)`, Err writes the err enum's disc. `eh` is
+        // the borrowed element Result handle. work_base ABOVE this level (`+9`).
+        emit_result_to_mem(
+            db,
+            eh,
+            slotaddr,
+            err_cases.len(),
+            cursor,
             work_base + 9,
             high,
             scratch_ty,
@@ -935,6 +972,115 @@ pub(super) fn variant_register_join_vt(
         });
     }
     join.ok_or_else(|| Reject::decline("a variant has no payload case to join"))
+}
+
+/// Write a value-heap `result<list<u8>, enum>` ELEMENT (handle in `result_slot`) IN PLACE into linear memory at
+/// `dest_addr` per its canonical layout: a 1-byte discriminant at offset 0 (Ok=0 / Err≠0, the guest sum-disc IS
+/// the component result disc, Ok declared first — the same convention `emit_record_arg_marshal`'s result-FIELD
+/// flatten arm uses) then the payload at `payload_off = align_up(1, 4)` (the ok arm `list<u8>` has align 4). On Ok
+/// the payload Bytes rope is copied into `mem` at the running `cursor` and `(ptr@off, len@off+4)` written, the
+/// cursor advanced; on Err the err enum's discriminant is written at `off` (at its canonical width) with `off+4`
+/// zero-padded. `err_case_count` is the err enum's case count (its disc width). The `list<result>` element
+/// analogue of the result-FIELD register flatten. Scratch from `work_base`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_result_to_mem(
+    db: &mut Db,
+    result_slot: u32,
+    dest_addr: u32,
+    err_case_count: usize,
+    cursor: u32,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let _ = db;
+    let payload_off = align_up_u32(disc_size_for(2), 4); // ok arm `list<u8>` align 4 → payload at offset 4
+    // The err enum's disc is written at its canonical width (1 byte for ≤256 cases, else 2/4) — within the 8-byte
+    // payload area (sized by the ok arm's `(ptr,len)`), so a narrower Err write leaves the rest unread.
+    let err_disc_store = match disc_size_for(err_case_count) {
+        1 => Lir::I32Store8 {
+            offset: payload_off,
+        },
+        2 => Lir::I32Store16 {
+            offset: payload_off,
+        },
+        _ => Lir::I32Store {
+            offset: payload_off,
+        },
+    };
+    let disc = work_base;
+    let rope = work_base + 1;
+    let blen = work_base + 2;
+    let pos = work_base + 3;
+    for s in [disc, rope, blen, pos] {
+        scratch_ty.insert(s, ValType::I32);
+    }
+    *high = (*high).max(work_base + 4);
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC));
+    out.push(Lir::LocalSet(disc));
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::LocalGet(disc));
+    out.push(Lir::I32Store8 { offset: 0 }); // 1-byte result disc (Ok=0 / Err≠0)
+    out.push(Lir::LocalGet(disc));
+    out.push(Lir::If(BlockType::Empty)); // disc != 0 → Err
+    // Err: dest[payload_off] = err enum disc (canonical width), dest[payload_off+4] = 0.
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [err enum handle]
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [enum disc]
+    out.push(err_disc_store);
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::ConstI32(0));
+    out.push(Lir::I32Store {
+        offset: payload_off + 4,
+    });
+    out.push(Lir::Else); // disc == 0 → Ok: copy the Bytes rope → mem at the cursor, write (ptr, len)
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [Bytes handle]
+    out.push(Lir::LocalSet(rope));
+    out.push(Lir::LocalGet(rope));
+    out.push(Lir::CallImport(OP_BYTES_LEN));
+    out.push(Lir::LocalSet(blen));
+    out.push(Lir::ConstI32(0));
+    out.push(Lir::LocalSet(pos));
+    out.push(Lir::Block(BlockType::Empty));
+    out.push(Lir::Loop(BlockType::Empty));
+    out.push(Lir::LocalGet(pos));
+    out.push(Lir::LocalGet(blen));
+    out.push(Lir::I32GeS);
+    out.push(Lir::BrIf(1));
+    out.push(Lir::LocalGet(cursor));
+    out.push(Lir::LocalGet(pos));
+    out.push(Lir::I32Add);
+    out.push(Lir::LocalGet(rope));
+    out.push(Lir::LocalGet(pos));
+    out.push(Lir::CallImport(OP_BYTES_GET));
+    out.push(Lir::I32Store8 { offset: 0 });
+    out.push(Lir::LocalGet(pos));
+    out.push(Lir::ConstI32(1));
+    out.push(Lir::I32Add);
+    out.push(Lir::LocalSet(pos));
+    out.push(Lir::Br(0));
+    out.push(Lir::End);
+    out.push(Lir::End);
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::LocalGet(cursor));
+    out.push(Lir::I32Store {
+        offset: payload_off,
+    }); // ptr
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::LocalGet(blen));
+    out.push(Lir::I32Store {
+        offset: payload_off + 4,
+    }); // len
+    out.push(Lir::LocalGet(cursor));
+    out.push(Lir::LocalGet(blen));
+    out.push(Lir::I32Add);
+    out.push(Lir::LocalSet(cursor)); // cursor += len
+    out.push(Lir::End);
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
