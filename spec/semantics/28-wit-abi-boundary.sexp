@@ -6093,3 +6093,36 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a payloadless enum as a FIELD of a typed record EXPORT result crosses BY NAME (corpus TODO — canon_write gap)"
+  (doc
+    "SHAPE 136 (v-wit-boundary corpus TODO) — a payloadless `enum` as a FIELD of a typed `record` EXPORT
+           result under a declared world: f(x:s64) -> record{c: enum{red,green,blue}, n: s64}, guest returns
+           {c: Red|Green, n: x}. The idealistic behavior: the enum field crosses BY CASE NAME (guest Red ->
+           `red`, Green -> `green`), so f(0) -> {c: red, n: 0} and f(5) -> {c: green, n: 5} — the nested/spilled
+           twin of the top-level enum result (SHAPE 60/64), placing the case by name like a record field
+           (SHAPE 20). It DECLINES CDZ0900 TODAY: the `canon_write_of` payloadless-enum arm (used at every
+           SPILLED position — a record-result field, a list element) was a MISCOMPILE — it stored garbage (the
+           enum DEFINED type was not emitted for the nested position → runtime `discriminant N out of range
+           [0..0)`, N = the sibling scalar's value) — so it now DECLINES rather than mis-emitting
+           (decline-don't-miscompile), which the imposed-world contract guard surfaces as CDZ0900. Grades Todo
+           now (CDZ0900 is a coded compile error) and auto-locks to Pass when the canon_write enum projection is
+           root-caused + fixed (emit the nested `enum` defined type + read the field's disc correctly, then
+           remap guest-disc -> WIT-disc BY NAME like `ResultLower::EnumRemap`). The `list<enum>` twin traps
+           identically (same arm). Owned by v-wit-boundary. The TOP-LEVEL enum result/param are UNAFFECTED
+           (SHAPE 60/64/67/68, a different lowering path).")
+  (wit-world
+    (world
+      w
+      (export cadenza:demo/iface (member f (func (param x (s64)) (result (record (= c (enum red green blue)) (= n (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (f (: x Int64)) #record((= c (if (= x 0) Color.Red Color.Green)) (= n x)))
+      (export f)))
+  (call f (: 0 Int64))
+  (output #record((= c (red unit)) (= n 0)))
+  (call f (: 5 Int64))
+  (output #record((= c (green unit)) (= n 5))))
