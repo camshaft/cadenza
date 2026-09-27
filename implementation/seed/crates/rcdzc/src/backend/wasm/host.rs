@@ -643,6 +643,27 @@ pub fn is_boundary_record(db: &mut Db, ty: &Ty) -> bool {
 /// ([`field_boundary_abi`], marshalled into `mem` by `emit_list_arg_marshal`), OR a `record` whose EVERY field
 /// crosses at the boundary ([`is_boundary_record`], recursed by `emit_record_arg_marshal`). An option/variant
 /// ELEMENT (no such arm in `emit_tuple_reg_flatten`) does NOT cross this increment.
+/// Whether a value-heap `option<T>` crosses natively as the built-in WIT `option<T>` — its PAYLOAD is one
+/// [`emit_option_reg_flatten`] handles: a SCALAR (`abi_val_type`), a `Bytes` leaf, a `tuple` of scalars/`Bytes`,
+/// or a `record` of scalars/`Bytes`. A non-option `ty` yields `false` (no payload). Shared by the top-level
+/// option-ARG gate + the option-ELEMENT-of-a-tuple gate, so they stay in lockstep with the marshal.
+fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
+    option_payload_ty(db, ty).is_some_and(|p| {
+        abi_val_type(&p).is_some()
+            || matches!(p, Ty::Bytes)
+            || matches!(p.strip_nominal(), Ty::Tuple(es)
+            if !es.is_empty()
+                && es.iter().all(|e| {
+                    abi_val_type(e).is_some() || matches!(e.strip_nominal(), Ty::Bytes)
+                }))
+            || matches!(p.strip_nominal(), Ty::Record(sub)
+            if !sub.is_empty()
+                && sub.values().all(|f| {
+                    abi_val_type(f).is_some() || matches!(f.strip_nominal(), Ty::Bytes)
+                }))
+    })
+}
+
 fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
     let Ty::Tuple(elems) = ty.strip_nominal() else {
         return false;
@@ -668,6 +689,9 @@ fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
                 }
                 _ => false,
             }
+            // an `option<T>` element crosses iff its payload crosses (`emit_option_reg_flatten`, the same twin a
+            // top-level option ARG uses) — pushes `(disc, payload…)` inline into the tuple's positional flatten.
+            || option_arg_crosses(db, e.strip_nominal())
             || is_boundary_record(db, e.strip_nominal())
     })
 }
@@ -754,12 +778,15 @@ pub fn tuple_arg_needs_cursor(db: &mut Db, ty: &Ty) -> bool {
                 fs.values().any(|f| leaf_needs(db, f))
             }
             other => {
-                // an `option<bytes>` or `result<list<u8>, enum>` leaf copies its rope into `mem`; an
-                // `option<scalar>`/`option<tuple-of-scalars>` does not.
+                // an `option<T>` leaf copies into `mem` iff its PAYLOAD does — recurse into the payload (an
+                // `option<bytes>`/`option<record-with-a-bytes-field>`/`option<tuple-with-bytes>` needs the
+                // cursor; an `option<scalar>`/`option<tuple-of-scalars>` does not). A `result<list<u8>, enum>`
+                // leaf copies its Ok rope.
                 let other = other.clone();
-                option_payload_ty(db, &other)
-                    .is_some_and(|p| matches!(p.strip_nominal(), Ty::Bytes | Ty::String))
-                    || result_bytes_enum(db, &other).is_some()
+                if let Some(p) = option_payload_ty(db, &other) {
+                    return leaf_needs(db, &p);
+                }
+                result_bytes_enum(db, &other).is_some()
             }
         }
     }
@@ -1484,6 +1511,29 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                 // list FIELD. `tuple_arg_crosses` guarantees the element crosses.
                                 field_boundary_abi(db, e)
                                     .expect("list element crosses by `tuple_arg_crosses`")
+                            } else if option_payload_ty(db, e).is_some() {
+                                // an `option<T>` element flattens to `(disc, payload…)` via
+                                // `emit_option_reg_flatten` (the register twin of the top-level option ARG). Its
+                                // abi is the shared `field_boundary_abi` (`RecordFieldAbi::Option(<payload>)`);
+                                // an `option<record>` payload is REORDERED to the element's option WIT record
+                                // order (the marshal reads WIT order), exactly as the top-level option arg does.
+                                let abi = field_boundary_abi(db, e)
+                                    .expect("option element crosses by `tuple_arg_crosses`");
+                                match (abi, elem_wits.as_ref().and_then(|ws| ws.get(i))) {
+                                    (
+                                        RecordFieldAbi::Option(inner),
+                                        Some(crate::wit_world::WitType::Option(pw)),
+                                    ) => {
+                                        let inner = match *inner {
+                                            RecordFieldAbi::Record(fields) => RecordFieldAbi::Record(
+                                                reorder_record_fields_to_wit(fields, pw.as_ref()),
+                                            ),
+                                            other => other,
+                                        };
+                                        RecordFieldAbi::Option(Box::new(inner))
+                                    }
+                                    (abi, _) => abi,
+                                }
                             } else {
                                 // a RECORD element: build each field's boundary abi via the shared recursive
                                 // builder (`field_boundary_abi` — scalar/`Bytes`/nested record/list/tuple/option/
@@ -2027,24 +2077,8 @@ pub fn first_unrepresentable_host_op(
             // flattens each POSITIONAL element via `emit_tuple_reg_flatten`). Same reducer/host-fused gating; an
             // `option<record>` / a nested/byte-leaf tuple payload is a later increment so it is admitted here for
             // a SCALAR, `Bytes`, or all-scalar tuple payload — matching the classifier + the marshal, in lockstep.
-            let arg_is_boundary_option = allow_option_bytes
-                && !peer_bound
-                && option_payload_ty(db, &at).is_some_and(|p| {
-                    abi_val_type(&p).is_some()
-                        || matches!(p, Ty::Bytes)
-                        || matches!(p.strip_nominal(), Ty::Tuple(es)
-                        if !es.is_empty()
-                            && es.iter().all(|e| {
-                                abi_val_type(e).is_some()
-                                    || matches!(e.strip_nominal(), Ty::Bytes)
-                            }))
-                        || matches!(p.strip_nominal(), Ty::Record(sub)
-                        if !sub.is_empty()
-                            && sub.values().all(|f| {
-                                abi_val_type(f).is_some()
-                                    || matches!(f.strip_nominal(), Ty::Bytes)
-                            }))
-                });
+            let arg_is_boundary_option =
+                allow_option_bytes && !peer_bound && option_arg_crosses(db, &at);
             // A top-level `tuple<…>` arg crosses NATIVELY as the built-in WIT `tuple<T…>` — the guest flattens
             // the value-heap tuple positionally (`select::emit_tuple_reg_flatten`; a Bytes element copies its
             // rope into `mem`, a nested tuple element recurses inline, a record element recurses

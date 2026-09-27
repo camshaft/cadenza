@@ -1224,6 +1224,20 @@ pub(super) fn collect_used_ops_into_seen(
                                 for fty in &ftys {
                                     collect_record_field_ops(db, fty, out);
                                 }
+                            } else if crate::backend::wasm::host::option_payload_ty(db, e).is_some()
+                            {
+                                // An `option<T>` element: `arr-get` (already inserted) the Option handle, then
+                                // `emit_option_reg_flatten` reads `sum-disc` + (on Some) `sum-payload` + the
+                                // payload's own ops — declare them via the shared `collect_record_field_ops` on
+                                // the payload (a scalar's unbox op, a `Bytes`/tuple/record payload's ops). Mirrors
+                                // the top-level option-ARG arm.
+                                out.insert(OP_SUM_DISC);
+                                out.insert(OP_SUM_PAYLOAD);
+                                if let Some(payload) =
+                                    crate::backend::wasm::host::option_payload_ty(db, e)
+                                {
+                                    collect_record_field_ops(db, &payload, out);
+                                }
                             } else if let Ok(Some(read)) = get_op_ty(db, e) {
                                 out.insert(read);
                             }
