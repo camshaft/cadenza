@@ -1115,7 +1115,11 @@
   (call main (: 1 Int64))
   (output (: -1 Int64))
   (call main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  ; reclaim lock (v-memory-safety): the `(Ok #list(a b))` heap value built via the hoisted `?` boundary lets
+  ; must reclaim on every path -- the both-Ok path (list built + List.len) and the Err short-circuits (list never built, Ok payloads unwind). Enforces the doc's "leak-clean (live-objects 0 every
+  ; path)" (was value-only). BRICK-3 compound-ctor `?` reclaim family.
+  (live-objects 0))
 
 (case
   "trt1 expression-position `?`s as `#tuple` elements hoist left-to-right and short-circuit"
@@ -1148,7 +1152,11 @@
   (call main (: 1 Int64))
   (output (: -1 Int64))
   (call main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  ; reclaim lock (v-memory-safety): the `(Ok #tuple(a b))` heap value built via the hoisted `?` boundary lets
+  ; must reclaim on every path -- the both-Ok path (tuple built + projected) and the Err short-circuits (tuple never built, payloads unwind). Enforces the doc's "leak-clean (live-objects 0 every
+  ; path)" (was value-only). BRICK-3 compound-ctor `?` reclaim family.
+  (live-objects 0))
 
 (case
   "trr3 expression-position `?`s as `#record` FIELD values hoist left-to-right and short-circuit"
@@ -1184,7 +1192,11 @@
   (call main (: 1 Int64))
   (output (: -1 Int64))
   (call main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  ; reclaim lock (v-memory-safety): the `(Ok #record((= a a)(= b b)))` heap value built via the hoisted `?` boundary lets
+  ; must reclaim on every path -- the both-Ok path (record built + fields read) and the Err short-circuits (record never built, payloads unwind). Enforces the doc's "leak-clean (live-objects 0 every
+  ; path)" (was value-only). BRICK-3 compound-ctor `?` reclaim family.
+  (live-objects 0))
 
 (case
   "trn1 two `?`s NESTED across compound constructors (record + list inside a tuple) each short-circuit"
@@ -1218,7 +1230,11 @@
   (call main (: 1 Int64))
   (output (: -1 Int64))
   (call main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  ; reclaim lock (v-memory-safety): the `(Ok #tuple(#record #list))` heap value built via the hoisted `?` boundary lets
+  ; must reclaim on every path -- the both-Ok path (nested tuple/record/list built + read) and the Err short-circuits (nothing built, payloads unwind). Enforces the doc's "leak-clean (live-objects 0 every
+  ; path)" (was value-only). BRICK-3 compound-ctor `?` reclaim family.
+  (live-objects 0))
 
 ; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
 ; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return).
