@@ -6101,32 +6101,20 @@ fn canon_write_of(
         // shape). Gated on the guest decl-order MATCHING the WIT case-order by name, so the guest's raw disc
         // IS the WIT case index (no runtime remap; a reordering declines this increment — a later slice). The
         // guest-export result-side twin of a host-import enum arg/result (bare-i32 enum-disc).
-        Ty::Sum { decl, .. } if db.is_enum_disc(*decl) => {
-            use crate::backend::common::export_name::kebab_extern_name;
-            let wit_cases: Vec<String> = match wty {
-                WitType::Enum(cs) => cs.clone(),
-                WitType::Variant(cs) if cs.iter().all(|(_, p)| p.is_none()) => {
-                    cs.iter().map(|(n, _)| n.clone()).collect()
-                }
-                _ => return None,
-            };
-            let guest_cases: Vec<String> = {
-                let dr = db.type_decl_by_occ(*decl)?;
-                dr.variants
-                    .iter()
-                    .map(|v| kebab_extern_name(&v.name))
-                    .collect()
-            };
-            if guest_cases != wit_cases {
-                return None; // a case REORDER would need a runtime disc remap — later increment
-            }
-            let (disc_size, _) = wit_ctype::variant_disc_layout(&vec![None; wit_cases.len()]);
-            let store = match disc_size {
-                1 => op::I32_STORE8,
-                2 => op::I32_STORE16,
-                _ => op::I32_STORE,
-            };
-            Some(CanonWrite::EnumDisc { store })
+        // A payloadless `enum` (all-nullary sum) as a SPILLED FIELD/ELEMENT (a record-result field, a list
+        // element) — DECLINES this increment. The `CanonWrite::EnumDisc` lowering here is a KNOWN MISCOMPILE:
+        // in a nested/spilled position it stores garbage (verified — `record{c: enum, n: s64}` yields the wrong
+        // case and traps "discriminant N out of range [0..0)" with N = the sibling scalar's value; `list<enum>`
+        // traps identically), i.e. the `enum` DEFINED type is not emitted for the nested position (0 cases) AND
+        // the disc read is wrong. Until the projection is root-caused + fixed (corpus TODO SHAPE 136, owned by
+        // v-wit-boundary), DECLINE rather than mis-emit (decline-don't-miscompile): a coded CDZ0900 at the typed
+        // export is safe, a silent wrong-case/trap is not. The TOP-LEVEL enum result/param are UNAFFECTED — they
+        // cross via `record_result_lower`'s Passthrough/`ResultLower::EnumRemap`, not this canon-write arm
+        // (SHAPE 60/64/67/68). A payloadless enum reaching here matches a WIT `enum` OR an all-nullary `variant`.
+        Ty::Sum { decl, .. }
+            if db.is_enum_disc(*decl) && matches!(wty, WitType::Enum(_) | WitType::Variant(_)) =>
+        {
+            None
         }
         Ty::Sum { decl, .. } if matches!(wty, WitType::Variant(_)) => {
             use crate::backend::common::export_name::kebab_extern_name;
