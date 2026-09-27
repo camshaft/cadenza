@@ -1268,6 +1268,34 @@
   (output (: 7 Int64))
   (live-objects 0))
 
+(case
+  "trmc1 a `?` as the argument of a MODULE-MEMBER call unwraps then calls — pending member-call arg descent"
+  (doc
+    "The member-call face of the expression-position `?`, an idealistic TODO pinning a KNOWN GAP: a `?` as the
+     argument of a module-member/method call — `(Ok (List.len (try r)))` under a `(Result Int64 String)`
+     boundary. It DECLINES today (CDZ0900): unlike a plain-name call `(add (try r) …)` (trc1) or a user-fn
+     call `(dbl (try r))`, a member call `List.len` desugars to a `.`-headed member-access node, so the hoist
+     search (`find_hoistable_try`) — which descends only plain-name and flat compound-ctor heads — does not
+     reach the `?` argument. IDEALISTICALLY it should hoist to `(let ((h (try r))) (Ok (List.len h)))`: k>0 →
+     Ok payload `#list(10 20 30)`, `List.len` = 3; k=0 → Err short-circuits `mk` to -1. The future fix must
+     descend a member-call's arguments AND bind a runtime RECEIVER (for a `recv.method` call) as a prefix
+     `let` ahead of the `?`, to preserve receiver-before-argument evaluation order — the same eval-order care
+     as the `#map` key-before-value descent. A MODULE member (`List`, static — no runtime receiver) is the
+     safe common case. Flips to a run when member-call arg descent lands.")
+  (input
+    (do
+      (def
+        (mk (: r (Result (List Int64) String)))
+        (: (Ok (List.len (try r))) (Result Int64 String)))
+      (def
+        (main (: k Int64))
+        (match (mk (if (> k 0) (Ok #list(10 20 30)) (Err "e"))) ((Ok v) v) ((Err _e) -1)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 3 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
 ; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
 ; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return).
 ; FIXED (v-effects): previously REJECTED with `CDZ0101: unbound name #seed<n>` — under this conjunction
