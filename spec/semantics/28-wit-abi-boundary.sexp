@@ -7862,3 +7862,58 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a bare result<tuple-with-a-Bytes-element, enum> host-op arg crosses on the Ok arm (mem-writing element)"
+  (doc
+    "SHAPE 204 (v-wit-boundary) — widens the `result<tuple, enum>` arg (SHAPE 192) from all-scalar elements to
+           any boundary element (`result_tuple_enum` now admits every shape `field_boundary_abi` does — the SAME
+           element set the direct tuple arg uses, symmetric with the record-FIELD widening of SHAPE 202). A
+           `tuple<s64, bytes>` Ok: `emit_result_tuple_arg_reg_flatten` now carries a `Vec<RecordFieldAbi>` and
+           threads a `cursor` to `emit_tuple_reg_flatten`, whose Bytes-element arm copies the rope into `mem` and
+           writes `(ptr,len)` into the element's two slots. This is the first `result<tuple>` that needs `mem` —
+           `set_needs_memory` (per-element like the direct tuple arg) + the emit.rs cursor pre-scan admit it, and
+           `collect_used_ops` declares the element ops via `collect_record_field_ops` (the scalar-only `get_op_ty`
+           would miss `bytes-len`/`bytes-get` → CDZ0910 u32::MAX). The component boundary is
+           `result<tuple<s64, list<u8>>, enum>`; the `(list u8)` type is built structurally from the declared WIT.
+           run() emits `(Ok #tuple(5 (Bytes.of #list(1 2))))`; a VALID running component (live-objects=0) is the
+           pin. A `list` element = SHAPE 205.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (s64) (list (u8))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Int64 Bytes) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple(5 (Bytes.of #list(1 2)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare result<tuple-with-a-list-element, enum> host-op arg crosses on the Ok arm (mem-writing element)"
+  (doc
+    "SHAPE 205 (v-wit-boundary) — the list-element counterpart of SHAPE 204. A `tuple<s64, list<s64>>` Ok:
+           the `list<s64>` element is marshalled into `mem` (an outer `(ptr,count)` header in the tuple layout, the
+           backing array spilled at the cursor) by `emit_tuple_reg_flatten`'s list-element arm. Same cursor +
+           `set_needs_memory` + `collect_record_field_ops` machinery as SHAPE 204. Component boundary
+           `result<tuple<s64, list<s64>>, enum>`. run() emits `(Ok #tuple(5 #list(1 2 3)))`; a VALID running
+           component (live-objects=0) is the pin. Completes the compound-tuple-ELEMENT widening of the
+           `result<tuple, enum>` arg.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (s64) (list (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Int64 (List Int64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple(5 #list(1 2 3))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

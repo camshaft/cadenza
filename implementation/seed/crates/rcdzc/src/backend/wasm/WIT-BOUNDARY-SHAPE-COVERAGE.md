@@ -256,22 +256,32 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   type is built structurally from WIT (no `has_list_param` change; verified — modules validate + run,
   live-objects=0). REMAINING (result family): `result<_, variant>` (err arm a variant) / a float Ok; a
   compound/float TUPLE element (`result<tuple<…,bytes>,enum>` — the symmetric tuple widening, next).
-- **[emit, register-path] a top-level `result<tuple-of-scalars, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
-  192/193/194).** The tuple-Ok sibling of the record-Ok result: a new `HostParam::ResultTuple(elem-abis, err-
-  cases)` (detector `result_tuple_enum`, admitting a tuple every element of which is a non-float SCALAR + a
-  payloadless-enum Err). It flattens to `(disc:i32, elem0, elem1, …)` — the discriminant then the Ok tuple's
-  elements POSITIONALLY (element order, NO reorder — a tuple is positional, unlike the record's WIT reorder), the
-  `i32` err disc riding the FIRST element's slot on Err. Every element is a non-float scalar → one register slot
-  each, joining the first with the `i32` err disc never widens past its own width — the slot widths ARE the
-  element widths, no `mem`. `emit_result_tuple_arg_reg_flatten` recurses `emit_tuple_reg_flatten` on Ok (N pushes
-  captured in reverse) and puts the err enum's disc in slot 0 on Err. SHAPE 192/193 (`tuple<s64,s64>`, core
-  `(param i32 i64 i64)`, both arms) + 194 (`tuple<bool,s64>`, mixed `(param i32 i32 i64)`) pin the join + widths.
-  Widened in LOCKSTEP: classifier, `first_unrepresentable_host_op`, emit dispatch (+ reclaim), `collect_used_ops`,
-  `serialize`, `host_imports.rs` (all four `Result*` arms — the structural-CRef `matches!` MUST list every
-  `Result*` variant or a `ResultRecord`/`ResultTuple` param silently falls back to the wrong CRef → CDZ0910
-  component-validation failure; this bit once when a codemod dropped `ResultRecord` from that `matches!`). NOT the
-  cursor pre-scan / `set_needs_memory`. REMAINING (result family): a compound/float tuple element; a record with a
-  compound field; `result<list,enum>`; `result<_, variant>`.
+- **[emit, register-path] a top-level `result<tuple, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
+  192/193/194 all-scalar; 204/205 compound element).** The tuple-Ok sibling of the record-Ok result: a
+  `HostParam::ResultTuple(elem-abis: Vec<RecordFieldAbi>, err-cases)` (detector `result_tuple_enum` + a
+  payloadless-enum Err). It flattens to `(disc:i32, flatten(elem0), flatten(elem1), …)` — the discriminant then
+  the Ok tuple's elements POSITIONALLY (element order, NO reorder — a tuple is positional, unlike the record's WIT
+  reorder), the `i32` err disc riding the FIRST element's slot on Err. `emit_result_tuple_arg_reg_flatten` recurses
+  `emit_tuple_reg_flatten` on Ok (N pushes captured in reverse) and puts the err enum's disc in slot 0 on Err (an
+  integer/ptr first slot joins `i32` without widening). SHAPE 192/193 (`tuple<s64,s64>`, core `(param i32 i64 i64)`,
+  both arms) + 194 (`tuple<bool,s64>`, mixed `(param i32 i32 i64)`) pin the all-scalar join + widths.
+  **WIDENED (SHAPE 204/205):** the Ok tuple may now have ANY boundary element (`result_tuple_enum` admits every
+  element `field_boundary_abi` does — the SAME element set the direct tuple arg uses, symmetric with the
+  record-FIELD widening of SHAPE 202/203). `HostParam::ResultTuple` carries `Vec<RecordFieldAbi>` (was
+  `Vec<AbiValType>`); the marshal derives its capture `slot_vts` from each element's `flatten_record_field_abi`
+  (so a bytes/list element counts its `(ptr,len)` slots — a `valtype_of` count would treat the handle as one i32
+  and leave a value on the stack, CDZ0910) and threads a `cursor` to `emit_tuple_reg_flatten` (a bytes/list/compound
+  element copies its backing into `mem` at the cursor). `set_needs_memory` gets a per-element `ResultTuple` arm and
+  the emit.rs cursor pre-scan reserves for a `result<tuple-with-a-compound-element>` (via `tuple_arg_needs_cursor`
+  on the Ok tuple), and `collect_used_ops` declares the element ops via `collect_record_field_ops` per element (the
+  scalar-only `get_op_ty` missed `bytes-len`/`bytes-get`/`vec-*` → CDZ0910 u32::MAX). SHAPE 204 (`tuple<s64,
+  list<u8>>` bytes element) + 205 (`tuple<s64, list<s64>>` list element), both run + live-objects=0. Widened in
+  LOCKSTEP: classifier, `first_unrepresentable_host_op`, emit dispatch (+ reclaim + cursor), `collect_used_ops`,
+  `serialize`, `set_needs_memory`, `host_imports.rs` (all `Result*` arms — the structural-CRef `matches!` MUST list
+  every `Result*` variant or a `ResultRecord`/`ResultTuple` param silently falls back to the wrong CRef → CDZ0910
+  component-validation failure; this bit once when a codemod dropped `ResultRecord` from that `matches!`). REMAINING
+  (result family): a FLOAT tuple element (needs the reinterpret join at slot 0); `result<_, variant>` (err arm a
+  variant).
 - **[emit, MEM-path] a top-level `result<list<scalar>, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 195/196).**
   The list-Ok sibling of the Bytes-Ok result: a new `HostParam::ResultList(err-cases)` (detector
   `result_list_enum`, admitting a `list<T>` whose ELEMENT is a scalar + a payloadless-enum Err; a `list<u8>` Ok is
