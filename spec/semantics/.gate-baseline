@@ -11342,7 +11342,7 @@ pass	a mutually-recursive group with a CONSTANT-condition branch-perform sharing
 todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
 todo	a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered
 todo	a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)
-todo	a record-variant-record three-level pattern destructures like its two-level faces (should-work; today the descent declines)
+pass	a record-variant-record three-level pattern destructures like its two-level faces
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands

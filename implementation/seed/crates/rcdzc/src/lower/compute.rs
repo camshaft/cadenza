@@ -296,13 +296,21 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                             _ => crate::ty::Ty::Any,
                         };
                     }
-                    crate::core::RecordSubStep::Payload(_) => {
+                    crate::core::RecordSubStep::Payload(head) => {
                         walk.push(crate::core::PathStep::Payload);
-                        // The payload's type is not tracked further here (a `Field`/`Elem` AFTER a variant
-                        // payload below a field is a niche the type-walk grounds to `Any` → the `Field` arm
-                        // below then declines cleanly). The common variant-below-field binds directly under
-                        // the `Payload` (no following step), so this suffices.
-                        cur_ty = crate::ty::Ty::Any;
+                        // Track the variant payload's type so a `Field`/`Elem` step BELOW the payload — a
+                        // record-variant-record three-level pattern `(record (= st (Active (record (= score
+                        // sc)))))` whose descent is `Field(st) → Payload(Active) → Field(score)` — resolves
+                        // the inner field against the real payload type instead of degrading to `Any` (which
+                        // made the following `Field` arm decline). A nominal newtype unwraps to its inner;
+                        // otherwise instantiate the variant head's payload against the current type. Mirrors
+                        // `project_record_substeps` in infer, which already grounds the binder's type this way.
+                        cur_ty = if let crate::ty::Ty::Nominal { inner, .. } = &cur_ty {
+                            (**inner).clone()
+                        } else {
+                            crate::infer::payload_ty_at_instantiation(db, *head, &cur_ty)
+                                .unwrap_or(crate::ty::Ty::Any)
+                        };
                     }
                     crate::core::RecordSubStep::Field(fk) => {
                         let crate::ty::Ty::Record(fs) = &cur_ty else {

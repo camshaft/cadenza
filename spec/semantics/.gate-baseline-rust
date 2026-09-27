@@ -10965,7 +10965,7 @@ todo	a record param carrying a bytes leaf beside a scalar compiles and runs (via
 todo	a record param field is read by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)
 todo	a record param interface export builds the record via the boundary wrapper and runs (via an imposed WIT world)
 todo	a record result field is written by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)
-todo	a record-variant-record three-level pattern destructures like its two-level faces (should-work; today the descent declines)
+pass	a record-variant-record three-level pattern destructures like its two-level faces
 todo	a record-with-a-MIXED-WIDTH-variant-field host arg emits, loads, and runs (via an imposed WIT world)
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
