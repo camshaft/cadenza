@@ -14073,15 +14073,25 @@
   (error CDZ0407))
 
 (case
-  "mrs1 a two-resume arm over a HEAP-allocating body declines cleanly (non-tail resume, later increment)"
+  "mrs1 a two-resume arm over a HEAP-allocating body folds by hoisting the allocation out of the per-resume splice"
   (doc
-    "The boundary of the tail-resumptive fold on a TWICE-resuming arm: `(+ (resume s s) (resume s s))`
-           over a body that ALLOCATES heap before the perform (`(let ((xs (bld 3))) (+ (List.len xs)
-           (E.ask)))`) declines honestly — 'this handler is not yet reducible by the tail-resumptive fold
-           (cross-function or non-tail resume arrives in a later increment)'. Pins that a multi-resume over a
-           non-re-computable (heap) continuation is REJECTED rather than double-freeing the captured heap —
-           the safe boundary. (A two-resume over a PURE re-computable body IS accepted and re-runs it; that
-           value's one-shot-vs-multi-shot intent is a v-effects semantic question, not pinned here.)")
+    "A TWICE-resuming arm `(+ (resume s s) (resume s s))` over a body that ALLOCATES heap in a strict
+           PREFIX before the perform (`(let ((xs (bld 3))) (+ (List.len xs) (E.ask)))`). The bare multi-shot
+           fold would splice the continuation — which INCLUDES the `(let ((xs (bld 3))) …)` — twice, RE-
+           ALLOCATING the list per resume (formerly a CDZ0408 decline: the safe boundary against double-using
+           the captured heap). FOLDS since the v-effects prefix-let hoist (same transform as hcc1's foreign
+           case): the pure List-allocating prefix is HOISTED OUT of the handle so `xs` is allocated ONCE, then
+           the multi-shot fold splices the now-alloc-free continuation `(+ (List.len xs) [])` twice — each
+           splice only BORROWS `xs` via `List.len` (a non-consuming read). One owner, two borrows, one drop:
+           heap-safe (live-objects 0), value 16 (List.len 3 + resume 5, twice). The pin below is the
+           reclaim-safety witness — a per-splice owned copy would double-free (v-memory-safety consult
+           2026-09-27). A PURE-scalar-body twin (mrs2) already folded; this extends the fold to a heap prefix.
+           SCOPE (v-memory-safety-confirmed): the pin proves ONLY the SEQUENTIAL double-resume-then-combine
+           with a BORROW-ONLY prefix (each splice reads `xs` via a non-consuming `List.len`). It does NOT
+           license a DIVERGENT-control-flow resume (only one path reads `xs` → needs a join reclaim) nor a
+           prefix CONSUMED/transferred on a resume path — the `subtree_reaches_discharged_op` own-op exclusion
+           plus Perceus's per-use dup keep the fold in the safe region (a consumed-prefix negative control pins
+           that boundary: live-objects 0 or a clean decline, never a double-free).")
   (input
     (do
       (effect E (op ask (-> Int64)))
@@ -14095,7 +14105,8 @@
           (let ((xs (bld 3))) (+ (List.len xs) (E.ask)))))
       (export main)))
   (call main (: 5 Int64))
-  (output (: 16 Int64)))
+  (output (: 16 Int64))
+  (live-objects 0))
 
 (case
   "mrs2 a PURE-body two-resume arm re-computes the continuation and sums (multi-shot on a re-computable body = 100; v-effects-ruled intended)"

@@ -2275,6 +2275,7 @@ pass	a context-typed empty float map accepts a runtime float key insert
 pass	a context-typed empty float map needs no key inserted to ground its wrapper type
 pass	a context-typed empty float set grounds its element wrapper type
 pass	a context-typed empty float32 map grounds the narrow-float wrapper
+pass	a continuation filed through a RECURSIVE pqueue insert (base arm) folds to the stored wake instant
 pass	a contradictory ARROW annotation on a function value is rejected
 pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
 pass	a contradictory arrow annotation on a function in a SUM payload is rejected
@@ -4432,6 +4433,7 @@ pass	a record-parameter export returns a tuple computed from its fields
 pass	a record-returning closure alongside a parameterized plain export — the closure
 pass	a record-returning closure alongside a parameterized plain export — the plain
 pass	a record-type mismatch message renders the type capitalized, matching the annotation spelling
+pass	a record-variant-record three-level pattern destructures like its two-level faces
 pass	a recursion carrying a Bytes parameter does a fallible read in its base arm
 pass	a recursion carrying a List parameter does a fallible read in its base arm
 pass	a recursion that builds Bytes via Bytes.concat const-folds byte-exact
@@ -5074,6 +5076,7 @@ pass	a runtime width NESTED in a compound annotation is rejected
 pass	a runtime wrap never traps at the widest input boundary and reads the low byte
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime zero denominator PRODUCED BY ARITHMETIC traps at construction
+pass	a runtime-DISC `?` inside a stored closure applies per-call
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
 pass	a runtime-assembled tree round-trips equal to its quoted twin
 pass	a runtime-branched tuple returned from a callee is projected in the caller
@@ -5646,6 +5649,7 @@ pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a truncating conversion to an unusual width keeps that width's low bits
 pass	a try early-return unwinds a handle with a list seed and a match-shaped arm
+pass	a try over a mutual-recursive callee short-circuits out of the converted loop
 pass	a tuple = whose Bool element derives from a const-divisor rem is emitted as valid wasm
 pass	a tuple = with differing const-divisor Bool elements compares unequal
 pass	a tuple ARGUMENT with one too many elements carries a delete fix on the trailing element
@@ -7937,7 +7941,6 @@ pass	eoi2 a String (mem-leaf) param and an Option (sum) param interleave in one 
 pass	eoi3 an Option<Int8> entry param's narrow Some payload widens correctly
 pass	eop1 an Option entry param read inside a handle body composes with the fold
 pass	eop2 an Option-of-list entry param measures its Some payload
-todo	eop3 an Option-of-list-of-string entry param measures its Some payload length
 pass	eor1 an Option entry param with a compound record payload sums the active arm
 pass	eos1 an option<string> entry param delivers its Some payload's byte-length
 pass	eot1 an Option entry param with a compound tuple payload sums the active arm
@@ -9545,13 +9548,10 @@ pass	rpp16 a Tuple entry param with an option element projects both the scalar a
 pass	rpp17 a Record entry param with an option-of-tuple field projects the Some payload
 pass	rpp18 a Record entry param with an option-of-record field projects the Some payload
 pass	rpp19 a Record entry param with an option-of-bytes field measures the Some payload byte-length
+pass	rpp2 an open-row helper projects a field of the boundary Record param
 pass	rpp20 a Record entry param with an option-of-string field measures the Some payload byte-length
 pass	rpp21 a Record entry param with a result-of-scalar-and-string field crosses the width-joined String arm
 pass	rpp22 a Record entry param with a result-of-two-strings field measures the active byte-leaf arm
-todo	rpp23 a Record entry param with a list<option<scalar>> field reads an element's Some payload
-todo	rpp24 a Tuple entry param with a list<option<scalar>> element reads an element's Some payload
-todo	bda1 a BigInt ENTRY parameter is decoded from its base-10 argument literal (value-form arg-decode)
-pass	rpp2 an open-row helper projects a field of the boundary Record param
 pass	rpp3 a Record entry param with a heap list field measures both
 pass	rpp4 a scalar Tuple entry param projects both positions
 pass	rpp5 a Tuple entry param with a heap list element measures both
@@ -9989,6 +9989,7 @@ pass	take-while where every element satisfies the predicate keeps the whole run
 pass	take-while where the first element fails the predicate returns the empty run
 pass	tax1 PROGRESSIVE tax brackets with a seed-shaped edge — assess splits the income into three bands via chained match binders over clamped compounds (ten twenty and thirty percent truncating), accumulating into the audit total, and the WIDER bracket taxes every income LESS while the sub-bracket income taxes to zero on both
 pass	tb1 a def RETURNS a tuple of two draws — the caller destructures the multi-value result of a performing helper
+pass	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)
 pass	tdr1 a RESERVOIR gate with a ratcheting threshold — inflow raises the level, gate releases HALF truncating only above the threshold (which ratchets up by one after every release), and the LOWER starting threshold releases on the very first gate while the higher one holds, the runs re-converging on the final held gate
 pass	tel1 a TELESCOPE tracker with a slew-rate limit — track names a target locking within five degrees (else a nine-hundred miss with the gap's low digits), slew moves the azimuth toward the target by at most SEVEN degrees (a two-sided inline clamp of the signed difference) tagging an exact arrival, the read packs azimuth lock and arrival, and one seed starts within locking range so every row down to the read disagrees with the far-parked run
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
@@ -10472,15 +10473,17 @@ pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive rows each route distinctly
 pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
+pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
 pass	trm1 a NESTED tuple-rest re-match peels two layers, through an if-selected scrutinee, with a RUNTIME element
 pass	trm1 an export returns a two-element Set (one reachable cell, constructor-application render)
 pass	trm2 an EXACT-arity tuple leaves the rest binder EMPTY, and a rest-only pattern gathers the whole tuple
 pass	trm2 an export returns a one-entry Map (one reachable cell)
 pass	trm3 an export returns a BigInt built from the scalar param (one reachable cell)
 pass	trm4 an export returns an exact Rational from the scalar param (three reachable cells)
-pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
 pass	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 pass	trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepening negative count), push passes and relocks or bounces (bounces answer their own negative count), the seed decides whether the gate STARTS unlocked, and the first push diverges the runs from the very first row
+pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
+pass	trr2 an expression-position `?` in a TAIL if-arm hoists into the arm and short-circuits
 pass	true is greater than false
 pass	true is not less than false
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
@@ -10594,6 +10597,8 @@ pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two literal list elements in one arm conjoin — both must match
 pass	two literal-payload arms of the same ctor variant each fire on their own literal
+pass	two map list elements FALL THROUGH when the second element's key is absent
+pass	two map list elements in one arm each refine on a key
 pass	two maps of different sizes are unequal, not a type error
 pass	two maps with different keys are unequal, not a type error
 pass	two module exports are selected by a runtime branch and applied as values
@@ -10620,6 +10625,8 @@ pass	two record list elements with two fields each FALL THROUGH when a second-el
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 pass	two refutable literal fields in one record arm compose (both must match)
+pass	two refutable nested-list elements FALL THROUGH when the second element's literal differs
+pass	two refutable nested-list elements in one arm each refine
 pass	two refutable record list elements in one arm each refine (#8418)
 pass	two refutable tuple list elements in one arm each refine and bind (#8418)
 pass	two residuals from ONE curry source hold distinct first-stage captures
@@ -10871,8 +10878,8 @@ todo	a Value.encode/Value.decode round-trip of a NULLARY single-ctor newtype is 
 todo	a bakeable nullary type-value export crosses the boundary (the control)
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a bare TUPLE export result crosses as a typed WIT tuple (declared world)
-todo	a bare enum RESULT member of a typed export interface crosses (payloadless-enum disc passthrough)
 todo	a bare enum PARAM member of a typed export interface crosses (payloadless-enum disc passthrough)
+todo	a bare enum RESULT member of a typed export interface crosses (payloadless-enum disc passthrough)
 todo	a bare list<scalar>/List PARAM member of a typed export interface crosses (mem_leaf List-arm coverage)
 todo	a bare list<u8>/Bytes PARAM member of a typed export interface crosses (multi-export list<u8> param — operator §2 decode-check half)
 todo	a bare list<u8>/Bytes RESULT member of a typed export interface crosses (multi-export list<u8> result — operator §2 encode-quoted half)
@@ -10892,7 +10899,6 @@ todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a consumer bound to two distinct peer interfaces combines their results
 todo	a consumer bound to two scalar peer interfaces runs with no runtime
 todo	a consumer calls a scalar op across a source peer provider
-pass	a continuation filed through a RECURSIVE pqueue insert (base arm) folds to the stored wake instant
 todo	a cross-function performing-arg call folds by inlining the effect-reaching helper
 todo	a declared-world enum EXPORT whose guest case order MISMATCHES the WIT remaps by case NAME to the declared order
 todo	a delegated perform with no recorded host response traps
@@ -10954,7 +10960,6 @@ todo	a record param carrying a bytes leaf beside a scalar compiles and runs (via
 todo	a record param field is read by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)
 todo	a record param interface export builds the record via the boundary wrapper and runs (via an imposed WIT world)
 todo	a record result field is written by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)
-pass	a record-variant-record three-level pattern destructures like its two-level faces
 todo	a record-with-a-MIXED-WIDTH-variant-field host arg emits, loads, and runs (via an imposed WIT world)
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
@@ -10976,7 +10981,6 @@ todo	a runtime Bytes value's encode member still renders after other member call
 todo	a runtime Bytes value's is-empty member crosses (call-method, bool result)
 todo	a runtime Bytes value's to-bytes member crosses (call-method, raw bytes result)
 todo	a runtime RECURSIVE Ast (a list of nodes) round-trips through the R2 value codec
-pass	a runtime-DISC `?` inside a stored closure applies per-call
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a runtime-produced String argument crosses to a peer as its handle
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
@@ -10992,7 +10996,6 @@ todo	a spilled record EXPORT result RECLAIMS the def's result handle — ZERO li
 todo	a string argument crosses to a peer and the doubled result byte-len is read
 todo	a string result chained through two peers escapes the entrypoint via the methods envelope
 todo	a symbol argument crosses to and from a peer as a runtime handle like a string
-pass	a try over a mutual-recursive callee short-circuits out of the converted loop
 todo	a tuple PARAM member whose element is a list<u8>/Bytes leaf rebuilds the compound element in-cell
 todo	a tuple PARAM member whose element is a nested record rebuilds the compound element in-cell
 todo	a tuple splat inside an effect-handler body spreads its elements
@@ -11044,6 +11047,7 @@ todo	an effect performed via a collection-extracted closure declines honestly (n
 todo	an effectful-operand splat inside a handle body performs exactly once
 todo	an enum PARAM member whose guest case order MISMATCHES the WIT remaps the disc by case NAME — the param twin of SHAPE 64
 todo	an option<s64> param field is read and rebuilt by the wrapper on both arms (via an imposed WIT world)
+todo	bda1 a BigInt ENTRY parameter is decoded from its base-10 argument literal (value-form arg-decode)
 todo	bk1 two runtime Blake3 digests of the same bytes bare-compare equal
 todo	bk2 one-byte-different inputs bare-compare unequal digests
 todo	bk3 runtime digests dedup as set members by content
@@ -11076,6 +11080,7 @@ todo	cvp1 a variant host RESULT with a LIST payload lifts and is measured
 todo	cvp2 a variant host RESULT with a RECORD payload lifts and projects
 todo	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
 todo	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
+todo	eop3 an Option-of-list-of-string entry param measures its Some payload length
 todo	expect traps on the absent case of a runtime optional
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
 todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry threads the partner out-state via the operand-partner-hoist group multi-value fold
@@ -11133,6 +11138,8 @@ todo	round-trip: a higher-order closure applied to TWO distinct inner closures
 todo	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
 todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
+todo	rpp23 a Record entry param with a list<option<scalar>> field reads an element's Some payload
+todo	rpp24 a Tuple entry param with a list<option<scalar>> element reads an element's Some payload
 todo	runtime Ast.encode of a nested Ast.List serializes via the recursive walk
 todo	runtime Ast.encode of an Ast.Int serializes via the ast-encode heap op, canonical length
 todo	runtime Ast.print renders a doubly-nested Ast.List
@@ -11150,21 +11157,14 @@ todo	sp6 TWO scalar params + 2-field record result (multi-scalar face)
 todo	sp7 SCALAR param + variant-with-payload result (sum face of the same gate)
 todo	srm2 a NESTED set-rest re-match peels two residual layers (should-work: the residual is a first-class set)
 todo	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
-pass	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)
 todo	the agent-return shape: three peers with a Cedar-gated escaping string result
 todo	the identity-less reducer-echo round-trips the real message shape into a step (via an imposed WIT world)
 todo	the try spelling of the performing bin-parse folds once try-under-effects lands
-pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
-pass	trr2 an expression-position `?` in a TAIL if-arm hoists into the arm and short-circuits
 todo	two adapter records with different state types drive a take-while fold in one program
 todo	two compound arguments each cross as their own handle in one peer call
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	two effects bound to the same interface share one peer instance (both ops run)
 todo	two length-prefixed dependent frames chain at runtime
-pass	two map list elements in one arm each refine on a key
-pass	two map list elements FALL THROUGH when the second element's key is absent
-pass	two refutable nested-list elements in one arm each refine
-pass	two refutable nested-list elements FALL THROUGH when the second element's literal differs
 todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact
 todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
 todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)

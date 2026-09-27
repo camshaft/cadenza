@@ -966,26 +966,22 @@ pub fn reduce_handle(
         }
         return Some(folded);
     }
-    // FOREIGN-PREFIX-LET HOIST (hcc1, 14b:13788). When a MULTI-SHOT arm is present and the handle body is
-    // `(let ((h P)) REST)` whose let-INIT `P` performs a FOREIGN/host op (an op NOT discharged by THIS
-    // handler) with a SCALAR result, BEFORE this handler's own perform (which lives in REST): the multi-shot
-    // fold below splices REST's continuation `C` once PER RESUME, and if the `(h P)` binding stayed inside
-    // `C` it would RE-RUN `P` — a DOUBLED host call (observable via the corpus host-call-COUNT gate; the
-    // VALUE looks right because `h`'s response is the same). HOIST it: fold the handle over REST ALONE (now
-    // foreign-free, so the existing multi-shot fold serves it), leaving `(let ((h P)) <folded>)` so `P` fires
-    // ONCE. Sound: `P` performs a DIFFERENT (enclosing-handled) effect, so it commutes out of this handle —
-    // it is the first thing evaluated on the strict spine either way, and `h` is a captured value, not
-    // re-performed, in the spliced continuations. GATED to a multi-shot handler (a ONE-shot arm splices `C`
-    // once → `P` runs once anyway, so the existing fold already serves it — do not perturb it), a FOREIGN
-    // (not own-op) scalar-result init (mrs1's PURE `(bld 3)` init reaches no foreign perform → NOT hoisted →
-    // stays declined, preserving its heap-safety pin; a heap-returning foreign prefix is a separate case).
-    // The recursive `reduce_handle` reparents its folded body under `body` (the `let`) at REST's slot, so
-    // `body` becomes the wrapped `(let ((h P)) folded)` we return.
+    // PREFIX-LET HOIST for a MULTI-SHOT handle whose body is `(let ((h P)) REST)` (see `foreign_prefix_let_rest`
+    // for the two admissible P shapes). The multi-shot fold below splices REST's continuation `C` once PER
+    // RESUME; if the `(h P)` binding stayed inside `C` it would RE-RUN `P` every resume — for a FOREIGN/host P
+    // (hcc1) a DOUBLED host call, for a heap-allocating P (mrs1) a re-ALLOCATION (the CDZ0408 heap-continuation
+    // decline). HOIST it: fold the handle over REST ALONE (now free of the prefix's cost, so the existing
+    // multi-shot fold serves it), leaving `(let ((h P)) <folded>)` so `P` runs ONCE and each splice only READS
+    // `h`. Sound: `P` commutes out of this handle (it performs a DIFFERENT effect or is pure) — evaluated first
+    // on the strict spine either way. GATED to a multi-shot handler (a one-shot arm splices `C` once → `P`
+    // runs once anyway; do not perturb it) via `foreign_prefix_let_rest`'s tight shape gate. The recursive
+    // `reduce_handle` reparents its folded body under `body` (the `let`) at REST's slot, so `body` becomes the
+    // wrapped `(let ((h P)) folded)` we return. mrs1's heap case is heap-safe ONLY for the sequential
+    // borrow-only shape (v-memory-safety consult) — the nix live-objects gate is the arbiter.
     {
         let arm_bodies: Vec<StructId> = ctx.arms.values().map(|a| a.body).collect();
         let has_multishot = arm_bodies.iter().any(|&b| count_resumes(db, b) > 1);
         if has_multishot
-            && body_reaches_foreign_perform(db, body, &ctx)
             && let Some((binder, prefix_init, rest)) = foreign_prefix_let_rest(db, body, &ctx)
         {
             let folded = reduce_handle(db, init, arms, rest, whole_fn_body)?;
@@ -3176,18 +3172,33 @@ fn foreign_prefix_let_rest(
         return None;
     }
     let (binder, init) = (kv[0], kv[1]);
-    // `P` must reach a FOREIGN/host perform (the effect we protect from per-resume duplication) but NOT this
-    // handler's OWN discharged op (else hoisting it out of the handle leaves that op unhandled).
-    if !body_reaches_foreign_perform(db, init, ctx) || subtree_reaches_discharged_op(db, init, ctx)
-    {
+    // The prefix init must NOT perform THIS handler's own discharged op — hoisting it out of the handle
+    // would leave that op unhandled.
+    if subtree_reaches_discharged_op(db, init, ctx) {
         return None;
     }
-    // Scalar result only (conservative: no heap-capture double-borrow question when `h` is copied into each
-    // spliced continuation). hcc1's `H.log` returns `Int64`.
-    if !matches!(
-        crate::infer::type_of(db, init),
-        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool
-    ) {
+    let reaches_foreign = body_reaches_foreign_perform(db, init, ctx);
+    let ty = crate::infer::type_of(db, init);
+    // Two hoistable shapes, both fold once REST is free of the prefix's cost:
+    //   (a) hcc1: a FOREIGN/host-performing init with a SCALAR result — hoist so the foreign op fires ONCE
+    //       (the per-resume splice would otherwise re-perform it: a doubled host call). `Int`/`Bool` copied
+    //       into each splice — no heap-capture question.
+    //   (b) mrs1: a PURE (no perform) LIST-allocating init — hoist so the list is ALLOCATED ONCE and each
+    //       multi-shot splice only BORROWS it (`List.len`, a non-consuming read). Without the hoist the
+    //       continuation RE-ALLOCATES per resume (the CDZ0408 heap-continuation decline). SOUND for the
+    //       SEQUENTIAL double-resume-then-combine shape iff the splice borrows (one owner, N borrows, one
+    //       drop) — v-memory-safety consult 2026-09-27; the nix live-objects gate + an adversarial consumed
+    //       twin are the decisive arbiter (verify, do not assume). List only (conservative — the exact mrs1
+    //       shape; other heap types are separate gate-verified increments).
+    // case_a admits a scalar prefix ONLY when it performs foreign (hcc1) — a pure scalar let is free to
+    // re-compute, so hoisting it would be needless churn. case_b admits ANY List-allocating prefix (mrs1):
+    // `reaches_foreign` is NOT a usable purity signal here (it over-reports a RECURSIVE callee like `bld` —
+    // mod.rs:7788), so soundness rests on the own-op exclusion above (a prefix performing THIS handler's op
+    // was already rejected) + the nix gate. Hoisting a List alloc out lets it run once + be borrowed per
+    // splice instead of re-allocated.
+    let case_a = reaches_foreign && matches!(ty, crate::ty::Ty::Int(_) | crate::ty::Ty::Bool);
+    let case_b = matches!(ty, crate::ty::Ty::List(_));
+    if !(case_a || case_b) {
         return None;
     }
     Some((binder, init, rest))
