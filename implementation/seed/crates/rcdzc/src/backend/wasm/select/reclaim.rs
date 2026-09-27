@@ -930,6 +930,13 @@ fn collect_escaped_field_projs(
         Core::ListLen { operand }
         | Core::BytesLen { operand }
         | Core::StrScalarLen { operand }
+        // CHAMP companions of `ListLen` (v-core-opt, node#6 CHAMP-asymmetry sweep): `Map.len`/`Set.len` borrow
+        // their operand (O(1) scalar read, no retained handle) — identical to `List.len`. Without them here,
+        // MapSize/SetLen fell to the `_ => !binder_occurs_in` bail → the escaped-field walk aborted → a missed
+        // dup-wrapper reclaim (leak). Adding them recurses the map/set operand borrowing (no escape recorded)
+        // so the walk succeeds. Reclaim-WIDENING direction (leak→0), the safe sibling of 62750d2b57.
+        | Core::MapSize { map: operand }
+        | Core::SetLen { set: operand }
         | Core::Blake3Of { operand }
         | Core::AstPrint { operand, .. }
         | Core::AstEncode { operand, .. }

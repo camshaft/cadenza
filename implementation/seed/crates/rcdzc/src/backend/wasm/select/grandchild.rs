@@ -110,7 +110,14 @@ pub(super) fn arm_consumes_binder_grandchild_seen(
         }
         | Core::ListLen { operand }
         | Core::BytesLen { operand }
-        | Core::StrScalarLen { operand } => {
+        | Core::StrScalarLen { operand }
+        // CHAMP companions of `ListLen` (v-core-opt, node#6 CHAMP-asymmetry sweep): `Map.len`/`Set.len` are
+        // O(1) scalar-i64 length reads that BORROW their operand and retain NO handle — identical to
+        // `List.len` above — so a grandchild read only through them is a BORROW, not a consume. Omitting them
+        // over-fired the consume fence → kept a spurious preservation dup (the sibling of the
+        // `arm_borrows_heap_subvalue` MapSize/SetLen gap, 62750d2b57). Mirrors that relax exactly.
+        | Core::MapSize { map: operand }
+        | Core::SetLen { set: operand } => {
             arm_consumes_binder_grandchild_seen(db, operand, binder, true, excuse, seen)
         }
         Core::SumPayload { scrutinee, .. } => {
