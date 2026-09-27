@@ -23465,7 +23465,12 @@
   (call main (: 5 Int64))
   (output (: 10 Int64))
   (call main (: 7 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  ; reclaim lock (v-memory-safety): the desugar's fresh `__cm` bind is the OWNED variant payload; both the
+  ; keyed-read HIT (main 5 → binds v, body match reclaims __cm) and the key-absent MISS (main 7 → threaded
+  ; catch-all, __cm reclaimed on the fall-through) must leave no live cell. Confirms the #9884 commit's
+  ; "balance verified live-objects 0" as an ENFORCED census assertion (was value-only before).
+  (live-objects 0))
 
 (case
   "a map pattern value sub-pattern may be a literal that refines the match"
