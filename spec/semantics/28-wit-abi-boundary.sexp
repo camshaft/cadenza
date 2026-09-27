@@ -5594,3 +5594,29 @@ cases
   (call g)
   (output #record((= p (flags read execute)) (= n 9)))
   (live-objects 0))
+
+(case
+  "a WIT option<flags> PARAM crosses as (disc, bitset) unpacked into an Option of record-of-bools"
+  (doc
+    "SHAPE 117 — a WIT `option<flags{read,write,execute}>` entry param. The Some payload is a flags, which
+           flattens to a SINGLE i32 bitset, so the option crosses as `(disc: i32, bitset: i32)`. The guest-only
+           option classifier would misread the record-of-bools Some payload as an N-leaf compound (CDZ0910
+           signature mismatch — [I32,I32] boundary vs [I32,I32,I32,I32] rebuild); the WIT-aware `option_flags_arg`
+           builds the correct Some arm (SumArmPayload::Flags, one i32 leaf -> record cell). Guest sums the set
+           bits of the Some payload, or -1 for None: Some((read,execute)) -> 5, Some(()) -> 0, None -> -1. The
+           flags twin of the option<list<scalar>> param (eop2).")
+  (wit-world
+    (world w (export iface (member f (func (param o (option (flags read write execute))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (f (: o (Option (Record (: read Bool) (: write Bool) (: execute Bool)))))
+        (match o
+          ((Option.Some p) (+ (if (. p read) 1 0) (+ (if (. p write) 2 0) (if (. p execute) 4 0))))
+          ((Option.None) -1)))
+      (export f)))
+  (call f (: (Some (flags read execute)) (Option (Record (: read Bool) (: write Bool) (: execute Bool)))))
+  (output (: 5 Int64))
+  (call f (: None (Option (Record (: read Bool) (: write Bool) (: execute Bool)))))
+  (output (: -1 Int64))
+  (live-objects 0))

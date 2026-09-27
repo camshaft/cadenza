@@ -6699,6 +6699,98 @@ fn option_list_arg(
     ))
 }
 
+/// Classify an `option<flags>` param (a two-variant Option whose Some payload is a WIT `flags{…}`, guest-modeled
+/// as a record-of-bools). WIT-AWARE (unlike [`option_list_arg`]): the guest Some payload is a `Ty::Record`, which
+/// the guest-only classifier ([`arg_boundary::fixed_shape_option_scalar_arg`]) would wrongly treat as an N-leaf
+/// COMPOUND — but the WIT flattens flags to a SINGLE i32 bitset, so the two disagree (CDZ0910). Driven by `wty ==
+/// option<flags>`, this builds the correct Some arm ([`SumArmPayload::Flags`], one i32 leaf → record cell), so the
+/// option crosses as `(disc: i32, bitset: i32)`. Field↔bit matched by name; declines >32 labels / a non-bool field.
+fn option_flags_arg(
+    db: &mut Db,
+    gty: &crate::ty::Ty,
+    wty: &crate::wit_world::WitType,
+) -> Option<(
+    Vec<crate::backend::wasm::lir::ValType>,
+    crate::backend::wasm::serialize::SumArgRebuild,
+)> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    use crate::backend::wasm::lir::ValType;
+    use crate::backend::wasm::serialize::{SumArgArm, SumArgRebuild, SumArmPayload};
+    use crate::ty::Ty;
+    use crate::wit_world::WitType;
+    // The WIT must be `option<flags{…}>`.
+    let WitType::Option(inner) = wty else {
+        return None;
+    };
+    let WitType::Flags(labels) = inner.as_ref() else {
+        return None;
+    };
+    if labels.len() > 32 {
+        return None;
+    }
+    let Ty::Sum { decl, args, .. } = gty.strip_nominal() else {
+        return None;
+    };
+    let args = args.clone();
+    let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
+        let dr = db.type_decl_by_occ(*decl)?;
+        if dr.variants.len() != 2 {
+            return None;
+        }
+        (
+            dr.params.clone(),
+            dr.variants.iter().map(|v| v.payloads.clone()).collect(),
+        )
+    };
+    let counts: Vec<usize> = variant_payloads.iter().map(|p| p.len()).collect();
+    let (payload_i, nullary_i) = match counts.as_slice() {
+        [1, 0] => (0u32, 1u32),
+        [0, 1] => (1u32, 0u32),
+        _ => return None,
+    };
+    let payload_occ = variant_payloads[payload_i as usize][0];
+    let pname = db
+        .ast
+        .head_name(payload_occ)
+        .or_else(|| db.ast.as_name(payload_occ))?
+        .to_string();
+    let pi = params.iter().position(|p| *p == pname)?;
+    let payload_ty = args.get(pi)?.clone();
+    // The Some payload must be the guest record-of-bools that `wit_type_to_ty` maps a flags to.
+    let Ty::Record(map) = payload_ty.strip_nominal() else {
+        return None;
+    };
+    if map.len() != labels.len() {
+        return None;
+    }
+    let label_kebab: Vec<String> = labels.iter().map(|l| kebab_extern_name(l)).collect();
+    let mut field_bits: Vec<(u32, u32)> = Vec::with_capacity(labels.len());
+    for (slot, (fname, fty)) in map.iter().enumerate() {
+        if !matches!(fty.strip_nominal(), Ty::Bool) {
+            return None;
+        }
+        let fk = kebab_extern_name(fname.name.as_ref());
+        let bit = label_kebab.iter().position(|l| *l == fk)?;
+        field_bits.push((slot as u32, bit as u32));
+    }
+    // Canonical `option<flags>` flattening: `(disc: i32, bitset: i32)`. Some = boundary disc 1.
+    Some((
+        vec![ValType::I32],
+        SumArgRebuild {
+            base_param: 1,
+            boundary_true_disc: 1,
+            arm_true: SumArgArm {
+                decl_disc: payload_i,
+                payload: SumArmPayload::Flags { field_bits },
+            },
+            arm_false: SumArgArm {
+                decl_disc: nullary_i,
+                payload: SumArmPayload::Nullary,
+            },
+        },
+    ))
+}
+
 /// An `option<string>` / `option<bytes>` entry param — an Option whose Some payload is a `String` or `Bytes`
 /// (a memory-bearing `(ptr, len)` byte-leaf). The all-scalar Option is
 /// [`arg_boundary::fixed_shape_option_scalar_arg`]'s path (which returns `None` for a byte-leaf payload) and a
@@ -8028,6 +8120,29 @@ fn record_interface_export(
                 // shell); a param whose shell ESCAPES (the def returns/stores it) declines to a later slice.
                 Ty::Sum { .. } => {
                     use crate::backend::wasm::envelope::ArgSlot;
+                    // WIT-AWARE `option<flags>` FIRST: the guest Some payload is a record-of-bools, which the
+                    // guest-only `fixed_shape_option_scalar_arg` would misclassify as an N-leaf compound (the
+                    // boundary flattens flags to ONE i32 — a signature mismatch, CDZ0910). Build the flags Some
+                    // arm (one i32 leaf → record cell) directly from the WIT type.
+                    if let Some((vts, rebuild)) = option_flags_arg(db, gty, wty) {
+                        if crate::backend::wasm::select::param_escapes_body(db, e.body, *binder) {
+                            return None; // the built sum shell escapes — a later slice (borrow-only)
+                        }
+                        param_vts.push(crate::backend::wasm::lir::ValType::I32.byte()); // disc
+                        for vt in &vts {
+                            param_vts.push(vt.byte()); // the flags bitset (one i32)
+                        }
+                        params.push(None);
+                        param_slots.push(None);
+                        mem_leaf_params.push(None);
+                        sum_params.push(Some((rebuild, true)));
+                        enum_disc_params.push(None);
+                        flags_params.push(None);
+                        record_param_drop_after.push(false);
+                        record_param_escaped_fields.push(None);
+                        any_sum_param = true;
+                        continue;
+                    }
                     let Some((slot, vts, rebuild)) =
                         crate::backend::wasm::arg_boundary::fixed_shape_option_scalar_arg(db, gty)
                     else {
