@@ -1295,6 +1295,69 @@
   (output (: -1 Int64))
   (live-objects 0))
 
+(case
+  "trmd1 `?`s as `#map` KEY and VALUE hoist KEY-BEFORE-VALUE and short-circuit in evaluation order"
+  (doc
+    "The `#map` completion of the compound-constructor element-`?` DESCENT (list/tuple/set/record already
+     covered): a `#map`'s kids are `(= key value)` PAIRS where BOTH the key and the value are evaluated —
+     unlike a `#record` (static field name) — KEY before VALUE, entries left-to-right (the runtime builds a
+     `Map.insert(…, k, v)` chain whose args evaluate left-to-right). The hoist flattens the entries to their
+     eval-order positions `[k0, v0, …]` and lifts the FIRST `?` with the earlier positions bound as a prefix.
+     Here ONE entry has a `?` in BOTH its key and its value with DISTINCT Err payloads: at k=0 both fail and
+     the KEY's `?` short-circuits FIRST (→ Err 111), pinning key-before-value ordering; at k=1 the key is Ok
+     and the VALUE's `?` fails (→ Err 222); at k=2 both Ok → the one-entry map (len 1). Verified leak-clean
+     (live-objects 0 every path) — the CHAMP re-wrapped-husk reclaim landed (62750d2b57). Complements
+     v-memory-safety's trmp1 shell-reclaim lock: trmd1 exercises the DESCENT (both `?`s evaluated + hoisted).")
+  (input
+    (do
+      (def
+        (mk (: rk (Result Int64 Int64)) (: rv (Result Int64 Int64)))
+        (: (Ok #map((= (try rk) (try rv)))) (Result (Map Int64 Int64) Int64)))
+      (def
+        (main (: k Int64))
+        (match
+          (mk (if (> k 0) (Ok 1) (Err 111)) (if (> k 1) (Ok 2) (Err 222)))
+          ((Ok m) (Map.len m))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 222 Int64))
+  (call main (: 2 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
+  "trsd1 two `?`s as `#set` elements hoist left-to-right and short-circuit at the FIRST failure"
+  (doc
+    "The `#set` element-`?` descent (Set was already in the compound-ctor descendable set but had no fence and
+     latent-leaked before the CHAMP fix): two `?`s as ELEMENTS of a `#set` — `(Ok #set((try r) (try s)))`
+     under a `(Result (Set Int64) String)` boundary — hoist left-to-right to nested boundary `let`s and
+     short-circuit at the first failure. Both Ok → the two-element set (len 2); k=1 short-circuits on the
+     second Err, k=0 on the first (→ -1). Verified leak-clean (live-objects 0 every path) — Set is a CHAMP
+     collection, so the re-wrapped Err husk on the short-circuit path is reclaimed by 62750d2b57.
+     Complements v-memory-safety's trst1 shell-reclaim lock: trsd1 exercises the element DESCENT.")
+  (input
+    (do
+      (def
+        (mk (: r (Result Int64 String)) (: s (Result Int64 String)))
+        (: (Ok #set((try r) (try s))) (Result (Set Int64) String)))
+      (def
+        (main (: k Int64))
+        (match
+          (mk (if (> k 0) (Ok 3) (Err "a")) (if (> k 1) (Ok 4) (Err "b")))
+          ((Ok st) (Set.len st))
+          ((Err _e) -1)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 2 Int64))
+  (call main (: 1 Int64))
+  (output (: -1 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64))
+  (live-objects 0))
+
 ; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
 ; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return).
 ; FIXED (v-effects): previously REJECTED with `CDZ0101: unbound name #seed<n>` — under this conjunction

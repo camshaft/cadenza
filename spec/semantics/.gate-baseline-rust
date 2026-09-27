@@ -10488,9 +10488,11 @@ pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
 pass	trc1 two `?`s as CALL ARGUMENTS hoist left-to-right and short-circuit at the FIRST failure
 pass	trmc1 a `?` as the argument of a MODULE-MEMBER call unwraps then calls
+pass	trmd1 `?`s as `#map` KEY and VALUE hoist KEY-BEFORE-VALUE and short-circuit in evaluation order
 pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
 pass	trn1 two `?`s NESTED across compound constructors (record + list inside a tuple) each short-circuit
 pass	trr3 expression-position `?`s as `#record` FIELD values hoist left-to-right and short-circuit
+pass	trsd1 two `?`s as `#set` elements hoist left-to-right and short-circuit at the FIRST failure
 pass	trt1 expression-position `?`s as `#tuple` elements hoist left-to-right and short-circuit
 pass	trm1 a NESTED tuple-rest re-match peels two layers, through an if-selected scrutinee, with a RUNTIME element
 pass	trm1 an export returns a two-element Set (one reachable cell, constructor-application render)
