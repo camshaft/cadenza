@@ -6351,6 +6351,9 @@ pub(super) fn emit(
                     // A top-level `option<list<T>>` arg marshals the payload list into `mem` on Some → cursor.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
                         .is_some_and(|p| matches!(p.strip_nominal(), Ty::List(_)))
+                    // A top-level `result<list<u8>, enum>` arg copies the Ok `list<u8>` payload's rope into
+                    // `mem` on the Ok arm (`emit_result_arg_reg_flatten`) → needs the running scratch cursor.
+                    || crate::backend::wasm::host::result_bytes_enum(db, &at).is_some()
                     // A top-level `tuple<…>` arg needs the cursor when SOME leaf (recursing nested tuples +
                     // record elements) copies runtime bytes into `mem` — a `Bytes` element, or a record
                     // element with a `Bytes` / `list` / `result` / `option<bytes>` field. Broader than the
@@ -6717,6 +6720,41 @@ pub(super) fn emit(
                             || out.dup_sites.contains(&arg)
                         {
                             out.push(Lir::LocalGet(var_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
+                    // A top-level `result<list<u8>, enum>` argument: the guest emits the value-heap Result
+                    // HANDLE into a slot, then decomposes it into the canonical `(disc, i32, i32)`
+                    // register-flatten via `emit_result_arg_reg_flatten` (the register twin of the `result<list
+                    // <u8>, enum>` record-FIELD flatten) — Ok copies the payload rope into `mem` at the cursor
+                    // and yields `(0, ptr, len)`, Err yields `(disc, err-enum-disc, 0)`. Checked BEFORE the
+                    // scalar `_` arm (a Sum's `emit` yields a HANDLE, not the flattened slots the built-in
+                    // `result` param expects); `option`/`variant`/`enum` above already declined a result shape.
+                    _ if crate::backend::wasm::host::result_bytes_enum(db, &at).is_some() => {
+                        let res_slot = arg_base.max(*high);
+                        scratch_ty.insert(res_slot, ValType::I32);
+                        *high = (*high).max(res_slot + 1);
+                        emit(db, arg, slots, res_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(res_slot));
+                        let cursor = scratch_cursor_slot.expect(
+                            "a result<list<u8>, enum> arg reserves the scratch cursor (pre-scan)",
+                        );
+                        let work_base = *high;
+                        emit_result_arg_reg_flatten(
+                            res_slot, cursor, work_base, high, scratch_ty, out,
+                        )?;
+                        // MARSHALED-ARG RECLAIM (v-memory-safety, result twin of the option/variant host-arg
+                        // reclaim): `emit_result_arg_reg_flatten` read the disc + (Ok) copied the Bytes rope /
+                        // (Err) read the enum disc via borrowing `sum-disc`/`sum-payload`/`bytes-get` — pure
+                        // borrow, no dup, no handle moved out — so the Result handle in `res_slot` is DEAD after
+                        // the flatten. When the arg is a freshly-built OWNED result (`heap_operand_ownership ==
+                        // Owned`) or a child-dup site, deep-drop it (the payload was COPIED out, so the cascade is
+                        // balanced; else the Result shell leaks per host call). A BORROWED result is left
+                        // untouched (leak-over-UAF). Import mirror in `collect_used_ops`'s result-arg arm.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(res_slot));
                             out.push(Lir::CallImport(OP_DROP));
                         }
                     }

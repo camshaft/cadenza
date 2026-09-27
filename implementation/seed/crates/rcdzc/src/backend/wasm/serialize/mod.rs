@@ -220,6 +220,15 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                     flatten_record_field_abi(e, &mut params);
                 }
             }
+            // A bare `result<list<u8>, enum>` param flattens (canonical variant flatten) to `(disc:i32, i32, i32)`
+            // — the discriminant then the join of the Ok arm `(ptr,len)` and the Err arm `(enum-disc, 0)` — the
+            // SAME 3-slot core shape as a `RecordFieldAbi::Result` field. The component boundary type is the
+            // built-in `result<list<u8>, err-enum>` (see mod.rs `host_op_comp_functype`).
+            HostParam::Result(_) => params.extend_from_slice(&[
+                wasm_abi::CORE_I32,
+                wasm_abi::CORE_I32,
+                wasm_abi::CORE_I32,
+            ]),
         }
     }
     // `params` now holds exactly the FLATTENED core-slot bytes (a scalar = 1, a string/bytes = 2, a record

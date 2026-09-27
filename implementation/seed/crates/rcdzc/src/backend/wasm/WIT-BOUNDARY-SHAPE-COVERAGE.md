@@ -199,6 +199,20 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   element dispatch + `collect_list_elem_ops` widened in lockstep. REMAINING (ARG-side only): an `option<option>`
   list element (the option-to-mem writer has no nested-option arm), and a mixed int↔float variant element (rolls
   into the compound-variant-payload / mixed-join gaps above).
+- **[emit, register-path] a top-level `result<list<u8>, enum>` host-op ARG — ✅ DONE (SHAPE 164/165).** The
+  register twin of the `result` record FIELD (SHAPE 17) and the list ELEMENT (SHAPE 163), now at the bare param
+  position. A new `HostParam::Result(err-cases)` variant + a `result_bytes_enum` classifier arm; the guest flattens
+  the value-heap Result to `(disc:i32, i32, i32)` via a new `emit_result_arg_reg_flatten` (the record-FIELD result
+  flatten minus the `arr-get`): Ok copies the `list<u8>` payload rope into `mem` at the running cursor → `(0, ptr,
+  len)`; Err reads the err enum payload's `sum-disc` → `(disc, err-enum-disc, 0)`. The `(result (list u8) (enum …))`
+  component type builds from the world's declared WIT via `add_wit_type_deduped`; the core functype adds 3 i32 slots
+  (`host_import_functype`). Widened in LOCKSTEP: `first_unrepresentable_host_op`'s `arg_is_boundary_result`, the emit
+  dispatch (+ the Owned/dup-site reclaim drop), `collect_used_ops`'s result-arg arm (`sum-disc`/`sum-payload` +
+  `bytes-len`/`bytes-get` + `drop`), the emit.rs cursor pre-scan, `host_imports.rs` (the structural-CRef param
+  reference + `has_list_param` + `host_param_abi` decline), and — the load-bearing fix — `set_needs_memory` (a
+  result arg copies a rope into `mem`, so the host set routes to the `_mem` assembler; without it the host op lower
+  was emitted memoryless → CDZ0910 "canonical option `memory` is required"). REMAINING: a `result<record,enum>` /
+  `result<_, variant>` (`result_bytes_enum` requires a `list<u8>` Ok + a payloadless-enum Err).
 - **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
   record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
   `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the

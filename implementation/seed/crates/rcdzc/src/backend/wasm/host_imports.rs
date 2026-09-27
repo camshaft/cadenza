@@ -545,6 +545,18 @@ pub(super) fn host_op_comp_functype(
                     .unwrap_or(crate::backend::wasm::wit_ctype::CRef::Idx(list_type_idx));
                 crate::backend::wasm::wit_ctype::encode_cref(&cref, &mut param_items);
             }
+            // A top-level `result<list<u8>, enum>` param references its built-in `(result <ok> <err>)`
+            // DEFINED type by the per-param `CRef` the caller computed — a `result` is STRUCTURAL
+            // (anonymous-allowed), NOT nominal, so it rides the same per-param structural-CRef path as
+            // `option`/`tuple`/`list`.
+            HostParam::Result(_) => {
+                let cref = list_param_crefs
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or(crate::backend::wasm::wit_ctype::CRef::Idx(list_type_idx));
+                crate::backend::wasm::wit_ctype::encode_cref(&cref, &mut param_items);
+            }
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
@@ -604,6 +616,9 @@ pub(super) fn build_host_result_types(
             host::HostParam::Record(fields) => fields
                 .iter()
                 .any(|(_, f)| host::record_field_abi_reaches_bytes(f)),
+            // A `result<list<u8>, enum>` ARG has a `list<u8>` Ok payload, so it reaches `list<u8>` and needs
+            // the shared `(list u8)` at index 0 (the result's Ok leaf references it).
+            host::HostParam::Result(_) => true,
             _ => false,
         })
     });
@@ -657,7 +672,10 @@ pub(super) fn build_host_result_types(
             // export-aware remap below covers both (a structural type is anonymous-allowed, define-only).
             if matches!(
                 p,
-                host::HostParam::List(_) | host::HostParam::Option(_) | host::HostParam::Tuple(_)
+                host::HostParam::List(_)
+                    | host::HostParam::Option(_)
+                    | host::HostParam::Tuple(_)
+                    | host::HostParam::Result(_)
             ) && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
             {
                 per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
@@ -1069,6 +1087,9 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         // A top-level `option<scalar>` param likewise has no scalar peer-ABI form (a peer-bound option crosses
         // as its `u32` handle, and the classifier only produces `Option` for a non-peer-bound host op) →
         // declines here.
+        // A `result<list<u8>, enum>` param likewise has no scalar peer-ABI form (a peer-bound result crosses
+        // as its `u32` handle, and the classifier only produces `Result` for a non-peer-bound host op) →
+        // declines here.
         host::HostParam::Str
         | host::HostParam::Bytes
         | host::HostParam::Record(_)
@@ -1076,7 +1097,8 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::List(_)
         | host::HostParam::Variant(_)
         | host::HostParam::Option(_)
-        | host::HostParam::Tuple(_) => None,
+        | host::HostParam::Tuple(_)
+        | host::HostParam::Result(_) => None,
     }
 }
 
