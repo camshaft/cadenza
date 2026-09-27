@@ -1651,6 +1651,7 @@ pass	a bare Map.empty threaded through two distinct Map.inserts folds its length
 pass	a bare Map.insert FLOAT KEY adopts the sibling Float32 width + keys/looks-up through the wrapper
 pass	a bare Map.insert FLOAT value adopts the sibling's Float32 width (map unifies, no rust E0308)
 pass	a bare Map.insert value that adopts Float32 and OVERFLOWS binary32 is rejected (CDZ0302, adopt range-check)
+pass	a bare MatchSum over List.at of a threaded (List (List Int64)) reclaims the extracted nested-list element shell while the list is rebuilt in the same step (no live objects)
 pass	a bare Qty constructor in a parameter type names its missing arguments
 pass	a bare RATIONAL as op ARGUMENT — the arm reads exact numerator/denominator off the crossed value
 pass	a bare Result<s64,String> RESULT round-trips DIRECTLY (unwrapped) via the run/encode envelope both arms
@@ -3482,6 +3483,7 @@ pass	a map pattern falls through when the key is absent
 pass	a map pattern in a recursive drain matches then exhausts
 pass	a map pattern matches a present key and binds its value
 pass	a map pattern naming a key the scrutinee lacks does NOT match (falls to the next arm)
+pass	a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read
 pass	a map pattern nested in a tuple binds its value binder
 pass	a map pattern over a non-map scrutinee is a type error
 pass	a map pattern over an Int64 scrutinee (definite) is a type error
@@ -5356,6 +5358,7 @@ pass	a runtime-magnitude same-unit difference subtracts the erased magnitudes
 pass	a runtime-magnitude same-unit sum adds the erased magnitudes
 pass	a runtime-match arm literal overflowing a narrow annotation is rejected at check
 pass	a runtime-match arm literal reaching a narrow parameter is rejected at check
+pass	a runtime-operand try mid LIST-literal short-circuits the whole list, else the list builds
 pass	a runtime-parameter start and length are bounds-checked at run time, yielding Some or None
 pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
 pass	a runtime-produced -inf crosses inside a compound alongside nan and inf
@@ -9106,6 +9109,8 @@ pass	mrf1 a macro-introduced RECURSIVE helper computes like its plainly-written 
 pass	mrf1 fifty frames of persistent Map.remove against an immortal 40-key deep CHAMP never corrupt it (the remove-side FBIP fence)
 pass	mrf2 a runtime-map remove drops the length, misses the removed key, and keeps the neighbors
 pass	mrg1 a TWO-POINTER MERGE across two handlers — each holds a sorted list, the body pulls whichever head is smaller each step, and the sentinel head lets one side drain
+pass	mrs1 a two-resume arm over a HEAP-allocating body folds by hoisting the allocation out of the per-resume splice
+pass	mrs1-consume a two-resume continuation that CONSUMES the hoisted list still reclaims to 0 (Perceus per-splice dup; borrow-vs-transfer negative control)
 pass	mrs2 a PURE-body two-resume arm re-computes the continuation and sums (multi-shot on a re-computable body = 100; v-effects-ruled intended)
 pass	mrt1 a METRONOME with a downbeat accent — tick advances the beat wrapping at the seed-shaped bar length (counting bars), accent answers a hundred plus the bar count ON a downbeat or the beats remaining until the next one, and the four-beat bar catches the second accent ON the downbeat while the three-beat bar misses both
 pass	mrv1 REMOVE-then-REINSERT churn on a Map state — del answers the removed value (0 when absent); for n=98 the second del hits the n+1 key it planted
@@ -10926,7 +10931,7 @@ pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive row
 pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
 pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
-pass	trt1 expression-position `?`s as `#tuple` elements hoist left-to-right and short-circuit
+pass	trr3 expression-position `?`s as `#record` FIELD values hoist left-to-right and short-circuit
 pass	trm1 a NESTED tuple-rest re-match peels two layers, through an if-selected scrutinee, with a RUNTIME element
 pass	trm1 an export returns a two-element Set (one reachable cell, constructor-application render)
 pass	trm2 an EXACT-arity tuple leaves the rest binder EMPTY, and a rest-only pattern gathers the whole tuple
@@ -10936,6 +10941,7 @@ pass	trm4 an export returns an exact Rational from the scalar param (three reach
 pass	trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepening negative count), push passes and relocks or bounces (bounces answer their own negative count), the seed decides whether the gate STARTS unlocked, and the first push diverges the runs from the very first row
 pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
 pass	trr2 an expression-position `?` in a TAIL if-arm hoists into the arm and short-circuits
+pass	trt1 expression-position `?`s as `#tuple` elements hoist left-to-right and short-circuit
 pass	true is greater than false
 pass	true is not less than false
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
@@ -11353,12 +11359,10 @@ todo	a dependent utf8 size from an arithmetic expression over a byte binder deco
 todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)
 todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
 todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
-pass	a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read
 todo	a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered
 todo	a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
-pass	a runtime-operand try mid LIST-literal short-circuits the whole list, else the list builds
 todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
 todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
 todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
@@ -11379,8 +11383,6 @@ todo	hce2 a borrowing op (=) over a captured value in a closure body declines pe
 todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the boundary
 todo	lcap3 an ESCAPING closure capturing BOTH a def-param and a let-local folds using both (no half-capture)
 todo	llb1 a recursive do-local fn capturing a do-LOCAL BINDING computes (should-work: lexical capture is uniform)
-pass	mrs1 a two-resume arm over a HEAP-allocating body folds by hoisting the allocation out of the per-resume splice
-pass	mrs1-consume a two-resume continuation that CONSUMES the hoisted list still reclaims to 0 (Perceus per-splice dup; borrow-vs-transfer negative control)
 todo	phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
@@ -11394,4 +11396,3 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	two length-prefixed dependent frames chain at runtime
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
-pass	a bare MatchSum over List.at of a threaded (List (List Int64)) reclaims the extracted nested-list element shell while the list is rebuilt in the same step (no live objects)

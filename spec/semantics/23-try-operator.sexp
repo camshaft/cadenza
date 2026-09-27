@@ -1128,8 +1128,9 @@
      inline-safe `lower_let` short-circuit. Both Ok → the tuple `(7 9)`, summed to 16; the FIRST failing `?`
      short-circuits `mk` to its Err (mapped to -1), leaving the later `?` unevaluated (k=1: second Err; k=0:
      first Err). Verified leak-clean (live-objects 0 every path). Pins the Tuple arm of the compound-ctor
-     descent beside the List arm (trl1); a `record`/`map` element `?` remains a clean CDZ0900 decline (their
-     `(= k v)` entries are a deliberate later slice — map-key evaluation order needs its own handling).")
+     descent beside the List arm (trl1) and the Record arm (trr3); a `map` element `?` remains a clean
+     CDZ0900 decline (its `(= k v)` entries evaluate the KEY too, needing per-entry key-then-value ordering —
+     a deliberate later slice).")
   (input
     (do
       (def
@@ -1140,6 +1141,42 @@
         (match
           (mk (if (> k 0) (Ok 7) (Err "a")) (if (> k 1) (Ok 9) (Err "b")))
           ((Ok t) (+ (. t 0) (. t 1)))
+          ((Err _e) -1)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 16 Int64))
+  (call main (: 1 Int64))
+  (output (: -1 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
+(case
+  "trr3 expression-position `?`s as `#record` FIELD values hoist left-to-right and short-circuit"
+  (doc
+    "The `#record` sibling of trl1/trt1 (BRICK 3 compound-constructor descent, extended to records): two
+     `?`s appear as FIELD VALUES of a `#record` — `(Ok #record((= a (try r)) (= b (try s))))` — under a
+     `(Result (Record (: a Int64) (: b Int64)) String)` boundary. A `#record`'s kids are `(= field value)`
+     PAIRS: the field name is STATIC (not evaluated), the value is the evaluated sub-expression, so the hoist
+     descends into each pair's VALUE (never treating a `(= k v)` pair as an operand) and, by fixpoint, lifts
+     BOTH `?`s to nested boundary `let`s in field order — `(let ((a (try r))) (let ((b (try s))) (Ok
+     #record((= a a) (= b b)))))` — each riding the inline-safe `lower_let` short-circuit. Both Ok → the
+     record `{a=7, b=9}`, summed to 16; the FIRST failing `?` short-circuits `mk` to its Err (mapped to -1),
+     leaving the later `?` unevaluated (k=1: second Err; k=0: first Err). An IMPURE earlier field value is
+     bound as a prefix `let` ahead of the `?` so field-evaluation order is preserved. Verified leak-clean
+     (live-objects 0 every path). Completes the compound-ctor element `?` family (list/tuple/set/record); a
+     `map` field `?` stays a clean CDZ0900 decline (its key is evaluated too — a later slice).")
+  (input
+    (do
+      (def
+        (mk (: r (Result Int64 String)) (: s (Result Int64 String)))
+        (:
+          (Ok #record((= a (try r)) (= b (try s))))
+          (Result (Record (: a Int64) (: b Int64)) String)))
+      (def
+        (main (: k Int64))
+        (match
+          (mk (if (> k 0) (Ok 7) (Err "a")) (if (> k 1) (Ok 9) (Err "b")))
+          ((Ok rec) (+ rec.a rec.b))
           ((Err _e) -1)))
       (export main)))
   (call main (: 2 Int64))
