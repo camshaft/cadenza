@@ -103,8 +103,92 @@ fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<StructId> {
     None
 }
 
+/// Collect the TAIL expression positions of `node` — the sub-expressions whose value becomes the enclosing
+/// boundary's value — by descending through the tail slots of control/binding forms (BRICK 3 slice 2a,
+/// `DESIGN-try-operator-rcdzc.md` §7.1): an ascription's expr, an `if`'s two arms, a `match`'s arm bodies,
+/// a `let`'s body, a `do`'s LAST form. Everything else is a tail LEAF (pushed). A `?` hoisted to a `let`
+/// wrapping one of these tail leaves sits in binding-tail position relative to the boundary, so `lower_let`'s
+/// runtime-`?` `Core::MatchSum` fires (verified: a runtime-`?` `let` in a tail `if`-arm compiles + runs). A
+/// `?` in a NON-tail slot (an `if` condition, a `match` scrutinee, a `do` non-last statement, a `let` init)
+/// is NOT collected — it is either `lower_let`'s (a binding-tail init) or a later slice's, a clean decline.
+fn collect_tail_positions(ast: &Arenas, node: StructId, out: &mut Vec<StructId>) {
+    let Struct::List(kids) = ast.get(node) else {
+        out.push(node);
+        return;
+    };
+    if kids.is_empty() {
+        out.push(node);
+        return;
+    }
+    let kids: Vec<StructId> = kids.clone();
+    match ast.as_name(kids[0]) {
+        // `(: expr T)` — expr is the tail (T is a type, not evaluated).
+        Some(":") if kids.len() == 3 => collect_tail_positions(ast, kids[1], out),
+        // `(if cond then else)` — both arms are tail; the condition is not.
+        Some("if") if kids.len() == 4 => {
+            collect_tail_positions(ast, kids[2], out);
+            collect_tail_positions(ast, kids[3], out);
+        }
+        // `(match scrut (pat body)…)` — each 2-form arm's BODY is tail; the scrutinee is not. A non-2-form
+        // arm (guard / multi-form) is left untouched (conservative — stays a clean decline).
+        Some("match") if kids.len() >= 3 => {
+            for &arm in &kids[2..] {
+                if let Struct::List(ak) = ast.get(arm)
+                    && ak.len() == 2
+                {
+                    let body = ak[1];
+                    collect_tail_positions(ast, body, out);
+                }
+            }
+        }
+        // `(let bindings body)` — the body is tail; a binding INIT `?` is `lower_let`'s (binding-tail), not
+        // collected here.
+        Some("let") if kids.len() == 3 => collect_tail_positions(ast, kids[2], out),
+        // `(do stmt… last)` — the LAST form is tail; earlier forms are sequenced statements.
+        Some("do") if kids.len() >= 2 => collect_tail_positions(ast, kids[kids.len() - 1], out),
+        // Any other node — a tail LEAF expression to search for a hoistable `?`.
+        _ => out.push(node),
+    }
+}
+
+/// Rewrite `target` (a tail-position node holding `C[(try e)]`) in place to `(let ((x (try e))) C[x])`,
+/// where `tn` is the `(try e)` node reachable within it. Overwrites `tn` to a fresh name reference and wraps
+/// `target` as the `let`, preserving `target`'s StructId/span (mirrors `desugar_try_do_defs`). The resulting
+/// binding-tail `let` rides the inline-safe `lower_let` runtime-`?` `Core::MatchSum` short-circuit.
+fn hoist_try_at(ast: &mut Arenas, target: StructId, tn: StructId) {
+    // `tn` = `(try e)`; capture its head + operand before overwriting it in place.
+    let Struct::List(tn_kids) = ast.get(tn) else {
+        return;
+    };
+    if tn_kids.len() != 2 {
+        return;
+    }
+    let try_head = tn_kids[0];
+    let operand = tn_kids[1];
+    // A fresh binder name, unique per `?` node (its original StructId index).
+    let xname: std::sync::Arc<str> = format!("__try_hoist_{}", tn.0).into();
+    // The let-INIT `(try e)` — a fresh node reusing the original head + operand (operand subtree shared).
+    let try_init = push_list(ast, vec![try_head, operand]);
+    // The let-binding NAME atom.
+    let binder = push_atom(ast, Leaf::Name(xname.clone()));
+    // Overwrite `tn` IN PLACE to a NAME reference to the binder — its parent already points at `tn`, so this
+    // repoints the continuation's use to `x` with no parent surgery.
+    let ref_lid = LeafId(ast.leaves.len() as u32);
+    ast.leaves.push(Leaf::Name(xname));
+    ast.structure[tn.0 as usize] = Struct::Atom(ref_lid);
+    // Wrap `target`: move its current struct to a fresh `b_inner` node (the continuation `C[x]`, now carrying
+    // the `x` reference), then overwrite `target` IN PLACE to `(let ((x (try e))) b_inner)`.
+    let b_struct = ast.structure[target.0 as usize].clone();
+    let b_inner = StructId(ast.structure.len() as u32);
+    ast.structure.push(b_struct);
+    let let_head = push_atom(ast, Leaf::Name("let".into()));
+    let pair = push_list(ast, vec![binder, try_init]);
+    let bindings = push_list(ast, vec![pair]);
+    ast.structure[target.0 as usize] = Struct::List(vec![let_head, bindings, b_inner]);
+}
+
 /// Hoist a single EXPRESSION-position `?` in each fallible-boundary function body to a boundary `let`
-/// (BRICK 3 slice 1, `DESIGN-try-operator-rcdzc.md` §7.1): `C[(try e)]` => `(let ((x (try e))) C[x])`.
+/// (BRICK 3 slices 1/2a, `DESIGN-try-operator-rcdzc.md` §7.1): `C[(try e)]` => `(let ((x (try e))) C[x])`.
 /// The resulting binding-tail `let` rides the proven `lower_let` runtime-`?` `Core::MatchSum` short-circuit
 /// (the same path tdd1 / stored-closure use) — no `Core::Block`/`Break` and no new emit, and it is
 /// INLINE-SAFE because the `match` is local (an emit-time boundary-block wrap is NOT, since inlining moves
@@ -121,8 +205,9 @@ pub fn desugar_try_expr_position(ast: &mut Arenas) {
     }
     let original_len = ast.structure.len() as u32;
     // Each fallible-boundary body is a `def`/`fn` node's LAST child (`(def target body)` / `(fn params
-    // body)`, both arity-3). Plan `(body_node, try_node)` for each body with a hoistable expression-position
-    // `?`; only ORIGINAL nodes are boundary bodies (the rewrite APPENDS the `let` scaffolding).
+    // body)`, both arity-3). For each body, collect its TAIL positions and hoist the FIRST that holds a
+    // hoistable expression-position `?`; only ORIGINAL nodes are boundary bodies (the rewrite APPENDS the
+    // `let` scaffolding). Plan `(target_node, try_node)`, one hoist per body per pass.
     let mut plans: Vec<(StructId, StructId)> = Vec::new();
     for i in 0..original_len {
         let id = StructId(i);
@@ -132,47 +217,21 @@ pub fn desugar_try_expr_position(ast: &mut Arenas) {
         if kids.len() != 3 {
             continue;
         }
-        let is_def_or_fn = matches!(ast.as_name(kids[0]), Some("def") | Some("fn"));
-        if !is_def_or_fn {
+        if !matches!(ast.as_name(kids[0]), Some("def") | Some("fn")) {
             continue;
         }
         let body = kids[2];
-        if let Some(tn) = find_hoistable_try(ast, body) {
-            plans.push((body, tn));
+        let mut tails: Vec<StructId> = Vec::new();
+        collect_tail_positions(ast, body, &mut tails);
+        for t in tails {
+            if let Some(tn) = find_hoistable_try(ast, t) {
+                plans.push((t, tn));
+                break; // one hoist per body per pass
+            }
         }
     }
-    for (body, tn) in plans {
-        // `tn` = `(try e)`; capture its head + operand before overwriting it in place.
-        let Struct::List(tn_kids) = ast.get(tn) else {
-            continue;
-        };
-        if tn_kids.len() != 2 {
-            continue;
-        }
-        let try_head = tn_kids[0];
-        let operand = tn_kids[1];
-        // A fresh binder name, unique per `?` node (its original StructId index).
-        let xname: std::sync::Arc<str> = format!("__try_hoist_{}", tn.0).into();
-        // The let-INIT `(try e)` — a fresh node reusing the original head + operand (so the operand subtree
-        // is shared, not re-copied).
-        let try_init = push_list(ast, vec![try_head, operand]);
-        // The let-binding NAME atom.
-        let binder = push_atom(ast, Leaf::Name(xname.clone()));
-        // Overwrite `tn` IN PLACE to a NAME reference to the binder — its parent (the enclosing application)
-        // already points at `tn`, so this repoints the continuation's use to `x` with no parent surgery.
-        let ref_lid = LeafId(ast.leaves.len() as u32);
-        ast.leaves.push(Leaf::Name(xname));
-        ast.structure[tn.0 as usize] = Struct::Atom(ref_lid);
-        // Wrap the boundary body: move its current struct to a fresh `b_inner` node (the continuation `C[x]`,
-        // now carrying the `x` reference), then overwrite the body node IN PLACE to `(let ((x (try e)))
-        // b_inner)` — preserving the body's StructId/span as the `let`, mirroring `desugar_try_do_defs`.
-        let b_struct = ast.structure[body.0 as usize].clone();
-        let b_inner = StructId(ast.structure.len() as u32);
-        ast.structure.push(b_struct);
-        let let_head = push_atom(ast, Leaf::Name("let".into()));
-        let pair = push_list(ast, vec![binder, try_init]);
-        let bindings = push_list(ast, vec![pair]);
-        ast.structure[body.0 as usize] = Struct::List(vec![let_head, bindings, b_inner]);
+    for (target, tn) in plans {
+        hoist_try_at(ast, target, tn);
     }
 }
 

@@ -11384,6 +11384,7 @@ pass	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its
 todo	the try spelling of the performing bin-parse folds once try-under-effects lands
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
+pass	trr2 an expression-position `?` in a TAIL if-arm hoists into the arm and short-circuits
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	two length-prefixed dependent frames chain at runtime
 pass	two map list elements in one arm each refine on a key
