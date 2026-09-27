@@ -5749,3 +5749,33 @@ cases
   (call cl (: -3 Int64))
   (output (: (one 3) V))
   (live-objects 0))
+
+(case
+  "a host-op record ARGUMENT with an option<tuple-of-scalars> FIELD crosses the plain host-delegating envelope"
+  (doc
+    "SHAPE 123 — an `option<tuple<s64,s64>>` FIELD of a RECORD host-op argument (probe.push : func(record{opt:
+           option<tuple<s64,s64>>, n: s64}) -> s64) on a pure-IMPORT custom wit-world with a plain top-level
+           export. Extends the v-wit-boundary compound host-ARG support: before this an option<compound> field
+           declined (field_boundary_abi admitted only option<scalar>/option<bytes>). Now field_boundary_abi
+           recurses an option<tuple-of-scalars> payload and emit_record_arg_marshal SCRATCH-FLATTENS it — the
+           canonical variant flatten `(disc:i32, flatten(tuple))` = disc + one core slot per element, marshalled
+           into N element scratch slots (Some → per-element arr-get+unbox; None → the element's width zero) and
+           pushed after the single-value `if` (LIR blocks are single-value, so the variable payload-slot count
+           can't be pushed from the branch). A TUPLE payload is POSITIONAL, so no name-lex/WIT field-order
+           ambiguity (an option<record> payload is a later slice). run() builds {opt: Some((10,20)), n:5},
+           performs probe.push, returns the stub. A VALID component that runs is the pin: a mis-flattened
+           option<tuple> arg (wrong core arity vs the declared `option<tuple<s64,s64>>` import type) fails
+           component validation (CDZ0910). The option<compound>-field twin of SHAPE 99 (option<scalar> field).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= opt (option (tuple (s64) (s64)))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: opt (Option (Tuple Int64 Int64))) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= opt (Some #tuple(10 20))) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 99 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 99)
+  (live-objects 0))

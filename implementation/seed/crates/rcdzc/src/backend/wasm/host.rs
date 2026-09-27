@@ -445,6 +445,20 @@ fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
                 if matches!(payload.strip_nominal(), Ty::Bytes | Ty::String) {
                     return Some(RecordFieldAbi::Option(Box::new(RecordFieldAbi::Bytes)));
                 }
+                // An `option<tuple-of-scalars>` payload crosses as `option<tuple<…>>` — a POSITIONAL tuple has
+                // no name-lex/WIT field-order ambiguity, so the payload's flattened slots (disc + one core slot
+                // per element) line up with the marshal's positional push. Recurse the payload's abi (a
+                // `RecordFieldAbi::Tuple` of scalars); its marshal is `emit_record_arg_marshal`'s
+                // option<tuple-of-scalars> arm (scratch-flatten). Restricted to a FLAT all-scalar tuple this
+                // increment — an `option<record>` (name-lex vs WIT ordering) or a nested/byte-leaf payload is a
+                // later slice, so this MUST agree with that marshal arm's guard (decline-don't-miscompile).
+                if let Ty::Tuple(elems) = payload.strip_nominal()
+                    && !elems.is_empty()
+                    && elems.iter().all(|e| abi_val_type(e).is_some())
+                {
+                    let inner = field_boundary_abi(db, &payload)?;
+                    return Some(RecordFieldAbi::Option(Box::new(inner)));
+                }
                 return None;
             }
             // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
