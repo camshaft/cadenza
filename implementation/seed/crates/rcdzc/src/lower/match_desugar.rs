@@ -508,6 +508,88 @@ pub(super) fn desugar_ctor_record_payload_destructure(
     Some(core_of(db, rewritten))
 }
 
+/// PRE-PASS for `lower_match` (sum/nominal scrutinee): a ctor whose SINGLE payload is a REFUTABLE MAP
+/// pattern over a RUNTIME map — `(match scrut ((Ctor #map((= k v)…)) body) (_ else))`, binding a value by
+/// keyed read. A map nested in a variant payload over a runtime scrutinee is not wired in `lower_map_field`
+/// ("constant map only"), but the DIRECT runtime map match IS. Rewrite it to the direct form by binding the
+/// ctor payload to a fresh `__cm` and re-matching it as ONE direct map match, THREADING the outer catch-all
+/// body into the inner map-else so a MISSING key produces the same result as the catch-all:
+///   `((Ctor #map((= k v)…)) body) (_ else)`  ≡
+///   `((Ctor __cm) (match __cm ((map (k v)…) body) (_ <else-clone>))) (_ else)`
+/// `__cm` is used EXACTLY ONCE (the body map-match owns + reclaims it) — a KEY-PRESENCE GUARD would borrow
+/// the OWNED payload map a second time and leak it (guarded-census: "live-objects expected 0 got 1"), so the
+/// threading form is deliberately guard-free. The map pattern + body + threaded else are CLONED (they were
+/// resolved+typed through the old composite `SumPayload → MapField` path; reusing carries a stale unsolved
+/// result type). SCOPE: fires only on the exact `[ctor-map-arm, bare catch-all]` two-arm shape over a
+/// non-const scrutinee (the outer catch-all still covers any other variant; a missing key threads to it). A
+/// constant map still folds via `fold_sum_path`. Other shapes are left to the existing path. NO new IR.
+pub(super) fn desugar_ctor_map_payload_destructure(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // A CONSTANT map payload folds through the existing `fold_sum_path` path — leave it be.
+    if is_const_value(db, scrutinee) {
+        return None;
+    }
+    // SCOPE: exactly two arms — a ctor-with-single-map-payload arm, then a BARE catch-all (`_` / binder).
+    if arms.len() != 2 {
+        return None;
+    }
+    let (arm0_pat, arm0_body) = arms[0];
+    let (catchall_pat, catchall_body) = arms[1];
+    // The catch-all must be an UNGUARDED bare wildcard / binder (so a missing key threading to its body is
+    // exactly "fall through to the catch-all").
+    if db.ast.as_form(catchall_pat, "guard").is_some() || db.ast.as_name(catchall_pat).is_none() {
+        return None;
+    }
+    // The first arm must be an UNGUARDED ctor with exactly one payload arg that is a map pattern.
+    if db.ast.as_form(arm0_pat, "guard").is_some() {
+        return None;
+    }
+    let (head, args) = ctor_pattern_head_and_args(db, arm0_pat)?;
+    if !(args.len() == 1 && is_map_element_pattern(db, args[0])) {
+        return None;
+    }
+    let map_pat = args[0];
+    let name = "__cm0".to_string();
+    // The rebuilt ctor pattern `(Ctor __cm)` — a FRESH head clone + the fresh payload binder.
+    let head_clone = clone_ctor_head(db, head);
+    let pat_binder = db.push_name(&name);
+    let new_ctor_pat = db.push_list(vec![head_clone, pat_binder]);
+    // The BODY: ONE direct map match on `__cm` — the key present binds the values for the original body; a
+    // missing key threads the outer catch-all's body (a CLONE). `__cm` is used ONCE here, so the direct map
+    // matcher owns + reclaims it (no leak). CLONE the map pattern, body, and else (stale composite-path memos).
+    let body_scrut = db.push_name(&name);
+    let map_pat_clone = clone_refutable_payload(db, map_pat);
+    let body_clone = clone_refutable_payload(db, arm0_body);
+    let else_clone = clone_refutable_payload(db, catchall_body);
+    let body_true_arm = db.push_list(vec![map_pat_clone, body_clone]);
+    let wild = db.push_name("_");
+    let body_else_arm = db.push_list(vec![wild, else_clone]);
+    let body_match_head = db.push_name("match");
+    let new_body = db.push_list(vec![
+        body_match_head,
+        body_scrut,
+        body_true_arm,
+        body_else_arm,
+    ]);
+    let new_arm0 = db.push_list(vec![new_ctor_pat, new_body]);
+    // Keep the catch-all arm unchanged — it still covers any OTHER variant of a multi-variant sum (a missing
+    // key on THIS variant is handled by the threaded inner else above).
+    let new_catchall = db.push_list(vec![catchall_pat, catchall_body]);
+    let match_head = db.push_name("match");
+    let rewritten = db.push_list(vec![match_head, scrutinee, new_arm0, new_catchall]);
+    // FORGET the rewritten ctor arm's stale resolution: the body + map pattern were resolved through the OLD
+    // composite `SumPayload → MapField` path the backend cannot wire; forgetting forces `resolve_subtree` to
+    // re-resolve the value binder against the NEW direct map match via `__cm`. The catch-all arm is unchanged
+    // (its original resolution stands) and the scrutinee is a sibling (untouched).
+    crate::resolve::forget_subtree(db, new_arm0);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "ctor with a refutable map payload over a runtime map → fresh binder + direct map re-match, catch-all threaded (guard-free, no leak)");
+    Some(core_of(db, rewritten))
+}
+
 pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // A ZERO-ARM match is the DEGENERATE base case of exhaustiveness: it is well-formed ONLY when the
     // scrutinee is UNINHABITED (`Never` — a diverging expression), for which no arm is needed to cover
@@ -640,6 +722,15 @@ pub(super) fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, S
         // payload is already fine, so this fires ONLY on a record-destructure payload. Rebuilds the match and
         // recurses through `core_of`. Returns `None` (falls through unchanged) for every other shape.
         if let Some(core) = desugar_ctor_record_payload_destructure(db, scrutinee, arms) {
+            return core;
+        }
+        // A ctor whose single payload is a REFUTABLE MAP over a RUNTIME map — `((W.Mk #map((= k v)…)) body)
+        // (_ else)` — binds a value by keyed read. The direct runtime map match is wired but a map nested in
+        // a variant payload over a runtime scrutinee is not; so bind the payload to a fresh `__cm` and
+        // re-match it ONCE as a direct map match, threading the outer catch-all into the inner map-else (a
+        // missing key falls through). Guard-free so the owned payload map is reclaimed once (no leak). Fires
+        // only on the `[ctor-map, catch-all]` shape over a runtime scrutinee; a constant map still folds.
+        if let Some(core) = desugar_ctor_map_payload_destructure(db, scrutinee, arms) {
             return core;
         }
         return lower_match_sum(db, scrutinee, arms);

@@ -11351,7 +11351,7 @@ todo	a dependent utf8 size from an arithmetic expression over a byte binder deco
 todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)
 todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
 todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)
-todo	a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read
+pass	a map pattern nested in a sum-variant payload over a runtime map binds its value by keyed read
 todo	a performing closure retrieved from a list dispatches to the call-site handler once collection flow is covered
 todo	a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
