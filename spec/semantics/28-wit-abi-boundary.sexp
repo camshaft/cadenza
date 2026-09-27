@@ -7735,3 +7735,76 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a bare result<list<bytes>, enum> host-op arg crosses on the Ok arm (element reaches list<u8>)"
+  (doc
+    "SHAPE 199 (v-wit-boundary) — widens `result<list, enum>` (SHAPE 197/198) to a list element that REACHES
+           `list<u8>`: a `list<list<u8>>` (list of `Bytes`) Ok. `result_list_enum` now admits any element
+           `list_elem_marshalable` accepts (the SAME element capability a bare `list<T>` arg uses); the element
+           marshals identically via `emit_list_arg_marshal` (a Bytes element writes a `(ptr,len)` header in the
+           outer array slot + spills its rope at the running cursor). The `result<list<list<u8>>, enum>` component
+           type is built STRUCTURALLY from the declared WIT — `ResultList` rides the structural-CRef path, so a
+           `list<u8>`-reaching element needs NO `has_list_param` shared-`(list u8)`-type change (the emitted module
+           validates + runs). The 3-slot `(disc, ptr, count)` flatten is unchanged. run() emits
+           `(Ok #list((Bytes.of #list(1 2)) (Bytes.of #list(3))))`; a VALID running component is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (list (u8))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (List Bytes) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #list((Bytes.of #list(1 2)) (Bytes.of #list(3)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare result<list<list<scalar>>, enum> host-op arg crosses on the Ok arm (nested-list element)"
+  (doc
+    "SHAPE 200 (v-wit-boundary) — a nested-list element counterpart of SHAPE 199. A `list<list<s64>>` Ok:
+           each element is itself a list, marshalled by the recursive `emit_list_arg_marshal` (an 8-byte
+           `(ptr, count)` header in the outer array slot, the inner backing array + element data laid after it).
+           Component boundary `result<list<list<s64>>, enum>`, built structurally from WIT. run() emits
+           `(Ok #list(#list(1 2) #list(3)))`; a VALID running component is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (list (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (List (List Int64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #list(#list(1 2) #list(3))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare result<list<option<scalar>>, enum> host-op arg crosses on the Ok arm (option element)"
+  (doc
+    "SHAPE 201 (v-wit-boundary) — an option-element counterpart of SHAPE 199. A `list<option<s64>>` Ok: each
+           element is written at its canonical option layout (disc byte + payload) by `emit_option_to_mem` within
+           the outer array. Component boundary `result<list<option<s64>>, enum>`. run() emits
+           `(Ok #list((Some 1) None (Some 3)))`; a VALID running component is the pin. Completes the
+           list-element widening of the `result<list, enum>` arg to the full `list_elem_marshalable` set.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (option (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (List (Option Int64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #list((Some 1) None (Some 3))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
