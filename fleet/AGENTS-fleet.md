@@ -17,6 +17,19 @@ directly and keep `AskUserQuestion`; every other role runs unattended (see invar
    checkout to edit, and you cannot commit at the hub path even if you try. Your worktree is
    recorded as your `worktree` in the registry. Never touch another agent's worktree; if you find
    files there you did not write, STOP and message them — do not `git add -A`, ever (stage by path).
+   - **🪤 OFF-TREE daemon agents: self-serve a per-agent worktree of your EXTERNAL repo (INTERIM).**
+     If your vertical works OFF-TREE — in a SEPARATE repo (e.g. the capmesh cluster in
+     `~/Projects/camshaft/capmeshd`), landing via THAT repo's own GitHub PRs, not cadenza `trunk` —
+     the registry currently records only a (largely unused) cadenza worktree for you; it does NOT yet
+     mint you a worktree of your external repo. Do NOT work in the external repo's single shared
+     checkout: multiple off-tree agents there share one HEAD/index/working-tree and COLLIDE (a commit
+     lands atop another's in-progress branch). Until the durable auto-create/register mechanism ships,
+     **self-serve your own**: `git -C <external-repo> worktree add ~/Projects/camshaft/<repo>.<your-name> <your-branch>`
+     (shared object store, isolated HEAD) and work only there. This is NOT fleet-tracked, so `fleet up`
+     will NOT reconstruct it on reboot — re-run the `worktree add` after a host reboot. **INTERIM only**,
+     to be superseded by the operator's pick of the auto-create/register design (see
+     `fleet/DESIGN-fleet-extraction-standalone-multirepo.md` → "Concrete driver: off-tree daemon
+     agents").
 
 2. **You NEVER advance `trunk` yourself.** `trunk` is the integration branch, and **only the
    `pr-sync` agent writes it.** There is no `git update-ref` CAS anymore, and no landing race — you
