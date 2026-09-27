@@ -6958,6 +6958,44 @@ pub(super) fn emit(
                             out.push(Lir::CallImport(OP_DROP));
                         }
                     }
+                    // A top-level `result<record-of-scalars, enum>` argument: the guest emits the value-heap
+                    // Result HANDLE into a slot, then decomposes it into `(disc, record-fields…)` via
+                    // `emit_result_record_arg_reg_flatten` (the record-Ok twin of the scalar-Ok result) — Ok
+                    // marshals the payload record's fields into the join slots (WIT order), Err puts the err enum's
+                    // disc in the first slot. No rope, so NO cursor. Checked BEFORE the scalar `_` arm (a Sum's
+                    // `emit` yields a HANDLE); the other result arms above are mutually exclusive by the Ok shape.
+                    _ if crate::backend::wasm::host::result_record_enum(db, &at).is_some() => {
+                        let res_slot = arg_base.max(*high);
+                        scratch_ty.insert(res_slot, ValType::I32);
+                        *high = (*high).max(res_slot + 1);
+                        emit(db, arg, slots, res_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(res_slot));
+                        let (ok_record, _errs) =
+                            crate::backend::wasm::host::result_record_enum(db, &at).unwrap();
+                        let ok_wit = match wit_params.as_ref().and_then(|p| p.get(arg_i)) {
+                            Some(crate::wit_world::WitType::Result { ok: Some(w), .. }) => {
+                                (**w).clone()
+                            }
+                            _ => {
+                                return Err(Reject::decline(
+                                    "a result<record,enum> arg has no WIT Ok record type",
+                                ));
+                            }
+                        };
+                        let work_base = *high;
+                        emit_result_record_arg_reg_flatten(
+                            db, res_slot, &ok_record, &ok_wit, work_base, high, scratch_ty, out,
+                        )?;
+                        // MARSHALED-ARG RECLAIM (result-record twin): the flatten borrowed the handle (sum-disc/
+                        // sum-payload/arr-get/unbox) — no dup, no handle moved out — so the Result handle in
+                        // `res_slot` is DEAD. Deep-drop iff Owned / a dup-site. Import mirror in `collect_used_ops`.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(res_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
                     // A scalar argument emits its value directly.
                     _ => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
                 }

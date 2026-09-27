@@ -243,6 +243,17 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                 };
                 params.extend_from_slice(&[wasm_abi::CORE_I32, join]);
             }
+            // A bare `result<record-of-scalars, enum>` param flattens to `(disc:i32, record-fields…)` — the
+            // discriminant then one core slot per Ok record field, in WIT declaration order. Because every field
+            // is a SCALAR, joining the first field with the `i32` err disc never widens beyond that field's own
+            // width, so the field slots are exactly the record's flattened field slots. The component boundary
+            // type is the built-in `result<record, err-enum>` (built from the declared WIT type).
+            HostParam::ResultRecord(fields, _) => {
+                params.push(wasm_abi::CORE_I32); // the result discriminant
+                for (_, abi) in fields {
+                    flatten_record_field_abi(abi, &mut params);
+                }
+            }
         }
     }
     // `params` now holds exactly the FLATTENED core-slot bytes (a scalar = 1, a string/bytes = 2, a record

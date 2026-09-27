@@ -1433,6 +1433,129 @@ pub(super) fn emit_result_scalar_arg_reg_flatten(
     Ok(())
 }
 
+/// Marshal a top-level value-heap `result<record-of-scalars, enum>` host argument whose handle is in
+/// `result_slot` into the canonical `(disc:i32, record-fields…)` core-slot flatten the built-in
+/// `result<record, err-enum>` param lowers to, pushing the values onto the operand stack. The record-Ok twin of
+/// `emit_result_scalar_arg_reg_flatten` (a scalar Ok) — the Ok arm's payload is a RECORD, so its fields ride the
+/// join slots POSITIONALLY (WIT declaration order), the `i32` err disc riding the FIRST slot on Err. Structurally
+/// the `emit_option_reg_flatten` record branch with Ok↔Some (disc 0 vs 1) and the None branch replaced by an Err
+/// branch: on Ok (disc 0) recurse `emit_record_arg_marshal` on the payload record handle, its N pushes captured
+/// into the slots in REVERSE; on Err (disc≠0) the err enum's disc goes into slot 0 (widened to its width) and the
+/// rest zero-fill. Because every Ok field is a SCALAR, each field is ONE slot and joining the first with the
+/// `i32` err disc never widens beyond the field's own width, so `slot_vts` is exactly the record's field widths
+/// — NO `mem` (no rope). `ok_wit` is the Ok arm's declared WIT record type (field order). `work_base` is the
+/// first free scratch slot.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_result_record_arg_reg_flatten(
+    db: &mut Db,
+    result_slot: u32,
+    ok_record_ty: &Ty,
+    ok_wit: &crate::wit_world::WitType,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let Ty::Record(fields) = ok_record_ty.strip_nominal() else {
+        return Err(Reject::decline(
+            "a result<record,enum> Ok arm is not a record",
+        ));
+    };
+    let fields = fields.clone();
+    let crate::wit_world::WitType::Record(wit_fields) = ok_wit else {
+        return Err(Reject::decline(
+            "a result<record,enum> arg has no matching WIT record Ok type (needed to order fields)",
+        ));
+    };
+    let wit_fields = wit_fields.clone();
+    // Slot valtypes in WIT declaration order — the SAME order + per-field slot count `emit_record_arg_marshal`
+    // pushes. Every field is a SCALAR (the detector's scope), so each contributes exactly one slot whose width is
+    // the field's own; the first slot also holds the `i32` err disc on Err, which fits (a scalar joins `i32`
+    // without widening past its own width). Derived from the field boundary ABI flattening to stay in lockstep.
+    let names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
+    let mut slot_vts: Vec<ValType> = Vec::new();
+    for (fname, _) in &wit_fields {
+        let Some(idx) = names.iter().position(|n| n == fname) else {
+            return Err(Reject::decline(
+                "a WIT record field is absent from the guest result Ok record",
+            ));
+        };
+        let fty = fields
+            .values()
+            .nth(idx)
+            .expect("name-lex index in range")
+            .clone();
+        let abi = crate::backend::wasm::host::field_boundary_abi(db, &fty)
+            .ok_or_else(|| Reject::decline("a result Ok record field does not cross"))?;
+        let mut bytes = Vec::new();
+        crate::backend::wasm::serialize::flatten_record_field_abi(&abi, &mut bytes);
+        for b in bytes {
+            slot_vts.push(ValType::from_byte(b).ok_or_else(|| {
+                Reject::decline(
+                    "a flattened result Ok record field slot is not a numeric core type",
+                )
+            })?);
+        }
+    }
+    let n = slot_vts.len() as u32;
+    let disc_out = work_base;
+    let base_slot = work_base + 1;
+    let rec_slot = base_slot + n;
+    scratch_ty.insert(disc_out, ValType::I32);
+    for (k, vt) in slot_vts.iter().enumerate() {
+        scratch_ty.insert(base_slot + k as u32, *vt);
+    }
+    scratch_ty.insert(rec_slot, ValType::I32);
+    *high = (*high).max(rec_slot + 1);
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component result disc, decl order Ok=0)
+    out.push(Lir::LocalSet(disc_out));
+    out.push(Lir::LocalGet(disc_out));
+    out.push(Lir::If(BlockType::Empty)); // disc != 0 → Err
+    // Err arm: slot 0 = the err enum's disc (widened to slot-0 width); the rest zero-fill.
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [err enum handle]
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [err enum disc: i32]
+    if slot_vts.first() == Some(&ValType::I64) {
+        out.push(Lir::I64ExtendI32U);
+    }
+    out.push(Lir::LocalSet(base_slot));
+    for (k, vt) in slot_vts.iter().enumerate().skip(1) {
+        out.push(match vt {
+            ValType::I64 => Lir::ConstI64(0),
+            ValType::F64 => Lir::F64ConstBits(0),
+            ValType::F32 => Lir::F32ConstBits(0),
+            _ => Lir::ConstI32(0),
+        });
+        out.push(Lir::LocalSet(base_slot + k as u32));
+    }
+    out.push(Lir::Else); // disc == 0 → Ok: marshal the payload record's fields into the slots
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [Ok record handle]
+    out.push(Lir::LocalSet(rec_slot));
+    emit_record_arg_marshal(
+        db,
+        rec_slot,
+        &fields,
+        ok_wit,
+        None, // all-scalar fields → no rope → no cursor
+        rec_slot + 1,
+        high,
+        scratch_ty,
+        out,
+    )?;
+    // Capture the N pushed field values into the slots in REVERSE (stack top = last WIT field).
+    for k in (0..n).rev() {
+        out.push(Lir::LocalSet(base_slot + k));
+    }
+    out.push(Lir::End);
+    out.push(Lir::LocalGet(disc_out)); // push (disc, field0, field1, …)
+    for k in 0..n {
+        out.push(Lir::LocalGet(base_slot + k));
+    }
+    Ok(())
+}
+
 /// Marshal a top-level value-heap `option<scalar>` host argument whose handle is in `var_slot` into the
 /// canonical `(disc:i32, payload)` core-slot flatten the built-in `option<T>` param lowers to, pushing the two
 /// values onto the operand stack. The register twin of the `RecordFieldAbi::Option` field flatten (the

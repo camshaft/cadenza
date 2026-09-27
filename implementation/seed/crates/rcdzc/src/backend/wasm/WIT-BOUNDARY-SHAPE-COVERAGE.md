@@ -232,6 +232,23 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `host_imports.rs` (the structural-CRef param reference + `host_param_abi` decline). NOT the cursor pre-scan and
   NOT `set_needs_memory` (no rope → no `mem`, unlike the Bytes result). REMAINING: `result<record/list/tuple,enum>`
   (a compound Ok needs the in-mem arg marshal) and `result<_, variant>` / a float Ok.
+- **[emit, register-path] a top-level `result<record-of-scalars, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
+  189/190/191).** The record-Ok sibling of the scalar-Ok result: a new `HostParam::ResultRecord(ok-fields, err-
+  cases)` (detector `result_record_enum`, admitting a record every field of which is a SCALAR + a payloadless-enum
+  Err; a compound Ok field is a later increment — the in-mem marshal). It flattens to `(disc:i32, field0, field1,
+  …)` — the discriminant then the Ok record's fields POSITIONALLY in WIT declaration order, the `i32` err disc
+  riding the FIRST field's slot on Err. Because every field is a scalar, each is ONE slot and joining the first
+  with the `i32` err disc never widens past that field's own width, so the slot widths ARE the record's field
+  widths — NO `mem`. `emit_result_record_arg_reg_flatten` recurses `emit_record_arg_marshal` on Ok (its N pushes
+  captured into the slots in reverse, WIT-reordered) and puts the err enum's disc in slot 0 on Err. SHAPE 189/190
+  (`record{x:s64,y:s64}`, core `(param i32 i64 i64)`, both arms) + 191 (`record{a:bool,b:s64}`, mixed
+  `(param i32 i32 i64)`) pin the multi-slot join + per-field widths. Widened in LOCKSTEP: the classifier arm (which
+  reorders the Ok fields to the result WIT's Ok record order), `first_unrepresentable_host_op`'s
+  `arg_is_boundary_result_record`, the emit dispatch (+ reclaim), `collect_used_ops` (`sum-disc`/`sum-payload`/
+  `arr-get` + each field's unbox + `drop`), `serialize` (disc + each field's flattened slots), and `host_imports.rs`
+  (structural-CRef param reference + `host_param_abi` decline). NOT the cursor pre-scan / `set_needs_memory` (all-
+  scalar → registers, no rope). REMAINING (result family): a record with a COMPOUND field (Bytes/list/nested →
+  needs `mem`); `result<list/tuple,enum>`; `result<_, variant>` / a float Ok.
 - **[emit, register-path] a top-level `option<variant>` host-op ARG — ✅ DONE (SHAPE 167/168).** The option
   payload is a scalar-payload `variant`: `option_arg_crosses` now admits it, and `emit_option_reg_flatten`'s
   variant branch flattens the value-heap option to `(opt-disc, var-disc, payload-join)` = the option disc + the

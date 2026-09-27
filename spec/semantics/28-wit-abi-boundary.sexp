@@ -7483,3 +7483,79 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a bare result<record-of-scalars, enum> host-op arg crosses on the Ok arm (multi-slot join)"
+  (doc
+    "SHAPE 189 (v-wit-boundary) — a top-level `result<record, enum>` ARG, the record-Ok sibling of the
+           scalar-Ok result (SHAPE 186). Where a scalar Ok flattens to 2 slots `(disc, join)`, a record-of-scalars
+           Ok flattens to `(disc, field0, field1, …)` — the discriminant then the record's fields POSITIONALLY in
+           WIT declaration order, with the `i32` err disc riding the FIRST field's slot on the Err arm.
+           `emit_result_record_arg_reg_flatten` recurses `emit_record_arg_marshal` on Ok (the payload record's N
+           pushes captured into the join slots) and puts the err enum's disc in slot 0 on Err. Every Ok field is a
+           SCALAR, so each is one register slot and NO memory is needed (a compound field is a later increment).
+           Here `record{x:s64, y:s64}` gives the core import sig `(param i32 i64 i64)` — the disc + two s64 fields.
+           run() emits `(Ok #record((= x 3) (= y 4)))`; a VALID component that runs and crosses is the pin (the
+           multi-slot flatten is pinned by the module validating with that core signature). The Err arm = SHAPE
+           190; a mixed-width record (a leading i32 field) = SHAPE 191.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= x (s64)) (= y (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: x Int64) (: y Int64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= x 3) (= y 4))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare result<record-of-scalars, enum> host-op arg crosses on the Err arm (err disc in slot 0)"
+  (doc
+    "SHAPE 190 (v-wit-boundary) — the Err-arm counterpart of SHAPE 189. On Err the result disc is non-zero
+           and `emit_result_record_arg_reg_flatten` writes the err ENUM's discriminant (here `worse` = decl-disc 1)
+           into slot 0 (widened to that slot's `i64` width to match the s64 first field) and zero-fills the
+           remaining field slots (a record's Ok fields are never read on the Err arm). run() emits `(Err (Worse))`;
+           the host stub returns 42. Same `result<record{x,y}, enum>` boundary as SHAPE 189, other arm.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= x (s64)) (= y (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: x Int64) (: y Int64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Err (Worse)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
+
+(case
+  "a bare result<record{bool,s64}, enum> host-op arg crosses on the Ok arm (mixed field widths)"
+  (doc
+    "SHAPE 191 (v-wit-boundary) — a mixed-width-record counterpart of SHAPE 189. A `record{a:bool, b:s64}`
+           Ok flattens to `(disc:i32, a:i32, b:i64)` — the core sig `(param i32 i32 i64)`. The leading `bool`
+           field is `i32`-width, so slot 0 (which also carries the `i32` err disc on Err) stays `i32`; the trailing
+           `s64` field is `i64`. This pins that `emit_result_record_arg_reg_flatten` derives each slot width from
+           its own field (no spurious widening, and the err disc fits the first slot) across differing widths.
+           run() emits `(Ok #record((= a true) (= b 9)))`; a VALID component that runs and crosses is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= a (bool)) (= b (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: a Bool) (: b Int64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= a true) (= b 9))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
