@@ -147,6 +147,64 @@ fn divergent_match_borrow_dupable(
     }
 }
 
+/// `Core::If` analogue of [`divergent_match_borrow_dupable`] (node#6 operand-node-kind extension, v-core-opt
+/// carry-forward #2, keep_scope co-design). A length-op over a divergent-ownership `Core::If` borrow-operand
+/// — one arm OWNED-FRESH, the other a dup-safe bare-ALIAS — leaks the owned-fresh arm (the arm-blind join
+/// reads `Borrowed`). Returns the FIX-A `ifjoin_arm_dups` plan `[(binder_slot, dup_is_then)]` to `dup` the
+/// alias arm so the `if` result is uniformly OWNED, REUSING FIX-A's blessed dup emit at the `Core::If` handler
+/// (NO new emit site); the caller inserts it into `out.ifjoin_arm_dups` (debug_assert no-overwrite — an
+/// inline-If length-op operand and a FIX-A let-value If are structurally disjoint `Core::If` nodes) and sets
+/// `reclaim = true`. SELECT-SAFE: a heap-result `if` is always the if/else BLOCK form (`select` excludes heap
+/// results), so the dup fires on EXACTLY ONE arm (net-zero on the binder), Match-equivalent. Dup-safety is
+/// `keep_scope_drop_despite_body_escape` (its `arms_inherit_borrow` variant already covers `Core::If`
+/// arm-results, reclaim.rs 1019/1132), so a DFBAR transfer (alias binder NOT live-after) fails keep_scope →
+/// no dup — the same self-exclusion that held across the Match family. INLINE only: a let-bound
+/// `(def r (if …)) (List.len r)` has operand `LocalRef(r)`, NOT a `Core::If` — a SEPARATE path, not fixed
+/// here. ANY unclassifiable arm → `None` (conservative leak, never a guess).
+fn divergent_if_borrow_dupable(
+    db: &mut Db,
+    operand: StructId,
+    slots: &HashMap<StructId, u32>,
+    fn_body: Option<StructId>,
+    dup_sites: &HashSet<StructId>,
+) -> Option<Vec<(u32, bool)>> {
+    let Core::If { then_, else_, .. } = core_of(db, operand) else {
+        return None;
+    };
+    let fn_body = fn_body?;
+    let mut plan: Vec<(u32, bool)> = Vec::new();
+    let mut has_owned_fresh = false;
+    for (body, is_then) in [(then_, true), (else_, false)] {
+        if matches!(heap_operand_ownership(db, body), Ok(HandleOwnership::Owned)) {
+            has_owned_fresh = true;
+            continue;
+        }
+        if let Core::LocalRef { binder } | Core::Param { binder } = core_of(db, body) {
+            // Dup-safe ⟺ B is OWNED+LIVE-AFTER (its own surviving reclaim makes dup+forced-drop net-zero on
+            // B) AND B has a materialized slot to `LocalGet` at the arm. A transfer / no slot → decline.
+            if let Some(&bslot) = slots.get(&binder)
+                && keep_scope_drop_despite_body_escape(db, fn_body, binder, dup_sites)
+            {
+                plan.push((bslot, is_then));
+                continue;
+            }
+            return None;
+        }
+        // POSITIVE static whitelist (mirror the Match detector): immortal singleton / Const producer only.
+        if returns_immortal_singleton(db, body)
+            || matches!(core_of(db, body), Core::ConstStr(_) | Core::ConstBytes(_))
+        {
+            continue;
+        }
+        return None;
+    }
+    if has_owned_fresh && !plan.is_empty() {
+        Some(plan)
+    } else {
+        None
+    }
+}
+
 /// NESTED IF-JOIN per-arm drop planner (v-memory-safety, join-liveness aware). Walk the If-subtree at
 /// `node` and, for the `slot`'s handle (alias set = the binding ∪ the bare ref its value materializes — a
 /// runtime bin-match scrutinee's `Let{(inner, Param(p))}`, whose return arms reference `Param(p)` directly
@@ -670,6 +728,26 @@ pub(super) fn emit(
                 }
                 None => false,
             };
+            // node#6 operand-node-kind extension (Core::If): same equalize for a divergent-ownership `if`
+            // borrow-operand, reusing FIX-A's ifjoin_arm_dups dup emit (no new emit site). INLINE `if` only.
+            let ifjoin_equalize = match divergent_if_borrow_dupable(
+                db,
+                operand,
+                slots,
+                out.fn_body,
+                &out.dup_sites,
+            ) {
+                Some(plan) => {
+                    debug_assert!(
+                        !out.ifjoin_arm_dups.contains_key(&operand),
+                        "node#6 If-operand equalize: ifjoin_arm_dups already has a plan for this If \
+                         (FIX-A let-value collision?) — insert would overwrite → lost dup / double-free"
+                    );
+                    out.ifjoin_arm_dups.insert(operand, plan);
+                    true
+                }
+                None => false,
+            };
             let reclaim =
                 matches!(
                     heap_operand_ownership(db, operand),
@@ -680,7 +758,8 @@ pub(super) fn emit(
                         core_of(db, operand),
                         Core::Param { .. } | Core::LocalRef { .. }
                     ) && out.dup_sites.contains(&operand))
-                    || matchjoin_equalize;
+                    || matchjoin_equalize
+                    || ifjoin_equalize;
             if reclaim {
                 let list_slot = base;
                 *high = (*high).max(list_slot + 1);
@@ -1193,6 +1272,26 @@ pub(super) fn emit(
                 }
                 None => false,
             };
+            // node#6 operand-node-kind extension (Core::If): equalize a divergent-ownership `if` operand via
+            // FIX-A's ifjoin_arm_dups dup emit (no new emit site). INLINE `if` only.
+            let ifjoin_equalize = match divergent_if_borrow_dupable(
+                db,
+                operand,
+                slots,
+                out.fn_body,
+                &out.dup_sites,
+            ) {
+                Some(plan) => {
+                    debug_assert!(
+                        !out.ifjoin_arm_dups.contains_key(&operand),
+                        "node#6 If-operand equalize: ifjoin_arm_dups already has a plan for this If \
+                         (FIX-A let-value collision?) — insert would overwrite → lost dup / double-free"
+                    );
+                    out.ifjoin_arm_dups.insert(operand, plan);
+                    true
+                }
+                None => false,
+            };
             let reclaim =
                 matches!(
                     heap_operand_ownership(db, operand),
@@ -1201,7 +1300,8 @@ pub(super) fn emit(
                     || out.sumexpect_view_reclaim.contains(&operand)
                     || child_dup_borrowed_view
                     || b2_dup_borrowed_binder
-                    || matchjoin_equalize;
+                    || matchjoin_equalize
+                    || ifjoin_equalize;
             if reclaim {
                 let bytes_slot = base;
                 *high = (*high).max(bytes_slot + 1);
@@ -1255,6 +1355,26 @@ pub(super) fn emit(
                 }
                 None => false,
             };
+            // node#6 operand-node-kind extension (Core::If): equalize a divergent-ownership `if` operand via
+            // FIX-A's ifjoin_arm_dups dup emit (no new emit site). INLINE `if` only.
+            let ifjoin_equalize = match divergent_if_borrow_dupable(
+                db,
+                operand,
+                slots,
+                out.fn_body,
+                &out.dup_sites,
+            ) {
+                Some(plan) => {
+                    debug_assert!(
+                        !out.ifjoin_arm_dups.contains_key(&operand),
+                        "node#6 If-operand equalize: ifjoin_arm_dups already has a plan for this If \
+                         (FIX-A let-value collision?) — insert would overwrite → lost dup / double-free"
+                    );
+                    out.ifjoin_arm_dups.insert(operand, plan);
+                    true
+                }
+                None => false,
+            };
             let reclaim = matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
@@ -1263,7 +1383,8 @@ pub(super) fn emit(
                     core_of(db, operand),
                     Core::Param { .. } | Core::LocalRef { .. }
                 ) && out.dup_sites.contains(&operand))
-                || matchjoin_equalize;
+                || matchjoin_equalize
+                || ifjoin_equalize;
             let str_slot = base;
             let pos_slot = base + 1;
             let bytelen_slot = base + 2;
@@ -1802,11 +1923,32 @@ pub(super) fn emit(
                     }
                     None => false,
                 };
+            // node#6 operand-node-kind extension (Core::If): equalize a divergent-ownership `if` operand via
+            // FIX-A's ifjoin_arm_dups dup emit (no new emit site). INLINE `if` only.
+            let ifjoin_equalize = match divergent_if_borrow_dupable(
+                db,
+                map,
+                slots,
+                out.fn_body,
+                &out.dup_sites,
+            ) {
+                Some(plan) => {
+                    debug_assert!(
+                        !out.ifjoin_arm_dups.contains_key(&map),
+                        "node#6 If-operand equalize: ifjoin_arm_dups already has a plan for this If \
+                             (FIX-A let-value collision?) — insert would overwrite → lost dup / double-free"
+                    );
+                    out.ifjoin_arm_dups.insert(map, plan);
+                    true
+                }
+                None => false,
+            };
             let reclaim = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned))
                 || owned_proj_child_dupd(db, map, slots, &out.sumexpect_shell_reclaim)
                 || (matches!(core_of(db, map), Core::Param { .. } | Core::LocalRef { .. })
                     && out.dup_sites.contains(&map))
-                || matchjoin_equalize;
+                || matchjoin_equalize
+                || ifjoin_equalize;
             if reclaim {
                 let map_slot = base;
                 *high = (*high).max(map_slot + 1);
@@ -1948,11 +2090,32 @@ pub(super) fn emit(
                     }
                     None => false,
                 };
+            // node#6 operand-node-kind extension (Core::If): equalize a divergent-ownership `if` operand via
+            // FIX-A's ifjoin_arm_dups dup emit (no new emit site). INLINE `if` only.
+            let ifjoin_equalize = match divergent_if_borrow_dupable(
+                db,
+                set,
+                slots,
+                out.fn_body,
+                &out.dup_sites,
+            ) {
+                Some(plan) => {
+                    debug_assert!(
+                        !out.ifjoin_arm_dups.contains_key(&set),
+                        "node#6 If-operand equalize: ifjoin_arm_dups already has a plan for this If \
+                             (FIX-A let-value collision?) — insert would overwrite → lost dup / double-free"
+                    );
+                    out.ifjoin_arm_dups.insert(set, plan);
+                    true
+                }
+                None => false,
+            };
             let reclaim = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned))
                 || owned_proj_child_dupd(db, set, slots, &out.sumexpect_shell_reclaim)
                 || (matches!(core_of(db, set), Core::Param { .. } | Core::LocalRef { .. })
                     && out.dup_sites.contains(&set))
-                || matchjoin_equalize;
+                || matchjoin_equalize
+                || ifjoin_equalize;
             if reclaim {
                 let set_slot = base;
                 *high = (*high).max(set_slot + 1);

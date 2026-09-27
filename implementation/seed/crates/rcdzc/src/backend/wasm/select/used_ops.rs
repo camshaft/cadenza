@@ -199,27 +199,29 @@ pub(super) fn collect_list_elem_ops(
     }
 }
 
-/// IMPORT-mirror of the emit-side node#6 match-join equalize (`divergent_match_borrow_dupable`): a length-op
-/// (Bytes/Str/List/Map/Set-len) over a divergent-ownership `Core::Match` borrow-operand dups the bare-alias
-/// arm (`OP_DUP` at `emit_arm_body`) + forces the post-borrow reclaim (`OP_DROP`), so both must be imported.
+/// IMPORT-mirror of the emit-side node#6 equalize (`divergent_match_borrow_dupable` / `divergent_if_borrow_
+/// dupable`): a length-op (Bytes/Str/List/Map/Set-len) over a divergent-ownership `Core::Match` OR `Core::If`
+/// borrow-operand dups the bare-alias arm (`OP_DUP` — at `emit_arm_body` for Match, at the `Core::If`
+/// handler's `ifjoin_arm_dups` for If) + forces the post-borrow reclaim (`OP_DROP`), so both must be imported.
 /// used_ops lacks `slots`/`fn_body`/`dup_sites` and so CANNOT run the full dup-safety gate; it imports on the
 /// db-only STRUCTURAL gate (≥1 owned-fresh arm AND ≥1 bare-alias arm) — a safe OVER-approximation, since the
 /// emit-side `keep_scope` check only further restricts (an unused import is harmless valid wasm). Without this
 /// the arm-dup's `CallImport(OP_DUP)` resolves to an unregistered function index (CDZ0910 `call u32::MAX`)
 /// whenever no other construct in the module happens to import dup/drop (the masked node#6 family gap).
 fn matchjoin_equalize_may_import(db: &mut Db, operand: StructId) -> bool {
-    let Core::Match { arms, .. } = core_of(db, operand) else {
-        return false;
+    // The equalize fires on a divergent `Core::Match` (N arm bodies) or `Core::If` (then/else). Both need
+    // ≥1 owned-fresh arm AND ≥1 bare-alias arm; a uniform operand (or a non-Match/If) never dups.
+    let arm_bodies: Vec<StructId> = match core_of(db, operand) {
+        Core::Match { arms, .. } => arms.iter().map(|a| a.body).collect(),
+        Core::If { then_, else_, .. } => vec![then_, else_],
+        _ => return false,
     };
     let (mut owned_fresh, mut alias) = (false, false);
-    for a in arms.iter() {
-        if matches!(
-            heap_operand_ownership(db, a.body),
-            Ok(HandleOwnership::Owned)
-        ) {
+    for body in arm_bodies {
+        if matches!(heap_operand_ownership(db, body), Ok(HandleOwnership::Owned)) {
             owned_fresh = true;
         } else if matches!(
-            core_of(db, a.body),
+            core_of(db, body),
             Core::LocalRef { .. } | Core::Param { .. }
         ) {
             alias = true;
