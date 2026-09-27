@@ -11378,6 +11378,7 @@ todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the b
 todo	lcap3 an ESCAPING closure capturing BOTH a def-param and a let-local folds using both (no half-capture)
 todo	llb1 a recursive do-local fn capturing a do-LOCAL BINDING computes (should-work: lexical capture is uniform)
 pass	mrs1 a two-resume arm over a HEAP-allocating body folds by hoisting the allocation out of the per-resume splice
+pass	mrs1-consume a two-resume continuation that CONSUMES the hoisted list still reclaims to 0 (Perceus per-splice dup; borrow-vs-transfer negative control)
 todo	phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
