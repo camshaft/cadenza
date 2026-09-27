@@ -465,13 +465,15 @@ pub fn result_record_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
     Some((args[0].clone(), err_cases))
 }
 
-/// Whether `ty` is `result<list<scalar>, enum>` — an Ok arm that is a `list<T>` whose ELEMENT is a SCALAR (so the
-/// list marshals into `mem` with a fixed element stride; a compound element is a later increment) and an Err arm
-/// that is a PAYLOAD-LESS enum. Returns `(the element Ty, err-enum case names)` if so, else `None`. A `Sum` whose
-/// decl has exactly `Ok`/`Err` variants, instantiated at `[list, enum]`. The 3-slot `(disc, ptr/errdisc, count/0)`
-/// flatten is `emit_result_list_arg_reg_flatten` (the list-Ok twin of the Bytes-Ok `emit_result_arg_reg_flatten`).
-/// Reads through erased nominal wrappers, mirroring [`result_tuple_enum`]. NB: a `list<u8>` Ok is `Bytes` → that
-/// is [`result_bytes_enum`]'s job (checked first), so this admits only a NON-`u8` scalar element.
+/// Whether `ty` is `result<list<T>, enum>` where the list ELEMENT is a SCALAR or an all-scalar product (a
+/// record every field of which is a scalar, or a tuple every element of which is a scalar) — so the list marshals
+/// into `mem` with `emit_list_arg_marshal` and NEVER reaches `list<u8>` (keeping `has_list_param` = false). An
+/// element with a `Bytes`/`list`/`option`/nested compound is a later increment (it reaches `list<u8>` / needs the
+/// shared list type). The Err arm must be a PAYLOAD-LESS enum. Returns `(the element Ty, err-enum case names)` if
+/// so, else `None`. A `Sum` whose decl has exactly `Ok`/`Err` variants, instantiated at `[list, enum]`. The
+/// 3-slot `(disc, ptr/errdisc, count/0)` flatten is `emit_result_list_arg_reg_flatten` (the list-Ok twin of the
+/// Bytes-Ok `emit_result_arg_reg_flatten`). Reads through erased nominal wrappers, mirroring [`result_tuple_enum`].
+/// NB: a `list<u8>` Ok is `Bytes` → that is [`result_bytes_enum`]'s job (a `list<u8>` arg type is `Ty::Bytes`).
 pub fn result_list_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
     use crate::backend::common::export_name::kebab_extern_name;
     let stripped = ty.strip_nominal();
@@ -481,13 +483,27 @@ pub fn result_list_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
     if args.len() != 2 {
         return None;
     }
-    // The Ok arm (args[0]) must be a `list<scalar>` — a `list<u8>` (Bytes) is `result_bytes_enum`'s job, and a
-    // compound element needs the per-element in-mem marshal (a later increment).
+    // The Ok arm (args[0]) must be a `list<scalar | all-scalar-product>` — a `list<u8>` (Bytes) is
+    // `result_bytes_enum`'s job, and an element that reaches `list<u8>` (Bytes/list/nested) needs the shared list
+    // type (a later increment). An all-scalar record/tuple element marshals inline via `emit_list_arg_marshal`
+    // (`emit_record_to_mem` / `emit_tuple_to_mem`) and never reaches `list<u8>`.
     let Ty::List(elem) = args[0].strip_nominal() else {
         return None;
     };
     let elem = (**elem).clone();
-    abi_val_type(&elem)?; // a SCALAR element only (a compound element is a later increment)
+    let elem_ok = abi_val_type(&elem).is_some()
+        || match elem.strip_nominal() {
+            Ty::Record(fields) => {
+                !fields.is_empty() && fields.values().all(|f| abi_val_type(f).is_some())
+            }
+            Ty::Tuple(elems) => {
+                !elems.is_empty() && elems.iter().all(|e| abi_val_type(e).is_some())
+            }
+            _ => false,
+        };
+    if !elem_ok {
+        return None;
+    }
     // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
     {
         let d = db.type_decl_by_occ(*decl)?;
