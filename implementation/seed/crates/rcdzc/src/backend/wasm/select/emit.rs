@@ -1218,6 +1218,24 @@ pub(super) fn emit(
             // AND as the borrowing scalar-len operand; the borrow-scan dup is never consumed → +1 leak. drop⟺dup;
             // the scan borrows so the dup is always unbalanced; `Param`/`LocalRef` is Borrowed → disjoint from the
             // Owned branch; O2-specific (at O0/O1 the operand is a fresh Owned producer, not a binder in dup_sites).
+            // MATCH-JOIN OWNERSHIP-EQUALIZE (node#6 sibling): same as the Core::BytesLen gate — a
+            // divergent-ownership heap Match borrow-operand whose arm-blind join reads Borrowed leaks its
+            // owned-fresh arm. The detector + emit_arm_body arm-dup are shared; force reclaim so the
+            // post-scan drop below fires (the equalized temp is uniformly OWNED on every arm). String, so the
+            // dup/drop are byte-buffer rc ops identical to BytesLen.
+            let matchjoin_equalize = match divergent_match_borrow_dupable(
+                db,
+                operand,
+                slots,
+                out.fn_body,
+                &out.dup_sites,
+            ) {
+                Some(ids) => {
+                    out.matchjoin_dup_arms.extend(ids);
+                    true
+                }
+                None => false,
+            };
             let reclaim = matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
@@ -1225,7 +1243,8 @@ pub(super) fn emit(
                 || (matches!(
                     core_of(db, operand),
                     Core::Param { .. } | Core::LocalRef { .. }
-                ) && out.dup_sites.contains(&operand));
+                ) && out.dup_sites.contains(&operand))
+                || matchjoin_equalize;
             let str_slot = base;
             let pos_slot = base + 1;
             let bytelen_slot = base + 2;
