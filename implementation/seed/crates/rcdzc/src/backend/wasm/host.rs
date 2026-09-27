@@ -1014,15 +1014,17 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
         Ty::Tuple(elems) => {
             !elems.is_empty() && elems.iter().all(|e| product_field_marshalable(db, e))
         }
-        // An `option<scalar|record|tuple>` element (`list<option<s64>>`, `list<option<record>>`,
-        // `list<option<tuple>>`): written in place at its canonical option layout (disc byte + payload) by
-        // `select::emit_option_to_mem`. A SCALAR payload writes its width inline; a RECORD/TUPLE payload is
-        // written at the payload offset via the product writer (each field `product_field_marshalable`, a Bytes
-        // field spilling at the cursor). An `option<bytes>`/`option<list>`/`option<option>` payload is a later
-        // slice (the option-to-mem writer has no arm for it).
+        // An `option<scalar|bytes|record|tuple>` element (`list<option<s64>>`, `list<option<bytes>>`,
+        // `list<option<record>>`, `list<option<tuple>>`): written in place at its canonical option layout (disc
+        // byte + payload) by `select::emit_option_to_mem`. A SCALAR payload writes its width inline; a `Bytes`
+        // payload copies its rope at the cursor + writes `(ptr,len)` at the payload offset; a RECORD/TUPLE payload
+        // is written at the payload offset via the product writer (each field `product_field_marshalable`, a Bytes
+        // field spilling at the cursor). An `option<list>`/`option<option>` payload is a later slice (the
+        // option-to-mem writer has no arm for a nested-list / nested-option payload).
         ref other
             if option_payload_ty(db, other).is_some_and(|p| {
                 abi_val_type(&p).is_some()
+                    || matches!(p.strip_nominal(), Ty::Bytes | Ty::String)
                     || (matches!(p.strip_nominal(), Ty::Record(_) | Ty::Tuple(_))
                         && list_elem_marshalable(db, &p))
             }) =>
