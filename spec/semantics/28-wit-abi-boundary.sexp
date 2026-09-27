@@ -7210,3 +7210,30 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a top-level list<enum> host-op arg crosses (each enum element written as its disc at the canonical width)"
+  (doc
+    "SHAPE 178 (v-wit-boundary) — a top-level `list<enum>` bare host-op ARGUMENT (probe.push :
+           func(list<enum{red,green,blue}>) -> s64). The last enum-in-compound position: extends the nested
+           payload-less `enum` support (record FIELD 174, tuple ELEMENT 175, option PAYLOAD 176/177) to the
+           list-ELEMENT position. `list_elem_marshalable` now admits an enum element (via `enum_cases`); the
+           element rides `emit_list_arg_marshal`'s scalar-store path — each element's disc is written in place at
+           the enum's canonical width (`disc_size(n_cases)`, one byte for a 3-case enum), read via the guest
+           sum's disc-unbox. The `(list (enum …))` component type builds from the world WIT (its element type is
+           the enum, via `field_boundary_abi`'s enum arm). run() builds [Green, Red] and performs probe.push; a
+           VALID component that runs is the pin (a wrong element stride/disc traps at the host's list.lift).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (enum red green blue))) (result (s64)))))))
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (effect probe (op push (-> (List Col) Int64)))
+      (def (run) (host (probe) (probe.push #list((Col.Green) (Col.Red)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
