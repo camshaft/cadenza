@@ -3915,11 +3915,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // FINE — the reconstruction grounds the interior (`ground_open_vars`) and the OUTER shape is
             // exactly what avoids the E0282 that a bare `_` value hole would raise.
             let match_result = type_of(db, id);
-            let scrut_ctx = if matches!(match_result, Ty::Var(_) | Ty::Any) {
+            let result_concrete = !matches!(match_result, Ty::Var(_) | Ty::Any);
+            let scrut_ctx = if !result_concrete {
                 None
             } else {
                 let mut c = ctx.clone();
-                c.expected_ty = Some(match_result);
+                c.expected_ty = Some(match_result.clone());
                 // CLEAR the enclosing-insert flag for the scrutinee: an enclosing `Map.insert`/`.remove`
                 // types the map it operates on (here the MATCH RESULT `inner`, which becomes the insert's
                 // base), NOT the scrutinee's OWN lookup map. When the scrutinee is `(Map.lookup m k)` whose
@@ -3933,15 +3934,34 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Some(c)
             };
             let scrut_emit_ctx = scrut_ctx.as_ref().unwrap_or(ctx);
+            // ARM-BODY expected type: each arm body's value IS the match result, so thread the match
+            // RESULT type as `expected_ty` for the arm bodies — a type-context-dependent arm body (an
+            // empty `(list)` / `Map.empty` / `Set.of (list)` whose own `type_of` left its element
+            // unsolved) then grounds to the MATCH RESULT, not the ambient `ctx.expected_ty` (which is
+            // the type the match result FLOWS INTO — an over-shallow container type when the match sits
+            // in a nested-collection build: e.g. the inner `(List Int64)` arm of a match whose result
+            // feeds a `(List (List Int64))` accumulator emitted `Vec::<Vec<i64>>::new()` for the empty-
+            // list arm → rustc E0308 vs the sibling `Vec<i64>` arm; wasm's untyped list handle hid it).
+            // Unlike `scrut_ctx`, KEEP the enclosing-insert flags: an arm body that IS a `Map.empty`
+            // under an enclosing `Map.insert` should still be typed by it. Only when the result is
+            // concrete; a bare Var/Any gives no grounding hint (fall back to the ambient ctx).
+            let arm_ctx = if result_concrete {
+                let mut c = ctx.clone();
+                c.expected_ty = Some(match_result);
+                Some(c)
+            } else {
+                None
+            };
+            let arm_emit_ctx = arm_ctx.as_ref().unwrap_or(ctx);
             if scrutinee_needs_materialize(db, scrutinee) {
                 let sv = emit(db, scrutinee, env, scrut_emit_ctx)?;
                 let local = format!("__ms{}", scrutinee.0);
-                let mut c = ctx.clone();
+                let mut c = arm_emit_ctx.clone();
                 c.scrut_locals.push((scrutinee, local.clone()));
                 let body = emit_sum_match(db, scrutinee, &root, result_it, env, &c)?;
                 return Ok(format!("{{ let {local} = {sv}; {body} }}"));
             }
-            emit_sum_match(db, scrutinee, &root, result_it, env, ctx)
+            emit_sum_match(db, scrutinee, &root, result_it, env, arm_emit_ctx)
         }
         // A LIST match `(match xs ((list) …) ((list a .. rest) …) …)` → a length-tested `if`/`else if`
         // chain over `xs.len()`. Each arm's condition is `== n` (fixed arity), `>= lead` (rest pattern),
