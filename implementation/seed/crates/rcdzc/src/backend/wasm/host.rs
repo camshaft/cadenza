@@ -423,21 +423,15 @@ pub fn result_record_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
     if args.len() != 2 {
         return None;
     }
-    // The Ok arm (args[0]) must be a RECORD with ≥1 field, every field a SCALAR (this increment's scope — a
-    // compound field needs the in-mem marshal). Scope the guest fields snapshot before the `&mut db` calls.
+    // The Ok arm (args[0]) must be a boundary RECORD — every field crosses (`is_boundary_record`, the SAME admit
+    // set the direct record ARG uses: scalar / Bytes / list / nested record / tuple / option / variant). Each
+    // field is marshalled by `emit_record_arg_marshal` (a scalar inline, a Bytes/list field into `mem` at the
+    // cursor, a nested product recursively) — the guest side is identical to a bare record arg, just wrapped in
+    // the result's Ok arm. A `mem`-writing field forces `set_needs_memory` + the scratch cursor (like the direct
+    // record arg + the Bytes/list result).
     let ok_record = args[0].clone();
-    let Ty::Record(fields) = ok_record.strip_nominal() else {
+    if !is_boundary_record(db, ok_record.strip_nominal()) {
         return None;
-    };
-    let field_tys: Vec<Ty> = fields.values().cloned().collect();
-    if field_tys.is_empty() {
-        return None;
-    }
-    for fty in &field_tys {
-        // A SCALAR field only — `field_boundary_abi` yields `Scalar`. A Bytes/list/nested field declines here.
-        if !matches!(field_boundary_abi(db, fty), Some(RecordFieldAbi::Scalar(_))) {
-            return None;
-        }
     }
     // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
     {
@@ -2498,6 +2492,12 @@ pub fn set_needs_memory(imports: &[HostImport]) -> bool {
             // memory core module + the host op lower's `Memory(0)`. The register-only scalar/record/tuple results
             // do NOT (they flatten to slots), so they fall to `_ => false`.
             HostParam::Result(_) | HostParam::ResultList(_) => true,
+            // A `result<record, enum>` needs `mem` iff its Ok record has a field that marshals into memory (a
+            // Bytes/list field — a record of only scalars flattens to registers, no mem). Mirrors the direct
+            // `HostParam::Record` arm's per-field check.
+            HostParam::ResultRecord(fields, _) => {
+                fields.iter().any(|(_, f)| record_field_abi_needs_memory(f))
+            }
             _ => false,
         })
     })

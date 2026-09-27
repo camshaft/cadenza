@@ -1512,16 +1512,17 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_SUM_DISC);
                         out.insert(OP_SUM_PAYLOAD);
                         out.insert(OP_ARR_GET);
-                        // Each Ok record field's unbox op (mirror the marshal's `emit_record_arg_marshal`).
+                        // Each Ok record field's marshal ops — `collect_record_field_ops` per field (the SAME
+                        // helper the direct `Ty::Record` arg uses), so a Bytes field's `bytes-len`/`bytes-get`, a
+                        // list field's `vec-len`/`vec-get` + element ops, etc. are all declared (a scalar-only
+                        // `get_op_ty` would miss them → the marshal's `CallImport` resolves to u32::MAX).
                         if let Some((ok_record, _)) =
                             crate::backend::wasm::host::result_record_enum(db, &at)
                             && let Ty::Record(fields) = ok_record.strip_nominal()
                         {
                             let ftys: Vec<Ty> = fields.values().cloned().collect();
                             for fty in ftys {
-                                if let Ok(Some(read)) = get_op_ty(db, &fty) {
-                                    out.insert(read);
-                                }
+                                collect_record_field_ops(db, &fty, out);
                             }
                         }
                         out.insert(OP_DROP);

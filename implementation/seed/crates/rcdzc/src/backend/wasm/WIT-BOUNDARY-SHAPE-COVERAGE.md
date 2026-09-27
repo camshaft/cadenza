@@ -246,9 +246,16 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   reorders the Ok fields to the result WIT's Ok record order), `first_unrepresentable_host_op`'s
   `arg_is_boundary_result_record`, the emit dispatch (+ reclaim), `collect_used_ops` (`sum-disc`/`sum-payload`/
   `arr-get` + each field's unbox + `drop`), `serialize` (disc + each field's flattened slots), and `host_imports.rs`
-  (structural-CRef param reference + `host_param_abi` decline). NOT the cursor pre-scan / `set_needs_memory` (all-
-  scalar → registers, no rope). REMAINING (result family): a record with a COMPOUND field (Bytes/list/nested →
-  needs `mem`); `result<list,enum>`; `result<_, variant>` / a float Ok.
+  (structural-CRef param reference + `host_param_abi` decline). An all-scalar Ok record is register-only (no
+  `mem`). **WIDENED (SHAPE 202/203):** the Ok record may now have ANY boundary field (`result_record_enum` admits
+  `is_boundary_record` — the SAME field set the direct record arg uses). A Bytes/list field marshals into `mem`:
+  `emit_result_record_arg_reg_flatten` now threads a `cursor` to `emit_record_arg_marshal` (whose Bytes/list arms
+  copy into `mem`), so `set_needs_memory` (per-field, like the direct record arg) + the emit.rs cursor pre-scan
+  admit it, and `collect_used_ops` declares the field ops via `collect_record_field_ops` (the scalar-only
+  `get_op_ty` missed `bytes-len`/`bytes-get` → CDZ0910 u32::MAX — the bite this increment fixed). The `(list u8)`
+  type is built structurally from WIT (no `has_list_param` change; verified — modules validate + run,
+  live-objects=0). REMAINING (result family): `result<_, variant>` (err arm a variant) / a float Ok; a
+  compound/float TUPLE element (`result<tuple<…,bytes>,enum>` — the symmetric tuple widening, next).
 - **[emit, register-path] a top-level `result<tuple-of-scalars, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
   192/193/194).** The tuple-Ok sibling of the record-Ok result: a new `HostParam::ResultTuple(elem-abis, err-
   cases)` (detector `result_tuple_enum`, admitting a tuple every element of which is a non-float SCALAR + a
