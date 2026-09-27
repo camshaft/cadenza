@@ -7684,58 +7684,74 @@ fn rearm_stale_scan(
         // reissue is DEMONSTRABLY not sticking, SURFACE it (rate-limited) to the concierge + watchdog.log as
         // needing an operator RESTART, instead of silently re-arming forever. We STILL send the re-arm below
         // (non-destructive, and harmless if the diagnosis is wrong); the surface just makes the wedge visible.
-        if reissue_not_sticking(&action, ra, hb_age, wedge_frozen_floor(interval)) {
-            // Cross-sweep TOKEN-ADVANCE guard (concierge, v-wit-boundary false-positive 2026-09-27): a
-            // heartbeat frozen after a re-arm is ALSO the signature of a legit LONG single turn — an agent
-            // mid-turn on a 37min nix gate that simply hasn't reached its end-of-tick heartbeat stamp. The
-            // in-scan 2-capture verdict can misread such a "thinking" turn as IdlePrompt (its esc-to-interrupt
-            // footer isn't always in the captured frame). So before the DESTRUCTIVE-restart surface, require
-            // the token count FROZEN ACROSS SWEEPS — the same cross-sweep fingerprint the watchdog's
-            // backgrounded-wait wedge uses. A count that ADVANCED (or a first/unreadable reading) = WORKING or
-            // unconfirmed → SUPPRESS the surface; the non-destructive re-arm below still runs. Stamp on CHANGE
-            // so a genuine freeze's mtime ages toward WAIT_FROZEN_MIN_SECS across sweeps.
-            let cur_tok = pane1.as_deref().and_then(parse_pane_token_count);
-            let prior_tok = last_wedge_token_fingerprint(fleet, &a.name, now);
-            let confirmed_frozen = wedge_token_confirmed_frozen(
-                cur_tok.as_deref(),
-                prior_tok.as_ref().map(|(t, ag)| (t.as_str(), *ag)),
-                WAIT_FROZEN_MIN_SECS,
-            );
-            if confirmed_frozen {
-                let key = format!("rearm-wedge.{}", a.name);
-                let surfaced_recently =
-                    sat_notify_age_secs(fleet, &key, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
-                if dry_run {
-                    println!(
-                        "  DRY-RUN would SURFACE wedge '{}' (re-issued but heartbeat frozen {age}s AND token count frozen across sweeps → non-destructive levers exhausted, needs operator restart)",
-                        a.name
-                    );
-                } else if !surfaced_recently {
-                    surface_wedged_agent(fleet, &a.name, age, &a.interval, now);
-                    stamp_sat_notify(fleet, &key);
-                    eprintln!(
-                        "  ⚠ SURFACED wedge '{}' → concierge + watchdog.log (heartbeat frozen {age}s + token count frozen across sweeps, re-arm not sticking — needs operator restart)",
-                        a.name
-                    );
-                }
-            } else {
-                // Advancing / first-seen / unreadable token → WORKING or unconfirmed: SUPPRESS the surface.
-                // Stamp on CHANGE so a real freeze's mtime ages toward the threshold on the next sweep.
-                let changed = !matches!((cur_tok.as_deref(), prior_tok.as_ref()), (Some(c), Some((p, _))) if c == p.as_str());
-                if !dry_run
-                    && changed
-                    && let Some(c) = cur_tok.as_deref()
-                {
-                    stamp_wedge_token_fingerprint(fleet, &a.name, c);
-                }
-                if dry_run {
-                    println!(
-                        "  DRY-RUN would SUPPRESS wedge '{}' — token count not confirmed frozen across sweeps ({} now; a long WORKING turn advances it), NOT a wedge",
-                        a.name,
-                        cur_tok.as_deref().unwrap_or("?")
-                    );
-                }
+        // CROSS-SWEEP TOKEN verdict — computed ONCE and shared by BOTH the wedge surface below AND the
+        // re-arm ACTION gate that follows. The in-scan 2-capture verdict (above) can misread a LONG turn as
+        // IdlePrompt: on a fast turn it catches the token delta, but a turn whose meter advances SLOWLY
+        // (v-memory-safety: 44.2k over 1h32m ≈ imperceptible in the ~3s window) shows no delta → misread. The
+        // pane token count vs. the DEDICATED cross-sweep fingerprint (minutes apart) catches it. `cur_tok`
+        // reads the meter — the LIVE `↓ N tokens` generation meter while a turn runs, or a completed turn's
+        // static remnant at an idle `❯`. Stamp on CHANGE so a genuine freeze's mtime ages toward
+        // WAIT_FROZEN_MIN_SECS across sweeps.
+        let cur_tok = pane1.as_deref().and_then(parse_pane_token_count);
+        let prior_tok = last_wedge_token_fingerprint(fleet, &a.name, now);
+        let confirmed_frozen = wedge_token_confirmed_frozen(
+            cur_tok.as_deref(),
+            prior_tok.as_ref().map(|(t, ag)| (t.as_str(), *ag)),
+            WAIT_FROZEN_MIN_SECS,
+        );
+        let token_changed = !matches!((cur_tok.as_deref(), prior_tok.as_ref()), (Some(c), Some((p, _))) if c == p.as_str());
+        if !dry_run
+            && token_changed
+            && let Some(c) = cur_tok.as_deref()
+        {
+            stamp_wedge_token_fingerprint(fleet, &a.name, c);
+        }
+        // WEDGE ESCALATION RUNG (concierge greenlit + operator seq 1251, after the wasm-boundary-marshal
+        // incident): a SESSION WEDGE accepts the reissue keystroke but can't run a tick + stamp a heartbeat,
+        // so it stays frozen no matter how often we reissue. When a reissue is DEMONSTRABLY not sticking AND
+        // the token count is confirmed FROZEN across sweeps (not a live long turn — #9790, v-wit-boundary
+        // false-positive 2026-09-27), SURFACE it (rate-limited) to the concierge + watchdog.log as needing an
+        // operator RESTART instead of silently re-arming forever.
+        if reissue_not_sticking(&action, ra, hb_age, wedge_frozen_floor(interval))
+            && confirmed_frozen
+        {
+            let key = format!("rearm-wedge.{}", a.name);
+            let surfaced_recently =
+                sat_notify_age_secs(fleet, &key, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
+            if dry_run {
+                println!(
+                    "  DRY-RUN would SURFACE wedge '{}' (re-issued but heartbeat frozen {age}s AND token count frozen across sweeps → non-destructive levers exhausted, needs operator restart)",
+                    a.name
+                );
+            } else if !surfaced_recently {
+                surface_wedged_agent(fleet, &a.name, age, &a.interval, now);
+                stamp_sat_notify(fleet, &key);
+                eprintln!(
+                    "  ⚠ SURFACED wedge '{}' → concierge + watchdog.log (heartbeat frozen {age}s + token count frozen across sweeps, re-arm not sticking — needs operator restart)",
+                    a.name
+                );
             }
+        }
+        // RE-ARM ACTION GATE (concierge issue 2026-09-27 — the 3rd un-gated branch: `/loop`-reissue false-fired
+        // on v-memory-safety mid a 1h32m gate whose meter advanced too slowly for the in-scan 2-capture to
+        // catch). Extend the SAME cross-sweep token-freeze that now gates the wedge (#9790) + drain-stall
+        // (#9792) to the re-arm ACTION itself — nudge AND reissue — so NO path can send keystrokes into a live
+        // turn. SUPPRESS this sweep iff a token meter is READABLE but NOT confirmed-frozen: an ADVANCING count
+        // (live long turn) or a first/not-yet-aged reading (unconfirmed) both mean "do not act yet" — stamp
+        // (above) and wait for the freeze to age. RE-ARM only when the meter is confirmed FROZEN across sweeps
+        // (a genuinely dead cron / a wedged turn) OR there is NO meter at all (`cur_tok` None → not generating,
+        // since a live turn always renders the `↓ N tokens` meter → a truly idle prompt with no lingering
+        // remnant, safe to re-arm immediately — so a dead cron is never stranded). This completes the
+        // token-delta unification across wedge + drain-stall + reissue/dead-cron.
+        if rearm_suppressed_by_live_token(cur_tok.as_deref(), confirmed_frozen) {
+            if dry_run {
+                println!(
+                    "  DRY-RUN would SUPPRESS re-arm of '{}' — token meter readable but not confirmed frozen across sweeps ({} now; a long WORKING/thinking turn advances it), NOT a dead loop",
+                    a.name,
+                    cur_tok.as_deref().unwrap_or("?")
+                );
+            }
+            continue;
         }
         let drift = cadence_drift_ratio(age, interval);
         if dry_run {
@@ -12363,6 +12379,21 @@ fn wedge_token_confirmed_frozen(
     min_frozen_secs: u64,
 ) -> bool {
     matches!((cur, prior), (Some(c), Some((p, age))) if c == p && age >= min_frozen_secs)
+}
+
+/// Should the rearm-stale RE-ARM action (nudge / `/loop`-reissue) be SUPPRESSED this sweep because the pane
+/// may be in a LIVE turn? True iff a token meter is READABLE (`cur` = `Some`) but the count is NOT confirmed
+/// frozen across sweeps. Rationale (concierge issue 2026-09-27, the 3rd un-gated branch after the wedge
+/// #9790 + drain-stall #9792): a readable meter that is ADVANCING — or a first/not-yet-aged reading we can't
+/// yet distinguish from advancing — signals a working (or possibly-working) turn, into which a re-arm
+/// keystroke must NOT be sent (it piles up unsubmitted / interrupts / double-fires the turn). We re-arm only
+/// when EITHER the meter is confirmed frozen across sweeps (`confirmed_frozen` — a genuinely dead cron or a
+/// wedged turn) OR there is NO meter at all (`cur` = `None`): a live turn ALWAYS renders the `↓ N tokens`
+/// meter, so its ABSENCE means "not generating" — a truly idle prompt with no lingering remnant, safe to
+/// re-arm immediately, so a dead cron is never stranded waiting for a freeze that can't be observed. Pure so
+/// the gate is unit-tested off fs/tmux.
+fn rearm_suppressed_by_live_token(cur: Option<&str>, confirmed_frozen: bool) -> bool {
+    cur.is_some() && !confirmed_frozen
 }
 
 /// Should a fresh-this-sweep agent (heartbeat within its stale window) have its consecutive-nudge streak
@@ -22800,6 +22831,21 @@ mod tests {
             Some(("76.4k", 999)),
             min
         ));
+    }
+
+    #[test]
+    fn rearm_suppressed_by_live_token_gates_only_a_readable_unfrozen_meter() {
+        // The 3rd un-gated branch (concierge 2026-09-27): a re-arm keystroke must NOT be sent into a live
+        // turn. SUPPRESS iff a meter is READABLE but not confirmed frozen across sweeps.
+        // Live long turn (v-memory-safety): meter readable + NOT confirmed frozen (advancing / unconfirmed) → SUPPRESS.
+        assert!(rearm_suppressed_by_live_token(Some("44.2k"), false));
+        // Confirmed frozen across sweeps (dead cron / wedged turn): readable meter, aged-unchanged → RE-ARM.
+        assert!(!rearm_suppressed_by_live_token(Some("44.2k"), true));
+        // NO meter at all → not generating (a live turn always renders `↓ N tokens`) → a truly idle prompt →
+        // RE-ARM immediately, so a dead cron whose remnant has scrolled away is never stranded.
+        assert!(!rearm_suppressed_by_live_token(None, false));
+        // Degenerate: no meter yet flagged frozen (can't arise — confirmed_frozen needs Some(cur)) → RE-ARM.
+        assert!(!rearm_suppressed_by_live_token(None, true));
     }
 
     #[test]
