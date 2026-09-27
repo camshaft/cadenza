@@ -7105,3 +7105,33 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a RECORD host-op arg with a payloadless ENUM field crosses (disc flattened as one i32)"
+  (doc
+    "SHAPE 174 (v-wit-boundary) — a RECORD host-op ARGUMENT with a payloadless `enum` FIELD (probe.push :
+           func(record{ e: enum{red,green,blue}, n: s64 }) -> s64). A payload-less enum was crossable only at
+           the TOP-LEVEL arg position (`HostParam::Enum`); nested in a record it declined because
+           `field_boundary_abi` had no enum arm. Now `field_boundary_abi` maps a payload-less `Sum` (via
+           `enum_cases`) to a new `RecordFieldAbi::Enum(cases)`, so `is_boundary_record` accepts the record;
+           `flatten_record_field_abi` flattens it to ONE i32 disc slot, and `record_field_cref` lays a nominal
+           `enum` DEFINED+EXPORTED type in the record's instance-type (the nested analogue of the top-level enum
+           arg's enum type). The guest reads the value-heap sum's disc (a payloadless enum's in-guest rep is a
+           bare disc) and writes it inline, joining the `n: s64` slot. run() builds { e: Green, n: 5 } and
+           performs probe.push; a VALID component that runs is the pin (a wrong enum type/disc flatten fails
+           component validation, CDZ0910, or traps at the host's record.lift). The record-FIELD analogue of the
+           top-level enum arg (SHAPE 96).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= e (enum red green blue)) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (effect probe (op push (-> (Record (: e Col) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= e (Col.Green)) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
