@@ -514,6 +514,16 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                     let inner = field_boundary_abi(db, &payload)?; // `Variant(cases)`
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
                 }
+                // A nested `option<option<scalar>>` payload crosses as `option<option<T>>` — `(outer-disc,
+                // inner-disc, scalar)`; recurse the inner option's abi (`Option(Scalar)`). Scoped to a SCALAR
+                // inner payload this increment (no `mem`). Marshalled by `emit_option_reg_flatten`'s
+                // nested-option branch (a top-level arg / tuple element) / `emit_record_arg_marshal`'s
+                // nested-option field arm (a record FIELD) — MUST agree with those marshal arms
+                // (decline-don't-miscompile). Checked last (an option is a Sum, distinct from all the above).
+                if option_payload_ty(db, &payload).is_some_and(|pp| abi_val_type(&pp).is_some()) {
+                    let inner = field_boundary_abi(db, &payload)?; // `Option(Scalar)`
+                    return Some(RecordFieldAbi::Option(Box::new(inner)));
+                }
                 return None;
             }
             // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
@@ -725,6 +735,11 @@ pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
         // `Option(Enum)` (so the component type is `(option (enum …))`, matching the world). Checked after the
         // variant admit (both are Sums; `enum_cases` requires ALL-nullary variants).
         || enum_cases(db, &p).is_some()
+        // a nested `option<scalar>` payload crosses — `option<option<scalar>>` flattens to `(outer-disc,
+        // inner-disc, scalar)` via `emit_option_reg_flatten`'s nested-option branch (which recurses on the
+        // inner option handle). Scoped to a SCALAR inner payload this increment (no `mem`). Kept in lockstep
+        // with `field_boundary_abi`'s nested-option arm so the shared tuple-element path stays consistent.
+        || option_payload_ty(db, &p).is_some_and(|pp| abi_val_type(&pp).is_some())
 }
 
 fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
@@ -1561,6 +1576,16 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             // abi. Checked before the record `else` (an enum is a Sum, NOT a `Ty::Record`).
                             field_boundary_abi(db, &payload)
                                 .expect("option<enum> payload crosses by the arm guard")
+                        } else if option_payload_ty(db, &payload)
+                            .is_some_and(|pp| abi_val_type(&pp).is_some())
+                        {
+                            // option<option<scalar>> → `RecordFieldAbi::Option(Option(Scalar))` via the shared
+                            // `field_boundary_abi` nested-option arm. Flattens to `(outer-disc, inner-disc,
+                            // scalar)` via `emit_option_reg_flatten`'s nested-option branch (which recurses on
+                            // the inner option handle). The `(option (option <scalar>))` component type builds
+                            // from this abi. Checked before the record `else` (an option is a Sum, NOT a record).
+                            field_boundary_abi(db, &payload)
+                                .expect("option<option<scalar>> payload crosses by the arm guard")
                         } else {
                             // option<record> → the payload's `RecordFieldAbi::Record(…)`, each field's abi from
                             // the shared recursive `field_boundary_abi` (scalar / Bytes / nested record / list /

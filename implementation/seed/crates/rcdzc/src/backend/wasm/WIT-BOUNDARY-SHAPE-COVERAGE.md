@@ -297,7 +297,19 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   (`emit_option_reg_flatten`'s record branch recurses `emit_record_arg_marshal`). `option_arg_crosses` +
   the emit dispatch + the cursor pre-scan (`record_has_option_field_needing_mem`, renamed from
   `record_has_option_bytes_field`) + `used_ops` all widened in lockstep. The `list<option<list>>` element is now
-  DONE too — SHAPE 162 (see the list-element entry above). REMAINING: an `option<option<…>>` payload anywhere.
+  DONE too — SHAPE 162 (see the list-element entry above).
+- **[emit, register-path] a nested `option<option<scalar>>` — ✅ DONE (SHAPE 181/182/183).** The payload is
+  itself an `option<scalar>`, flattening to `(outer-disc, inner-disc, scalar)` via `emit_option_reg_flatten`'s
+  new nested-option branch, which on outer Some reads the inner option handle and RECURSES
+  `emit_option_reg_flatten` on it (pushing the inner `(disc, scalar)`), capturing in reverse; outer/inner None
+  zero-fill. Widened in LOCKSTEP (scalar inner): `field_boundary_abi`'s option arm + `option_arg_crosses` (the
+  shared arg + tuple-element gate) + the classifier option arm + `emit_option_reg_flatten` (arg + tuple element)
+  + `emit_record_arg_marshal`'s nested-option field arm (delegates to `emit_option_reg_flatten`) + the
+  `collect_used_ops` option-payload dispatch. `flatten_record_field_abi` (`Option(Option(Scalar))` → 3 slots) +
+  `record_field_cref` (recurses) were already general. The record-FIELD (RF) and tuple-ELEMENT (TE) positions
+  cross for free (verified). REMAINING: a non-scalar inner payload (`option<option<bytes/record/…>>`) — the inner
+  option's mem-writing payload needs threading through the recursion; and `list<option<option>>` (the
+  `emit_option_to_mem` in-mem writer has no nested-option arm).
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
 - **[emit, export] typed enum RESULT under a DECLARED world — ✅ DONE (SHAPE 60).** A payloadless-enum
