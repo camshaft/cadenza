@@ -10474,6 +10474,7 @@ pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive rows each route distinctly
 pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
+pass	trc1 two `?`s as CALL ARGUMENTS hoist left-to-right and short-circuit at the FIRST failure
 pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
 pass	trn1 two `?`s NESTED across compound constructors (record + list inside a tuple) each short-circuit
 pass	trr3 expression-position `?`s as `#record` FIELD values hoist left-to-right and short-circuit
