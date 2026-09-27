@@ -5538,3 +5538,59 @@ cases
   (call g)
   (output (flags read execute))
   (live-objects 0))
+
+(case
+  "a WIT flags field of a record PARAM unpacks into a nested record-of-bools"
+  (doc
+    "SHAPE 115 — a WIT `flags{read,write,execute}` FIELD of a record PARAM (`record{p: flags, n: u64}`).
+           The nested position twin of the top-level flags param (SHAPE 113): `param_field_rebuild`'s flags arm
+           (FieldRebuild::Flags) unpacks the field's single i32 bitset leaf into a nested record-of-bools cell,
+           matched to the field's label bit BY NAME. Guest `f` sums 1*p.read + 2*p.write + 4*p.execute + n;
+           f({p:(read,execute), n:10}) -> 1+4+10 = 15. The record cell + its nested flags cell reclaim
+           (`live-objects 0`).")
+  (wit-world
+    (world
+      w
+      (export
+        iface
+        (member
+          f
+          (func
+            (param m (record (= p (flags read write execute)) (= n (u64))))
+            (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def
+        (f (: m (Record (: p (Record (: read Bool) (: write Bool) (: execute Bool))) (: n (Int 64)))))
+        (+ (if (. (. m p) read) 1 0) (+ (if (. (. m p) write) 2 0) (+ (if (. (. m p) execute) 4 0) (. m n)))))
+      (export f)))
+  (call f (: #record((= p (flags read execute)) (= n 10)) (Record (: p (Record (: read Bool) (: write Bool) (: execute Bool))) (: n (Int 64)))))
+  (output (: 15 Int64))
+  (live-objects 0))
+
+(case
+  "a WIT flags field of a record RESULT packs a nested record-of-bools into the bitset"
+  (doc
+    "SHAPE 116 — a WIT `flags{read,write,execute}` FIELD of a record RESULT (`record{p: flags, n: u64}`): the
+           RESULT twin of SHAPE 115. The def returns a record whose `p` field is a nested record-of-bools;
+           `canon_write_of`'s flags arm (CanonWrite::Flags) packs that nested cell into the field's canonical
+           bitset (stored at the flags canonical width) as the parent record spills to memory. Guest returns
+           p=(read=T,write=F,execute=T), n=9, so the result renders `#record((= p (flags read execute)) (= n
+           9))`. The record result + nested flags cell reclaim (`live-objects 0`).")
+  (wit-world
+    (world
+      w
+      (export
+        iface
+        (member
+          g
+          (func (result (record (= p (flags read write execute)) (= n (u64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (g) #record((= p #record((= read true) (= write false) (= execute true))) (= n 9)))
+      (export g)))
+  (call g)
+  (output #record((= p (flags read execute)) (= n 9)))
+  (live-objects 0))
