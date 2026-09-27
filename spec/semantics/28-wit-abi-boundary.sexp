@@ -6187,6 +6187,60 @@ cases
   (live-objects 0))
 
 (case
+  "a TOP-LEVEL tuple with a RECORD element that has a NESTED RECORD field flattens the sub-record inline"
+  (doc
+    "SHAPE 142 (v-wit-boundary) — a top-level `tuple<record{n: s64, inner: record{a: s64, b: bool}}, s64>`
+           bare host-op arg: a record element of a tuple arg carrying a NESTED RECORD field. This tick the
+           tuple-arg classifier's record-element field build was GENERALIZED to the shared recursive
+           `field_boundary_abi` (the SAME builder the DIRECT record arg + `emit_record_arg_marshal` use), so a
+           record element now crosses with ANY field `field_boundary_abi` accepts — here a nested record field,
+           whose sub-fields flatten inline in the sub-record's WIT declaration order (`emit_record_arg_marshal`
+           recurses on a nested-record field; `reorder_record_fields_to_wit` recurses into the nested record's
+           abi). The whole arg flattens to `(n: i64, a: i64, b: i32, outer1: i64)` = 4 core slots. run() builds
+           ({n: 7, inner: {a: 5, b: true}}, 9), performs probe.push, returns the stub 55. The tuple-element
+           analogue of the direct record-arg nested-record field.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (record (= n (s64)) (= inner (record (= a (s64)) (= b (bool))))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Record (: n Int64) (: inner (Record (: a Int64) (: b Bool)))) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple(#record((= n 7) (= inner #record((= a 5) (= b true)))) 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL tuple with a RECORD element that has a list<s64> field marshals the list into shared mem"
+  (doc
+    "SHAPE 143 (v-wit-boundary) — a top-level `tuple<record{n: s64, xs: list<s64>}, s64>` bare host-op arg: a
+           record element of a tuple arg carrying a `list<s64>` FIELD. Same classifier generalization as SHAPE
+           142 (`field_boundary_abi` admits a `list<T>` field), plus the tuple-arg cursor pre-scan was widened
+           (`tuple_arg_needs_cursor`) to reserve the running scratch cursor for a record element whose field
+           needs `mem` (a list marshals its backing array + elements into shared memory at the cursor) — a
+           `Bytes`-only detection (`tuple_has_bytes_element`) would have MISSED the list field and panicked the
+           marshal's `cursor.expect(...)`. `emit_record_arg_marshal`'s list-field arm runs `emit_list_arg_marshal`
+           and pushes `(ptr, count)`; the whole arg flattens to `(n: i64, xs_ptr: i32, xs_count: i32, outer1:
+           i64)` = 4 core slots. run() builds ({n: 7, xs: [5, 6]}, 9), performs probe.push, returns the stub 55.
+           Pins the cursor-reservation widening the record-element generalization required.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (record (= n (s64)) (= xs (list (s64)))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Record (: n Int64) (: xs (List Int64))) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple(#record((= n 7) (= xs #list(5 6))) 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
   "a payloadless enum as a FIELD of a typed record EXPORT result crosses BY NAME"
   (doc
     "SHAPE 136 — a payloadless `enum` as a FIELD of a typed `record` EXPORT result under a declared world:

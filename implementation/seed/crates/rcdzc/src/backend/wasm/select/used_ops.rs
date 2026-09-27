@@ -1207,25 +1207,14 @@ pub(super) fn collect_used_ops_into_seen(
                                     }
                                 }
                             } else if let Ty::Record(sub) = e.strip_nominal() {
-                                // A record element: `arr-get` (already inserted) + each field's op — a scalar
-                                // unboxes via its read op, a `Bytes` field copies its rope (`bytes-len`/
-                                // `bytes-get`) into `mem` at the cursor, a nested tuple field unboxes each inner
-                                // element.
+                                // A record element: `arr-get` (already inserted) + each field's ops via the shared
+                                // recursive `collect_record_field_ops` (the used_ops twin of `field_boundary_abi`/
+                                // `emit_record_arg_marshal`) — a scalar's unbox op, a `Bytes`/list/tuple/option/
+                                // result field's ops, recursing into a nested record. Kept in lockstep with the
+                                // classifier's `field_boundary_abi` record-element build.
                                 let ftys: Vec<Ty> = sub.values().cloned().collect();
                                 for fty in &ftys {
-                                    if matches!(fty.strip_nominal(), Ty::Bytes) {
-                                        out.insert(OP_BYTES_LEN);
-                                        out.insert(OP_BYTES_GET);
-                                    } else if let Ty::Tuple(inner) = fty.strip_nominal() {
-                                        let inner: Vec<Ty> = inner.iter().cloned().collect();
-                                        for x in &inner {
-                                            if let Ok(Some(read)) = get_op_ty(db, x) {
-                                                out.insert(read);
-                                            }
-                                        }
-                                    } else if let Ok(Some(read)) = get_op_ty(db, fty) {
-                                        out.insert(read);
-                                    }
+                                    collect_record_field_ops(db, fty, out);
                                 }
                             } else if let Ok(Some(read)) = get_op_ty(db, e) {
                                 out.insert(read);

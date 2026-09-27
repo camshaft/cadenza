@@ -6188,8 +6188,12 @@ pub(super) fn emit(
                     // marshal`) → needs the cursor, like the `record`-with-a-Bytes-field arg above.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
                         .is_some_and(|p| crate::backend::wasm::host::record_has_bytes_field(&p))
-                    // A top-level `tuple<…,bytes,…>` arg copies each Bytes element's rope into `mem` → the cursor.
-                    || crate::backend::wasm::host::tuple_has_bytes_element(&at)
+                    // A top-level `tuple<…>` arg needs the cursor when SOME leaf (recursing nested tuples +
+                    // record elements) copies runtime bytes into `mem` — a `Bytes` element, or a record
+                    // element with a `Bytes` / `list` / `result` / `option<bytes>` field. Broader than the
+                    // `Bytes`-only `tuple_has_bytes_element`, matching the record-element fields
+                    // `tuple_arg_crosses` now admits (a missing reservation panics the marshal's cursor).
+                    || crate::backend::wasm::host::tuple_arg_needs_cursor(db, &at)
             });
             let scratch_cursor_slot = if has_runtime_compound {
                 let slot = base.max(*high);
