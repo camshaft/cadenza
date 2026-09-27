@@ -9415,16 +9415,15 @@
       (export main)))
   (output (: -1 Int64)))
 
-; multi-map-elem (breaker, the MAP leg of the deferred N-per-arm follow-up #8430): the MAP-element twin of
-; multi-nlist-elem above. TWO map elements in one arm `(list (map (= 1 a)) (map (= 2 b)))` — each refines on its
-; key — still DECLINE 'a list arm with more than one map element is not supported (match one map element per
-; arm)', deferred by #8430 alongside the nested-list leg. A SINGLE map element refines. Consistent decline
-; wasm+rust+cadenza. SHOULD refine both: `xs = [{1:5},{2:3}]` → element 0 `(map (= 1 a))` → a=5, element 1
-; `(map (= 2 b))` → b=3 → 8. Idealistic-todo; auto-flips with multi-nlist-elem when #8430's deferred N-per-arm
-; lands. Map value-refinement is a DISTINCT desugar from nested-list (as tuple #8418 vs record #8422 were), so
-; its own flip-guard.
+; multi-map-elem (breaker, the MAP leg of the N-per-arm follow-up #8430): the MAP-element twin of
+; multi-nlist-elem above. TWO map elements in one arm `(list (map (= 1 a)) (map (= 2 b)))` each refine on
+; their own key, like the nested-list / ctor / tuple / record N-loop: `xs = [{1:5},{2:3}]` → element 0
+; `(map (= 1 a))` → a=5, element 1 `(map (= 2 b))` → b=3 → 8. Each position gets a fresh binder + a
+; conjoined key-presence guard (a wildcard-value map pattern); the body re-matches inside-out so both value
+; binders scope it. Map value-refinement is a DISTINCT desugar from nested-list (as tuple #8418 vs record
+; #8422 were), so this is its own #8430 flip-guard.
 (case
-  "two map list elements in one arm each refine on a key (currently declines >1-per-arm)"
+  "two map list elements in one arm each refine on a key"
   (input
     (do
       (def
@@ -9433,6 +9432,21 @@
       (def (main) (f #list(#map((= 1 5)) #map((= 2 3)))))
       (export main)))
   (output (: 8 Int64)))
+
+; multi-map-elem FALL-THROUGH (the #8358-class hazard for the N-per-arm map desugar): when the SECOND
+; element's KEY is absent (`{9:3}` vs the arm's `(map (= 2 b))`), the arm must FALL THROUGH to the catch-all
+; → -1, NOT trap in the inside-out body re-match. Pins that key-presence refutation composes across the
+; N-loop — a per-position presence guard that only tested the FIRST element would silently trap here.
+(case
+  "two map list elements FALL THROUGH when the second element's key is absent"
+  (input
+    (do
+      (def
+        (f (: xs (List (Map Int64 Int64))))
+        (match xs (#list(#map((= 1 a)) #map((= 2 b))) (+ a b)) (_ -1)))
+      (def (main) (f #list(#map((= 1 5)) #map((= 9 3)))))
+      (export main)))
+  (output (: -1 Int64)))
 
 ; multi-rec-elem-multifield (breaker, COMPOSITION guard #8428 × multi-field): N-per-arm (#8428, >1 refutable
 ; element) composed with MULTI-FIELD record refinement (#8438 pinned a single record element with TWO literal
