@@ -402,32 +402,62 @@ only a constant operand" — the honest safe floor (reject-don't-miscompile). Th
 expression-position (each declines CDZ0900, NOT a boundary bug). `bin-parse`/`tbx2` are a separate
 try-under-effects gap (behind glb1), not this.
 
-This genuinely needs the designed `Core::Block`/`Break` path, because an expression-position `?` requires a
-NON-LOCAL exit to the fn boundary. Nothing currently PRODUCES a `Core::Block` (BRICK 2 unbuilt), and
-`emit.rs` (the `Core::Block { .. } | Core::Break { .. }` arm) DECLINES both (BRICK 3 stub). Three
-interlocking pieces, decomposed into gated slices:
+**The `Core::Block`/`Break` emit path is INLINE-UNSAFE — do NOT build it (empirically confirmed
+2026-09-27).** The obvious plan — wrap the fallible fn body in a wasm `block` (BRICK 2) and emit each
+`Core::Break` as a `br` to it (BRICK 3) — was PROTOTYPED and FAILS on the common case, because a `?`-bearing
+function is routinely INLINED into a caller with a DIFFERENT result type. Concretely, for
+`(def (step) (: (Ok (+ 1 (try (: (Err "x") …)))) (Result Int64 String)))` called by
+`(def (main (: k Int64)) (match (step) …))`: the seed inlines `step` into `main`, so at emit time `main`'s
+Core carries `step`'s `Core::Break` — but `main`'s result is `Int64` (i64), while the `Break` carries the
+`Result` value (i32). A whole-`main`-body `block (result i64)` then emits `br` with an i32 on the stack →
+`type mismatch: expected i64, found i32`, an INVALID module (CDZ0910). The `block`/`br` shape assumes "the
+enclosing wasm function IS the boundary", which INLINING violates: the boundary is a lexical
+sub-expression, not the emitted function. Threading emit-frame depth does not fix this — the depth is right;
+the *boundary identity* is wrong after inlining. (This is the SAME inline-fragility class that bit tdd1 /
+stored-closure — and, exactly as there, the fix is to stay LOCAL.)
 
-- **THE CRUX (emit-frame depth).** `emit.rs` branches with a STATIC relative `Lir::Br(n)` computed locally
-  inside a self-contained sequence. A `Core::Break` targeting an ENCLOSING `Core::Block` needs a DYNAMIC
-  relative depth = how many wasm control frames (block/loop/if) sit between the `Break` and its target
-  `Block`. So BRICK 3 must thread a control-frame-depth (a boundary-block label stack) through the emit
-  recursion so a nested `Break` emits the correct `br` depth. This is the intricate, leak-sensitive part
-  (the block introduces a new scope the reclaim passes must account for) and is the foundation both slices
-  below rest on.
-- **Slice 1 (foundation, smaller, independently gate-testable) — BRICK 2 wrap + BRICK 3 emit for the
-  CONSTANT-FAILURE expression-position sub-case.** Wrap a fallible fn body containing an expression-position
-  `?` in `Core::Block { result_ty: T_B }` (BRICK 2); the constant-failure `(try (Err r))` already yields
-  `Core::Break { value }` (`compute.rs`), so no runtime MatchSum is needed; emit `block`/`br` with the
-  depth machinery (BRICK 3). Gate with a NEW corpus case: a constant-failure `?` in expression position
-  (e.g. `(Ok (+ 1 (try (: (Err "x") (Result Int64 String)))))`) short-circuits the fn to `Err`. Exercises
-  the full Block/Break emit path without runtime dispatch.
-- **Slice 2 (on top) — runtime `?` in expression position → `MatchSum { Ok → payload, Err → Core::Break }`
-  inside the wrapped `Core::Block`.** Turns `trr1`, `list-elem`, `mutual-rec` green. Reuses Slice 1's
-  emit-frame depth + Block wrap; adds only the runtime-operand MatchSum-with-Break in the generic
-  `Resolved::Try` arm (replacing the CDZ0900 decline for expression position).
+**The inline-safe approach — a continuation-duplicating `MatchSum` (adopt this; it needs NO `Core::Block`/
+`Break`, NO new emit).** An expression-position `?` is lowered LOCALLY, exactly like the binding-tail
+`lower_let` MatchSum generalized: hoist the `?` to a `match` at its boundary, distributing the CONTINUATION
+into the success arm. For a boundary body `C[(try e)]` (where `C[•]` is the boundary expression with a hole
+at the `?`):
+
+```
+C[(try e)]   ==>   match e with
+                   | Ok(x)  => C[x]        -- success: run the continuation with the payload bound
+                   | Err(r) => Err(r)      -- failure: the boundary value, produced LOCALLY (no jump)
+```
+
+(`Option`: `Some(x) => C[x]`, `None => None`.) This is a plain `MatchSum` whose arms both yield the
+boundary-typed value with NO non-local control transfer, so it is INLINE-SAFE — when `step` inlines into
+`main`, the `match` moves as a unit and its arms produce `Result` values locally, wrapped by `main`'s own
+`match` correctly. It reuses the existing `MatchSum` lowering + emit + reclaim wholesale (the machinery
+tdd1/stored-closure already exercise). `e.g. (Ok (+ 1 (try r)))` → `match r { Ok x => (Ok (+ 1 x));
+Err e => (Err e) }`. Multiple `?`s nest (each success arm may contain the next `?`, hoisted recursively);
+`?` under a user `if`/`match` distributes into that arm's continuation.
+
+- **Slice 1 — a single expression-position `?` in a fallible boundary body, via the continuation-hoist
+  transform.** Implement as an AST/lowering rewrite (a generalization of `try_desugar.rs`, which already
+  hoists the binding-tail `(do (def x (try e)) body)` → `(let …)`): find an expression-position `(try e)`
+  within a fallible boundary body, replace the `?` occurrence with a fresh binder `x`, and wrap the body in
+  `(match e ((Ok x) <body'>) ((Err r) (Err r)))` (Result) / `((Some x) <body'>) ((None _) (None unit))`
+  (Option), where `body'` is the body with the `?` replaced by `x`. Gate with `trr1` (`23:1039`) — a single
+  runtime-`?` in expression position — which the transform turns green DIRECTLY (no separate const-failure
+  step needed: the MatchSum handles both a runtime and a constant operand, the constant folding away as
+  today). CRUX to get right: (a) BOUNDARY discovery — the nearest enclosing fallible fn body / `let` tail
+  (reuse `enclosing_boundary_ty`); (b) reconstructing `C[x]` (clone the boundary body with the `?` node
+  rewritten to the binder) as an AST rewrite BEFORE resolve, so it resolves/infers/lowers like hand-written
+  source and is inline-safe; (c) the leftmost/outermost `?` is hoisted first so a left-to-right evaluation
+  order matches `match`'s scrutinee-first semantics.
+- **Slice 2 — multiple / nested expression-position `?` + the `list<…>` element and mutual-recursion
+  shapes.** Recurse the hoist (a success arm containing another `?`), and confirm `list-elem` (`14b:8783`)
+  and `mutual-rec` (`23:1114`) go green. Reuses Slice 1's transform.
 
 Keep the CDZ0900 safe floor for expression-position `?` until each slice lands green
-(reject-don't-miscompile — a decline is strictly better than a wrong value).
+(reject-don't-miscompile — a decline is strictly better than a wrong value). NOTE: the `Core::Block`/
+`Break` nodes stay in `core.rs` (BRICK 1) for the eventual v2 explicit `try { }` block, where the boundary
+IS a lexical block that inlining preserves as a unit — but v1's function/expression boundary uses the
+inline-safe MatchSum hoist above, not the block.
 
 ## 8. Seams / file anchors (landmarks at 2026-07-15)
 
