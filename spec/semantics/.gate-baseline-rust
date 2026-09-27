@@ -11097,7 +11097,7 @@ todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry threads the partn
 todo	gtx3 a generic transformer's tuple-result closure at a SINGLE domain with a discarding consumer
 todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the boundary
 todo	llb1 a recursive do-local fn capturing a do-LOCAL BINDING computes (should-work: lexical capture is uniform)
-todo	mrs1 a two-resume arm over a HEAP-allocating body declines cleanly (non-tail resume, later increment)
+todo	mrs1 a two-resume arm over a HEAP-allocating body folds by hoisting the allocation out of the per-resume splice
 todo	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
 todo	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
 todo	nfe1 runtime +inf Ast.Float encodes to non-empty bytes (op93 non-finite tag path)
