@@ -1614,6 +1614,22 @@ pub(super) fn emit_result_tuple_arg_reg_flatten(
             })?);
         }
     }
+    // A FLOAT first element: slot 0 joins the `i32` err disc, so its slot is the reinterpret int
+    // (`join(f64,i32)=i64`, `join(f32,i32)=i32`) — the Ok arm bit-reinterprets the float into it (below), the
+    // host lift reads it back as the float. Only a bare scalar first slot can BE a float (a compound element's
+    // first slot is an `i32` ptr/disc). A float in a LATER slot keeps its own float valtype.
+    let first_float: Option<ValType> = match slot_vts.first() {
+        Some(ValType::F64) => Some(ValType::F64),
+        Some(ValType::F32) => Some(ValType::F32),
+        _ => None,
+    };
+    if let Some(f) = first_float {
+        slot_vts[0] = if f == ValType::F64 {
+            ValType::I64
+        } else {
+            ValType::I32
+        };
+    }
     let n = slot_vts.len() as u32;
     let disc_out = work_base;
     let base_slot = work_base + 1;
@@ -1661,8 +1677,17 @@ pub(super) fn emit_result_tuple_arg_reg_flatten(
         scratch_ty,
         out,
     )?;
-    // Capture the N pushed element values into the slots in REVERSE (stack top = last element).
+    // Capture the N pushed element values into the slots in REVERSE (stack top = last element). At k==0 the
+    // stack top is the FIRST element's value; if it is a float, bit-reinterpret it into the integer slot-0 join
+    // before storing (the dual of the Err arm's err-disc → slot 0 and the host's lift-back).
     for k in (0..n).rev() {
+        if k == 0 {
+            match first_float {
+                Some(ValType::F64) => out.push(Lir::I64ReinterpretF64),
+                Some(ValType::F32) => out.push(Lir::I32ReinterpretF32),
+                _ => {}
+            }
+        }
         out.push(Lir::LocalSet(base_slot + k));
     }
     out.push(Lir::End);

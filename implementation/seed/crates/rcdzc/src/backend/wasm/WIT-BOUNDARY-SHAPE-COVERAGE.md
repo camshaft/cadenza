@@ -290,13 +290,18 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `serialize`, `set_needs_memory`, `host_imports.rs` (all `Result*` arms — the structural-CRef `matches!` MUST list
   every `Result*` variant or a `ResultRecord`/`ResultTuple` param silently falls back to the wrong CRef → CDZ0910
   component-validation failure; this bit once when a codemod dropped `ResultRecord` from that `matches!`).
-  **FLOAT ELEMENT (SHAPE 206):** a float element in a NON-slot-0 position now crosses — only slot 0 joins the
-  `i32` err disc (the payloadless-enum Err flattens to a single `i32`; slots 1+ have no Err counterpart and keep
-  their own core type), so a float in a later element rides its own `f64` slot (zero-filled `F64ConstBits(0)` on
-  Err), core e.g. `(param i32 i64 f64)`. `result_tuple_enum` admits a float element EXCEPT in slot 0. REMAINING
-  (result family): a FLOAT FIRST element (slot 0 would need the canonical reinterpret join `f64`↔`i64` on each arm
-  — a clean intentional DECLINE for now, shared with the float-first record + the float `result<scalar>`);
-  `result<_, variant>` (err arm a variant). The float-first reinterpret join is the defined next slice.
+  **FLOAT ELEMENT — ANY position (SHAPE 206 non-slot-0; 211/212 slot-0):** a float element crosses in every
+  position. Only slot 0 joins the `i32` err disc (the payloadless-enum Err flattens to a single `i32`; slots 1+
+  have no Err counterpart and keep their own core type): a float in a LATER slot rides its own `f64`/`f32` slot
+  (zero-filled `F64ConstBits(0)`/`F32ConstBits(0)` on Err), core e.g. `(param i32 i64 f64)` (SHAPE 206). A float
+  FIRST element bit-REINTERPRETS into the integer slot-0 join — `join(f64,i32)=i64` / `join(f32,i32)=i32`:
+  `emit_result_tuple_arg_reg_flatten` overrides `slot_vts[0]` to the join int and emits `I64ReinterpretF64` /
+  `I32ReinterpretF32` at the k==0 reverse-capture (Ok arm), the Err arm stores the err disc into slot 0 (widened
+  to i64 for f64), `serialize` emits the join int for slot 0, and `result_tuple_enum` now admits a float first
+  element (the SHAPE 206 slot-0 decline is lifted). SHAPE 211 (`tuple<f64,s64>`, `(param i32 i64 i64)`) + 212
+  (`tuple<f32,s64>`, `(param i32 i32 i64)`). REMAINING (result family): a FLOAT slot-0 field in a `result<record>`
+  (adds the WIT-reorder — the tuple slot-0 done here is the positional counterpart; the record twin is next);
+  `result<_, variant>` (err arm a variant).
 - **[emit, MEM-path] a top-level `result<list<scalar>, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 195/196).**
   The list-Ok sibling of the Bytes-Ok result: a new `HostParam::ResultList(err-cases)` (detector
   `result_list_enum`, admitting a `list<T>` whose ELEMENT is a scalar + a payloadless-enum Err; a `list<u8>` Ok is

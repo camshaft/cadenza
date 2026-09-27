@@ -264,8 +264,26 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
             // the `i32` err disc never widens past that slot's own width. Component type = the built-in
             // `result<tuple<T…>, err-enum>` (from the declared WIT).
             HostParam::ResultTuple(elems, _) => {
+                use crate::backend::wasm::host::RecordFieldAbi;
+                use crate::backend::wasm::runtime_abi::AbiValType;
                 params.push(wasm_abi::CORE_I32); // the result discriminant
-                for abi in elems {
+                for (i, abi) in elems.iter().enumerate() {
+                    // Slot 0 joins the `i32` err disc; a FLOAT first element reinterprets into the int join
+                    // (`join(f64,i32)=i64`, `join(f32,i32)=i32`), so emit the join int for slot 0, not the float
+                    // byte. A later float element keeps its own float slot (no join).
+                    if i == 0 {
+                        match abi {
+                            RecordFieldAbi::Scalar(AbiValType::F64) => {
+                                params.push(wasm_abi::CORE_I64);
+                                continue;
+                            }
+                            RecordFieldAbi::Scalar(AbiValType::F32) => {
+                                params.push(wasm_abi::CORE_I32);
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                     flatten_record_field_abi(abi, &mut params);
                 }
             }

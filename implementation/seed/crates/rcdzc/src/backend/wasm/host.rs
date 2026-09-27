@@ -523,10 +523,10 @@ pub fn result_list_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
 }
 
 /// Whether `ty` is `result<tuple, enum>` — an Ok arm that is a TUPLE every element of which is a boundary field
-/// (`field_boundary_abi` — scalar/bytes/list/nested-compound), EXCEPT that the FIRST element may not be a float
-/// (the `i32` err disc joins slot 0; an integer/ptr first slot absorbs it, a float first slot would need the
-/// canonical reinterpret join, declined for now — a float in a LATER element is fine) and an
-/// Err arm that is a PAYLOAD-LESS enum. Returns `(the Ok tuple Ty, err-enum case names)` if so, else `None`. A
+/// (`field_boundary_abi` — scalar/bytes/list/nested-compound) and an Err arm that is a PAYLOAD-LESS enum. The
+/// `i32` err disc joins slot 0; an integer/ptr first slot absorbs it, and a FLOAT first element bit-reinterprets
+/// into the int join (`join(f64,i32)=i64`, `join(f32,i32)=i32`) in the marshal (a float in a LATER element rides
+/// its own float slot). Returns `(the Ok tuple Ty, err-enum case names)` if so, else `None`. A
 /// `Sum` whose decl has exactly `Ok`/`Err` variants, instantiated at `[tuple, enum]`. The register flatten is
 /// `emit_result_tuple_arg_reg_flatten` (positional — no field reorder). Reads through erased nominal wrappers,
 /// mirroring [`result_record_enum`].
@@ -549,24 +549,13 @@ pub fn result_tuple_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
         return None;
     }
     let elems = elems.clone(); // release the borrow of `args`/`ty` before the `&mut db` calls
-    // SLOT-0 CONSTRAINT: the payloadless-enum Err arm flattens to a SINGLE `i32` (its disc), so the result
-    // flatten joins that `i32` with ONLY the Ok payload's FIRST slot (slots 1+ have no Err counterpart and
-    // stay their own type). An integer/ptr first slot absorbs the `i32` disc cleanly (widen to `i64`); a FLOAT
-    // first slot would need the canonical reinterpret join (`f64`↔`i64` bit-cast on each arm) which this
-    // increment does not emit — so a FLOAT first element is DECLINED here (a clean decline, not a miscompile).
-    // Only a bare scalar first slot can BE a float: every compound element (bytes/list/record/tuple/option)
-    // flattens with an `i32` ptr/disc first, so a float can only reach slot 0 as `Scalar(F32|F64)`. A float in
-    // a LATER element is fine (it never joins the disc) — TESTED.
-    for (i, ety) in elems.iter().enumerate() {
-        let abi = field_boundary_abi(db, ety)?;
-        if i == 0
-            && matches!(
-                abi,
-                RecordFieldAbi::Scalar(AbiValType::F32) | RecordFieldAbi::Scalar(AbiValType::F64)
-            )
-        {
-            return None;
-        }
+    // Every element must cross (`field_boundary_abi`). A FLOAT first element is admitted: the payloadless-enum
+    // Err arm flattens to a single `i32`, so the result flatten joins that `i32` with ONLY the Ok payload's
+    // FIRST slot; for a float that join is the reinterpret lattice (`join(f64,i32)=i64`, `join(f32,i32)=i32`),
+    // which `emit_result_tuple_arg_reg_flatten` emits by bit-reinterpreting the first element into the (integer)
+    // slot-0 join. A float in a LATER element never joins the disc — it rides its own `f64`/`f32` slot.
+    for ety in elems.iter() {
+        field_boundary_abi(db, ety)?;
     }
     // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
     {

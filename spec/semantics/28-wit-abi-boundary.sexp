@@ -8070,3 +8070,54 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a bare result<tuple<f64,s64>, enum> host-op arg crosses on the Ok arm (float FIRST element, reinterpret join)"
+  (doc
+    "SHAPE 211 (v-wit-boundary) — a FLOAT in SLOT 0 of a `result<tuple, enum>` arg, the tuple counterpart of the
+           scalar float reinterpret join (SHAPE 209). Only slot 0 joins the `i32` err disc (the payloadless-enum
+           Err flattens to a single `i32`), so a float FIRST element bit-reinterprets into the integer slot-0 join
+           — `join(f64,i32)=i64` — while slot 1 (the `s64`) keeps its own `i64`. Core `(param i32 i64 i64)`:
+           `emit_result_tuple_arg_reg_flatten` overrides `slot_vts[0]` to the join int and emits `I64ReinterpretF64`
+           at the k==0 reverse-capture (the Ok arm), the Err arm stores the err disc into slot 0 (widened to i64);
+           `serialize` emits the join int for slot 0; `result_tuple_enum` now admits a float first element (the
+           SHAPE 206 slot-0 decline is lifted). The host lift reads slot 0 back as the `f64`. run() emits
+           `(Ok #tuple(1.5 7))`; a VALID running component (live-objects=0) is the pin. The f32 twin = SHAPE 212;
+           a float in a LATER slot rides its own f-slot (SHAPE 206).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (f64) (s64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Float64 Int64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple(1.5 7)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
+
+(case
+  "a bare result<tuple<f32,s64>, enum> host-op arg crosses on the Ok arm (f32 FIRST element, reinterpret join)"
+  (doc
+    "SHAPE 212 (v-wit-boundary) — the f32 twin of SHAPE 211. For an `f32` in slot 0 the join is
+           `join(f32,i32)=i32`, so the slot-0 join stays `i32`: the Ok arm emits `I32ReinterpretF32`, the Err arm
+           stores the err disc directly (no widen). Slot 1 (`s64`) is `i64`. Core `(param i32 i32 i64)`. run()
+           emits `(Ok #tuple((: 1.5 Float32) 7))` (the `Float32` annotation pins the literal width). A VALID
+           running component (live-objects=0) is the pin. Completes the `result<tuple>` float-slot-0 reinterpret join.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (f32) (s64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Float32 Int64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple((: 1.5 Float32) 7)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
