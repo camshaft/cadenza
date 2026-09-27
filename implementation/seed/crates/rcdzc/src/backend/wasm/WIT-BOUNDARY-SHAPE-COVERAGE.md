@@ -262,8 +262,14 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `option<enum>` flattens to `(opt-disc, enum-disc)` EXACTLY like `option<scalar>`: `option_arg_crosses` now
   admits an enum payload, the classifier builds `RecordFieldAbi::Option(Enum)` (so the component type is
   `(option (enum …))`, matching the world), and `emit_option_reg_flatten`'s scalar branch marshals it with NO
-  dedicated arm (None zero-fills). REMAINING enum gap: `list<enum>` (`list_elem_marshalable` + the element
-  in-mem writer don't yet admit a bare enum element).
+  dedicated arm (None zero-fills).
+- **[emit, ARG-side] a top-level `list<enum>` host-op arg — ✅ DONE (SHAPE 178).** The last enum-in-compound
+  position. `list_elem_marshalable` now admits an enum element (via `enum_cases`); the element rides
+  `emit_list_arg_marshal`'s scalar-store path — each element's disc is written in place at the enum's canonical
+  width (`disc_size(n_cases)`), read via the guest sum's disc-unbox, with NO dedicated writer. The `(list (enum
+  …))` component type builds from the world WIT (element type via `field_boundary_abi`'s enum arm). **The
+  payload-less `enum` now crosses at EVERY nested position** — record FIELD (174), tuple ELEMENT (175), option
+  PAYLOAD (176/177), and list ELEMENT (178), plus the pre-existing top-level arg (`HostParam::Enum`).
 - **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
   record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
   `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the

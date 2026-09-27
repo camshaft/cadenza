@@ -1113,6 +1113,11 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
         // option (option takes its own arm); this is the residual general scalar-payload variant. A mixed-
         // width / Bytes / compound variant payload is a later slice (the flatten join widens).
         ref other if variant_scalar_payload_cases(db, other).is_some() => true,
+        // A payload-less `enum` element (`list<enum{a, b, …}>`): written in place as its discriminant at the
+        // enum's canonical width (`disc_size(n_cases)`) by `select::emit_enum_to_mem`. Detected AFTER variant
+        // (both are Sums; `enum_cases` requires ALL-nullary variants). The list-ELEMENT analogue of the record
+        // enum FIELD (SHAPE 174) / the tuple enum ELEMENT (SHAPE 175).
+        ref other if enum_cases(db, other).is_some() => true,
         ref other => abi_val_type(other).is_some(),
     }
 }
