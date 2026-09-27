@@ -11382,6 +11382,7 @@ todo	srm2 a NESTED set-rest re-match peels two residual layers (should-work: the
 todo	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
 pass	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)
 todo	the try spelling of the performing bin-parse folds once try-under-effects lands
+pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
 pass	trr2 an expression-position `?` in a TAIL if-arm hoists into the arm and short-circuits
