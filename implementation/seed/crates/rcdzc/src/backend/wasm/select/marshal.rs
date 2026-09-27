@@ -1409,6 +1409,21 @@ pub(super) fn emit_tuple_reg_flatten(
             )?;
             continue;
         }
+        // A scalar-payload `variant` element: read its handle (`arr-get i`, borrows the tuple) → flatten via
+        // `emit_variant_reg_flatten`, which pushes `(disc, payload-join)` inline — the register twin a bare-
+        // variant ARG / a variant record FIELD uses. Checked AFTER the option arm (an option is a Sum but
+        // `variant_scalar_payload_cases` excludes the 2-case option shape); no cursor (scalar payloads only).
+        if crate::backend::wasm::host::variant_scalar_payload_cases(db, ety).is_some() {
+            let var_slot = work_base;
+            scratch_ty.insert(var_slot, ValType::I32);
+            *high = (*high).max(work_base + 1);
+            out.push(Lir::LocalGet(tup_slot));
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::CallImport(OP_ARR_GET)); // [element variant handle] (borrows the tuple)
+            out.push(Lir::LocalSet(var_slot));
+            emit_variant_reg_flatten(db, var_slot, ety, work_base + 1, high, scratch_ty, out)?;
+            continue;
+        }
         // A NESTED tuple element (`tuple<…, tuple<…>, …>`): read its handle (`arr-get i`, borrows the outer
         // tuple) and RECURSE — its elements flatten POSITIONALLY inline onto the operand stack, matching
         // serialize's `RecordFieldAbi::Tuple` recursion + the component `tuple<tuple<…>>` type. No capture/disc:

@@ -6315,6 +6315,37 @@ cases
   (live-objects 0))
 
 (case
+  "a TOP-LEVEL tuple with a scalar-payload VARIANT element flattens (disc, payload-join) inline"
+  (doc
+    "SHAPE 147 (v-wit-boundary) — a top-level `tuple<variant{go, stop(s64)}, s64>` bare host-op arg: a
+           scalar-payload `variant` as a tuple ELEMENT. `emit_tuple_reg_flatten` gained a variant-element arm
+           that `arr-get`s the element's variant handle and runs `emit_variant_reg_flatten` (the SAME register
+           twin a bare-variant ARG (SHAPE 93) / a variant record FIELD / a list-element variant uses), pushing
+           `(disc:i32, payload-join)` INLINE into the tuple's positional flatten. The guest `sum-disc` IS the
+           component discriminant (decl order); the payload slot is the canonical JOIN valtype so the mixed
+           nullary/`s64` cases read back correctly. So the whole arg flattens to `(disc: i32, payload: i64,
+           outer1: i64)` = 3 core slots (no cursor — scalar payloads only). `tuple_arg_crosses` now admits a
+           variant element via `variant_scalar_payload_cases` (checked after the option branch, which
+           `variant_scalar_payload_cases` excludes). run() builds ((Stop 7), 9), performs probe.push, returns
+           the stub 55. Completes the tuple ELEMENT set to scalar / Bytes / nested-tuple / record / list /
+           option / variant — every WIT `tuple` element shape the marshals handle now crosses at the tuple
+           ARG position.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (variant (go) (stop (s64))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (Tuple Sig Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Sig.Stop 7) 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
   "a payloadless enum as a FIELD of a typed record EXPORT result crosses BY NAME"
   (doc
     "SHAPE 136 — a payloadless `enum` as a FIELD of a typed `record` EXPORT result under a declared world:
