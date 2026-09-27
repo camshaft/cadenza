@@ -1658,6 +1658,120 @@ pub(super) fn emit_record_arg_marshal(
                     out.push(Lir::LocalGet(base_slot + k as u32));
                 }
             }
+            // An `option<record-of-scalars>` field flattens to `(disc:i32, flatten(record))` = disc + one core
+            // slot per record field IN THE PAYLOAD WIT'S DECLARATION ORDER (matching `reorder_record_fields_to_
+            // wit`'s recursion into the `Option(Record)` payload + `record_field_cref`'s `(option (record …))`).
+            // Each WIT field is read from its NAME-LEX cell index (the value-heap record cell is name-lex).
+            // Scratch-flatten (single-value blocks): Some → per-field arr-get+unbox; None → the field's width
+            // zero; push disc + the N slots (WIT order) after the `if`. The record twin of the option<tuple>
+            // arm above (positional); MUST also precede the option<scalar> arm (a record's `valtype_of` is
+            // `Some(I32)`). A nested-compound / byte-leaf payload field is a later slice.
+            None if crate::backend::wasm::host::option_payload_ty(db, fty).is_some_and(|p| {
+                matches!(p.strip_nominal(), Ty::Record(sub)
+                    if !sub.is_empty() && sub.values().all(|f| valtype_of(f).is_some()))
+            }) =>
+            {
+                let payload_ty = crate::backend::wasm::host::option_payload_ty(db, fty)
+                    .expect("option-shaped by the guard");
+                let Ty::Record(sub) = payload_ty.strip_nominal() else {
+                    unreachable!("record payload by the guard")
+                };
+                let sub = sub.clone();
+                // The payload's WIT record (declaration order) — the field's `fwit` is `option<record<…>>`.
+                let crate::wit_world::WitType::Option(inner) = fwit else {
+                    return Err(Reject::decline("an option field's WIT is not option<…>"));
+                };
+                let crate::wit_world::WitType::Record(pwit_fields) = inner.as_ref() else {
+                    return Err(Reject::decline(
+                        "an option<record> payload WIT is not a record",
+                    ));
+                };
+                // Guest field names in name-lex (cell) order.
+                let names: Vec<String> = sub.keys().map(|s| s.name.to_string()).collect();
+                // Per WIT field (declaration order): (name-lex cell index, core valtype, unbox op).
+                let mut reads: Vec<(u32, ValType, &'static str)> =
+                    Vec::with_capacity(pwit_fields.len());
+                for (pfname, _) in pwit_fields {
+                    let idx = names.iter().position(|n| n == pfname).ok_or_else(|| {
+                        Reject::decline(
+                            "an option<record> payload WIT field is absent from the guest record",
+                        )
+                    })?;
+                    let fgty = sub.values().nth(idx).expect("name-lex index in range");
+                    let pv = valtype_of(fgty)
+                        .ok_or_else(|| Reject::decline("an option<record> field has no valtype"))?;
+                    let read = get_op_ty(db, fgty)?.ok_or_else(|| {
+                        Reject::decline("an option<record> field has no unbox op")
+                    })?;
+                    reads.push((idx as u32, pv, read));
+                }
+                let some_disc = {
+                    let crate::ty::Ty::Sum { decl, .. } = fty.strip_nominal() else {
+                        unreachable!("option is a Sum")
+                    };
+                    let d = db.type_decl_by_occ(*decl).ok_or_else(|| {
+                        Reject::decline("the option field's sum decl was not found")
+                    })?;
+                    d.variants
+                        .iter()
+                        .position(|v| v.payloads.len() == 1)
+                        .ok_or_else(|| Reject::decline("the option field has no payload variant"))?
+                        as i32
+                };
+                let ans = work_base + 4; // option handle
+                let pay = work_base + 5; // payload record handle
+                let disc_out = work_base + 6;
+                let base_slot = work_base + 7; // first of N field slots
+                scratch_ty.insert(ans, ValType::I32);
+                scratch_ty.insert(pay, ValType::I32);
+                scratch_ty.insert(disc_out, ValType::I32);
+                for (k, (_, pv, _)) in reads.iter().enumerate() {
+                    scratch_ty.insert(base_slot + k as u32, *pv);
+                }
+                *high = (*high).max(base_slot + reads.len() as u32);
+                let zero = |pv: ValType| match pv {
+                    ValType::I64 => Lir::ConstI64(0),
+                    ValType::F64 => Lir::F64ConstBits(0),
+                    ValType::F32 => Lir::F32ConstBits(0),
+                    _ => Lir::ConstI32(0),
+                };
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [option handle] (borrows rec)
+                out.push(Lir::LocalSet(ans));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_DISC));
+                out.push(Lir::ConstI32(some_disc));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty)); // Some
+                out.push(Lir::ConstI32(1)); // WIT `option` some = 1
+                out.push(Lir::LocalSet(disc_out));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload record handle]
+                out.push(Lir::LocalSet(pay));
+                for (k, &(idx, pv, read)) in reads.iter().enumerate() {
+                    out.push(Lir::LocalGet(pay));
+                    out.push(Lir::ConstI32(idx as i32));
+                    out.push(Lir::CallImport(OP_ARR_GET)); // [field] (borrows pay)
+                    out.push(Lir::CallImport(read)); // [scalar]
+                    if read == OP_GET_INT && matches!(pv, ValType::I32) {
+                        out.push(Lir::I32WrapI64); // a narrow int / char field narrows to its i32 slot
+                    }
+                    out.push(Lir::LocalSet(base_slot + k as u32));
+                }
+                out.push(Lir::Else); // None → (0, zeros…)
+                out.push(Lir::ConstI32(0)); // WIT `option` none = 0
+                out.push(Lir::LocalSet(disc_out));
+                for (k, (_, pv, _)) in reads.iter().enumerate() {
+                    out.push(zero(*pv));
+                    out.push(Lir::LocalSet(base_slot + k as u32));
+                }
+                out.push(Lir::End);
+                out.push(Lir::LocalGet(disc_out)); // push disc, then the N field slots (WIT order)
+                for k in 0..reads.len() {
+                    out.push(Lir::LocalGet(base_slot + k as u32));
+                }
+            }
             // An `option<scalar>` field flattens (canonical variant flatten) to `(disc:i32, payload)`. Branch on
             // the value-heap Option's discriminant: Some (the guest decl's single-payload arm) → `(1, unbox(
             // payload))`; None → `(0, 0)`. `BlockType` is single-value, so the `if` arms SIDE-EFFECT into scratch

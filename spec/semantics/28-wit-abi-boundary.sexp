@@ -5779,3 +5779,32 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 99)
   (live-objects 0))
+
+(case
+  "a host-op record ARGUMENT with an option<record-of-scalars> FIELD (WIT field order ≠ name-lex) crosses"
+  (doc
+    "SHAPE 124 — an `option<record{lo,hi}>` FIELD of a RECORD host-op argument (probe.push : func(record{opt:
+           option<record{lo: s64, hi: s64}>, n: s64}) -> s64), the record twin of SHAPE 123's option<tuple>.
+           A record payload is name-lex in the value-heap cell but DECLARATION-ordered in the host WIT, so
+           `reorder_record_fields_to_wit` now recurses into the `Option(Record)` payload (reordering the inner
+           record's abi to the option payload WIT record order), and `emit_record_arg_marshal`'s
+           option<record-of-scalars> arm reads each payload WIT field FROM ITS NAME-LEX cell index, scratch-
+           flattening `(disc, flatten(record))` = disc + one core slot per field in WIT order (Some →
+           arr-get+unbox per field; None → the field's width zero; push after the single-value `if`). The WIT
+           declares `lo, hi` but name-lex is `hi, lo` (h < l), so a marshal that read/declared in the wrong
+           order would mis-flatten. run() builds {opt: Some({lo:10, hi:20}), n:5}, performs probe.push, returns
+           the stub. A VALID component that runs is the pin (a mis-declared/mis-ordered option<record> arg fails
+           component validation, CDZ0910). The option<compound>-field family sibling of SHAPE 123.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= opt (option (record (= lo (s64)) (= hi (s64))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: opt (Option (Record (: lo Int64) (: hi Int64)))) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= opt (Some #record((= lo 10) (= hi 20)))) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 77 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 77)
+  (live-objects 0))

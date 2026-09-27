@@ -459,6 +459,19 @@ fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
                     let inner = field_boundary_abi(db, &payload)?;
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
                 }
+                // An `option<record-of-scalars>` payload crosses as `option<record<…>>`. Unlike the tuple case,
+                // a record's fields are name-lex in the value-heap cell but DECLARATION-ordered in the host WIT,
+                // so `reorder_record_fields_to_wit` recurses into this `Option(Record)` payload (reordering the
+                // inner record's abi to the option payload's WIT record order) and the marshal reads each WIT
+                // field from its name-lex cell index. Restricted to a FLAT all-scalar record this increment (a
+                // nested-compound / byte-leaf field is a later slice) — MUST agree with the marshal arm's guard.
+                if let Ty::Record(sub) = payload.strip_nominal()
+                    && !sub.is_empty()
+                    && sub.values().all(|f| abi_val_type(f).is_some())
+                {
+                    let inner = field_boundary_abi(db, &payload)?;
+                    return Some(RecordFieldAbi::Option(Box::new(inner)));
+                }
                 return None;
             }
             // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
@@ -576,6 +589,24 @@ pub fn reorder_record_fields_to_wit(
                     err_cases,
                     err_is_variant,
                 }
+            }
+            // Recurse into an `option<record>` payload: reorder the inner record's sub-fields to the option
+            // PAYLOAD WIT record's declaration order (the field's `fwit` is `option<payload>`; unwrap it). A
+            // non-record payload (option<scalar/tuple/bytes>) has no name-lex/WIT ambiguity, so it passes
+            // through unchanged. This keeps the emitted `(option (record …))` component type + the flatten in
+            // WIT order, matching the marshal's WIT-order push.
+            RecordFieldAbi::Option(inner) => {
+                let payload_wit = match fwit {
+                    WitType::Option(p) => p.as_ref(),
+                    _ => fwit,
+                };
+                let inner = match *inner {
+                    RecordFieldAbi::Record(sub) => {
+                        RecordFieldAbi::Record(reorder_record_fields_to_wit(sub, payload_wit))
+                    }
+                    other => other,
+                };
+                RecordFieldAbi::Option(Box::new(inner))
             }
             other => other,
         };
