@@ -324,6 +324,34 @@ recipient, one with no live window, one already mid-tick (it'll drain your messa
 and the interactive `concierge`/`design` windows (a human may be typing). `/loop` remains the safety
 heartbeat, so even a missed nudge is eventually picked up. Pass `--no-wake` when seeding a batch.
 
+## The task board — register + mirror your progress (OPERATOR-DIRECTED 2026-09-27)
+
+The operator added a **task board** (a local MCP service) for REAL progress tracking instead of ad-hoc. It is
+a **tracking MIRROR that COEXISTS with the fleet inbox — it does NOT replace it.** The inbox stays the
+load-bearing transport (heartbeat, `merge-request`, drain-stall, check-leases all key off it); the board is
+where you make your progress VISIBLE to the operator. Do NOT move coordination off the inbox onto the board.
+
+**The tools are in YOUR session directly** (MCP tools named `register_agent`, `create_project`, `create_task`,
+`comment_task`, `set_status`, `set_task_props`, `list_projects`, `list_tasks`, `get_task`, `send_message`,
+`get_messages`, `check_notifications`, `get_events`) — no `fleet` subcommand, no proxy: call them as tools.
+⚠ They load at SESSION START and don't hot-reload, so a session that PREDATES the board being configured
+won't have them — if you don't see them, your window predates the config; flag `v-fleet-tooling`/`concierge`
+(a one-time fleet roll-restart is what makes every agent pick them up). New sessions get them automatically.
+
+**On your FIRST tick after (re)launch — boot registration (idempotent, safe to repeat):**
+1. `register_agent(agent_id=<your fleet name>, display_name=<your fleet name>, kind="worker")`.
+2. Ensure your workstream's Project exists: `list_projects`; if none is named for your `$VERTICAL`/workstream,
+   `create_project(name="<your vertical>")`. **Project == your vertical/workstream** (one long-lived project).
+
+**As you work (lightweight — a comment per landed slice, NOT per keystroke):**
+- **Task == a unit of work** (a slice / issue / the thing a `merge-request` lands). When you start one, ensure
+  a `create_task(project_id=<your project>, title="<the slice>")` exists for it.
+- **Comment == progress.** On a meaningful step (landed a slice, hit a blocker, sent an `ask`), `comment_task`
+  the task with the same one-liner you'd put in your landing log. On landing / status change, `set_status` /
+  `set_task_props`. Mirror what you already report — don't invent new bookkeeping.
+- This is ADDITIVE to your normal tick (inbox + merge-request + landing log are unchanged). Keep it cheap; if
+  the board is unreachable, log it and carry on — a board hiccup must never block your real work.
+
 ## The gate (what "green" means)
 
 **🚦 THE LAND MODEL (OPERATOR DIRECTIVE 2026-08-28, fleet-wide): open your OWN PR, gate it LOCALLY with
