@@ -191,6 +191,35 @@ pub(super) fn collect_list_elem_ops(
     }
 }
 
+/// IMPORT-mirror of the emit-side node#6 match-join equalize (`divergent_match_borrow_dupable`): a length-op
+/// (Bytes/Str/List/Map/Set-len) over a divergent-ownership `Core::Match` borrow-operand dups the bare-alias
+/// arm (`OP_DUP` at `emit_arm_body`) + forces the post-borrow reclaim (`OP_DROP`), so both must be imported.
+/// used_ops lacks `slots`/`fn_body`/`dup_sites` and so CANNOT run the full dup-safety gate; it imports on the
+/// db-only STRUCTURAL gate (≥1 owned-fresh arm AND ≥1 bare-alias arm) — a safe OVER-approximation, since the
+/// emit-side `keep_scope` check only further restricts (an unused import is harmless valid wasm). Without this
+/// the arm-dup's `CallImport(OP_DUP)` resolves to an unregistered function index (CDZ0910 `call u32::MAX`)
+/// whenever no other construct in the module happens to import dup/drop (the masked node#6 family gap).
+fn matchjoin_equalize_may_import(db: &mut Db, operand: StructId) -> bool {
+    let Core::Match { arms, .. } = core_of(db, operand) else {
+        return false;
+    };
+    let (mut owned_fresh, mut alias) = (false, false);
+    for a in arms.iter() {
+        if matches!(
+            heap_operand_ownership(db, a.body),
+            Ok(HandleOwnership::Owned)
+        ) {
+            owned_fresh = true;
+        } else if matches!(
+            core_of(db, a.body),
+            Core::LocalRef { .. } | Core::Param { .. }
+        ) {
+            alias = true;
+        }
+    }
+    owned_fresh && alias
+}
+
 pub(super) fn collect_used_ops_into_seen(
     db: &mut Db,
     id: StructId,
@@ -267,6 +296,10 @@ pub(super) fn collect_used_ops_into_seen(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
             ) {
+                out.insert(OP_DROP);
+            }
+            if matchjoin_equalize_may_import(db, operand) {
+                out.insert(OP_DUP);
                 out.insert(OP_DROP);
             }
             collect_used_ops_into_seen(db, operand, out, visited);
@@ -355,6 +388,10 @@ pub(super) fn collect_used_ops_into_seen(
             ) {
                 out.insert(OP_DROP);
             }
+            if matchjoin_equalize_may_import(db, operand) {
+                out.insert(OP_DUP);
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `String.scalar-len` walks the UTF-8 byte leaf counting lead bytes — `bytes-len` (the loop bound)
@@ -367,6 +404,10 @@ pub(super) fn collect_used_ops_into_seen(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
             ) {
+                out.insert(OP_DROP);
+            }
+            if matchjoin_equalize_may_import(db, operand) {
+                out.insert(OP_DUP);
                 out.insert(OP_DROP);
             }
             collect_used_ops_into_seen(db, operand, out, visited);
@@ -546,6 +587,10 @@ pub(super) fn collect_used_ops_into_seen(
             out.insert(OP_MAP_SIZE);
             // RECLAMATION: a `map-size` over an OWNED-temporary map drops it after the borrow (mirror emit).
             if matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned)) {
+                out.insert(OP_DROP);
+            }
+            if matchjoin_equalize_may_import(db, map) {
+                out.insert(OP_DUP);
                 out.insert(OP_DROP);
             }
             collect_used_ops_into_seen(db, map, out, visited);
