@@ -1045,7 +1045,19 @@ pub(super) fn collect_used_ops_into_seen(
             }
         }
         Core::Let { bindings, body } => {
+            // FIX-A let-value-If OP_DUP IMPORT MIRROR (node#6 operand-node-kind followup, v-core-opt-routed):
+            // FIX-A's Core::Let emit handler dups an EARLIER move-aliased heap binder (via ifjoin_arm_dups,
+            // emitting OP_DUP at the Core::If handler) when a heap-typed let-VALUE is a `Core::If` and an
+            // earlier heap binder escapes EXACTLY ONE arm. used_ops is db-only-structural (no dup_sites → it
+            // cannot run FIX-A's esc_then!=esc_else walk), so OVER-approximate the trigger: a heap-typed
+            // `Core::If` let-value with ≥1 STRICTLY-EARLIER heap binder → import OP_DUP. This is a SUPERSET of
+            // FIX-A's trigger (esc-divergence ⟹ ∃ an earlier heap binder + a heap let-value-If), so
+            // FIX-A-populates ⟹ used_ops-imports → no under-import → no CDZ0910 (`call u32::MAX`). Over-import
+            // for a benign let-value-If = harmless valid wasm. OP_DROP is already imported unconditionally for
+            // a heap binder just below (FIX-A's forced pick-drop reuses it), so only OP_DUP was the gap.
+            let mut earlier_heap_binder = false;
             for (binder, value) in bindings.iter() {
+                let binder_heap = is_heap_type_for_retain(&type_of(db, *binder));
                 // A HEAP-typed binding is `drop`'d after the body (Perceus) — so the program imports
                 // `drop`. (A scalar binding owns no heap cell → no drop, matching `emit`.) The `dup` a
                 // consumed-then-reused binding needs is imported ONCE at the `collect_used_ops` entry
@@ -1053,8 +1065,17 @@ pub(super) fn collect_used_ops_into_seen(
                 // `_for_retain`: a still-`Var` binder that solves to heap needs its `drop` DECLARED (a
                 // declared-but-unused import is harmless if it turns out scalar) — keeps the import set a
                 // superset of what the retain-candidate broadening can emit.
-                if is_heap_type_for_retain(&type_of(db, *binder)) {
+                if binder_heap {
                     out.insert(OP_DROP);
+                }
+                if earlier_heap_binder
+                    && binder_heap
+                    && matches!(core_of(db, *value), Core::If { .. })
+                {
+                    out.insert(OP_DUP);
+                }
+                if binder_heap {
+                    earlier_heap_binder = true;
                 }
                 collect_used_ops_into_seen(db, *value, out, visited);
             }
