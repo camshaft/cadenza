@@ -1025,22 +1025,38 @@ pub(super) fn emit_option_reg_flatten(
         out.push(Lir::LocalGet(len_out));
         return Ok(());
     }
-    // A top-level `option<tuple-of-scalars>` arg flattens (canonical variant flatten) to `(disc:i32,
-    // flatten(tuple))` = disc + one core slot per tuple element (POSITIONAL, no name-lex/WIT-order ambiguity),
-    // the register twin of the `option<tuple>` record-FIELD flatten. `BlockType` is single-value, so the
-    // variable element count cannot be pushed from the `if`; instead marshal the payload tuple into N element
-    // scratch slots (Some → `emit_tuple_reg_flatten` on the SUM_PAYLOAD tuple handle, its N positional pushes
-    // captured in REVERSE; None → each element's width zero) and push `disc` + the N slots AFTER the `if`. MUST
-    // precede the scalar branch below: a tuple's `valtype_of` is `Some(I32)` (an opaque handle), so the scalar
-    // branch's guard would else match it and decline for "no unbox op".
+    // A top-level `option<tuple-of-scalars-or-bytes>` arg flattens (canonical variant flatten) to `(disc:i32,
+    // flatten(tuple))` = disc + one core slot per SCALAR element / TWO `(ptr,len)` slots per `Bytes` element
+    // (POSITIONAL, no name-lex/WIT-order ambiguity), the register twin of the `option<tuple>` record-FIELD
+    // flatten. `BlockType` is single-value, so the variable element count cannot be pushed from the `if`;
+    // instead marshal the payload tuple into N element scratch slots (Some → `emit_tuple_reg_flatten` on the
+    // SUM_PAYLOAD tuple handle, copying each Bytes element's rope into `mem` at the cursor + pushing its N
+    // positional slots, captured in REVERSE; None → each slot's width zero) and push `disc` + the N slots AFTER
+    // the `if`. The guard is `abi_val_type OR Bytes` (NOT `valtype_of`, which is `Some(I32)` for a nested tuple/
+    // record handle and would wrongly admit a nested-compound element). MUST precede the scalar branch below: a
+    // tuple's `valtype_of` is `Some(I32)`, so the scalar branch's guard would else match it and decline.
     if matches!(payload_ty.strip_nominal(), Ty::Tuple(es)
-        if !es.is_empty() && es.iter().all(|e| valtype_of(e).is_some()))
+        if !es.is_empty()
+            && es.iter().all(|e| crate::backend::wasm::host::abi_val_type(e).is_some()
+                || matches!(e.strip_nominal(), Ty::Bytes)))
     {
         let Ty::Tuple(elems) = payload_ty.strip_nominal() else {
             unreachable!("tuple payload by the guard")
         };
         let elems = elems.to_vec(); // release the borrow of `payload_ty` before the recursive marshal
-        let slot_vts: Vec<ValType> = elems.iter().map(|e| valtype_of(e).unwrap()).collect();
+        // Expand each element to its core slots: a `Bytes` element is `(ptr,len)` = 2 slots, a scalar is 1. This
+        // count MUST equal `emit_tuple_reg_flatten`'s per-element push count or the capture leaves a value on
+        // the stack — the same `valtype_of(Bytes)=Some(I32)` slot-count trap as the record byte-leaf field.
+        let slot_vts: Vec<ValType> = elems
+            .iter()
+            .flat_map(|e| {
+                if matches!(e.strip_nominal(), Ty::Bytes) {
+                    vec![ValType::I32, ValType::I32] // (ptr, len)
+                } else {
+                    vec![valtype_of(e).expect("scalar-or-bytes element by the guard")]
+                }
+            })
+            .collect();
         let n = slot_vts.len() as u32;
         let disc_out = work_base;
         let base_slot = work_base + 1;

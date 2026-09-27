@@ -1212,6 +1212,7 @@ pub(super) fn collect_used_ops_into_seen(
                                     if !es.is_empty()
                                         && es.iter().all(|e| {
                                             crate::backend::wasm::host::abi_val_type(e).is_some()
+                                                || matches!(e.strip_nominal(), Ty::Bytes)
                                         }))
                             },
                         ) =>
@@ -1226,8 +1227,9 @@ pub(super) fn collect_used_ops_into_seen(
                             crate::backend::wasm::host::option_payload_ty(db, &at)
                         {
                             // A `Bytes` payload copies its rope into `mem` on Some (`bytes-len`/`bytes-get`); a
-                            // scalar payload unboxes with its get-op; a `tuple-of-scalars` payload is decomposed
-                            // by `emit_tuple_reg_flatten` — POSITIONAL `arr-get` + each element's unbox op.
+                            // scalar payload unboxes with its get-op; a `tuple-of-scalars-or-bytes` payload is
+                            // decomposed by `emit_tuple_reg_flatten` — POSITIONAL `arr-get` + each SCALAR
+                            // element's unbox op / each `Bytes` element's `bytes-len`/`bytes-get` rope copy.
                             if matches!(payload, Ty::Bytes) {
                                 out.insert(OP_BYTES_LEN);
                                 out.insert(OP_BYTES_GET);
@@ -1237,7 +1239,10 @@ pub(super) fn collect_used_ops_into_seen(
                                 out.insert(OP_ARR_GET);
                                 let elems = elems.to_vec();
                                 for e in &elems {
-                                    if let Ok(Some(read)) = get_op_ty(db, e) {
+                                    if matches!(e.strip_nominal(), Ty::Bytes) {
+                                        out.insert(OP_BYTES_LEN);
+                                        out.insert(OP_BYTES_GET);
+                                    } else if let Ok(Some(read)) = get_op_ty(db, e) {
                                         out.insert(read);
                                     }
                                 }
