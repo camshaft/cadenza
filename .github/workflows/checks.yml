@@ -448,6 +448,28 @@ jobs:
       - name: nix reproducibility backstop (scoped from full flake check)
         run: nix build .#checks.aarch64-linux.flake-repro-backstop --print-build-logs
 
+  corpus-cadenza-subset:
+    name: corpus-cadenza-subset re-emit-parity (advisory)
+    runs-on: ubuntu-24.04-arm
+    # ADVISORY land-time re-emit-parity coverage (v-nix flake wiring + v-cadenza-ci, concierge 085166;
+    # gate definition owned by v-cadenza-backend). Runs the bounded corpus-cadenza-subset check
+    # (09-functions + 13-strings) on push/PR so a NEW cadenza re-emit regression on those re-emit-heavy
+    # chapters reds THIS advisory AT LAND TIME instead of waiting for v-cadenza-backend's next manual
+    # sweep. `continue-on-error` + non-required — never gates a merge (the belt-and-suspenders advisory
+    # pattern, same as `nix-flake` above). Bounded to 2 stems so it stays cheap + nix-cached (a push that
+    # does not rotate the corpus-cadenza-subset drv is a cache hit); corpusCadenzaAll stays nightly/manual.
+    # Deliberately EXCLUDES 05 + 14b/14c (standing v-core-opt re-emit reds) so the advisory is green-on-clean-
+    # main and a red is a real NEW regression. Phase 2 widens the subset once those reds clear.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v23
+        with:
+          extra-conf: "extra-experimental-features = ca-derivations\naccept-flake-config = true\nextra-substituters = https://camshaft.cachix.org\nextra-trusted-public-keys = camshaft.cachix.org-1:vJQM+N6ilGdDPFSUiH0tL5pBLZ/cD4acir7t4I2zGSc="
+      - uses: ./.github/actions/nix-store-cache
+      - name: corpus-cadenza-subset (09-functions + 13-strings re-emit-parity, via nix)
+        run: nix build .#checks.aarch64-linux.corpus-cadenza-subset --print-build-logs
+
   roundtrip:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax
     # independently of the compiler. Full-CI-in-nix cutover (Model A): body runs the nix `checks.roundtrip`
