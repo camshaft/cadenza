@@ -1362,6 +1362,77 @@ pub(super) fn emit_result_arg_reg_flatten(
     Ok(())
 }
 
+/// Marshal a top-level value-heap `result<scalar, enum>` host argument whose handle is in `result_slot` into the
+/// canonical `(disc:i32, join)` core-slot flatten the built-in `result<ok-scalar, err-enum>` param lowers to,
+/// pushing the two values onto the operand stack. The 2-slot scalar-Ok twin of `emit_result_arg_reg_flatten`
+/// (the 3-slot Bytes-Ok result): branch on the value-heap Result sum's disc (Ok=0 declared first / Err≠0, decl
+/// order = the component result disc). Ok → unbox the scalar payload into the join slot; Err → the err enum
+/// payload's disc into the join slot. `BlockType` is SINGLE-value, so the `if` arms SIDE-EFFECT into scratch and
+/// the 2 values are pushed AFTER the `if`. The join is `i64` iff the Ok scalar is 64-bit (the `i32` err disc
+/// widens via `i64.extend_i32_u`), else `i32` (a 64-bit Ok narrows the `OP_GET_INT` read only when the join is
+/// `i32`, which cannot happen for a genuine 64-bit Ok — the wrap guard mirrors `emit_variant_reg_flatten`).
+/// `work_base` is the first free scratch slot. No rope, so NO `mem`/cursor (unlike the Bytes result).
+pub(super) fn emit_result_scalar_arg_reg_flatten(
+    db: &mut Db,
+    result_slot: u32,
+    fty: &Ty,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let Ty::Sum { args, .. } = fty.strip_nominal() else {
+        return Err(Reject::decline(
+            "a result<scalar,enum> arg is not a result-shaped sum",
+        ));
+    };
+    let ok_ty = args
+        .first()
+        .cloned()
+        .ok_or_else(|| Reject::decline("a result<scalar,enum> arg has no Ok arm"))?;
+    let ok_read = get_op_ty(db, &ok_ty)?
+        .ok_or_else(|| Reject::decline("a result Ok scalar has no unbox op"))?;
+    let ok_vt =
+        valtype_of(&ok_ty).ok_or_else(|| Reject::decline("a result Ok scalar has no valtype"))?;
+    // The join widens the `i32` err disc to `i64` iff the Ok scalar is 64-bit; otherwise the slot is `i32`.
+    let join_vt = if ok_vt == ValType::I64 {
+        ValType::I64
+    } else {
+        ValType::I32
+    };
+    let disc = work_base;
+    let join = work_base + 1;
+    scratch_ty.insert(disc, ValType::I32);
+    scratch_ty.insert(join, join_vt);
+    *high = (*high).max(work_base + 2);
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component result disc, decl order Ok=0)
+    out.push(Lir::LocalSet(disc));
+    out.push(Lir::LocalGet(disc));
+    out.push(Lir::If(BlockType::Empty)); // disc != 0 → Err
+    // Err arm: join = the err enum's disc (widened to the join slot).
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [err enum handle]
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [enum disc: i32]
+    if join_vt == ValType::I64 {
+        out.push(Lir::I64ExtendI32U); // the disc is a small non-negative index
+    }
+    out.push(Lir::LocalSet(join));
+    out.push(Lir::Else); // disc == 0 → Ok
+    // Ok arm: unbox the scalar payload into the join slot.
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [Ok value handle]
+    out.push(Lir::CallImport(ok_read));
+    if ok_read == OP_GET_INT && join_vt == ValType::I32 {
+        out.push(Lir::I32WrapI64); // a narrow int / char payload narrows to its i32 join slot
+    }
+    out.push(Lir::LocalSet(join));
+    out.push(Lir::End);
+    out.push(Lir::LocalGet(disc)); // push the 2 flattened core values
+    out.push(Lir::LocalGet(join));
+    Ok(())
+}
+
 /// Marshal a top-level value-heap `option<scalar>` host argument whose handle is in `var_slot` into the
 /// canonical `(disc:i32, payload)` core-slot flatten the built-in `option<T>` param lowers to, pushing the two
 /// values onto the operand stack. The register twin of the `RecordFieldAbi::Option` field flatten (the

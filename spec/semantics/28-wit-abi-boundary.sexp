@@ -7409,3 +7409,77 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a bare result<s64, enum> host-op arg crosses on the Ok arm (2-slot (disc, i64-join) flatten)"
+  (doc
+    "SHAPE 186 (v-wit-boundary) — a top-level `result<scalar, enum>` ARG, the scalar-Ok sibling of the
+           `result<list<u8>, enum>` arg (SHAPE 164/165). Where the Bytes result flattens to 3 slots
+           `(disc, ptr, len)` and copies a rope into `mem`, a scalar-Ok result flattens to just 2 slots
+           `(disc:i32, join)` with NO memory: `emit_result_scalar_arg_reg_flatten` reads the result disc, and on
+           Ok unboxes the scalar payload into the join slot, on Err reads the err enum's disc into it. The join
+           is `i64` here because the Ok scalar is `s64` (the `i32` err disc widens to fit) — the component
+           boundary is `result<s64, enum{bad,worse}>`, the core import sig `(param i32 i64)`. run() emits
+           `(Ok 7)`; a VALID component that runs and crosses the boundary is the pin (the 2-slot flatten + join
+           width are pinned by the module validating with that core signature). The Err arm = SHAPE 187; a
+           narrower `i32` join = SHAPE 188.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (s64) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result Int64 Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok 7))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare result<s64, enum> host-op arg crosses on the Err arm (err enum disc into the join slot)"
+  (doc
+    "SHAPE 187 (v-wit-boundary) — the Err-arm counterpart of SHAPE 186. On Err the result disc is non-zero
+           and `emit_result_scalar_arg_reg_flatten` reads the err ENUM's discriminant (here `worse` = decl-disc 1)
+           into the join slot (widened to `i64` to match the s64-Ok join width). run() emits `(Err (Worse))`; the
+           host stub returns 42. Same `result<s64, enum>` boundary as SHAPE 186, exercising the other arm.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (s64) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result Int64 Er) Int64)))
+      (def (run) (host (probe) (probe.push (Err (Worse)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
+
+(case
+  "a bare result<bool, enum> host-op arg crosses on the Ok arm (narrower i32 join width)"
+  (doc
+    "SHAPE 188 (v-wit-boundary) — the narrow-join counterpart of SHAPE 186. A `result<bool, enum>` Ok scalar
+           is `i32`-width, so the join stays `i32` (both the Ok bool and the `i32` err disc fit) — the core import
+           sig is `(param i32 i32)`, distinct from SHAPE 186's `(param i32 i64)`. This pins that
+           `emit_result_scalar_arg_reg_flatten` derives the join width from the Ok scalar (no spurious widening).
+           run() emits `(Ok true)`; a VALID component that runs and crosses is the pin. Completes the
+           `result<scalar, enum>` bare-arg family (s64 Ok = 186/187, bool Ok = 188).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (bool) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result Bool Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok true))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

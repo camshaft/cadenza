@@ -1479,6 +1479,27 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_DROP);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
+                    // A top-level `result<scalar, enum>` arg is decomposed by `emit_result_scalar_arg_reg_flatten`:
+                    // `sum-disc` (the result disc), `sum-payload`, and on the Ok arm the scalar UNBOX op (`get-*`)
+                    // / on the Err arm a further `sum-disc` (the err enum disc). Declare them (else the marshal's
+                    // `CallImport` resolves to u32::MAX → an invalid module), then descend to collect the ops that
+                    // BUILD the result value. Checked BEFORE the `_` fallthrough; the Bytes-result arm above is
+                    // mutually exclusive (Bytes Ok vs scalar Ok).
+                    at if !peer_bound
+                        && crate::backend::wasm::host::result_scalar_enum(db, &at).is_some() =>
+                    {
+                        out.insert(OP_SUM_DISC);
+                        out.insert(OP_SUM_PAYLOAD);
+                        // The Ok scalar's unbox op (mirror the marshal's `get_op_ty(ok_ty)`).
+                        if let Ty::Sum { args, .. } = at.strip_nominal()
+                            && let Some(ok_ty) = args.first()
+                            && let Ok(Some(read)) = get_op_ty(db, &ok_ty.clone())
+                        {
+                            out.insert(read);
+                        }
+                        out.insert(OP_DROP);
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     _ => collect_used_ops_into_seen(db, arg, out, visited),
                 }
             }

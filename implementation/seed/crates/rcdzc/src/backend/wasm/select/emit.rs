@@ -6931,6 +6931,33 @@ pub(super) fn emit(
                             out.push(Lir::CallImport(OP_DROP));
                         }
                     }
+                    // A top-level `result<scalar, enum>` argument: the guest emits the value-heap Result HANDLE
+                    // into a slot, then decomposes it into the canonical `(disc, join)` register-flatten via
+                    // `emit_result_scalar_arg_reg_flatten` (the 2-slot scalar-Ok twin of the Bytes-Ok result) —
+                    // Ok unboxes the scalar into the join slot, Err reads the err enum's disc. No rope, so NO
+                    // cursor (unlike the Bytes result). Checked BEFORE the scalar `_` arm (a Sum's `emit` yields
+                    // a HANDLE, not the flattened slots); option/variant/enum/result-bytes above already declined.
+                    _ if crate::backend::wasm::host::result_scalar_enum(db, &at).is_some() => {
+                        let res_slot = arg_base.max(*high);
+                        scratch_ty.insert(res_slot, ValType::I32);
+                        *high = (*high).max(res_slot + 1);
+                        emit(db, arg, slots, res_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(res_slot));
+                        let work_base = *high;
+                        emit_result_scalar_arg_reg_flatten(
+                            db, res_slot, &at, work_base, high, scratch_ty, out,
+                        )?;
+                        // MARSHALED-ARG RECLAIM (result-scalar twin of the Bytes-result reclaim): the flatten
+                        // borrowed `sum-disc`/`sum-payload`/unbox — no dup, no handle moved out — so the Result
+                        // handle in `res_slot` is DEAD. Deep-drop iff Owned / a dup-site (else the shell leaks).
+                        // Import mirror in `collect_used_ops`'s result-scalar-arg arm.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(res_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
                     // A scalar argument emits its value directly.
                     _ => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
                 }

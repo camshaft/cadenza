@@ -109,6 +109,18 @@ pub enum HostParam {
     /// pushes `(ptr,len)`, Err pushes `(err-enum-disc, 0)`. A non-`Bytes` ok arm / a `variant` err arm is a later
     /// increment (declined — the classifier only pushes this for `result_bytes_enum`).
     Result(Vec<String>),
+    /// A bare `result<scalar, enum>` param (the top-level position, not nested in a record/list) — crosses as
+    /// the built-in WIT `result<ok-scalar, err-enum>` type, referenced by a per-param structural `CRef` (like
+    /// [`Result`](HostParam::Result)). Its core form flattens (canonical variant flatten) to `(disc:i32, join)`
+    /// — the discriminant then the reinterpret join of the Ok arm's scalar and the Err arm's enum discriminant
+    /// (`join` is `i64` iff the Ok scalar is 64-bit, else `i32`; the `i32` err disc widens to fit). This is 2
+    /// core slots, NOT the 3-slot `list<u8>` Ok shape ([`Result`](HostParam::Result)) — there is no rope, so it
+    /// needs NO shared `mem`. Carries the Ok scalar's ABI and the err enum's case names (kebab, DECLARATION =
+    /// discriminant order). The guest marshals it via `select::emit_result_scalar_arg_reg_flatten`: Ok unboxes
+    /// the scalar payload, Err reads the err enum's disc, both into the shared join slot. A non-integer Ok
+    /// (float — needs the reinterpret join lattice) / a `variant` err arm is a later increment (declined — the
+    /// classifier only pushes this for `result_scalar_enum`, which admits integer-width Ok scalars).
+    ResultScalar(AbiValType, Vec<String>),
 }
 
 /// Whether a record-field ABI bottoms out at a `list<u8>` (`Bytes`) leaf — so a `list<T>` param carrying it
@@ -306,6 +318,53 @@ pub fn result_bytes_enum(db: &mut Db, ty: &Ty) -> Option<Vec<String>> {
             .map(|v| kebab_extern_name(&v.name))
             .collect(),
     )
+}
+
+/// Whether `ty` is `result<scalar, enum>` — an Ok arm carrying an INTEGER-width scalar (not `Bytes`, whose own
+/// arm is [`result_bytes_enum`]) and an Err arm that is a PAYLOAD-LESS enum. Returns `(ok-scalar-abi, err-enum
+/// case names)` if so, else `None`. A `Sum` whose decl has exactly `Ok`/`Err` variants, instantiated at
+/// `[ok-scalar, err-enum]`. The Ok scalar must JOIN cleanly with the `i32` err discriminant — every integer
+/// width does (widening to `i64` if the Ok is 64-bit), so a FLOAT Ok is EXCLUDED (the canonical reinterpret
+/// join lattice is a later increment). The `(disc, join)` register flatten is `emit_result_scalar_arg_reg_
+/// flatten`. Reads through erased nominal wrappers, mirroring [`result_bytes_enum`].
+pub fn result_scalar_enum(db: &mut Db, ty: &Ty) -> Option<(AbiValType, Vec<String>)> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let stripped = ty.strip_nominal();
+    let Ty::Sum { decl, args } = stripped else {
+        return None;
+    };
+    if args.len() != 2 {
+        return None;
+    }
+    // The Ok arm (args[0]) must be an INTEGER scalar — a float needs the reinterpret join lattice (excluded).
+    let ok = abi_val_type(&args[0])?;
+    if matches!(ok, AbiValType::F32 | AbiValType::F64) {
+        return None;
+    }
+    // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
+    {
+        let d = db.type_decl_by_occ(*decl)?;
+        if !(d.variants.len() == 2
+            && d.variants.iter().any(|v| v.name == "Ok")
+            && d.variants.iter().any(|v| v.name == "Err"))
+        {
+            return None;
+        }
+    }
+    // The err arm (args[1]) must be a payload-less enum — a `Sum` whose every variant is nullary.
+    let Ty::Sum { decl: err_decl, .. } = args[1].strip_nominal() else {
+        return None;
+    };
+    let ed = db.type_decl_by_occ(*err_decl)?;
+    if ed.variants.is_empty() || ed.variants.iter().any(|v| !v.payloads.is_empty()) {
+        return None;
+    }
+    let err_cases = ed
+        .variants
+        .iter()
+        .map(|v| kebab_extern_name(&v.name))
+        .collect();
+    Some((ok, err_cases))
 }
 
 /// The case list of a general `variant`-with-scalar-payload host boundary type — a `Sum` that is NOT
@@ -1521,6 +1580,17 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     _ if !peer_bound && result_bytes_enum(db, &at).is_some() => {
                         params.push(HostParam::Result(result_bytes_enum(db, &at).unwrap()));
                     }
+                    // A top-level `result<scalar, enum>` arg crosses as the built-in WIT `result<ok, err-enum>`.
+                    // It flattens to `(disc:i32, join)` — 2 slots, NOT the 3-slot Bytes shape: on Ok the guest
+                    // unboxes the scalar payload; on Err it reads the err enum's disc; both into the shared join
+                    // slot (`i64` iff the Ok scalar is 64-bit, else `i32`). Marshalled by
+                    // `emit_result_scalar_arg_reg_flatten` (no rope, so NO `mem`). Checked BEFORE the scalar `_`
+                    // arm (a Sum has no `abi_val_type`); a float Ok / a `variant` err arm is a later increment
+                    // (`result_scalar_enum` declines it → `_` declines).
+                    _ if !peer_bound && result_scalar_enum(db, &at).is_some() => {
+                        let (ok, err_cases) = result_scalar_enum(db, &at).unwrap();
+                        params.push(HostParam::ResultScalar(ok, err_cases));
+                    }
                     // A top-level `option<scalar>` / `option<bytes>` / `option<tuple-of-scalars>` arg crosses as
                     // the built-in WIT `option<T>` (its own arm — `variant_scalar_payload_cases` above EXCLUDES
                     // option-shaped sums, since option needs the distinct built-in type, not a `variant` DEFINED
@@ -2275,6 +2345,13 @@ pub fn first_unrepresentable_host_op(
             // declines it), matching the classifier + the marshal, in lockstep.
             let arg_is_boundary_result =
                 allow_option_bytes && !peer_bound && result_bytes_enum(db, &at).is_some();
+            // A top-level `result<scalar, enum>` arg crosses NATIVELY as the built-in WIT `result<ok, err-enum>`
+            // — the guest flattens the value-heap result to `(disc, join)` core slots
+            // (`select::emit_result_scalar_arg_reg_flatten`; no rope, so no `mem`). Same gating as the Bytes
+            // result; a float Ok / `variant` err arm is a later increment (`result_scalar_enum` declines it),
+            // matching the classifier + the marshal, in lockstep.
+            let arg_is_boundary_result_scalar =
+                allow_option_bytes && !peer_bound && result_scalar_enum(db, &at).is_some();
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
@@ -2285,6 +2362,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_option
                 && !arg_is_boundary_tuple
                 && !arg_is_boundary_result
+                && !arg_is_boundary_result_scalar
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }
