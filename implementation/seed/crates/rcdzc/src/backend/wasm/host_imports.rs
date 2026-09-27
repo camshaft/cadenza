@@ -553,11 +553,12 @@ pub(super) fn host_op_comp_functype(
                     .unwrap_or(crate::backend::wasm::wit_ctype::CRef::Idx(list_type_idx));
                 crate::backend::wasm::wit_ctype::encode_cref(&cref, &mut param_items);
             }
-            // A top-level `result<list<u8>, enum>` param references its built-in `(result <ok> <err>)`
-            // DEFINED type by the per-param `CRef` the caller computed — a `result` is STRUCTURAL
-            // (anonymous-allowed), NOT nominal, so it rides the same per-param structural-CRef path as
-            // `option`/`tuple`/`list`.
-            HostParam::Result(_) => {
+            // A top-level `result<list<u8>, enum>` / `result<scalar, enum>` param references its built-in
+            // `(result <ok> <err>)` DEFINED type by the per-param `CRef` the caller computed — a `result` is
+            // STRUCTURAL (anonymous-allowed), NOT nominal, so it rides the same per-param structural-CRef path as
+            // `option`/`tuple`/`list`. The Ok arm (list<u8> vs scalar) only changes the built structural type,
+            // not the CRef mechanism.
+            HostParam::Result(_) | HostParam::ResultScalar(..) => {
                 let cref = list_param_crefs
                     .get(i)
                     .cloned()
@@ -684,6 +685,7 @@ pub(super) fn build_host_result_types(
                     | host::HostParam::Option(_)
                     | host::HostParam::Tuple(_)
                     | host::HostParam::Result(_)
+                    | host::HostParam::ResultScalar(..)
             ) && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
             {
                 per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
@@ -1106,7 +1108,8 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::Variant(_)
         | host::HostParam::Option(_)
         | host::HostParam::Tuple(_)
-        | host::HostParam::Result(_) => None,
+        | host::HostParam::Result(_)
+        | host::HostParam::ResultScalar(..) => None,
     }
 }
 

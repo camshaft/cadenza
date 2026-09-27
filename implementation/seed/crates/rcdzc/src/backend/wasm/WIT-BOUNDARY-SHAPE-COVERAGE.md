@@ -219,6 +219,19 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   result arg copies a rope into `mem`, so the host set routes to the `_mem` assembler; without it the host op lower
   was emitted memoryless → CDZ0910 "canonical option `memory` is required"). REMAINING: a `result<record,enum>` /
   `result<_, variant>` (`result_bytes_enum` requires a `list<u8>` Ok + a payloadless-enum Err).
+- **[emit, register-path] a top-level `result<scalar, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 186/187/188).**
+  The scalar-Ok sibling of the Bytes-Ok result arg: a new `HostParam::ResultScalar(ok-abi, err-cases)` (detector
+  `result_scalar_enum`, admitting an INTEGER-width Ok scalar + a payloadless-enum Err; a FLOAT Ok / `variant` err
+  is a later increment — the reinterpret join lattice). It flattens to just 2 slots `(disc:i32, join)` with NO
+  `mem` (no rope): `emit_result_scalar_arg_reg_flatten` reads the result disc, unboxes the Ok scalar into the join
+  slot on Ok, reads the err enum's disc into it on Err. The join is `i64` iff the Ok scalar is 64-bit (the `i32`
+  err disc widens via `i64.extend_i32_u`), else `i32` — SHAPE 186/187 (s64 Ok, `(param i32 i64)`) vs 188 (bool Ok,
+  `(param i32 i32)`) pin both widths + both arms. Widened in LOCKSTEP: the classifier arm, `first_unrepresentable_
+  host_op`'s `arg_is_boundary_result_scalar`, the emit dispatch (+ Owned/dup-site reclaim drop), `collect_used_ops`
+  (`sum-disc`/`sum-payload` + the Ok unbox `get-*` + `drop`), `serialize` (`(i32, join)` core flatten), and
+  `host_imports.rs` (the structural-CRef param reference + `host_param_abi` decline). NOT the cursor pre-scan and
+  NOT `set_needs_memory` (no rope → no `mem`, unlike the Bytes result). REMAINING: `result<record/list/tuple,enum>`
+  (a compound Ok needs the in-mem arg marshal) and `result<_, variant>` / a float Ok.
 - **[emit, register-path] a top-level `option<variant>` host-op ARG — ✅ DONE (SHAPE 167/168).** The option
   payload is a scalar-payload `variant`: `option_arg_crosses` now admits it, and `emit_option_reg_flatten`'s
   variant branch flattens the value-heap option to `(opt-disc, var-disc, payload-join)` = the option disc + the
