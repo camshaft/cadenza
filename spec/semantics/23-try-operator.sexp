@@ -1236,6 +1236,38 @@
   ; path)" (was value-only). BRICK-3 compound-ctor `?` reclaim family.
   (live-objects 0))
 
+(case
+  "trc1 two `?`s as CALL ARGUMENTS hoist left-to-right and short-circuit at the FIRST failure"
+  (doc
+    "The plain-application face of the expression-position `?` (the generic operand descent, distinct from the
+     dedicated `#list`/`#tuple`/`#record` compound-ctor arms): two `?`s are ARGUMENTS of an ordinary function
+     call — `(Ok (add (try r) (try s)))` under a `(Result Int64 Int64)` boundary. `find_hoistable_try`
+     descends the name-head application left-to-right and, by fixpoint, lifts BOTH `?`s to nested boundary
+     `let`s in argument order — `(let ((a (try r))) (let ((b (try s))) (Ok (add a b))))`. Both Ok → `add 3 4
+     = 7`; the FIRST failing `?` short-circuits `mk` to its Err, leaving the later one unevaluated — pinned
+     with DISTINCT Err payloads: at k=0 the first arg's `?` fails (→ Err 111), at k=1 the second (→ Err 222),
+     proving left-to-right evaluation order. Verified leak-clean (live-objects 0 every path).")
+  (input
+    (do
+      (def (add (: a Int64) (: b Int64)) (+ a b))
+      (def
+        (mk (: r (Result Int64 Int64)) (: s (Result Int64 Int64)))
+        (: (Ok (add (try r) (try s))) (Result Int64 Int64)))
+      (def
+        (main (: k Int64))
+        (match
+          (mk (if (> k 0) (Ok 3) (Err 111)) (if (> k 1) (Ok 4) (Err 222)))
+          ((Ok v) v)
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 222 Int64))
+  (call main (: 2 Int64))
+  (output (: 7 Int64))
+  (live-objects 0))
+
 ; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
 ; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return).
 ; FIXED (v-effects): previously REJECTED with `CDZ0101: unbound name #seed<n>` — under this conjunction
