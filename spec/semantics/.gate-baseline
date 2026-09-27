@@ -231,6 +231,7 @@ pass	List.len does NOT fold away a trapping element construction (runtime denomi
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
 pass	List.len of a trap-free constant list still folds to its arity
+pass	List.len over a DIVERGENT-ownership inline if (owned-fresh arm vs bare-alias arm) reclaims the owned arm (node#6 If, no live objects)
 pass	List.len over a DIVERGENT-ownership runtime-list match (owned-fresh arm vs bare-alias arm) reclaims the owned arm (node#6 MatchList, no live objects)
 pass	List.len over a DIVERGENT-ownership scalar match (owned-fresh arm vs bare-alias arm) reclaims the owned arm (node#6 Match, no live objects)
 pass	List.len over a NESTED owned-producer chain (concat of two pushes) reclaims every temporary (no live objects)
