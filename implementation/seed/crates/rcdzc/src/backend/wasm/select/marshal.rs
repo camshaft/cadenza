@@ -1183,6 +1183,63 @@ pub(super) fn emit_option_reg_flatten(
         out.push(Lir::LocalGet(len_out));
         return Ok(());
     }
+    // A `list<T>` payload flattens to the built-in `option<list<elem>>`: `(disc:i32, ptr:i32, count:i32)`. On Some
+    // the payload list is marshalled into `mem` at the running scratch `cursor` via `emit_list_arg_marshal` (which
+    // leaves `(outer-ptr, count)` on the stack — captured into the out-slots), on None all three slots are 0 (a
+    // none `option` never reads its payload). The register analogue of the Bytes branch above, using the list
+    // marshal instead of a rope copy; the element WIT comes from `payload_wit` (`WitType::List(elem)`), so a
+    // record/nested element inside the list orders correctly.
+    if let Ty::List(elem) = payload_ty.strip_nominal() {
+        let cursor = cursor.expect("an option<list> arg reserves the scratch cursor (pre-scan)");
+        let elem = (**elem).clone(); // release the borrow of `payload_ty` before the recursive marshal
+        let elem_wit = match payload_wit {
+            Some(crate::wit_world::WitType::List(ew)) => Some(ew.as_ref()),
+            _ => None,
+        };
+        let disc_out = work_base;
+        let ptr_out = work_base + 1;
+        let count_out = work_base + 2;
+        let list_slot = work_base + 3;
+        for s in [disc_out, ptr_out, count_out, list_slot] {
+            scratch_ty.insert(s, ValType::I32);
+        }
+        *high = (*high).max(work_base + 4);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_DISC)); // [guest disc]
+        out.push(Lir::ConstI32(some_disc));
+        out.push(Lir::I32Eq);
+        out.push(Lir::If(BlockType::Empty)); // Some
+        out.push(Lir::ConstI32(1));
+        out.push(Lir::LocalSet(disc_out));
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload list handle]
+        out.push(Lir::LocalSet(list_slot));
+        emit_list_arg_marshal(
+            db,
+            &elem,
+            elem_wit,
+            list_slot,
+            cursor,
+            work_base + 4,
+            high,
+            scratch_ty,
+            out,
+        )?; // leaves [outer-ptr, count] on the stack
+        out.push(Lir::LocalSet(count_out)); // capture count (top) then ptr
+        out.push(Lir::LocalSet(ptr_out));
+        out.push(Lir::Else); // None → (0, 0, 0)
+        out.push(Lir::ConstI32(0));
+        out.push(Lir::LocalSet(disc_out));
+        out.push(Lir::ConstI32(0));
+        out.push(Lir::LocalSet(ptr_out));
+        out.push(Lir::ConstI32(0));
+        out.push(Lir::LocalSet(count_out));
+        out.push(Lir::End);
+        out.push(Lir::LocalGet(disc_out)); // push (disc, ptr, count)
+        out.push(Lir::LocalGet(ptr_out));
+        out.push(Lir::LocalGet(count_out));
+        return Ok(());
+    }
     // A top-level `option<tuple-of-scalars-or-bytes>` arg flattens (canonical variant flatten) to `(disc:i32,
     // flatten(tuple))` = disc + one core slot per SCALAR element / TWO `(ptr,len)` slots per `Bytes` element
     // (POSITIONAL, no name-lex/WIT-order ambiguity), the register twin of the `option<tuple>` record-FIELD

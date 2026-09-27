@@ -1345,6 +1345,15 @@ pub(super) fn collect_used_ops_into_seen(
                                         out.insert(read);
                                     }
                                 }
+                            } else if let Ty::List(inner) = payload.strip_nominal() {
+                                // A `list<T>` payload is marshalled into `mem` by `emit_list_arg_marshal` —
+                                // `vec-len`/`vec-get` on the payload list + the element's own ops via the shared
+                                // `collect_list_elem_ops` (a scalar element's unbox, a compound element's writer
+                                // ops). The register-path twin of the option<bytes> `bytes-*` declaration.
+                                out.insert(OP_VEC_LEN);
+                                out.insert(OP_VEC_GET);
+                                let inner = (**inner).clone();
+                                collect_list_elem_ops(db, &inner, out);
                             } else if matches!(payload.strip_nominal(), Ty::Record(_)) {
                                 // A `record` payload is decomposed by `emit_record_arg_marshal` — declare exactly
                                 // its per-field ops via the shared recursive `collect_record_field_ops` (the
