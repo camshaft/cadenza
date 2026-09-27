@@ -1376,21 +1376,28 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                     || matches!(e.strip_nominal(), Ty::Tuple(inner)
                                         if !inner.is_empty()
                                             && inner.iter().all(|x| abi_val_type(x).is_some()))
+                                    || matches!(e.strip_nominal(), Ty::Record(sub)
+                                        if !sub.is_empty()
+                                            && sub.values().all(|f| abi_val_type(f).is_some()))
                             }) =>
                     {
                         let elems = elems.to_vec();
+                        // Element `i`'s WIT (for a record element's field reorder), from the tuple's declared WIT.
+                        let elem_wits: Option<Vec<crate::wit_world::WitType>> =
+                            match wit_params.as_ref().and_then(|ps| ps.get(arg_i)) {
+                                Some(crate::wit_world::WitType::Tuple(ws)) => Some(ws.clone()),
+                                _ => None,
+                            };
                         let abis = elems
                             .iter()
-                            .map(|e| {
+                            .enumerate()
+                            .map(|(i, e)| {
                                 if let Some(pv) = abi_val_type(e) {
                                     RecordFieldAbi::Scalar(pv)
                                 } else if matches!(e.strip_nominal(), Ty::Bytes) {
                                     RecordFieldAbi::Bytes // tuple<…, list<u8>, …> element → (ptr, len)
-                                } else {
+                                } else if let Ty::Tuple(inner) = e.strip_nominal() {
                                     // a nested tuple-of-scalars element (positional, no name-lex ambiguity)
-                                    let Ty::Tuple(inner) = e.strip_nominal() else {
-                                        unreachable!("tuple element is scalar/bytes/tuple-of-scalars by the guard")
-                                    };
                                     let inner_abis = inner
                                         .iter()
                                         .map(|x| {
@@ -1400,6 +1407,30 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                         })
                                         .collect();
                                     RecordFieldAbi::Tuple(inner_abis)
+                                } else {
+                                    // a record-of-scalars element: build name-lex then REORDER to the element's
+                                    // WIT record order (`emit_record_arg_marshal` pushes in WIT order, so the
+                                    // component type + core flatten must match — a name-lex order mis-links).
+                                    let Ty::Record(sub) = e.strip_nominal() else {
+                                        unreachable!("tuple element is scalar/bytes/tuple/record by the guard")
+                                    };
+                                    let sub = sub.clone();
+                                    let fields: Vec<(String, RecordFieldAbi)> = sub
+                                        .iter()
+                                        .map(|(sym, fty)| {
+                                            (
+                                                sym.name.to_string(),
+                                                RecordFieldAbi::Scalar(
+                                                    abi_val_type(fty).expect("scalar field by the guard"),
+                                                ),
+                                            )
+                                        })
+                                        .collect();
+                                    let fields = match elem_wits.as_ref().and_then(|ws| ws.get(i)) {
+                                        Some(ew) => reorder_record_fields_to_wit(fields, ew),
+                                        None => fields,
+                                    };
+                                    RecordFieldAbi::Record(fields)
                                 }
                             })
                             .collect();
@@ -1950,6 +1981,8 @@ pub fn first_unrepresentable_host_op(
                         || matches!(e.strip_nominal(), Ty::Bytes)
                         || matches!(e.strip_nominal(), Ty::Tuple(inner)
                             if !inner.is_empty() && inner.iter().all(|x| abi_val_type(x).is_some()))
+                        || matches!(e.strip_nominal(), Ty::Record(sub)
+                            if !sub.is_empty() && sub.values().all(|f| abi_val_type(f).is_some()))
                 }));
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)

@@ -1201,6 +1201,14 @@ pub(super) fn collect_used_ops_into_seen(
                                         out.insert(read);
                                     }
                                 }
+                            } else if let Ty::Record(sub) = e.strip_nominal() {
+                                // A record-of-scalars element: `arr-get` (already inserted) + each field's op.
+                                let ftys: Vec<Ty> = sub.values().cloned().collect();
+                                for fty in &ftys {
+                                    if let Ok(Some(read)) = get_op_ty(db, fty) {
+                                        out.insert(read);
+                                    }
+                                }
                             } else if let Ok(Some(read)) = get_op_ty(db, e) {
                                 out.insert(read);
                             }

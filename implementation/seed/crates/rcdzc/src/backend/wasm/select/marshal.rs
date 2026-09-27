@@ -1084,10 +1084,12 @@ pub(super) fn emit_option_reg_flatten(
         out.push(Lir::LocalGet(var_slot));
         out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [tuple handle]
         out.push(Lir::LocalSet(pay_slot));
+        // The option payload's WIT IS the tuple's WIT (for a record element's reorder, should one appear).
         emit_tuple_reg_flatten(
             db,
             pay_slot,
             &payload_ty,
+            payload_wit,
             cursor,
             pay_slot + 1,
             high,
@@ -1265,15 +1267,17 @@ pub(super) fn emit_option_reg_flatten(
 /// register twin of a record's scalar-field marshal, but POSITIONAL: element `i` reads the value-heap cell at
 /// index `i` via `arr-get i`, which borrows the tuple, + its wrap-free get-op, + an i64→i32 narrow for a narrow
 /// int/char). A `Bytes` element's rope is copied into `mem` at the running scratch `cursor` and pushed as
-/// `(ptr,len)` (2 slots, the same copy a Bytes ARG / a Bytes record FIELD does). Scoped to SCALAR-or-`Bytes`
-/// elements — a compound element is declined at classification. `work_base` is the first free scratch slot for
-/// the Bytes copy (rope/len/pos, only touched when a Bytes element is present). All reads BORROW `tup_slot` (no
-/// consume/drop; the caller reclaims it).
+/// `(ptr,len)` (2 slots, the same copy a Bytes ARG / a Bytes record FIELD does). A NESTED tuple element recurses
+/// (positional, inline); a RECORD-of-scalars element recurses `emit_record_arg_marshal` (its fields reordered to
+/// the element's WIT record order — so `tuple_wit`, when present, must be the tuple's declared WIT type so
+/// element `i`'s WIT is `tuple_wit`'s `i`th element). `work_base` is the first free scratch slot for the Bytes
+/// copy / nested marshal. All reads BORROW `tup_slot` (no consume/drop; the caller reclaims it).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_tuple_reg_flatten(
     db: &mut Db,
     tup_slot: u32,
     fty: &Ty,
+    tuple_wit: Option<&crate::wit_world::WitType>,
     cursor: Option<u32>,
     work_base: u32,
     high: &mut u32,
@@ -1284,6 +1288,11 @@ pub(super) fn emit_tuple_reg_flatten(
         return Err(Reject::decline("a top-level tuple arg is not a tuple"));
     };
     let elems = elems.to_vec(); // release the borrow of `fty` before the &mut db calls
+    // Element `i`'s declared WIT type (for a record element's field reorder), when the tuple WIT is present.
+    let elem_wits: Option<Vec<crate::wit_world::WitType>> = match tuple_wit {
+        Some(crate::wit_world::WitType::Tuple(ws)) => Some(ws.clone()),
+        _ => None,
+    };
     for (i, ety) in elems.iter().enumerate() {
         // A `Bytes` element: read the value-heap cell's rope handle (`arr-get i`, borrows the tuple), copy its
         // logical bytes into `mem` at the running `cursor`, push `(ptr,len)`, and advance the cursor by the
@@ -1351,10 +1360,51 @@ pub(super) fn emit_tuple_reg_flatten(
             out.push(Lir::ConstI32(i as i32));
             out.push(Lir::CallImport(OP_ARR_GET)); // [nested tuple handle] (borrows the outer tuple)
             out.push(Lir::LocalSet(sub_slot));
+            let elem_wit = elem_wits.as_ref().and_then(|ws| ws.get(i));
             emit_tuple_reg_flatten(
                 db,
                 sub_slot,
                 ety,
+                elem_wit,
+                cursor,
+                work_base + 1,
+                high,
+                scratch_ty,
+                out,
+            )?;
+            continue;
+        }
+        // A RECORD-of-scalars element (`tuple<…, record{…}, …>`): read its handle (`arr-get i`, borrows the
+        // outer tuple) and recurse `emit_record_arg_marshal` — its fields flatten inline in the element's WIT
+        // DECLARATION order (so `elem_wit` must be the element's WIT record type, threaded from `tuple_wit`),
+        // matching serialize's `RecordFieldAbi::Record` recursion + the component `tuple<…, record<…>, …>` type.
+        // No capture/disc (a record is not a variant). Requires the tuple's WIT (else decline — a name-lex order
+        // would mis-link). Scoped to a record whose fields are all scalar this increment.
+        if matches!(ety.strip_nominal(), Ty::Record(sub) if !sub.is_empty()) {
+            let Ty::Record(sub) = ety.strip_nominal() else {
+                unreachable!("record element by the guard")
+            };
+            let sub = sub.clone();
+            let Some(elem_wit @ crate::wit_world::WitType::Record(_)) =
+                elem_wits.as_ref().and_then(|ws| ws.get(i))
+            else {
+                return Err(Reject::decline(
+                    "a top-level tuple record element has no matching WIT record type (needed to order fields)",
+                ));
+            };
+            let elem_wit = elem_wit.clone();
+            let sub_slot = work_base;
+            scratch_ty.insert(sub_slot, ValType::I32);
+            *high = (*high).max(work_base + 1);
+            out.push(Lir::LocalGet(tup_slot));
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::CallImport(OP_ARR_GET)); // [record handle] (borrows the outer tuple)
+            out.push(Lir::LocalSet(sub_slot));
+            emit_record_arg_marshal(
+                db,
+                sub_slot,
+                &sub,
+                &elem_wit,
                 cursor,
                 work_base + 1,
                 high,
