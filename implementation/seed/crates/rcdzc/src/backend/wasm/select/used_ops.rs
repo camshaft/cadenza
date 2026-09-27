@@ -709,6 +709,10 @@ pub(super) fn collect_used_ops_into_seen(
             if matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned)) {
                 out.insert(OP_DROP);
             }
+            if matchjoin_equalize_may_import(db, set) {
+                out.insert(OP_DUP);
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into_seen(db, set, out, visited);
         }
         // A set-algebra op = the matching runtime op (consumes both operand sets).

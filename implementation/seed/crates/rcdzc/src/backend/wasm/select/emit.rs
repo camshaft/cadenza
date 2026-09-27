@@ -1169,7 +1169,7 @@ pub(super) fn emit(
             // borrow-site dup is ALWAYS unbalanced → drop ⟺ dup, never a drop-without-dup double-free. A
             // `Param`/`LocalRef` is `heap_operand_ownership==Borrowed` → DISJOINT from the Owned branch (no
             // double-drop). Covers the fldirect O2/O3 divergence v-core-opt assigned to this lane (the B2/CSE dup
-            // source); StrScalarLen/ListLen/MapSize wired the node#6 equalize; SetLen remains a follow-up.
+            // source); the length-op family (StrScalarLen/ListLen/MapSize/SetLen) all wired the node#6 equalize.
             let b2_dup_borrowed_binder = matches!(
                 core_of(db, operand),
                 Core::Param { .. } | Core::LocalRef { .. }
@@ -1934,10 +1934,25 @@ pub(super) fn emit(
             // as a consumed call arg AND as the borrowing `set-size` operand; the borrow-site dup is never
             // consumed → +1 leak. drop⟺dup; `set-size` borrows so the dup is always unbalanced; `Param`/`LocalRef`
             // is Borrowed → disjoint from the Owned branch; O2-specific (O0/O1 operand is a fresh Owned producer).
+            // MATCH-JOIN OWNERSHIP-EQUALIZE (node#6 sibling): same as Core::MapSize/ListLen/BytesLen — a
+            // divergent-ownership heap Match borrow-operand (an alias arm + an owned-fresh arm) leaks its
+            // owned-fresh arm because the arm-blind join reads Borrowed. Plan the dup-safe alias-arm dup
+            // (emit_arm_body) + FORCE reclaim so the post-borrow OP_DROP below fires on the equalized-owned
+            // set. Set handle dup/drop = the polymorphic header rc ops (rc++/rc--, element-recursion only at
+            // rc=0), identical pairing to Bytes/List/Map.
+            let matchjoin_equalize =
+                match divergent_match_borrow_dupable(db, set, slots, out.fn_body, &out.dup_sites) {
+                    Some(ids) => {
+                        out.matchjoin_dup_arms.extend(ids);
+                        true
+                    }
+                    None => false,
+                };
             let reclaim = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned))
                 || owned_proj_child_dupd(db, set, slots, &out.sumexpect_shell_reclaim)
                 || (matches!(core_of(db, set), Core::Param { .. } | Core::LocalRef { .. })
-                    && out.dup_sites.contains(&set));
+                    && out.dup_sites.contains(&set))
+                || matchjoin_equalize;
             if reclaim {
                 let set_slot = base;
                 *high = (*high).max(set_slot + 1);
