@@ -5808,3 +5808,26 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 77)
   (live-objects 0))
+
+(case
+  "a host-op record ARG with an option<tuple> FIELD = None exercises the zero-fill marshal branch"
+  (doc
+    "SHAPE 125 — the NONE arm of the option<compound> host-arg-field marshal (SHAPE 123/124 exercised only
+           Some). An `option<tuple<s64,s64>>` field that is None flattens to `(disc=0, 0, 0)` — the marshal's
+           else branch zero-fills every payload element scratch slot (the element's width zero) and pushes
+           disc=0. run() builds {opt: None, n:5}, performs probe.push, returns the stub. A VALID component that
+           runs is the pin: a broken zero-fill (wrong slot count/width, or reading an absent payload) would
+           trap or mis-flatten. Complements SHAPE 123 (option<tuple> Some).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= opt (option (tuple (s64) (s64)))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: opt (Option (Tuple Int64 Int64))) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= opt None) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
