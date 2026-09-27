@@ -6095,6 +6095,37 @@ cases
   (live-objects 0))
 
 (case
+  "a TOP-LEVEL tuple with a NESTED tuple element that carries a Bytes LEAF flattens the inner rope-copy inline"
+  (doc
+    "SHAPE 139 (v-wit-boundary) — a top-level `tuple<tuple<list<u8>, s64>, s64>` bare host-op arg, extending
+           the nested-tuple element marshal (SHAPE 134, all-scalar inner) to an inner tuple that carries a
+           BYTES LEAF. `emit_tuple_reg_flatten` reads the inner tuple's handle (`arr-get`, borrows the outer
+           tuple) and RECURSES — the recursion routes the inner element 0 through its own Bytes branch, copying
+           the rope into `mem` at the SHARED scratch `cursor` and pushing `(ptr, len)`, then pushes inner
+           element 1 (s64) inline; the outer element 1 (s64) pushes last. So the whole arg flattens to
+           `(ptr0:i32, len0:i32, inner1:i64, outer1:i64)` = 4 core slots, no discriminant. The Bytes LEAF makes
+           the recursion load-bearing: the inner tuple is not a flat scalar run, so the shared cursor must be
+           reserved by the pre-scan (`tuple_has_bytes_element` recurses into nested tuple elements) and threaded
+           through the recursion — a non-recursed inner (treating the nested tuple as one slot) or a missing
+           cursor reservation would emit a wrong core signature / panic. run() builds ((b\"hi\", 7), 9), performs
+           probe.push, returns the stub 55. Matches serialize's `RecordFieldAbi::Tuple` recursion + the component
+           `tuple<tuple<list<u8>, s64>, s64>` type. Completes the tuple-arg family (scalar/Bytes/nested-tuple/
+           record element, and now a Bytes leaf INSIDE a nested tuple element).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (tuple (list (u8)) (s64)) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Tuple Bytes Int64) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple(#tuple(b"hi" 7) 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
   "a payloadless enum as a FIELD of a typed record EXPORT result crosses BY NAME"
   (doc
     "SHAPE 136 — a payloadless `enum` as a FIELD of a typed `record` EXPORT result under a declared world:
