@@ -6268,6 +6268,53 @@ cases
   (live-objects 0))
 
 (case
+  "a TOP-LEVEL tuple with an option<s64> ELEMENT flattens (disc, payload) inline — Some"
+  (doc
+    "SHAPE 145 (v-wit-boundary) — a top-level `tuple<option<s64>, s64>` bare host-op arg: an `option<T>` as a
+           tuple ELEMENT. `emit_tuple_reg_flatten` gained an option-element arm that `arr-get`s the element's
+           Option handle and runs `emit_option_reg_flatten` (the SAME register twin a top-level option ARG /
+           an option record FIELD uses), pushing `(disc:i32, payload…)` INLINE into the tuple's positional
+           flatten — so the whole arg flattens to `(opt_disc: i32, opt_payload: i64, outer1: i64)` = 3 core
+           slots. `tuple_arg_crosses` now admits an option element whose payload crosses (`option_arg_crosses`,
+           shared with the top-level option-arg gate). This is the Some arm: guest disc → WIT some=1, payload
+           unboxed. run() builds ((Some 5), 9), performs probe.push, returns the stub 55. The None twin is SHAPE
+           146.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (option (s64)) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Option Int64) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Some 5) 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL tuple with an option<s64> ELEMENT flattens (disc, payload) inline — None"
+  (doc
+    "SHAPE 146 (v-wit-boundary) — the NONE arm of SHAPE 145 (`tuple<option<s64>, s64>` tuple ELEMENT). The
+           option-element flatten in `emit_tuple_reg_flatten` pushes `(disc=0, payload-width zero)` for None (a
+           none `option` never reads its payload), so the arg flattens to `(0:i32, 0:i64, outer1:i64)`. run()
+           builds (None, 9), performs probe.push, returns the stub 42. Complements SHAPE 145 (Some).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (option (s64)) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Option Int64) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple(None 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
+
+(case
   "a payloadless enum as a FIELD of a typed record EXPORT result crosses BY NAME"
   (doc
     "SHAPE 136 — a payloadless `enum` as a FIELD of a typed `record` EXPORT result under a declared world:

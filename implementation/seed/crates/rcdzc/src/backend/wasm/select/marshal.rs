@@ -1377,6 +1377,38 @@ pub(super) fn emit_tuple_reg_flatten(
             // (outer-ptr, count) left on the stack = the list element's 2 flattened core slots.
             continue;
         }
+        // An `option<T>` element: read its handle (`arr-get i`, borrows the tuple) → flatten via
+        // `emit_option_reg_flatten`, which pushes `(disc, payload…)` inline — the register twin a top-level
+        // option ARG / an option record FIELD uses. The payload WIT comes from `elem_wits[i]`
+        // (`WitType::Option(payload)`), so an `option<record>` payload orders its fields correctly.
+        if crate::backend::wasm::host::option_payload_ty(db, ety).is_some() {
+            let opt_slot = work_base;
+            scratch_ty.insert(opt_slot, ValType::I32);
+            *high = (*high).max(work_base + 1);
+            out.push(Lir::LocalGet(tup_slot));
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::CallImport(OP_ARR_GET)); // [element option handle] (borrows the tuple)
+            out.push(Lir::LocalSet(opt_slot));
+            let payload_wit = elem_wits
+                .as_ref()
+                .and_then(|ws| ws.get(i))
+                .and_then(|w| match w {
+                    crate::wit_world::WitType::Option(inner) => Some(inner.as_ref()),
+                    _ => None,
+                });
+            emit_option_reg_flatten(
+                db,
+                opt_slot,
+                ety,
+                payload_wit,
+                cursor,
+                work_base + 1,
+                high,
+                scratch_ty,
+                out,
+            )?;
+            continue;
+        }
         // A NESTED tuple element (`tuple<…, tuple<…>, …>`): read its handle (`arr-get i`, borrows the outer
         // tuple) and RECURSE — its elements flatten POSITIONALLY inline onto the operand stack, matching
         // serialize's `RecordFieldAbi::Tuple` recursion + the component `tuple<tuple<…>>` type. No capture/disc:
