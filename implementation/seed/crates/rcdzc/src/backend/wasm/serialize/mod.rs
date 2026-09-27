@@ -3763,6 +3763,12 @@ impl SumArgArm {
                     out(elem.box_op);
                 }
             }
+            // A flags payload builds a record-of-bools cell (`arr-alloc`/`arr-set` + `box-bool` per label).
+            SumArmPayload::Flags { .. } => {
+                out("arr-alloc");
+                out("arr-set");
+                out("box-bool");
+            }
         }
     }
 }
@@ -3813,6 +3819,13 @@ pub enum SumArmPayload {
     /// admitted here (a nested list-in-option is a later slice). Reuses the wrapper's scratch locals as the
     /// vec accumulator + cursor (like the `Bytes` arm reuses them for the byte copy).
     List(ListElem),
+    /// A WIT `flags{…}` payload (an `option<flags>` Some arm). The flags flattened to a SINGLE i32 bitset leaf
+    /// at the payload base (bit i = the i-th declared label); the arm builds the guest record-of-bools cell
+    /// (`arr-alloc N` + per `(slot, bit)` `box-bool((bits>>bit)&1)` `arr-set`), leaving the cell handle as this
+    /// arm's payload — exactly the top-level flags reader, but sourcing its one leaf from the sum payload base.
+    /// `(slot, bit)` = the field's name-lex cell slot and its label's WIT declaration-order bit, matched by
+    /// name. One leaf. No scratch/memory (a pure product of bools unpacked from a register).
+    Flags { field_bits: Vec<(u32, u32)> },
 }
 
 /// How a closure `call` reassembles ONE flattened fixed-shape SUM argument (an `Option`/`Result` — a
@@ -3860,7 +3873,8 @@ impl SumArgRebuild {
                 // A `list<u8>` (Bytes) or `list<scalar>` payload flattens to `(ptr, len)` — two leaves; an
                 // enum to one disc leaf.
                 SumArmPayload::Bytes { .. } | SumArmPayload::List(_) => 2,
-                SumArmPayload::Enum => 1,
+                // An enum → one disc leaf; a flags → one i32 bitset leaf.
+                SumArmPayload::Enum | SumArmPayload::Flags { .. } => 1,
             }
         };
         1 + arm_leaves(&self.arm_true)
@@ -3960,6 +3974,31 @@ fn emit_sum_arm(
                 "only a flat list payload is admitted in a sum arm"
             );
             emit_list_leaf_lift(elem, payload_param, buf, ctr, next_local, imp, out); // [disc, vec-handle]
+        }
+        SumArmPayload::Flags { field_bits } => {
+            // The flags payload crossed as ONE i32 bitset at `payload_param`; build the guest record-of-bools
+            // cell (arr-alloc N + per (slot,bit) box-bool((bits>>bit)&1) arr-set), leaving the cell handle as
+            // this arm's payload — the top-level flags reader, sourcing its one leaf from the sum payload base.
+            out.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(field_bits.len() as i64, out);
+            out.push(op::CALL);
+            uleb128(imp("arr-alloc"), out); // [disc, arr]
+            for &(slot, bit) in field_bits {
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(slot as i64, out); // [disc, arr, slot]
+                out.push(op::LOCAL_GET);
+                uleb128(payload_param as u64, out);
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(bit as i64, out);
+                out.push(op::I32_SHR_U);
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(1, out);
+                out.push(op::I32_AND); // [disc, arr, slot, (bits>>bit)&1]
+                out.push(op::CALL);
+                uleb128(imp("box-bool"), out); // [disc, arr, slot, bool]
+                out.push(op::CALL);
+                uleb128(imp("arr-set"), out); // [disc, arr]
+            }
         }
     }
     out.push(op::CALL);
