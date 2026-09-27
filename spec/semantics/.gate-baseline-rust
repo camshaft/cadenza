@@ -11163,7 +11163,8 @@ todo	two compound arguments each cross as their own handle in one peer call
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	two effects bound to the same interface share one peer instance (both ops run)
 todo	two length-prefixed dependent frames chain at runtime
-todo	two map list elements in one arm each refine on a key (currently declines >1-per-arm)
+pass	two map list elements in one arm each refine on a key
+pass	two map list elements FALL THROUGH when the second element's key is absent
 pass	two refutable nested-list elements in one arm each refine
 pass	two refutable nested-list elements FALL THROUGH when the second element's literal differs
 todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact

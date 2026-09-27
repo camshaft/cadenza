@@ -3021,11 +3021,12 @@ pub(super) fn is_map_element_pattern(db: &Db, elem_pat: StructId) -> bool {
 ///       (match __lc ((map (k v)…) body) (_ (trap …))))`
 /// The GUARD's key-presence test (a wildcard-VALUE map pattern) gates the arm; the BODY re-matches the SAME
 /// element binder to bind the values `v…` (the DIRECT map matcher — `lower_match_map` / the `MapField`
-/// resolution — binds them). One refutable-map element per arm (the common shape); ≥2 declines. NO new IR.
-/// TODO(N-per-arm): like the nested-list pass above, this still declines ≥2 while #8428 gave CTOR / TUPLE /
-/// RECORD N-per-arm support — a deferred consistency follow-up (marginal; the map guard is key-presence, so
-/// the N-loop would conjoin per-position presence tests + nest the value-binding body re-matches inside-out).
-/// Returns `Some(Core)` iff the rewrite fired.
+/// resolution — binds them). N-per-arm (#8430 MAP leg, the twin of the nested-list pass above / #8428's
+/// ctor/tuple/record N-loop): ≥2 map elements per arm each refine — the `len(positions) > 1` branch below
+/// replaces every map position with a fresh binder, conjoins each position's key-presence test in the guard,
+/// and re-matches the positions INSIDE-OUT in the body so every position's value binders are in scope (a user
+/// cond is evaluated at the innermost level of a value-binding content nest). The N=1 path is byte-identical
+/// to the pre-#8430 single-element rewrite. NO new IR. Returns `Some(Core)` iff the rewrite fired.
 pub(super) fn desugar_refutable_map_list_elements(
     db: &mut Db,
     scrutinee: StructId,
@@ -3087,10 +3088,93 @@ pub(super) fn desugar_refutable_map_list_elements(
             continue;
         }
         if map_positions.len() > 1 {
-            // ≥2 map elements in one arm — the body-rematch nesting is a later increment. Decline honestly.
-            return Some(Core::Poison(Reject::decline(
-                "a list arm with more than one map element is not supported (match one map element per arm)",
-            )));
+            // N-per-arm (#8430 MAP leg, the twin of the nested-list leg above / #8428's ctor-tuple-record
+            // N-loop): >1 map element in one arm — each refines on its own keys. Replace EACH map position
+            // with a fresh binder; the GUARD conjoins every position's key-PRESENCE test (a wildcard-value
+            // map pattern — no binding, no unused-binder warning), and the BODY re-matches the positions
+            // INSIDE-OUT so every position's value binders are in scope for the body. A user guard `g` (which
+            // may read value binders across positions) is evaluated at the innermost level of a value-binding
+            // content nest conjoined into the guard. The N=1 case still takes the single-position path below.
+            let list_head = match db.ast.get(inner) {
+                crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+                _ => db.push_name("list"),
+            };
+            let binder_name = |p: usize| format!("__lm{ai}_{p}");
+            let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
+            for (p, &e) in es.iter().enumerate() {
+                if map_positions.contains(&p) {
+                    new_es.push(db.push_name(&binder_name(p)));
+                } else {
+                    new_es.push(e);
+                }
+            }
+            let mut list_children = vec![list_head];
+            list_children.extend(new_es);
+            let new_list = db.push_list(list_children);
+            // Per-position key-PRESENCE tests: `(match __lm{p} ((map (k _)…) true) (_ false))` — a
+            // wildcard-value map pattern gates on key presence only (no binding). Independent bools.
+            let mut presence_tests: Vec<StructId> = Vec::with_capacity(map_positions.len());
+            for &p in &map_positions {
+                let presence_scrut = db.push_name(&binder_name(p));
+                let presence_pat = map_pattern_with_wildcard_values(db, es[p]);
+                let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
+                let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
+                let presence_true_arm = db.push_list(vec![presence_pat, true_node]);
+                let wild = db.push_name("_");
+                let presence_false_arm = db.push_list(vec![wild, false_node]);
+                let match_head = db.push_name("match");
+                presence_tests.push(db.push_list(vec![
+                    match_head,
+                    presence_scrut,
+                    presence_true_arm,
+                    presence_false_arm,
+                ]));
+            }
+            // A user guard reads value binders across positions → evaluate it inside a VALUE-binding content
+            // nest (inside-out): `(match __lm{p0} (<clone_p0> (match __lm{p1} (<clone_p1> g) (_ false)))
+            // (_ false))`. The presence tests already gated, so the `_ → false` arms are dead. CLONES (the
+            // body re-match reuses the ORIGINAL map patterns). Omitted entirely when there is no user guard.
+            let mut guard_terms: Vec<StructId> = presence_tests;
+            if let Some(g) = existing_guard {
+                let mut value_nest = g;
+                for &p in map_positions.iter().rev() {
+                    let scrut = db.push_name(&binder_name(p));
+                    let clone_p = clone_refutable_payload(db, es[p]);
+                    let true_arm = db.push_list(vec![clone_p, value_nest]);
+                    let wild = db.push_name("_");
+                    let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
+                    let false_arm = db.push_list(vec![wild, false_node]);
+                    let match_head = db.push_name("match");
+                    value_nest = db.push_list(vec![match_head, scrut, true_arm, false_arm]);
+                }
+                guard_terms.push(value_nest);
+            }
+            // guard_cond = right-fold of binary `and` over the guard terms (≥2 for a multi-position arm).
+            let and_head = db.push_name("and");
+            let mut guard_cond = *guard_terms.last().unwrap();
+            for &t in guard_terms.iter().rev().skip(1) {
+                guard_cond = db.push_list(vec![and_head, t, guard_cond]);
+            }
+            let guard_head = db.push_name("guard");
+            let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
+            // The BODY re-match (inside-out): `(match __lm{p0} (<map_pat_p0> (match __lm{p1} (<map_pat_p1>
+            // body) (_ trap))) (_ trap))` — the DIRECT map matcher binds each position's value sub-patterns
+            // for the body; each `_ → trap` arm is dead (the guard proved key presence).
+            let mut new_body = body;
+            for &p in map_positions.iter().rev() {
+                let scrut = db.push_name(&binder_name(p));
+                let true_arm = db.push_list(vec![es[p], new_body]);
+                let trap_head = db.push_name("trap");
+                let trap_msg =
+                    db.push_str("unreachable: list-map-element keys already gated by guard");
+                let trap = db.push_list(vec![trap_head, trap_msg]);
+                let wild = db.push_name("_");
+                let false_arm = db.push_list(vec![wild, trap]);
+                let match_head = db.push_name("match");
+                new_body = db.push_list(vec![match_head, scrut, true_arm, false_arm]);
+            }
+            new_arms.push(db.push_list(vec![new_pat, new_body]));
+            continue;
         }
         let mpos = map_positions[0];
         let map_pat = es[mpos]; // the original `(map (k v)…)` element pattern
