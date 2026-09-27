@@ -1361,24 +1361,46 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     }
                     // A top-level `tuple<…>` arg crosses as the built-in WIT `tuple<T…>` — the guest flattens
                     // the value-heap tuple POSITIONALLY (a SCALAR element as one core slot, a `Bytes` element as
-                    // `(ptr,len)` copied into `mem`, no disc). Admitted when EVERY element is a scalar
-                    // (`abi_val_type`) OR `Bytes` — a compound (record/list/…) element is a later increment
-                    // (leaves `params` short → declined). A Bytes element maps to `RecordFieldAbi::Bytes` (the
-                    // register twin of the `RecordFieldAbi::Bytes` record field, `emit_tuple_reg_flatten`'s bytes
-                    // branch). Checked BEFORE the scalar `_` arm (a tuple has no `abi_val_type`, so `_` would
-                    // decline).
+                    // `(ptr,len)` copied into `mem`, a NESTED tuple-of-scalars element recursed inline, no disc).
+                    // Admitted when EVERY element is a scalar (`abi_val_type`) OR `Bytes` OR a non-empty
+                    // tuple-of-scalars — a record/list/deeper element is a later increment (leaves `params` short
+                    // → declined). A Bytes element maps to `RecordFieldAbi::Bytes`, a nested tuple to
+                    // `RecordFieldAbi::Tuple` (both flatten via `emit_tuple_reg_flatten`). Checked BEFORE the
+                    // scalar `_` arm (a tuple has no `abi_val_type`, so `_` would decline).
                     Ty::Tuple(elems)
                         if !peer_bound
                             && !elems.is_empty()
                             && elems.iter().all(|e| {
-                                abi_val_type(e).is_some() || matches!(e.strip_nominal(), Ty::Bytes)
+                                abi_val_type(e).is_some()
+                                    || matches!(e.strip_nominal(), Ty::Bytes)
+                                    || matches!(e.strip_nominal(), Ty::Tuple(inner)
+                                        if !inner.is_empty()
+                                            && inner.iter().all(|x| abi_val_type(x).is_some()))
                             }) =>
                     {
+                        let elems = elems.to_vec();
                         let abis = elems
                             .iter()
-                            .map(|e| match abi_val_type(e) {
-                                Some(pv) => RecordFieldAbi::Scalar(pv),
-                                None => RecordFieldAbi::Bytes, // tuple<…, list<u8>, …> element → (ptr, len)
+                            .map(|e| {
+                                if let Some(pv) = abi_val_type(e) {
+                                    RecordFieldAbi::Scalar(pv)
+                                } else if matches!(e.strip_nominal(), Ty::Bytes) {
+                                    RecordFieldAbi::Bytes // tuple<…, list<u8>, …> element → (ptr, len)
+                                } else {
+                                    // a nested tuple-of-scalars element (positional, no name-lex ambiguity)
+                                    let Ty::Tuple(inner) = e.strip_nominal() else {
+                                        unreachable!("tuple element is scalar/bytes/tuple-of-scalars by the guard")
+                                    };
+                                    let inner_abis = inner
+                                        .iter()
+                                        .map(|x| {
+                                            RecordFieldAbi::Scalar(
+                                                abi_val_type(x).expect("scalar inner element by the guard"),
+                                            )
+                                        })
+                                        .collect();
+                                    RecordFieldAbi::Tuple(inner_abis)
+                                }
                             })
                             .collect();
                         params.push(HostParam::Tuple(abis));
@@ -1918,11 +1940,17 @@ pub fn first_unrepresentable_host_op(
                 });
             // A top-level `tuple<…>` arg crosses NATIVELY as the built-in WIT `tuple<T…>` — the guest flattens
             // the value-heap tuple positionally (`select::emit_tuple_reg_flatten`; a Bytes element copies its
-            // rope into `mem`). Same reducer/host-fused gating; admitted for an ALL-SCALAR-OR-`Bytes` tuple (a
-            // compound element needs a later increment) — matching the classifier + the marshal, in lockstep.
+            // rope into `mem`, a nested tuple-of-scalars element recurses inline). Same reducer/host-fused
+            // gating; admitted for an ALL-SCALAR-OR-`Bytes`-OR-nested-tuple-of-scalars tuple (a record/deeper
+            // element needs a later increment) — matching the classifier + the marshal, in lockstep.
             let arg_is_boundary_tuple = allow_option_bytes
                 && !peer_bound
-                && matches!(at.strip_nominal(), Ty::Tuple(elems) if !elems.is_empty() && elems.iter().all(|e| abi_val_type(e).is_some() || matches!(e.strip_nominal(), Ty::Bytes)));
+                && matches!(at.strip_nominal(), Ty::Tuple(elems) if !elems.is_empty() && elems.iter().all(|e| {
+                    abi_val_type(e).is_some()
+                        || matches!(e.strip_nominal(), Ty::Bytes)
+                        || matches!(e.strip_nominal(), Ty::Tuple(inner)
+                            if !inner.is_empty() && inner.iter().all(|x| abi_val_type(x).is_some()))
+                }));
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)

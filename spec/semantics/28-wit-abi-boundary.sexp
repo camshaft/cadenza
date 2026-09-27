@@ -6037,3 +6037,30 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL tuple with a NESTED tuple element flattens the inner tuple positionally inline"
+  (doc
+    "SHAPE 134 — a top-level `tuple<tuple<s64, bool>, s64>` bare host-op arg, extending the tuple-arg marshal
+           (scalar/Bytes elements) to a NESTED tuple element. `emit_tuple_reg_flatten` reads the inner tuple's
+           handle (`arr-get`, borrows the outer tuple) and RECURSES — the inner elements flatten POSITIONALLY
+           inline onto the operand stack, matching serialize's `RecordFieldAbi::Tuple` recursion + the component
+           `tuple<tuple<…>, …>` type. So the whole arg flattens to `(inner0: i64, inner1: i32, outer1: i64)` = 3
+           core slots, no discriminant (a tuple is not a variant). The MIXED inner widths (s64 = i64 slot, bool =
+           i32 slot) make the flatten load-bearing: a non-recursed inner (treating the nested tuple as one slot)
+           or a wrong element order would emit a core signature the runtime rejects at instantiation. run() builds
+           ((7, true), 9), performs probe.push, returns the stub 55. The tuple analogue of the nested-record
+           record FIELD (`emit_record_arg_marshal`'s nested-record recursion).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (tuple (s64) (bool)) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Tuple Int64 Bool) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple(#tuple(7 true) 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
