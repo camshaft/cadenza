@@ -732,7 +732,7 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
 /// leak pins (which the value oracles structurally cannot observe).
 pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(30);
+    let shape = c.variant(31);
     // Small bounded literals so values stay in range and the whole program is trivially terminating.
     let a = c.int_bounded(0, 99);
     let b = c.int_bounded(0, 99);
@@ -1167,8 +1167,23 @@ pub fn generate_reclaim_shapes(entropy: &[u8]) -> Program {
         // a≥2 the concat arm. Value = byte-len(r)*10 + byte-len(src) = 44 (alias, src="abcd") / 64 (concat,
         // r="abcdzz"). Verified rust/wasm AGREE 44 & 64. Distinct from shapes 26/28 (String.at views) — this
         // is a divergent-arm-consumed let-binding that survives as a post-body BORROW.
-        _ => format!(
+        29 => format!(
             "(do (def (f (: mode Int64)) (let ((src (String.concat \"ab\" \"cd\"))) (+ (* (String.byte-len (if (< mode 2) src (String.concat src \"zz\"))) 10) (String.byte-len src)))) (def (main) (f {a})) (export main))"
+        ),
+        // 30 — N-PER-ARM REFUTABLE NESTED-LIST DESUGAR tripwire (the #8430 nested-list leg, #c1541c43d8).
+        // The value-refinement pre-pass in lower/match_desugar.rs previously DECLINED a list arm with >1
+        // refutable nested-list element ("match one nested-list refutable element per arm; ≥2 declines
+        // honestly"); #8430 wired the N-loop: each refutable position → a fresh binder + a conjoined
+        // (len_test AND content_match) guard, body re-matches INSIDE-OUT so inner binders are in scope.
+        // This shape has TWO refutable nested-list elements in one arm — `(list (list p q) (list x y) .. r)`
+        // over a list-of-lists — each len-guarded, both refining. A desugar regression (wrong guard order,
+        // dropped position, mis-scoped inner binder) → wrong value / spurious fall-through / decline. The
+        // inner lists are always len 2 here so the guard holds and all four binders bind; value = p+q+x+y =
+        // a+b+d+n. Constructs + destructures the nested list (reclaim-relevant). Verified rust/wasm AGREE
+        // (10 at 1/2/3/4; fall-through to `_` verified 99 with a len-1 inner). NULLARY, non-entry. Distinct
+        // from shape 26 (list<list> ENTRY marshal) — this is a REFUTABLE nested-list DESTRUCTURE.
+        _ => format!(
+            "(do (def (main) (match (list (list {a} {b}) (list {d} {n})) ((list (list p q) (list x y) .. r) (+ (+ p q) (+ x y))) (_ 0))) (export main))"
         ),
     };
     Program { source }
@@ -5978,8 +5993,8 @@ mod tests {
     #[test]
     fn generate_reclaim_shapes_reaches_all_forms_and_compiles() {
         // Distinctive, mutually-exclusive markers for the twenty-seven shapes (see `generate_reclaim_shapes`).
-        let mut reached = [false; 30];
-        for seed in 0u64..1350 {
+        let mut reached = [false; 31];
+        for seed in 0u64..1395 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(3);
             let mut bytes = Vec::new();
             // variant(5) reads 1 byte then four int_bounded reads consume 8 each (33 total); 40 keeps the
@@ -6053,6 +6068,8 @@ mod tests {
                 reached[28] = true; // shape 28 = String.at-on-a-slice-view source-reclaim tripwire (c6469 value side)
             } else if src.contains("(def (f (: mode Int64))") {
                 reached[29] = true; // shape 29 = divergent-arm-consume live-after tripwire (c2236 value side)
+            } else if src.contains("((list (list p q) (list x y) .. r)") {
+                reached[30] = true; // shape 30 = N-per-arm refutable nested-list desugar tripwire (#8430)
             } else if src.contains("(type L (Nil) (Cons (List Int64) L))") {
                 reached[19] = true;
             } else if src.contains("((Mk xs) (List.len xs)))") {
@@ -6061,7 +6078,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all thirty reclaim shapes must be reachable across seeds: reached={reached:?}"
+            "all thirty-one reclaim shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
