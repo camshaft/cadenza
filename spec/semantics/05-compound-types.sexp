@@ -30372,6 +30372,32 @@
   (live-objects 0))
 
 (case
+  "List.len over a DIVERGENT-ownership runtime-list match (owned-fresh arm vs bare-alias arm) reclaims the owned arm (node#6 MatchList, no live objects)"
+  (doc
+    "node#6 divergent-ownership Core::MatchList borrow-operand: `(List.len (match probe ((list) src) (_ (build
+           ...))))` where one arm is a bare ALIAS of a live-after binding (`src`) and the other is an
+           OWNED-FRESH producer. The arm-blind ownership join reads Borrowed (>=1 bare-alias arm), which
+           pre-fix SUPPRESSED the length-op's post-borrow reclaim so the owned-fresh arm LEAKED one list cell.
+           The fix dups the bare-alias arm at emit_arm_body so the joined operand is uniformly OWNED, then
+           FORCES the reclaim (the Core::MatchList extension of the length-op node#6 family). mode=1: probe=[0]
+           is non-empty so the `_` arm's owned-fresh `(build 0 4)` = [0,1,2,3] (len 4) is taken -> 4*10 +
+           List.len src [0,1,2]=3 = 43; src stays live for the trailing read. A missed reclaim leaks the owned
+           arm; a double-free would trap/underflow the count. Net 0.")
+  (input
+    (do
+      (def
+        (build (: i Int64) (: n Int64) (: acc (List Int64)))
+        (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+      (def
+        (main (: mode Int64))
+        (let ((src (build 0 3 #list())) (probe (build 0 mode #list())))
+          (+ (* (List.len (match probe ((list) src) (_ (build 0 4 #list())))) 10) (List.len src))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 43 Int64))
+  (live-objects 0))
+
+(case
   "a surviving closure capturing a heap List reclaims its env cell and captured handle (no live objects)"
   (doc
     "`mk-adder` takes an UNANNOTATED `(fn (x) ...)` so the closure is NOT inlined -- it lowers to a real
