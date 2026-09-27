@@ -1007,21 +1007,19 @@
 (case
   "tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)"
   (doc
-    "Idealistic TODO fence (corpus policy; breaker minimal pair 2026-09-01, GO from v-deferral):
-     `(do (def h (try (half k))) (half h))` must compute exactly like the `(let ((h (try (half k)))))`
-     twin — this file's header documents BOTH as the landed boundary-tail idiom, and the let twin
-     computes exactly with the same runtime user-fn operand. Today this DECLINES CDZ0900 (`the ?/try
-     operator lowers only a constant operand`) — a FALSE decline, not a miscompile (try-operator lane).
-     RCA (2026-09-27, verified by lowering trace): the STANDALONE `quarter` body DOES lower via BRICK 3b
-     — the `(do (def x e?) …)` fold routes through `lower_let`, building the runtime `?`→`Core::MatchSum`
-     short-circuit — but when `quarter` is INLINED into `main` the copied MatchSum's SUCCESS arm re-lowers
-     the try-node body through the GENERIC `Resolved::Try` path (lower/compute.rs) to a `Poison`, because
-     the copy's body refs do not resolve to the `core_override` BRICK 3b installed on the copy's try init
-     (the inline-copy/override reference-resolution divergence). The `(let …)` twin escapes it (its refs
-     resolve to the override on the SAME node) and runs 2/-1/-1 NATIVELY (emit+cdz-run, confirmed).
-     Derivation (matching the verified let twin): half halves evens else None; quarter chains two
-     halvings through `?`: n=8 -> 2 (unwrap twice), n=6 -> -1 (3 is odd: inner fail), n=5 -> -1
-     (short-circuit at the first `?`). Auto-flips when the inline-copy override-resolution is fixed.")
+    "A runtime-operand `?` under the do-def idiom `(do (def x (try e)) body)` computes exactly like its
+     `(let ((x (try e))) body)` twin — this file's header documents BOTH as the landed boundary-tail idiom.
+     Here `quarter` is INLINED into `main`, which is the path that regressed: the do-def form is fragile
+     under inlining (a do-local reference misresolves through the nested β-copy, missing the copied `try`'s
+     BRICK-3b `core_override`), so the copied MatchSum's success arm re-declined CDZ0900 — and un-declining
+     it naively MISCOMPILED the failure leg (n=5 gave 0, not -1). FIXED by the load-time `try_desugar` pass
+     (`rcdzc/src/try_desugar.rs`): a two-form `(do (def x (try e)) body)` is rewritten to `(let ((x (try
+     e))) body)` before resolution, so the runtime-`?` uses the inline-ROBUST `lower_let` short-circuit path
+     (identical MatchSum to the `let` twin) whether inlined or not. This case now COMPUTES (not a fence) and
+     GUARDS the inline path against regressing back to the CDZ0900 decline or the 0-not-`-1` miscompile.
+     Derivation (matching the `let` twin): half halves evens else None; quarter chains two halvings through
+     `?`: n=8 -> 2 (unwrap twice), n=6 -> -1 (3 is odd: inner fail), n=5 -> -1 (short-circuit at the first
+     `?`).")
   (input
     (do
       (def (half (: k Int64)) (if (= (% k 2) 0) (Some (/ k 2)) (None)))
