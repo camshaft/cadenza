@@ -181,17 +181,19 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   list result + boxed elements are not reclaimed (the SpillRecord-result reclaim class, SHAPE 60/62/63;
   value-correct, routed to v-memory-safety). The ARG-side (host→guest) `list<COMPOUND>` element is ALSO ✅ DONE:
   `list_elem_marshalable` + `emit_list_arg_marshal` write a `list<record>` (SHAPE 30/39), `list<tuple>` (SHAPE
-  33), `list<option<scalar>>` (SHAPE 38), `list<option<record>>` / `list<option<tuple>>` (SHAPE 152/153), and
+  33), `list<option<scalar>>` (SHAPE 38), `list<option<record>>` / `list<option<tuple>>` (SHAPE 152/153), `list<option<bytes>>` (SHAPE 154), and
   `list<variant<scalar>>` (SHAPE 43/52) element IN PLACE at its canonical layout, recursing for a nested
-  `list<list<…>>`. The `list<option<COMPOUND>>` element (SHAPE 152/153) writes the payload product at the
-  option's payload offset via `emit_option_to_mem`'s compound branch → `emit_record_to_mem`/`emit_tuple_to_mem`
-  (the same product writers `list<record>` uses), threading the running spill cursor + the payload record's WIT
-  (from the element's `option<…>` WIT); on None the payload area is left unwritten (a none option's payload is
-  never read on lift). `list_elem_marshalable`'s option arm was widened from scalar-only to also admit a
-  record/tuple payload whose fields are `product_field_marshalable`, in lockstep with `collect_list_elem_ops`
-  (recurses the payload's field ops). REMAINING (ARG-side only): an `option<bytes>`/`option<list>`/`option<option>`
-  list element (the option-to-mem writer has no arm for a byte-leaf / nested-list / nested-option payload yet),
-  and a mixed int↔float variant element (rolls into the compound-variant-payload / mixed-join gaps above).
+  `list<list<…>>`. The `list<option<COMPOUND>>` element writes the payload at the option's payload offset via
+  `emit_option_to_mem`'s branches: a RECORD/TUPLE payload (SHAPE 152/153) via `emit_record_to_mem`/`emit_tuple_
+  to_mem` (the same product writers `list<record>` uses), threading the running spill cursor + the payload
+  record's WIT (from the element's `option<…>` WIT); a `Bytes` payload (SHAPE 154) copies its rope at the cursor
+  and writes `(ptr,len)` at the payload offset. On None the payload area is left unwritten (a none option's
+  payload is never read on lift). `list_elem_marshalable`'s option arm was widened from scalar-only to also admit
+  a `Bytes` payload + a record/tuple payload whose fields are `product_field_marshalable`, in lockstep with
+  `emit_list_arg_marshal`'s `option_elem` detector + `collect_list_elem_ops` (recurses the payload's field ops).
+  REMAINING (ARG-side only): an `option<list>`/`option<option>` list element (the option-to-mem writer has no arm
+  for a nested-list / nested-option payload yet), and a mixed int↔float variant element (rolls into the
+  compound-variant-payload / mixed-join gaps above).
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
 - **[emit, export] typed enum RESULT under a DECLARED world — ✅ DONE (SHAPE 60).** A payloadless-enum

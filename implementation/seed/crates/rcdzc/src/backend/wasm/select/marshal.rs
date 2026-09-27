@@ -63,17 +63,21 @@ pub(super) fn emit_list_arg_marshal(
         None
     };
     let is_tuple = tuple_elem.is_some();
-    // An `option<scalar|record|tuple>` element (`list<option<s64>>`, `list<option<record>>`): written in place
-    // at its canonical option layout (disc byte + payload) by `emit_option_to_mem`. Carries the payload `Ty` +
-    // the guest decl's some-disc. The admitted payload set matches `host::list_elem_marshalable`'s option arm
-    // (scalar, or a record/tuple product) — the representability gate; an option<bytes>/list/option is excluded
-    // (the gate declines it before emit, so a broader detector here would only ever see an admitted shape).
+    // An `option<scalar|bytes|record|tuple>` element (`list<option<s64>>`, `list<option<bytes>>`,
+    // `list<option<record>>`): written in place at its canonical option layout (disc byte + payload) by
+    // `emit_option_to_mem`. Carries the payload `Ty` + the guest decl's some-disc. The admitted payload set
+    // matches `host::list_elem_marshalable`'s option arm (scalar, Bytes, or a record/tuple product) — the
+    // representability gate; an option<list>/option<option> is excluded (the gate declines it before emit, so a
+    // broader detector here would only ever see an admitted shape).
     let option_elem: Option<(Ty, i32)> = if is_bytes || is_nested_list || is_record || is_tuple {
         None
     } else if let Some(payload) =
         crate::backend::wasm::host::option_payload_ty(db, elem).filter(|p| {
             crate::backend::wasm::host::abi_val_type(p).is_some()
-                || matches!(p.strip_nominal(), Ty::Record(_) | Ty::Tuple(_))
+                || matches!(
+                    p.strip_nominal(),
+                    Ty::Bytes | Ty::String | Ty::Record(_) | Ty::Tuple(_)
+                )
         })
     {
         let crate::ty::Ty::Sum { decl, .. } = elem.strip_nominal() else {
@@ -709,6 +713,67 @@ pub(super) fn emit_option_to_mem(
         out.push(zero);
         out.push(width_store(payload_off)?);
         out.push(Lir::End);
+        return Ok(());
+    }
+
+    // A `Bytes`/`String` payload (`list<option<bytes>>`): on Some, copy the payload rope into `mem` at the running
+    // `cursor` and write its `(ptr@payload_off, len@payload_off+4)` header, advancing the cursor by the length; on
+    // None the payload area is left unwritten (a none option's `(ptr,len)` is never read on lift). The payload area
+    // is the canonical `option<list<u8>>` `(i32,i32)` at `payload_off = align_up(1, align(list)=4) = 4`. Same rope
+    // copy as `emit_product_to_mem`'s Bytes field, keyed to the option's payload offset.
+    if matches!(payload_ty.strip_nominal(), Ty::Bytes | Ty::String) {
+        let rope = work_base + 1;
+        let blen = work_base + 2;
+        let pos = work_base + 3;
+        for s in [rope, blen, pos] {
+            scratch_ty.insert(s, ValType::I32);
+        }
+        *high = (*high).max(work_base + 4);
+        out.push(Lir::LocalGet(is_some));
+        out.push(Lir::If(BlockType::Empty)); // Some
+        out.push(Lir::LocalGet(opt_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload list<u8> handle] (borrows the option)
+        out.push(Lir::LocalSet(rope));
+        out.push(Lir::LocalGet(rope));
+        out.push(Lir::CallImport(OP_BYTES_LEN));
+        out.push(Lir::LocalSet(blen));
+        out.push(Lir::ConstI32(0));
+        out.push(Lir::LocalSet(pos));
+        out.push(Lir::Block(BlockType::Empty));
+        out.push(Lir::Loop(BlockType::Empty));
+        out.push(Lir::LocalGet(pos));
+        out.push(Lir::LocalGet(blen));
+        out.push(Lir::I32GeS);
+        out.push(Lir::BrIf(1));
+        out.push(Lir::LocalGet(cursor));
+        out.push(Lir::LocalGet(pos));
+        out.push(Lir::I32Add); // addr = cursor + pos
+        out.push(Lir::LocalGet(rope));
+        out.push(Lir::LocalGet(pos));
+        out.push(Lir::CallImport(OP_BYTES_GET));
+        out.push(Lir::I32Store8 { offset: 0 });
+        out.push(Lir::LocalGet(pos));
+        out.push(Lir::ConstI32(1));
+        out.push(Lir::I32Add);
+        out.push(Lir::LocalSet(pos));
+        out.push(Lir::Br(0));
+        out.push(Lir::End);
+        out.push(Lir::End);
+        out.push(Lir::LocalGet(dest_addr));
+        out.push(Lir::LocalGet(cursor));
+        out.push(Lir::I32Store {
+            offset: payload_off,
+        }); // ptr
+        out.push(Lir::LocalGet(dest_addr));
+        out.push(Lir::LocalGet(blen));
+        out.push(Lir::I32Store {
+            offset: payload_off + 4,
+        }); // len
+        out.push(Lir::LocalGet(cursor));
+        out.push(Lir::LocalGet(blen));
+        out.push(Lir::I32Add);
+        out.push(Lir::LocalSet(cursor)); // cursor += len
+        out.push(Lir::End); // if (no Else — a none option's payload area is left unwritten, never read on lift)
         return Ok(());
     }
 

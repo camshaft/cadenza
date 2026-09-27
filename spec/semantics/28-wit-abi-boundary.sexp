@@ -6582,3 +6582,32 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL list<option<bytes>> host-op arg writes each option element in place (byte-leaf payload) — Some + None"
+  (doc
+    "SHAPE 154 (v-wit-boundary) — a top-level `list<option<list<u8>>>` (`list<option<bytes>>`) bare host-op arg:
+           an option element whose payload is a `Bytes` byte-leaf. `emit_option_to_mem` gained a Bytes-payload
+           branch — on Some it copies the payload rope into shared `mem` at the running spill cursor and writes the
+           canonical `option<list<u8>>` payload `(ptr, len)` at the payload offset (`align_up(1, align(list)=4) = 4`),
+           advancing the cursor; on None the payload area is left unwritten (a none option's `(ptr,len)` is never
+           read at the canonical lift). `list_elem_marshalable`'s option arm was widened to admit a `Bytes` payload
+           (in lockstep with `emit_list_arg_marshal`'s `option_elem` detector + `collect_list_elem_ops`, which
+           declares the payload's `bytes-len`/`bytes-get` via the shared recursion). Each element occupies the
+           canonical `option<list<u8>>` stride (disc byte + 4-byte-aligned `(ptr,len)`); the ropes spill after the
+           element array. run() builds [Some(b\"\\x01\\x02\\x03\"), None, Some(b\"\\x04\\x05\")], performs probe.push,
+           returns the stub 55. A VALID component that runs is the pin (a wrong option/bytes layout traps at the
+           host's list.lift). The byte-leaf twin of SHAPE 152/153 (record/tuple payload).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (list (u8))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Option Bytes)) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some (Bytes.of #list(1 2 3))) None (Some (Bytes.of #list(4 5)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
