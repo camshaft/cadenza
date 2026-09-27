@@ -121,6 +121,21 @@ pub enum HostParam {
     /// (float — needs the reinterpret join lattice) / a `variant` err arm is a later increment (declined — the
     /// classifier only pushes this for `result_scalar_enum`, which admits integer-width Ok scalars).
     ResultScalar(AbiValType, Vec<String>),
+    /// A bare `result<record-of-scalars, enum>` param (the top-level position, not nested) — crosses as the
+    /// built-in WIT `result<record, err-enum>` type, referenced by a per-param structural `CRef` (like
+    /// [`ResultScalar`](HostParam::ResultScalar)). Its core form flattens (canonical variant flatten) to
+    /// `(disc:i32, join(record-fields, err-disc))` — the discriminant then the record's fields POSITIONALLY (in
+    /// host WIT declaration order), with the `i32` err discriminant riding the FIRST field's slot on the Err arm.
+    /// Because every Ok field is a SCALAR, joining it with the `i32` err disc never widens beyond the field's own
+    /// width (an `i32` field stays `i32`; an `i64` field stays `i64` and the err disc widens into it), so the slot
+    /// widths are exactly the record's field widths — no `mem` (a record-of-scalars flattens to registers, unlike
+    /// a Bytes/list field). Carries `(field-name, field-ABI)` per Ok field in WIT declaration order (so the core
+    /// flatten + component type derive from it) and the err enum's case names. The guest marshals it via
+    /// `select::emit_result_record_arg_reg_flatten`: Ok recurses `emit_record_arg_marshal` on the payload record
+    /// (its N pushes captured into the join slots), Err puts the err enum's disc in the first slot + zero-fills
+    /// the rest. A record with a COMPOUND field (Bytes/list/nested) is a later increment (needs the in-mem
+    /// marshal); the classifier only pushes this for `result_record_enum` (all-scalar Ok fields).
+    ResultRecord(Vec<(String, RecordFieldAbi)>, Vec<String>),
 }
 
 /// Whether a record-field ABI bottoms out at a `list<u8>` (`Bytes`) leaf — so a `list<T>` param carrying it
@@ -365,6 +380,63 @@ pub fn result_scalar_enum(db: &mut Db, ty: &Ty) -> Option<(AbiValType, Vec<Strin
         .map(|v| kebab_extern_name(&v.name))
         .collect();
     Some((ok, err_cases))
+}
+
+/// Whether `ty` is `result<record-of-scalars, enum>` — an Ok arm that is a RECORD every one of whose fields is a
+/// SCALAR (so it flattens to registers, no `mem`; a compound field is a later increment) and an Err arm that is a
+/// PAYLOAD-LESS enum. Returns `(the Ok record Ty, err-enum case names)` if so, else `None`. A `Sum` whose decl
+/// has exactly `Ok`/`Err` variants, instantiated at `[record, enum]`. The register flatten is
+/// `emit_result_record_arg_reg_flatten`; the classifier reorders the Ok fields to WIT order. Reads through erased
+/// nominal wrappers, mirroring [`result_scalar_enum`].
+pub fn result_record_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let stripped = ty.strip_nominal();
+    let Ty::Sum { decl, args } = stripped else {
+        return None;
+    };
+    if args.len() != 2 {
+        return None;
+    }
+    // The Ok arm (args[0]) must be a RECORD with ≥1 field, every field a SCALAR (this increment's scope — a
+    // compound field needs the in-mem marshal). Scope the guest fields snapshot before the `&mut db` calls.
+    let ok_record = args[0].clone();
+    let Ty::Record(fields) = ok_record.strip_nominal() else {
+        return None;
+    };
+    let field_tys: Vec<Ty> = fields.values().cloned().collect();
+    if field_tys.is_empty() {
+        return None;
+    }
+    for fty in &field_tys {
+        // A SCALAR field only — `field_boundary_abi` yields `Scalar`. A Bytes/list/nested field declines here.
+        if !matches!(field_boundary_abi(db, fty), Some(RecordFieldAbi::Scalar(_))) {
+            return None;
+        }
+    }
+    // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
+    {
+        let d = db.type_decl_by_occ(*decl)?;
+        if !(d.variants.len() == 2
+            && d.variants.iter().any(|v| v.name == "Ok")
+            && d.variants.iter().any(|v| v.name == "Err"))
+        {
+            return None;
+        }
+    }
+    // The err arm (args[1]) must be a payload-less enum — a `Sum` whose every variant is nullary.
+    let Ty::Sum { decl: err_decl, .. } = args[1].strip_nominal() else {
+        return None;
+    };
+    let ed = db.type_decl_by_occ(*err_decl)?;
+    if ed.variants.is_empty() || ed.variants.iter().any(|v| !v.payloads.is_empty()) {
+        return None;
+    }
+    let err_cases = ed
+        .variants
+        .iter()
+        .map(|v| kebab_extern_name(&v.name))
+        .collect();
+    Some((args[0].clone(), err_cases))
 }
 
 /// The case list of a general `variant`-with-scalar-payload host boundary type — a `Sum` that is NOT
@@ -1591,6 +1663,44 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                         let (ok, err_cases) = result_scalar_enum(db, &at).unwrap();
                         params.push(HostParam::ResultScalar(ok, err_cases));
                     }
+                    // A top-level `result<record-of-scalars, enum>` arg crosses as the built-in WIT
+                    // `result<record, err-enum>`. It flattens to `(disc:i32, record-fields…)` — the discriminant
+                    // then the Ok record's fields POSITIONALLY (WIT order), the `i32` err disc riding the first
+                    // field's slot on Err. Marshalled by `emit_result_record_arg_reg_flatten` (Ok recurses
+                    // `emit_record_arg_marshal`; no rope → NO `mem`). Checked BEFORE the scalar `_` arm; a compound
+                    // Ok field is a later increment (`result_record_enum` declines it → `_` declines).
+                    _ if !peer_bound && result_record_enum(db, &at).is_some() => {
+                        let (ok_record, err_cases) = result_record_enum(db, &at).unwrap();
+                        if let Ty::Record(fields) = ok_record.strip_nominal() {
+                            let fields = fields.clone();
+                            let mut field_abis = Vec::with_capacity(fields.len());
+                            let mut all_ok = !fields.is_empty();
+                            for (sym, fty) in fields.iter() {
+                                match field_boundary_abi(db, fty) {
+                                    Some(v) => field_abis.push((sym.name.to_string(), v)),
+                                    None => {
+                                        all_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if all_ok {
+                                // Reorder the name-lex Ok fields to the host WIT record's declaration order (the
+                                // arg's WIT is `result<record, enum>`; the Ok arm carries the record type).
+                                let field_abis = match wit_params
+                                    .as_ref()
+                                    .and_then(|ps| ps.get(arg_i))
+                                {
+                                    Some(crate::wit_world::WitType::Result {
+                                        ok: Some(ok_wit),
+                                        ..
+                                    }) => reorder_record_fields_to_wit(field_abis, ok_wit),
+                                    _ => field_abis,
+                                };
+                                params.push(HostParam::ResultRecord(field_abis, err_cases));
+                            }
+                        }
+                    }
                     // A top-level `option<scalar>` / `option<bytes>` / `option<tuple-of-scalars>` arg crosses as
                     // the built-in WIT `option<T>` (its own arm — `variant_scalar_payload_cases` above EXCLUDES
                     // option-shaped sums, since option needs the distinct built-in type, not a `variant` DEFINED
@@ -2352,6 +2462,12 @@ pub fn first_unrepresentable_host_op(
             // matching the classifier + the marshal, in lockstep.
             let arg_is_boundary_result_scalar =
                 allow_option_bytes && !peer_bound && result_scalar_enum(db, &at).is_some();
+            // A top-level `result<record-of-scalars, enum>` arg crosses NATIVELY as the built-in WIT
+            // `result<record, err-enum>` — the guest flattens it to `(disc, record-fields…)`
+            // (`select::emit_result_record_arg_reg_flatten`; no rope → no `mem`). A compound Ok field is a later
+            // increment (`result_record_enum` declines it), matching the classifier + the marshal, in lockstep.
+            let arg_is_boundary_result_record =
+                allow_option_bytes && !peer_bound && result_record_enum(db, &at).is_some();
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
@@ -2363,6 +2479,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_tuple
                 && !arg_is_boundary_result
                 && !arg_is_boundary_result_scalar
+                && !arg_is_boundary_result_record
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }

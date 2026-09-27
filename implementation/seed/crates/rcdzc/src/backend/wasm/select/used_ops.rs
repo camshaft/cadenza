@@ -1500,6 +1500,33 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_DROP);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
+                    // A top-level `result<record-of-scalars, enum>` arg is decomposed by
+                    // `emit_result_record_arg_reg_flatten`: `sum-disc` (result disc), `sum-payload`, and on Ok
+                    // `arr-get` + each field's unbox `get-*` (the record marshal), on Err a further `sum-disc` (the
+                    // err enum disc). Declare them (else a marshal `CallImport` resolves to u32::MAX → invalid
+                    // module), then descend to collect the ops that BUILD the result value. Checked BEFORE the `_`
+                    // fallthrough; the other result arms above are mutually exclusive by the Ok shape.
+                    at if !peer_bound
+                        && crate::backend::wasm::host::result_record_enum(db, &at).is_some() =>
+                    {
+                        out.insert(OP_SUM_DISC);
+                        out.insert(OP_SUM_PAYLOAD);
+                        out.insert(OP_ARR_GET);
+                        // Each Ok record field's unbox op (mirror the marshal's `emit_record_arg_marshal`).
+                        if let Some((ok_record, _)) =
+                            crate::backend::wasm::host::result_record_enum(db, &at)
+                            && let Ty::Record(fields) = ok_record.strip_nominal()
+                        {
+                            let ftys: Vec<Ty> = fields.values().cloned().collect();
+                            for fty in ftys {
+                                if let Ok(Some(read)) = get_op_ty(db, &fty) {
+                                    out.insert(read);
+                                }
+                            }
+                        }
+                        out.insert(OP_DROP);
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     _ => collect_used_ops_into_seen(db, arg, out, visited),
                 }
             }
