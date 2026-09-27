@@ -7968,3 +7968,52 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<u8>-RESULT host op immediately before a string-ARG host op lowers the string arg cleanly (adjacency regression)"
+  (doc
+    "SHAPE 208 (v-wit-boundary) — REGRESSION PIN for a suspected guest-side string-ARG mislowering
+           (v-hivemind issue, re-verified on current main via the real-wasmtime nix value gate). TRIGGER: a host op
+           with a `list<u8>` RESULT (`put-blob`) called IMMEDIATELY before a host op with a `string` ARG and a
+           `list<record>` RESULT (`materialize`), the record being the full 4-field `event{kind:string,
+           source:string, session:list<u8>, at:u64}` — the exact shape that once drove the wasmtime canonical-ABI
+           lift to trap `invalid utf-8` when lowering the `kind` string arg with a bad (ptr,len). The concern was
+           that the preceding list-RESULT lift's scratch/retptr allocation collided with the following string-arg
+           lowering. On current main the string arg lowers with a correct (ptr,len): the guest calls put-blob
+           (dropping its list<u8> result), then materialize(\"session-spawned\", empty, empty) and returns
+           `List.len` of its list<event> result. A real component-model host LIFTS the `kind` string arg (a
+           mislowering would trap `invalid utf-8` at the lift, BEFORE the host fn runs); it lifts cleanly and the
+           list<event> response (2 elements) is returned → output 2, live-objects=0. This case is the permanent
+           guard the adjacency defect never returns.")
+  (wit-world
+    (world w (import cadenza:platform/sys
+      (member put-blob (func (param bytes (list (u8))) (result (list (u8)))))
+      (member materialize
+        (func
+          (param kind (string))
+          (param session (list (u8)))
+          (param source (string))
+          (result (list (record (= kind (string)) (= source (string)) (= session (list (u8))) (= at (u64))))))))))
+  (input
+    (do
+      (effect sys
+        (op put-blob (-> Bytes Bytes))
+        (op materialize (-> String (-> Bytes (-> String (List (Record (: kind String) (: source String) (: session Bytes) (: at UInt64))))))))
+      (def (run)
+        (host (sys)
+          (let ((_b (sys.put-blob b"data")))
+            (List.len (sys.materialize "session-spawned" b"" "")))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond sys.put-blob (: #list(1 2 3) Bytes))
+    (respond sys.materialize
+      (:
+        #list(#record((= kind "a") (= source "b") (= session #list()) (= at 1))
+              #record((= kind "c") (= source "d") (= session #list()) (= at 2)))
+        (List (Record (: kind String) (: source String) (: session Bytes) (: at UInt64))))))
+  (host-calls
+    (call cadenza:platform/sys.put-blob)
+    (call cadenza:platform/sys.materialize))
+  (output 2)
+  (live-objects 0))
