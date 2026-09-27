@@ -1060,6 +1060,34 @@
   (call main (: 0 Int64))
   (output (: -1 Int64)))
 
+(case
+  "trr2 an expression-position `?` in a TAIL if-arm hoists into the arm and short-circuits"
+  (doc
+    "The control-flow face of the expression-position `?` (BRICK 3 slice 2a): the `?` sits inside the ELSE
+     arm of a tail `if` — `(if b (Ok 100) (Ok (+ 1 (try r))))` — not a binding tail and not the whole body.
+     The hoist descends TAIL positions (both `if` arms are tail) and rewrites the containing arm to
+     `(let ((x (try r))) (Ok (+ 1 x)))`, which rides the same inline-safe `lower_let` runtime-`?`
+     `Core::MatchSum` short-circuit — the `?`'s boundary is the fn's `(Result …)` result even though it is
+     nested in an arm. b=true takes the `(Ok 100)` arm (100, the `?` never evaluated); b=false unwraps Ok
+     (42 = 41+1) or PROPAGATES Err (short-circuits `step` to the Err, mapped to -1). Verified leak-clean
+     (live-objects 0 on every path, incl. the String-carrying Err leg). The condition `b` is NOT a tail
+     position, so a `?` in the condition would stay a clean CDZ0900 decline (a later slice).")
+  (input
+    (do
+      (def
+        (step (: r (Result Int64 String)) (: b Bool))
+        (: (if b (Ok 100) (Ok (+ 1 (try r)))) (Result Int64 String)))
+      (def
+        (main (: k Int64))
+        (match (step (if (> k 0) (Ok 41) (Err "no")) (= k 2)) ((Ok v) v) ((Err _s) -1)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64))
+  (call main (: 2 Int64))
+  (output (: 100 Int64)))
+
 ; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
 ; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return).
 ; FIXED (v-effects): previously REJECTED with `CDZ0101: unbound name #seed<n>` — under this conjunction

@@ -11154,6 +11154,7 @@ todo	the agent-return shape: three peers with a Cedar-gated escaping string resu
 todo	the identity-less reducer-echo round-trips the real message shape into a step (via an imposed WIT world)
 todo	the try spelling of the performing bin-parse folds once try-under-effects lands
 pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
+pass	trr2 an expression-position `?` in a TAIL if-arm hoists into the arm and short-circuits
 todo	two adapter records with different state types drive a take-while fold in one program
 todo	two compound arguments each cross as their own handle in one peer call
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
