@@ -6896,3 +6896,30 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a RECORD host-op arg with a scalar-payload VARIANT field crosses (variant flattened in place)"
+  (doc
+    "SHAPE 166 (v-wit-boundary) — a RECORD host-op ARGUMENT with a scalar-payload `variant` FIELD
+           (probe.push : func(record{ v: variant{go, stop(s64)}, n: s64 }) -> s64). The variant FIELD rides
+           the SAME `field_boundary_abi` Variant arm the bare-variant ARG (SHAPE 93) / a list-element variant
+           uses; `emit_record_arg_marshal`'s variant-field arm flattens it to `(disc:i32, payload-join)` via the
+           shared `emit_variant_reg_flatten`, joining the record's core run alongside the `n: s64` scalar field;
+           `collect_record_field_ops` declares the variant arm's `sum-disc`/`sum-payload` + payload unbox in
+           lockstep. This was already reachable (the three sites were widened for the variant algebra) but
+           UNTESTED — locking in the value round-trip. run() builds { v: Stop(7), n: 5 } and performs probe.push;
+           a VALID component that runs is the pin (a wrong variant flatten traps at the host's record.lift).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= v (variant (go) (stop (s64)))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (Record (: v Sig) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Sig.Stop 7)) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
