@@ -2616,14 +2616,13 @@ pub(super) fn refutable_nested_list_element(db: &Db, elem_pat: StructId) -> Opti
 /// short → false → FALL THROUGH, not a trap); the body re-matches the SAME binder to bind the inner
 /// elements — and there the inner `(list p… .. r1)` IS irrefutable given the length guard held, so the sum
 /// matcher's own length dispatch is satisfied (the `_ → trap` arm is dead). A guarded arm is EXCLUDED from
-/// length-coverage exhaustiveness, so the outer match still needs a `_`/rest catch-all. Scope: ONE
-/// refutable nested-list element per arm (the common shape); ≥2 declines honestly. NO new IR.
-/// TODO(N-per-arm): #8428 generalized the CTOR / TUPLE / RECORD value-refinement desugars to N refutable
-/// elements per arm (fresh binder per position; guard + body re-matches nested INSIDE-OUT so every position's
-/// binders are in scope for a user cond). This nested-list pass (and the map pass below) still decline ≥2;
-/// generalizing them the same way is a deferred consistency follow-up (marginal — ≥2 nested-list/map elements
-/// per arm is rare — and gnarlier here: the guard is `(and <len_test> <content_match>)` per position, so the
-/// N-loop must conjoin all len_tests AND nest the content-matches inside-out with the user cond innermost).
+/// length-coverage exhaustiveness, so the outer match still needs a `_`/rest catch-all. N-per-arm (#8430
+/// nested-list leg, the twin of #8428's ctor/tuple/record N-loop): ≥2 refutable nested-list elements per arm
+/// each refine — the `len(positions) > 1` branch below replaces every position with a fresh binder, conjoins
+/// each position's `(len_test AND content_match)` in the guard (independent bools), and re-matches the
+/// positions INSIDE-OUT in the body so every position's inner binders are in scope (a user cond is evaluated
+/// at the innermost level of a value-binding content nest). The N=1 path is byte-identical to the pre-#8430
+/// single-element rewrite. NO new IR. (The MAP pass below still declines ≥2 — its own #8430 leg / flip-guard.)
 pub(super) fn desugar_refutable_nested_list_elements(
     db: &mut Db,
     scrutinee: StructId,
@@ -2685,10 +2684,89 @@ pub(super) fn desugar_refutable_nested_list_elements(
             continue;
         }
         if nested_positions.len() > 1 {
-            return Some(Core::Poison(Reject::decline(
-                "a list arm with more than one refutable nested-list element is not supported \
-                 (match one nested list per arm)",
-            )));
+            // N-per-arm (#8430 nested-list leg, the twin of #8428's ctor/tuple/record N-loop): >1 refutable
+            // nested-list element in one arm — each refines independently. Replace EACH refutable position
+            // with a fresh binder; the GUARD conjoins every position's `(len_test AND content_match)` (all
+            // independent bools — no cross-position scope needed), and the BODY re-matches the positions
+            // INSIDE-OUT so every position's inner binders are in scope for the body. A user guard `g` (which
+            // may read binders across positions) is evaluated at the innermost level of a value-binding
+            // content nest. The N=1 case still takes the single-position path below — byte-identical.
+            let list_head = match db.ast.get(inner) {
+                crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+                _ => db.push_name("list"),
+            };
+            let binder_name = |p: usize| format!("__ne{ai}_{p}");
+            let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
+            for (p, &e) in es.iter().enumerate() {
+                if nested_positions.contains(&p) {
+                    new_es.push(db.push_name(&binder_name(p)));
+                } else {
+                    new_es.push(e);
+                }
+            }
+            let mut list_children = vec![list_head];
+            list_children.extend(new_es);
+            let new_list = db.push_list(list_children);
+            // Per-position inner-length tests: `((=|>=) (List.len __ne{p}) k_p)` — `=` fixed inner, `>=` rest.
+            let mut len_tests: Vec<StructId> = Vec::with_capacity(nested_positions.len());
+            for &p in &nested_positions {
+                let (inner_lead, inner_fixed) = refutable_nested_list_element(db, es[p]).unwrap();
+                let len_scrut = db.push_name(&binder_name(p));
+                let dot = db.push_name(".");
+                let list_mod = db.push_name("List");
+                let len_key = db.push_name("len");
+                let len_member = db.push_list(vec![dot, list_mod, len_key]);
+                let len_call = db.push_list(vec![len_member, len_scrut]);
+                let k_lit = db.push_atom(crate::ast::Leaf::Int {
+                    value: crate::ast::IntValue::from_u128(inner_lead as u128),
+                    radix: crate::ast::Radix::Dec,
+                });
+                let cmp_op = db.push_name(if inner_fixed { "=" } else { ">=" });
+                len_tests.push(db.push_list(vec![cmp_op, len_call, k_lit]));
+            }
+            // The CONTENT nest (inside-out): `(match __ne{p0} (<clone_p0> (match __ne{p1} (<clone_p1> INNER)
+            // (_ false))) (_ false))` where INNER is the user guard `g` (its binders now in scope) or `true`.
+            // A non-matching element hits `_ → false` (the arm falls through), so the body re-match's trap is
+            // dead. CLONES (the body re-match reuses the ORIGINAL patterns — a node has one parent).
+            let inner_guard =
+                existing_guard.unwrap_or_else(|| db.push_atom(crate::ast::Leaf::Bool(true)));
+            let mut content_nest = inner_guard;
+            for &p in nested_positions.iter().rev() {
+                let scrut = db.push_name(&binder_name(p));
+                let clone_p = clone_refutable_payload(db, es[p]);
+                let true_arm = db.push_list(vec![clone_p, content_nest]);
+                let wild = db.push_name("_");
+                let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
+                let false_arm = db.push_list(vec![wild, false_node]);
+                let match_head = db.push_name("match");
+                content_nest = db.push_list(vec![match_head, scrut, true_arm, false_arm]);
+            }
+            // guard_cond = right-fold of `and` over [len_tests…, content_nest] (binary `(and a b)`).
+            let and_head = db.push_name("and");
+            let mut guard_cond = content_nest;
+            for &lt in len_tests.iter().rev() {
+                guard_cond = db.push_list(vec![and_head, lt, guard_cond]);
+            }
+            let guard_head = db.push_name("guard");
+            let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
+            // The BODY re-match (inside-out): `(match __ne{p0} (<orig_pat_p0> (match __ne{p1} (<orig_pat_p1>
+            // body) (_ trap))) (_ trap))` — binds every position's inner sub-patterns for the body; each inner
+            // pattern is irrefutable GIVEN its length+content guard, so the `_ → trap` arms are dead.
+            let mut new_body = body;
+            for &p in nested_positions.iter().rev() {
+                let scrut = db.push_name(&binder_name(p));
+                let true_arm = db.push_list(vec![es[p], new_body]);
+                let trap_head = db.push_name("trap");
+                let trap_msg =
+                    db.push_str("unreachable: nested-list-element length already gated by guard");
+                let trap = db.push_list(vec![trap_head, trap_msg]);
+                let wild = db.push_name("_");
+                let false_arm = db.push_list(vec![wild, trap]);
+                let match_head = db.push_name("match");
+                new_body = db.push_list(vec![match_head, scrut, true_arm, false_arm]);
+            }
+            new_arms.push(db.push_list(vec![new_pat, new_body]));
+            continue;
         }
         let npos = nested_positions[0];
         let nested_pat = es[npos]; // the original `(list p… .. r1)` inner pattern
