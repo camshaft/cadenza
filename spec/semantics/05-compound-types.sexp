@@ -37909,13 +37909,13 @@
   (output-byte-len 638879))
 
 ; dp1: THREE-level pattern descent — a record pattern whose field holds a variant whose payload is
-; destructured by a NESTED record pattern. Idealistically pattern depth composes (both depth-2 faces
-; compute today: payload-whole bind + project = 2105, and a direct sum-of-record destructure = 2100);
-; the three-level shape currently DECLINES (CDZ0900 "nested record field descent whose intermediate
-; value is not a record"). TODO — auto-flips when the descent supports a variant hop mid-path.
-; (breaker deep-pattern frontier probe 2026-09-02.)
+; destructured by a NESTED record pattern. Pattern depth COMPOSES: the descent below a record field
+; tracks the variant payload's type across the `Payload` hop, so a `Field` step BELOW the variant
+; resolves the inner record's slot (the record-field-descent type-walk mirrors infer's). n=5 → id=5,
+; st=Active{score=10,tag="hi"} → i + 10*sc + 1000*byte-len(t) = 5 + 100 + 2000 = 2105; n=2 → Idle →
+; -i = -2. (breaker deep-pattern frontier probe 2026-09-02; three-level descent wired 2026-09-27.)
 (case
-  "a record-variant-record three-level pattern destructures like its two-level faces (should-work; today the descent declines)"
+  "a record-variant-record three-level pattern destructures like its two-level faces"
   (input
     (do
       (type St (Idle) (Active (Record (: score Int64) (: tag String))))
