@@ -1557,3 +1557,51 @@
   (call main (: 1 Int64))
   (output (: 1 Int64))
   (live-objects 0))
+
+; trnt1 (TODO): the NESTED try `(try (try rr))` — a `?` whose OPERAND is itself a `?`. The desugar for
+; this is known and small (inner-first hoisting in `find_hoistable_try`'s `(try e)` arm: descend the
+; operand FIRST so `(try (try rr))` lifts to `(let ((a (try rr))) (let ((b (try a))) …))`, each level a
+; binding-tail `let` riding `lower_let`), and it produces the CORRECT values (verified: 111/222/7). It is
+; held back by a REACHABLE-ON-MAIN reclaim leak, NOT the desugar: a `?` on a `(Result Sum E)` — a Result
+; whose Ok-arm is ITSELF a Sum (nested Result/Option/enum) — leaks 1 object on the short-circuit re-wrap.
+; Isolated with three do-def controls (the LANDED path, no nested-try): scalar-both-arms Result = clean,
+; heap-`List` Ok-arm = clean, nested-Result (heap-Sum) Ok-arm = LEAKS. Same Sum-shell reclaim family as the
+; CHAMP husk fix (62750d2b57), which covered a CHAMP Ok-arm but not a nested-Sum Ok-arm; routed to
+; v-memory-safety. Until BOTH the reclaim fix and the inner-first desugar land, `(try (try rr))` stays a
+; clean CDZ0900 decline (the safe floor — a decline beats a leaky compile). Idealistic values + leak-clean
+; pinned here; flips todo→pass when the reclaim lands and the desugar is enabled.
+(case
+  "trnt1 a NESTED `?` `(try (try rr))` unwraps twice, each level short-circuiting to the boundary"
+  (doc
+    "The nested-`?` face of the expression-position operator: the operand of a `?` is ITSELF a `?`. For
+     `rr : (Result (Result Int64 Int64) Int64)`, the inner `(try rr)` unwraps the OUTER Result (short-
+     circuiting the whole boundary on the outer Err), and the outer `(try …)` unwraps the resulting inner
+     Result (short-circuiting on the inner Err) — so `(Ok (try (try rr)))` under a `(Result Int64 Int64)`
+     boundary yields the doubly-unwrapped payload, with two distinct short-circuit points. Pinned with
+     DISTINCT Err payloads: at k=0 the OUTER Result is Err (→ 111, inner-`?` short-circuits first); at k=1
+     it is `(Ok (Err 222))` (→ 222, outer-`?` short-circuits); at k=2 `(Ok (Ok 7))` → 7. Idealistic +
+     leak-clean; declines CDZ0900 today (see the trnt1 comment above — held on the nested-Sum-Ok-arm
+     reclaim leak, routed to v-memory-safety, plus the inner-first desugar).")
+  (input
+    (do
+      (def
+        (mk (: rr (Result (Result Int64 Int64) Int64)))
+        (: (Ok (try (try rr))) (Result Int64 Int64)))
+      (def
+        (main (: k Int64))
+        (match
+          (mk (if (> k 0)
+                  (if (> k 1)
+                      (: (Ok (Ok 7)) (Result (Result Int64 Int64) Int64))
+                      (: (Ok (Err 222)) (Result (Result Int64 Int64) Int64)))
+                  (: (Err 111) (Result (Result Int64 Int64) Int64))))
+          ((Ok v) v)
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 222 Int64))
+  (call main (: 2 Int64))
+  (output (: 7 Int64))
+  (live-objects 0))
