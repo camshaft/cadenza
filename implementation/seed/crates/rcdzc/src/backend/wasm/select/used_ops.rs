@@ -1209,12 +1209,20 @@ pub(super) fn collect_used_ops_into_seen(
                             } else if let Ty::Record(sub) = e.strip_nominal() {
                                 // A record element: `arr-get` (already inserted) + each field's op — a scalar
                                 // unboxes via its read op, a `Bytes` field copies its rope (`bytes-len`/
-                                // `bytes-get`) into `mem` at the cursor.
+                                // `bytes-get`) into `mem` at the cursor, a nested tuple field unboxes each inner
+                                // element.
                                 let ftys: Vec<Ty> = sub.values().cloned().collect();
                                 for fty in &ftys {
                                     if matches!(fty.strip_nominal(), Ty::Bytes) {
                                         out.insert(OP_BYTES_LEN);
                                         out.insert(OP_BYTES_GET);
+                                    } else if let Ty::Tuple(inner) = fty.strip_nominal() {
+                                        let inner: Vec<Ty> = inner.iter().cloned().collect();
+                                        for x in &inner {
+                                            if let Ok(Some(read)) = get_op_ty(db, x) {
+                                                out.insert(read);
+                                            }
+                                        }
                                     } else if let Ok(Some(read)) = get_op_ty(db, fty) {
                                         out.insert(read);
                                     }
