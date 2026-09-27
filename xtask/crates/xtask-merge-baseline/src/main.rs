@@ -22,6 +22,19 @@
 //! union untouched) — a prune that can't see the corpus must NEVER strip. The gate vanished-check stays
 //! the backstop.
 //!
+//! WHY THE PRUNE IS ONLY BEST-EFFORT (do NOT "fix" it by reading the tree — v-fleet-tooling ↔
+//! v-corpus-harness, 2026-09-27): `corpus_sexps` reads the WORKTREE's `spec/semantics/*.sexp`, which during
+//! a MULTI-COMMIT rebase/cherry-pick can be MID-MERGE when the driver runs on the baseline (the retitled
+//! `.sexp` not yet at its post-merge state), so the prune can see a stale OLD title as still-valid and KEEP
+//! the union-re-added line → a vanished-check RED the backstop catches post-land. This is NOT fixable inside
+//! the driver: git hands a merge driver ONLY the one file it merges (`%A`/`%B`), while the rest of the tree
+//! is mid-construction, so there is no race-free "settled corpus" to read here — index stages (`:1/:2/:3`)
+//! exist only for CONFLICTED files (a cleanly-merged retitle `.sexp` has no `:3`), and stage-0 races the
+//! undefined driver-vs-tree processing order. The DURABLE fix lives at the SOURCE (a retitle commit that
+//! regenerates all three `.gate-baseline{,-rust,-rust-async}` atomically, so neither side ever carries the
+//! OLD title for the union to re-add), owned by v-corpus-harness's baseline hygiene — NOT by making this
+//! driver spawn git mid-merge (the highest-blast-radius path in the fleet). Keep this prune fail-open.
+//!
 //! Carved out of `xtask/src/main.rs`'s `Cmd::MergeBaseline` (v-xtask-decompose, seq-202 shrink). Not a
 //! nix-app: git needs a fast local binary, not a per-merge nix eval — the driver points at this crate's
 //! binary. Deps `xtask-support` + the tiny `corpus-case-titles` leaf (no clap/cdz/compiler/nix).
