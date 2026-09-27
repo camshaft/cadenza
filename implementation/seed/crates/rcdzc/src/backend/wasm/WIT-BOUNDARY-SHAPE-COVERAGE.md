@@ -237,7 +237,17 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `get-*` — `get_op_ty` returns `get-float`/`get-float32` for a float — + `drop`), `serialize`, and `host_imports.rs`.
   NOT the cursor pre-scan and NOT `set_needs_memory` (no rope → no `mem`). The float reinterpret join is now DONE
   across all three carriers — `result<scalar>` (209/210), `result<tuple>` slot-0 (211/212), `result<record>`
-  slot-0 incl. WIT-reorder (213/214). REMAINING: `result<_, variant>` (variant err arm).
+  slot-0 incl. WIT-reorder (213/214). REMAINING: `result<_, variant>` (variant err arm — every result detector
+  gates the err to a PAYLOADLESS enum; a variant err needs a new `HostParam` variant carrying the err variant's
+  payload ABIs + the multi-slot err-flatten join, where the Err payload contributes ≥2 slots (variant disc +
+  payload) so the result join is `[result-disc, join(ok-slot, variant-disc), variant-payload…]`). ⚠ TRAP
+  (verified tick, nix value gate): a `result<scalar, variant-err>` host-op ARG does NOT decline cleanly and does
+  NOT cross — it REIFIES via the resource-escape value-form envelope (the call returns a `#record((= kind
+  "effect/probe") (= payload b"cdzast…") (= schema_descriptor …))` instead of performing the host op). `xtask gate
+  --opt-sweep` is FOOLED: the reify record is consistent across O0..O3 so the case "checks", but the nix VALUE gate
+  catches it (expected 42, got the reify record). So a variant-err result reads as "checked" under opt-sweep yet is
+  NOT a real WIT crossing — always confirm a new result/variant boundary shape with the nix value gate, never
+  opt-sweep alone. See `[[wit-boundary-opt-sweep-fooled-by-reify-value-form-fallback]]`.
 - **[emit, register-path] a top-level `result<record-of-scalars, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
   189/190/191).** The record-Ok sibling of the scalar-Ok result: a new `HostParam::ResultRecord(ok-fields, err-
   cases)` (detector `result_record_enum`, admitting a record every field of which is a SCALAR + a payloadless-enum
