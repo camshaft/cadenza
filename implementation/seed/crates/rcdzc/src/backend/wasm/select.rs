@@ -6715,7 +6715,24 @@ fn arm_borrows_heap_subvalue_seen(
         // re-wrapped Err husk left unreclaimed because `Map.len m` was mis-read as CONSUMING `m` — the
         // omission of the CHAMP length ops from this list, while `List.len` reclaimed clean).
         | Core::MapSize { map: operand }
-        | Core::SetLen { set: operand } => arm_borrows_heap_subvalue_seen(db, operand, true, seen),
+        | Core::SetLen { set: operand }
+        // `MapToList` (`Map.to-list`) / `SetToList` (`Set.to-list`) are the CHAMP borrow-PRODUCERS (v-core-opt,
+        // node#6 CHAMP-asymmetry sweep, GAP-3 — v-mem-safety's REACHABLE `Result<Map/Set,_>`-via-`try` leak):
+        // both BORROW the collection (an enumeration read that leaves the collection's own refcount untouched)
+        // and yield a FRESH `List` handle. Unlike `MapSize`/`SetLen` (scalar `i64`, trivially non-aliasing),
+        // to-list's result is a heap `List` whose elements SHARE the collection's cells — but the runtime DUPs
+        // every shared cell into the fresh list (retained-storage discipline: `op_map_to_list` `op_dup`s BOTH
+        // the key and the value, `op_set_to_list` `op_dup`s each element — value_codec.rs, "the entry tuple /
+        // vec co-owns an independent reference alongside the map/set"). So the result INDEPENDENTLY co-owns its
+        // elements and the operand is genuinely only BORROWED: the shell-drop (drops the collection → decrements
+        // the originals) and the result-`List`-drop (decrements the dup'd copies) balance 1:1 — no double-free,
+        // even for HEAP-value maps. Relax the operand to `borrowed` GENERALLY (not scalar-gated), un-blocking
+        // the enclosing `MatchSum` shell-reclaim exactly like the length ops above. (Same leak signature as the
+        // MapSize/SetLen gap 62750d2b57: the re-wrapped Err husk left unreclaimed because to-list was mis-read
+        // as CONSUMING the collection.) Note the distinct field names: `map`/`set` — the `key_ty`/`val_ty`/
+        // `elem_ty` type-descriptor fields carry no operand.
+        | Core::MapToList { map: operand, .. }
+        | Core::SetToList { set: operand, .. } => arm_borrows_heap_subvalue_seen(db, operand, true, seen),
         Core::SumPayload { scrutinee, .. } => {
             arm_borrows_heap_subvalue_seen(db, scrutinee, true, seen)
         }
