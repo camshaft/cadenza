@@ -762,6 +762,12 @@ pub fn emit(
                             // boxes the Some payload scalar with its box op.
                             used.insert("sum-new");
                             used.insert(s.payload_box);
+                        } else if elem.flags.is_some() {
+                            // A `list<flags>` builds a value-heap record-of-bools cell per element
+                            // (`arr-alloc`/`arr-set`) and `box-bool`s each unpacked bit.
+                            used.insert("arr-alloc");
+                            used.insert("arr-set");
+                            used.insert("box-bool");
                         } else {
                             used.insert(elem.box_op);
                         }
@@ -5944,6 +5950,17 @@ fn disc_store_of(disc_size: u32) -> u8 {
     }
 }
 
+/// The unsigned wasm load op reading a `size`-byte (1/2/4) packed integer out of linear memory — the load twin
+/// of [`disc_store_of`], used to read a canonical flags bitset (whose width follows its label count).
+fn disc_load_of(size: u32) -> u8 {
+    use crate::backend::wasm::wasm_abi::op;
+    match size {
+        1 => op::I32_LOAD8_U,
+        2 => op::I32_LOAD16_U,
+        _ => op::I32_LOAD,
+    }
+}
+
 /// Build the recursive [`serialize::CanonWrite`] that lowers a value-heap value of type `gty` (WIT `wty`) to
 /// its canonical-ABI memory form — the reducer result-lower. A scalar unboxes + stores; a `Bytes`/`list<u8>`
 /// copies its bytes out; a record recurses per field at canonical offsets (permuted by name); a `list<T>`
@@ -6408,6 +6425,7 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
             byte_leaf: Some(matches!(leaf, Ty::String)),
             compound: None,
             sum: None,
+            flags: None,
         });
     }
     // A COMPOUND leaf — a scalar-fielded `tuple<…>`/`record<…>` — crosses as `stride` contiguous bytes per
@@ -6450,6 +6468,7 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
             byte_leaf: None,
             compound: Some(fields),
             sum: None,
+            flags: None,
         });
     }
     // The scalar leaf's read+box: (load_op, natural-align, stride, narrow-extend, box_op).
@@ -6464,6 +6483,7 @@ fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serial
         byte_leaf: None,
         compound: None,
         sum: None,
+        flags: None,
     })
 }
 
@@ -6537,6 +6557,61 @@ fn list_sum_elem(
             payload_load_align,
             payload_extend,
             payload_box,
+        }),
+        flags: None,
+    })
+}
+
+/// The per-element descriptor for a `list<flags>` entry param: each element is a PACKED bitset (canonical width
+/// 1/2/4 bytes by label count) lifted into a value-heap record-of-bools cell per element. The guest models a WIT
+/// `flags` as `record{ label: bool, … }` (the operator's PRODUCT ruling), so `elem_ty` is a `Ty::Record` of
+/// bools that must match the WIT flags `labels` BY NAME. Builds the `(cell_slot, bitset_bit)` pairing — the list
+/// twin of the record-field [`param_field::param_field_rebuild`]'s flags arm and the top-level flags param arm.
+/// Declines >32 labels, an arity mismatch, a non-bool field, or a label with no matching field. WIT-AWARE: it
+/// needs the flags labels (the guest `Ty::Record` alone cannot tell a flags element from an ordinary
+/// record-of-bools), so unlike [`list_scalar_elem`] it is called with the element's WIT.
+fn list_flags_elem(
+    elem_ty: &crate::ty::Ty,
+    labels: &[String],
+) -> Option<crate::backend::wasm::serialize::ListElem> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    use crate::backend::wasm::serialize::{FlagsListElem, ListElem};
+    use crate::ty::Ty;
+    let Ty::Record(map) = elem_ty.strip_nominal() else {
+        return None;
+    };
+    if labels.len() > 32 || map.len() != labels.len() {
+        return None;
+    }
+    let label_kebab: Vec<String> = labels.iter().map(|l| kebab_extern_name(l)).collect();
+    let mut field_bits: Vec<(u32, u32)> = Vec::with_capacity(labels.len());
+    for (slot, (fname, fty)) in map.iter().enumerate() {
+        if !matches!(fty.strip_nominal(), Ty::Bool) {
+            return None;
+        }
+        let fk = kebab_extern_name(fname.name.as_ref());
+        let bit = label_kebab.iter().position(|l| *l == fk)?;
+        field_bits.push((slot as u32, bit as u32));
+    }
+    // The bitset's canonical width (1/2/4 bytes) sets the packed-read load op + the per-element stride; its
+    // natural-align memarg is `log2(size)` (`size.trailing_zeros()`: 1→0, 2→1, 4→2).
+    let size = crate::backend::wasm::wit_ctype::canonical_size(&crate::wit_world::WitType::Flags(
+        labels.to_vec(),
+    ));
+    Some(ListElem {
+        load_op: 0,
+        load_align: 0,
+        stride: size,
+        extend: None,
+        box_op: "",
+        nest_lists: 0,
+        byte_leaf: None,
+        compound: None,
+        sum: None,
+        flags: Some(FlagsListElem {
+            field_bits,
+            load_op: disc_load_of(size),
+            load_align: size.trailing_zeros(),
         }),
     })
 }
@@ -7565,6 +7640,10 @@ fn try_bare_entry_param_component(
                 // payload scalar with its box op.
                 lift_ops.push("sum-new");
                 lift_ops.push(s.payload_box);
+            } else if elem.flags.is_some() {
+                // A `list<flags>` builds a value-heap record-of-bools cell per element (`arr-alloc`/`arr-set`) +
+                // `box-bool`s each unpacked bit.
+                lift_ops.extend(["arr-alloc", "arr-set", "box-bool"]);
             } else {
                 // A list<scalar> boxes each element with its own box op (box-int/float/float32/bool).
                 lift_ops.push(elem.box_op);
@@ -8207,6 +8286,26 @@ fn record_interface_export(
                         // descriptor; a nested/compound element (list<list>, list<record>) declines via `?`.
                         // A `Ty::List(UInt8)` crossing WIT `list<u8>` is a genuine `List UInt8` (boxed-u8 vec),
                         // NOT `Bytes` (packed byte-leaf) — distinct value reps behind the same WIT type.
+                        // A `list<flags>` element: the WIT element is a PACKED bitset while the guest models it
+                        // as a record-of-bools, so the guest-only `list_scalar_elem` would misread the packed
+                        // byte(s) as a compound cell — a wrong-layout miscompile. Lift each element via the
+                        // WIT-aware `list_flags_elem` (bit i → the i-th declared label, matched to the field by
+                        // name). Only a DIRECTLY-flags element is supported here.
+                        (Ty::List(elem), WitType::List(inner))
+                            if matches!(&**inner, WitType::Flags(_)) =>
+                        {
+                            let WitType::Flags(labels) = &**inner else {
+                                unreachable!("guarded by the match arm")
+                            };
+                            serialize::MemLeafKind::List(list_flags_elem(elem, labels)?)
+                        }
+                        // A flags nested DEEPER (`list<option<flags>>`, `list<list<flags>>`) still declines —
+                        // the sum/nested list element readers do not yet unpack a flags leaf (a later slice).
+                        (Ty::List(_), WitType::List(inner))
+                            if crate::wit_world::wit_contains_flags(inner) =>
+                        {
+                            return None;
+                        }
                         (Ty::List(elem), WitType::List(_)) => {
                             serialize::MemLeafKind::List(list_scalar_elem(elem)?)
                         }
@@ -9153,15 +9252,20 @@ impl MakeParams {
                                     out(f.box_op);
                                 }
                             } else {
-                                // A SUM element (`list<option<scalar>>`) does not reach here today: the make-path
-                                // classifier above declines ALL list params (Str/Bytes/ValueForm only). If list
-                                // params are enabled here later via `list_sum_elem`, this arm MUST gain a sum
-                                // branch (`sum-new` + `s.payload_box`, like the entry path) — else the sum
-                                // element's inert empty `box_op` poisons the wrapper import collection (the
-                                // #9752/#9753 empty-op decline class). The assert catches that reintroduction.
+                                // A SUM element (`list<option<scalar>>`) or a FLAGS element (`list<flags>`) does
+                                // not reach here today: the make-path classifier above declines ALL list params
+                                // (Str/Bytes/ValueForm only). If list params are enabled here later, this arm MUST
+                                // gain a sum branch (`sum-new` + `s.payload_box`) and a flags branch (`arr-alloc`/
+                                // `arr-set`/`box-bool`), like the entry path — else the element's inert empty
+                                // `box_op` poisons the wrapper import collection (the #9752/#9753 empty-op decline
+                                // class). The asserts catch that reintroduction.
                                 debug_assert!(
                                     elem.sum.is_none(),
                                     "make-path list sum element needs a sum-new branch (see #9752/#9753)"
+                                );
+                                debug_assert!(
+                                    elem.flags.is_none(),
+                                    "make-path list flags element needs an arr-alloc/box-bool branch (see #9752/#9753)"
                                 );
                                 out(elem.box_op);
                             }

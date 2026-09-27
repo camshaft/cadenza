@@ -1149,6 +1149,29 @@ pub struct ListElem {
     /// (`nest_lists == 0`) `option<scalar>` element is admitted; a `result<…>` / compound-payload / nested
     /// element is a later slice.
     pub sum: Option<SumListElem>,
+    /// `None` for a SCALAR / byte-leaf / compound / sum / nested-list element. `Some(flags)` for a `flags{…}`
+    /// element (`list<permissions>`) — each element is a PACKED bitset (`stride` = the flags' `canonical_size`:
+    /// 1/2/4 bytes by label count) that lifts into a value-heap record-of-bools cell (the guest models `flags`
+    /// as `record{ label: bool, … }`, the operator's PRODUCT ruling). `emit_list_level` reads the packed bitset
+    /// once, then per `(slot, bit)` masks the bit and `box-bool`s it into the cell (`arr-alloc`/`arr-set`), then
+    /// pushes — the memory-reading twin of the param-field [`FieldRebuild::Flags`]. Only a FLAT (`nest_lists ==
+    /// 0`) directly-`flags` element is admitted; a `list<option<flags>>` / flags nested deeper is a later slice.
+    pub flags: Option<FlagsListElem>,
+}
+
+/// How ONE `flags{…}` element of a `list<flags>` param is read out of linear memory and built into a value-heap
+/// record-of-bools cell (see [`ListElem::flags`]). The element is a PACKED bitset at the element base, read once
+/// with `load_op`/`load_align` (byte/i16/i32 by the flags' `canonical_size`); then per `(cell_slot, bitset_bit)`
+/// the wrapper masks `(bits >> bit) & 1`, `box-bool`s it, and `arr-set`s it at `cell_slot`. Pairing is BY LABEL
+/// NAME (the field named by WIT declaration-order label `bit`), the exact list twin of [`FlagsRebuild`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FlagsListElem {
+    /// `(cell_slot, bitset_bit)` per record field. Length = the flags label count (≤ 32).
+    pub field_bits: Vec<(u32, u32)>,
+    /// The wasm load opcode reading the packed bitset at the element base (`i32.load8_u`/`load16_u`/`load`).
+    pub load_op: u8,
+    /// The load's natural-alignment memarg (log2 bytes): 0 (1-byte), 1 (i16), 2 (i32).
+    pub load_align: u32,
 }
 
 /// How ONE `option<scalar>` element of a `list<option<scalar>>` param is read out of linear memory and built
@@ -4616,6 +4639,42 @@ fn emit_list_level(
         out.push(op::CALL);
         uleb128(imp("sum-new"), out); // [buf, none-cell]
         out.push(op::END); // [buf, cell]
+        out.push(op::CALL);
+        uleb128(imp("vec-push"), out); // [buf']
+        out.push(op::LOCAL_SET);
+        uleb128(buf as u64, out);
+    } else if levels == 0 && elem.flags.is_some() {
+        // FLAGS element (`list<flags>`): the element at `addr` is a PACKED bitset (`stride` = its canonical
+        // width). Build a fresh value-heap record-of-bools cell (`arr-alloc`), then per `(slot, bit)` re-load
+        // the packed bitset, mask `(bits >> bit) & 1`, `box-bool` it, and `arr-set` it at `slot`; then push the
+        // cell. Re-loading the bitset per field (like the compound branch re-emits `emit_addr`) needs NO fresh
+        // scratch local. The memory-reading twin of the top-level flags param unpack + the param-field
+        // `FieldRebuild::Flags` cell rebuild.
+        let f = elem.flags.as_ref().unwrap();
+        out.push(op::LOCAL_GET);
+        uleb128(buf as u64, out); // [buf]
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(f.field_bits.len() as i64, out);
+        out.push(op::CALL);
+        uleb128(imp("arr-alloc"), out); // [buf, arr]
+        for &(slot, bit) in &f.field_bits {
+            out.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(slot as i64, out); // [buf, arr, slot]
+            emit_addr(out); // [buf, arr, slot, addr]
+            out.push(f.load_op);
+            uleb128(f.load_align as u64, out);
+            uleb128(0, out); // [buf, arr, slot, bits] (packed bitset at offset 0)
+            out.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(bit as i64, out);
+            out.push(op::I32_SHR_U); // [buf, arr, slot, bits>>bit]
+            out.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(1, out);
+            out.push(op::I32_AND); // [buf, arr, slot, (bits>>bit)&1]
+            out.push(op::CALL);
+            uleb128(imp("box-bool"), out); // [buf, arr, slot, bool-handle]
+            out.push(op::CALL);
+            uleb128(imp("arr-set"), out); // [buf, arr]
+        }
         out.push(op::CALL);
         uleb128(imp("vec-push"), out); // [buf']
         out.push(op::LOCAL_SET);

@@ -297,6 +297,30 @@ pub fn ty_natural_wit(t: &Ty) -> Option<WitType> {
 /// needs a SYNTHESIZED nominal sum decl — a Cadenza sum is nominal, carrying a decl identity, unlike a
 /// structural WIT variant; a later increment covers `Dir`/`Error`), or any compound whose inner type does
 /// not map. `db` is needed only to instantiate the prelude `Option`/`Result` sums (`normalize_sum` over the
+/// Whether a WIT type IS or (recursively) CONTAINS a `flags{…}`. A `flags` maps to a Cadenza record-of-bools
+/// but its canonical layout is a PACKED bitset (a single ≤4-byte int), NOT the record's per-field layout — so
+/// any marshal path that reads/writes a compound element via the GUEST record layout (e.g. the guest-only
+/// `list_scalar_elem` list-element reader) would MISREAD a flags element. Such WIT-unaware paths call this to
+/// DECLINE a flags-bearing shape rather than emit a wrong-layout read (a `list<flags>` / `list<record{flags}>`
+/// miscompile). The WIT-aware paths (record field, option payload, result writer) handle flags directly and do
+/// not need this guard.
+pub fn wit_contains_flags(t: &WitType) -> bool {
+    match t {
+        WitType::Flags(_) => true,
+        WitType::List(e) | WitType::Option(e) => wit_contains_flags(e),
+        WitType::Tuple(es) => es.iter().any(wit_contains_flags),
+        WitType::Record(fs) => fs.iter().any(|(_, ft)| wit_contains_flags(ft)),
+        WitType::Variant(cs) => cs
+            .iter()
+            .any(|(_, p)| p.as_ref().is_some_and(wit_contains_flags)),
+        WitType::Result { ok, err } => {
+            ok.as_ref().is_some_and(|t| wit_contains_flags(t))
+                || err.as_ref().is_some_and(|t| wit_contains_flags(t))
+        }
+        _ => false,
+    }
+}
+
 /// declared occurrence), so a prelude-less compile yields `None` there too.
 pub fn wit_type_to_ty(db: &crate::db::Db, t: &WitType) -> Option<Ty> {
     use crate::ty::{FloatTy, IntTy};
