@@ -8780,9 +8780,9 @@
   (output (: 2 Int64)))
 
 (case
-  "a runtime-operand try as a list element declines pending brick 3b"
+  "a runtime-operand try mid LIST-literal short-circuits the whole list, else the list builds"
   (doc
-    "The runtime face: a runtime operand mid-list hits the documented brick-3b boundary — flips when the runtime-try increment lands (oracle 3 at pick=1).")
+    "The runtime face of the collection-constructor idiom: a runtime `?` operand mid-`#list` hoists to the enclosing function boundary — at pick=1 all three unwrap and the list builds (len 3), and at any other pick the middle `?` fails and short-circuits `mk` to None. The do-local `(def xs #list(…))` value carries the `?`s, so the hoist targets the whole `do` (the def is FIRST, no preceding effect is reordered).")
   (input
     (do
       (def

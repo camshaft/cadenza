@@ -11356,7 +11356,7 @@ todo	a performing closure retrieved from a list dispatches to the call-site hand
 todo	a producer capturing a host-supplied COMPOUND List parameter crosses via host→guest decode (should-work)
 todo	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
-todo	a runtime-operand try as a list element declines pending brick 3b
+pass	a runtime-operand try mid LIST-literal short-circuits the whole list, else the list builds
 todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
 todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
 todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
