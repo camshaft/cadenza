@@ -12983,6 +12983,40 @@ fn refresh_fleet_tools(fleet: &Fleet, cwd: &Path) {
         .output();
 }
 
+/// Attempts for a transient-failure-tolerant `git reset --hard` in [`sync`] — rides out a momentary
+/// `index.lock` / ref-lock in the SHARED common dir when a peer worktree's git touches refs concurrently
+/// (v-nmidid's intermittent "reset failed" 2026-09-27: clean worktree, self-recovering).
+const GIT_RESET_RETRIES: u32 = 3;
+/// Backoff between `git reset --hard` retries (ms). A git `.lock` from a concurrent op typically clears well
+/// under this; 3×250ms bounds the added latency to ~0.5s even on a genuinely-stuck repo.
+const GIT_RESET_RETRY_BACKOFF_MS: u64 = 250;
+
+/// Run `attempt` up to `max_tries` times (clamped to ≥1), calling `sleep` BETWEEN tries (never after the
+/// last); return the first `Ok`, else the LAST `Err`. Rides out a transient failure (e.g. a momentary git
+/// lock) WITHOUT masking a persistent one — the final `Err` still carries the real error for the caller to
+/// surface. Generic + sleep-injected so the retry POLICY (first-Ok / last-Err / correct sleep count) is
+/// unit-tested without real git or real wall-time.
+fn retry<T, E>(
+    max_tries: u32,
+    mut attempt: impl FnMut() -> Result<T, E>,
+    mut sleep: impl FnMut(),
+) -> Result<T, E> {
+    let tries = max_tries.max(1);
+    let mut last_err = None;
+    for i in 0..tries {
+        match attempt() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                last_err = Some(e);
+                if i + 1 < tries {
+                    sleep();
+                }
+            }
+        }
+    }
+    Err(last_err.expect("at least one attempt ran"))
+}
+
 fn sync(fleet: &Fleet, force: bool) {
     let cwd = std::env::current_dir().expect("cwd");
     // Propagate any landed shim/tooling change to THIS running agent without a restart (operator seq-267):
@@ -13001,6 +13035,25 @@ fn sync(fleet: &Fleet, force: bool) {
         String::from_utf8_lossy(&git(args).stdout)
             .trim()
             .to_string()
+    };
+    // A `git reset --hard <target>` that RETRIES a transient lock failure (a momentary index.lock/ref-lock
+    // in the shared common dir when a peer worktree's git touches refs concurrently — v-nmidid's
+    // intermittent "reset failed" 2026-09-27, clean worktree, self-recovering). `reset --hard` is idempotent
+    // so a retry is harmless; a PERSISTENT failure exhausts the retries and returns git's stderr so the
+    // caller's message is SELF-DIAGNOSING (the old bare "failed." gave no cause).
+    let reset_hard = |target: &str| -> Result<(), String> {
+        retry(
+            GIT_RESET_RETRIES,
+            || {
+                let o = git(&["reset", "--hard", target]);
+                if o.status.success() {
+                    Ok(())
+                } else {
+                    Err(String::from_utf8_lossy(&o.stderr).trim().to_string())
+                }
+            },
+            || std::thread::sleep(std::time::Duration::from_millis(GIT_RESET_RETRY_BACKOFF_MS)),
+        )
     };
 
     // Refuse on a dirty tree — a reset --hard would silently discard uncommitted work. (The tick
@@ -13083,7 +13136,7 @@ fn sync(fleet: &Fleet, force: bool) {
         let om_ancestor_of_head =
             git_ok(&["merge-base", "--is-ancestor", "origin/main", &old_head]);
         if sync_head_should_fast_forward_to_origin_main(head_ancestor_of_om, om_ancestor_of_head)
-            && git_ok(&["reset", "--hard", "origin/main"])
+            && reset_hard("origin/main").is_ok()
         {
             let om_short = git_stdout(&["rev-parse", "--short", "origin/main"]);
             println!(
@@ -13228,8 +13281,10 @@ fn sync(fleet: &Fleet, force: bool) {
     if let Some(role) = my_role.as_deref()
         && role_never_authors(role)
     {
-        if !git_ok(&["reset", "--hard", base]) {
-            eprintln!("fleet sync: `git reset --hard {base}` failed.");
+        if let Err(e) = reset_hard(base) {
+            eprintln!(
+                "fleet sync: `git reset --hard {base}` failed after {GIT_RESET_RETRIES} attempts: {e}"
+            );
             std::process::exit(1);
         }
         let base_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
@@ -13264,8 +13319,10 @@ fn sync(fleet: &Fleet, force: bool) {
         // every-tick "reset onto a diverged base" friction). Lossless either way (trees are equal here).
         let origin_main_tree = git_stdout(&["rev-parse", "origin/main^{tree}"]);
         let target = content_identical_reset_target(&head_tree, &trunk_tree, &origin_main_tree);
-        if !git_ok(&["reset", "--hard", target]) {
-            eprintln!("fleet sync: `git reset --hard {target}` failed.");
+        if let Err(e) = reset_hard(target) {
+            eprintln!(
+                "fleet sync: `git reset --hard {target}` failed after {GIT_RESET_RETRIES} attempts: {e}"
+            );
             std::process::exit(1);
         }
         let new_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
@@ -13524,8 +13581,10 @@ fn sync(fleet: &Fleet, force: bool) {
     }
 
     // Land on the integrated tip (the chosen base — origin/main under publish-lag, else trunk).
-    if !git_ok(&["reset", "--hard", base]) {
-        eprintln!("fleet sync: `git reset --hard {base}` failed.");
+    if let Err(e) = reset_hard(base) {
+        eprintln!(
+            "fleet sync: `git reset --hard {base}` failed after {GIT_RESET_RETRIES} attempts: {e}"
+        );
         std::process::exit(1);
     }
     let trunk_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
@@ -13540,7 +13599,7 @@ fn sync(fleet: &Fleet, force: bool) {
     for sha in &replay {
         if !git_ok(&["cherry-pick", sha]) {
             let _ = git_ok(&["cherry-pick", "--abort"]);
-            let _ = git_ok(&["reset", "--hard", &old_head]);
+            let _ = reset_hard(&old_head); // retry the restore too — a transient lock must not botch it
             eprintln!(
                 "fleet sync: cherry-pick of {sha} onto {base} ({trunk_sha}) FAILED (likely a real \
                  conflict with the advanced base). Restored your pre-sync HEAD ({}) — nothing lost. \
@@ -22848,6 +22907,61 @@ mod tests {
             Some(("76.4k", 999)),
             min
         ));
+    }
+
+    #[test]
+    fn retry_returns_first_ok_else_last_err_and_sleeps_only_between_tries() {
+        use std::cell::Cell;
+        // Succeeds on the 3rd attempt → Ok; slept exactly twice (BETWEEN tries, never after the success).
+        let calls = Cell::new(0u32);
+        let sleeps = Cell::new(0u32);
+        let r: Result<&str, u32> = retry(
+            3,
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() == 3 {
+                    Ok("ok")
+                } else {
+                    Err(calls.get())
+                }
+            },
+            || sleeps.set(sleeps.get() + 1),
+        );
+        assert_eq!(r, Ok("ok"));
+        assert_eq!(calls.get(), 3);
+        assert_eq!(sleeps.get(), 2);
+        // Always fails → Err(LAST err); tried max_tries, slept max_tries-1 (a persistent failure still
+        // surfaces its real error — the retry does not mask it).
+        let calls = Cell::new(0u32);
+        let sleeps = Cell::new(0u32);
+        let r: Result<(), u32> = retry(
+            3,
+            || {
+                calls.set(calls.get() + 1);
+                Err(calls.get())
+            },
+            || sleeps.set(sleeps.get() + 1),
+        );
+        assert_eq!(r, Err(3)); // last error, not the first
+        assert_eq!(calls.get(), 3);
+        assert_eq!(sleeps.get(), 2);
+        // First attempt succeeds → zero sleeps.
+        let sleeps = Cell::new(0u32);
+        let r: Result<i32, ()> = retry(3, || Ok(7), || sleeps.set(sleeps.get() + 1));
+        assert_eq!(r, Ok(7));
+        assert_eq!(sleeps.get(), 0);
+        // max_tries 0 clamps to 1: exactly one attempt, no sleep.
+        let calls = Cell::new(0u32);
+        let r: Result<(), u32> = retry(
+            0,
+            || {
+                calls.set(calls.get() + 1);
+                Err(9)
+            },
+            || panic!("must not sleep when only one attempt runs"),
+        );
+        assert_eq!(r, Err(9));
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]
