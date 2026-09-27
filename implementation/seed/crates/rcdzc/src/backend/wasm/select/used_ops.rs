@@ -1194,10 +1194,15 @@ pub(super) fn collect_used_ops_into_seen(
                                 out.insert(OP_BYTES_LEN);
                                 out.insert(OP_BYTES_GET);
                             } else if let Ty::Tuple(inner) = e.strip_nominal() {
-                                // A nested tuple element: `arr-get` (already inserted) + each inner scalar's op.
+                                // A nested tuple element: `arr-get` (already inserted) + each inner leaf's op —
+                                // a scalar unboxes via its read op, a `Bytes` inner copies its rope (`bytes-len`/
+                                // `bytes-get`) into `mem` at the cursor.
                                 let inner: Vec<Ty> = inner.iter().cloned().collect();
                                 for x in &inner {
-                                    if let Ok(Some(read)) = get_op_ty(db, x) {
+                                    if matches!(x.strip_nominal(), Ty::Bytes) {
+                                        out.insert(OP_BYTES_LEN);
+                                        out.insert(OP_BYTES_GET);
+                                    } else if let Ok(Some(read)) = get_op_ty(db, x) {
                                         out.insert(read);
                                     }
                                 }
