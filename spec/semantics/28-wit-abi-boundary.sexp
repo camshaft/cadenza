@@ -6976,3 +6976,53 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a RECORD host-op arg with an option<variant> FIELD crosses on the Some arm (variant flattened in the payload)"
+  (doc
+    "SHAPE 169 (v-wit-boundary) — a RECORD host-op ARGUMENT with an `option<variant>` FIELD (probe.push :
+           func(record{ v: option<variant{go, stop(s64)}>, n: s64 }) -> s64), the Some arm. The record-FIELD
+           composition of the top-level `option<variant>` arg (SHAPE 167): `field_boundary_abi`'s option arm now
+           admits a scalar-payload variant payload (→ `Option(Variant)`), so `is_boundary_record` accepts the
+           record; `emit_record_arg_marshal`'s new option<variant> field arm flattens the field to
+           `(opt-disc:i32, var-disc:i32, payload-join)` via the shared `emit_variant_reg_flatten`, joining the
+           record's core run alongside `n: s64`; None zero-fills. `flatten_record_field_abi` already flattens
+           `Option(Variant)` to the 3 slots, and `collect_record_field_ops`'s option arm recurses into the
+           variant payload (declaring its `sum-disc`/`sum-payload` + unbox). run() builds { v: Some(Stop(7)),
+           n: 5 } and performs probe.push; a VALID component that runs is the pin. None arm = SHAPE 170.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= v (option (variant (go) (stop (s64))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (Record (: v (Option Sig)) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Some (Sig.Stop 7))) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a RECORD host-op arg with an option<variant> FIELD crosses on the None arm (payload slots zero)"
+  (doc
+    "SHAPE 170 (v-wit-boundary) — the None arm of SHAPE 169. A record host-op arg whose `option<variant>` field
+           is None flattens that field to `(0, 0, 0)` — the option disc 0 (WIT none) with both the variant-disc
+           and the payload-join slots zero-filled — joining `n: s64` in the record's core run. Completes the
+           record option<variant>-field family (Some = SHAPE 169).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= v (option (variant (go) (stop (s64))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (Record (: v (Option Sig)) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v None) (= n 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))

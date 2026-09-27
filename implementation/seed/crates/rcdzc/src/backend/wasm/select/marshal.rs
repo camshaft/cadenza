@@ -2814,6 +2814,96 @@ pub(super) fn emit_record_arg_marshal(
             // payload))`; None → `(0, 0)`. `BlockType` is single-value, so the `if` arms SIDE-EFFECT into scratch
             // slots (disc_out, pval) and we push the 2 flattened values AFTER the `if` — the same shape as the
             // `result<list<u8>, enum>` field arm. WIT `option` disc is some=1 / none=0.
+            None if crate::backend::wasm::host::option_payload_ty(db, fty).is_some_and(|p| {
+                crate::backend::wasm::host::variant_scalar_payload_cases(db, &p).is_some()
+            }) =>
+            {
+                // An option<variant> field flattens to `(opt-disc:i32, var-disc:i32, payload-join)` = the
+                // option disc + the payload variant's own `(disc, join)` flatten via the shared
+                // `emit_variant_reg_flatten` (the SAME helper the bare-variant ARG / a top-level
+                // option<variant> arg uses); None zero-fills both payload slots. Touches no `mem` (a
+                // scalar-payload variant), so no `cursor`. MUST precede the option<scalar> arm below (a variant
+                // handle's `valtype_of` is `Some(I32)`, so that arm's guard would else match + miscompile it).
+                let payload_ty = crate::backend::wasm::host::option_payload_ty(db, fty)
+                    .expect("option-shaped by the guard");
+                let cases =
+                    crate::backend::wasm::host::variant_scalar_payload_cases(db, &payload_ty)
+                        .expect("variant payload by the guard");
+                let payload_discs: Vec<i32> = cases
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(d, (_, p))| p.map(|_| d as i32))
+                    .collect();
+                let pv = variant_register_join_vt(db, &payload_ty, &payload_discs)?;
+                let crate::ty::Ty::Sum { decl, .. } = fty.strip_nominal() else {
+                    unreachable!("option is a Sum")
+                };
+                let some_disc = {
+                    let d = db.type_decl_by_occ(*decl).ok_or_else(|| {
+                        Reject::decline("the option field's sum decl was not found")
+                    })?;
+                    d.variants
+                        .iter()
+                        .position(|v| v.payloads.len() == 1)
+                        .ok_or_else(|| Reject::decline("the option field has no payload variant"))?
+                        as i32
+                };
+                let ans = work_base + 4;
+                let disc_out = work_base + 5;
+                let var_disc = work_base + 6;
+                let pval = work_base + 7;
+                scratch_ty.insert(ans, ValType::I32);
+                scratch_ty.insert(disc_out, ValType::I32);
+                scratch_ty.insert(var_disc, ValType::I32);
+                scratch_ty.insert(pval, pv);
+                *high = (*high).max(work_base + 8);
+                let zero = match pv {
+                    ValType::I64 => Lir::ConstI64(0),
+                    ValType::F64 => Lir::F64ConstBits(0),
+                    ValType::F32 => Lir::F32ConstBits(0),
+                    _ => Lir::ConstI32(0),
+                };
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [option handle] (borrows rec)
+                out.push(Lir::LocalSet(ans));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_DISC)); // [guest opt disc]
+                out.push(Lir::ConstI32(some_disc));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty)); // Some: flatten the payload variant into the 2 scratch slots
+                out.push(Lir::ConstI32(1)); // WIT `option` some = 1
+                out.push(Lir::LocalSet(disc_out));
+                let pay_slot = work_base + 8;
+                scratch_ty.insert(pay_slot, ValType::I32);
+                *high = (*high).max(work_base + 9);
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [variant handle] (borrow — the record owns it)
+                out.push(Lir::LocalSet(pay_slot));
+                emit_variant_reg_flatten(
+                    db,
+                    pay_slot,
+                    &payload_ty,
+                    work_base + 9,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+                // Capture the 2 pushed values in REVERSE (stack top = the payload join).
+                out.push(Lir::LocalSet(pval));
+                out.push(Lir::LocalSet(var_disc));
+                out.push(Lir::Else); // None: (0, 0, 0)
+                out.push(Lir::ConstI32(0)); // WIT `option` none = 0
+                out.push(Lir::LocalSet(disc_out));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(var_disc));
+                out.push(zero);
+                out.push(Lir::LocalSet(pval));
+                out.push(Lir::End);
+                out.push(Lir::LocalGet(disc_out)); // push (opt-disc, var-disc, payload-join)
+                out.push(Lir::LocalGet(var_disc));
+                out.push(Lir::LocalGet(pval));
+            }
             None if crate::backend::wasm::host::option_payload_ty(db, fty)
                 .is_some_and(|p| valtype_of(&p).is_some()) =>
             {

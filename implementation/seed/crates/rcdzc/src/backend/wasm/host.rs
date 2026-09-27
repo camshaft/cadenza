@@ -495,6 +495,15 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                     let inner = field_boundary_abi(db, &payload)?;
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
                 }
+                // An `option<variant>` payload (scalar-payload variant) crosses as `option<variant<…>>` —
+                // `(disc, var-disc, join)`; recurse the payload's `Variant` abi. Marshalled by
+                // `emit_record_arg_marshal`'s option<variant> field arm (a record FIELD) /
+                // `emit_option_reg_flatten`'s variant branch (a top-level arg) — MUST agree with those marshal
+                // arms (decline-don't-miscompile).
+                if variant_scalar_payload_cases(db, &payload).is_some() {
+                    let inner = field_boundary_abi(db, &payload)?; // `Variant(cases)`
+                    return Some(RecordFieldAbi::Option(Box::new(inner)));
+                }
                 return None;
             }
             // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
