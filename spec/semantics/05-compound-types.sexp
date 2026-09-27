@@ -30398,6 +30398,31 @@
   (live-objects 0))
 
 (case
+  "List.len over a DIVERGENT-ownership scalar match (owned-fresh arm vs bare-alias arm) reclaims the owned arm (node#6 Match, no live objects)"
+  (doc
+    "node#6 divergent-ownership Core::Match borrow-operand (the scalar-match sibling of the MatchList case
+           above): `(List.len (match mode (1 src) (_ (build ...))))` -- one arm a bare ALIAS of a live-after
+           binding (`src`), the other an OWNED-FRESH producer. The arm-blind ownership join reads Borrowed
+           (>=1 bare-alias arm), pre-fix SUPPRESSING the length-op's post-borrow reclaim so the owned-fresh arm
+           LEAKED one list cell. The fix dups the bare-alias arm at emit_arm_body so the joined operand is
+           uniformly OWNED, then FORCES the reclaim. mode=2 (!=1) takes the owned-fresh `_` arm: (List.len
+           [0..4]=4)*10 + List.len src [0..3]=3 = 43; src stays live for the trailing read. A missed reclaim
+           leaks the owned arm; a double-free traps/underflows. Net 0.")
+  (input
+    (do
+      (def
+        (build (: i Int64) (: n Int64) (: acc (List Int64)))
+        (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+      (def
+        (main (: mode Int64))
+        (let ((src (build 0 3 #list())))
+          (+ (* (List.len (match mode (1 src) (_ (build 0 4 #list())))) 10) (List.len src))))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 43 Int64))
+  (live-objects 0))
+
+(case
   "a surviving closure capturing a heap List reclaims its env cell and captured handle (no live objects)"
   (doc
     "`mk-adder` takes an UNANNOTATED `(fn (x) ...)` so the closure is NOT inlined -- it lowers to a real
