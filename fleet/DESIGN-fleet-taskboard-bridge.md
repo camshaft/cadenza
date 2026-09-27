@@ -18,18 +18,30 @@ Three requirements: (1) every fleet agent auto-registers on the task board; (2) 
 ad-hoc (file inbox + the ~7.7MB `backlog.md`) onto tasks + comments + status; (3) a durable BRIDGE between
 today's fleet coordination and the task-board capabilities.
 
-## ⚠ Pivotal scoping finding: the task-board MCP is NOT in an agent's session
+## Scoping finding: MCP availability is a session-START-TIMING artifact, not absence (CORRECTED 2026-09-27)
 
-The board's MCP tools the assignment names — `register_agent`, `list_agents`, `create_project`,
-`create_task`, `list_tasks`, `get_task`, `comment_task`, `update_task`, `set_status`, `set_task_props`,
-`send_message`, `subscribe`, `get_events`, `check_notifications` — are **not available in this
-(`v-fleet-tooling`) agent session**. VERIFIED: two `ToolSearch` passes of the deferred-tool registry with the
-exact distinctive names return only Amazon Taskei/SIM + pipeline-assistant tools, none of the board tools.
-They appear to be available only in the **concierge's** session (the assignment says "available in this
-session" — i.e. the concierge's, where it was routed).
+Initial finding (probing THIS session): the board's MCP tools (`register_agent`, `create_task`,
+`comment_task`, …) did not appear in the `v-fleet-tooling` session — two `ToolSearch` passes returned only
+Amazon Taskei/SIM + pipeline-assistant tools, none of the board tools. **CORRECTION (concierge, host access):**
+the tools ARE available to agent sessions — the reason THIS session doesn't see them is **session-start
+timing, not absence**. `task-board` lives in the GLOBAL `~/.claude.json`, and `fleet/window.sh` launches plain
+`claude` with no MCP-scoping flag (`CLAUDE_ARGS` = `--disallowedTools AskUserQuestion` + effort/model/
+autocompact/skip-permissions only), so EVERY session resolves it. But MCP servers load at session START and do
+NOT hot-reload; `task-board` was added to the config AFTER this window launched, so a still-running
+pre-existing session predates it. A session started AFTER the config change (the concierge's, restarted then)
+has the tools.
 
-This SHAPES the whole architecture: **agents cannot self-register or self-comment via the MCP directly.** So
-the bridge needs a PROXY path. Three candidate architectures (the #1 Open Question):
+**Lesson (verify-before-asserting):** the OBSERVATION (tools absent from my running session) was real, but the
+CONCLUSION ("not available to agents") over-generalized — the real cause was session-start timing (a session
+predating the config change), not absence.
+
+**This OPENS a 4th architecture — (D):** after a `fleet up` relaunch (or any window restart), every agent has
+the board MCP tools DIRECTLY in-session, so a live agent can self-register / comment / set-status via its OWN
+MCP tools — **no proxy, no Rust client.** But the proxy path still matters for the moments with NO live agent
+session: AUTO-register-on-spinup (`fleet add` + `fleet up` reconstruct run OUTSIDE any agent's Claude session)
+and non-Claude contexts. So the likely shape is a **HYBRID**: (D) for a live agent's ongoing progress/comments,
+plus a small `fleet.rs`-direct client (A) for the register-on-spinup / reconcile moment. The four candidate
+paths (the #1 Open Question is now the CHOICE among them + whether to trigger a fleet relaunch):
 
 - **(A) `fleet.rs` calls the board directly.** Add a `fleet task …` subcommand family (register/comment/
   status/create) that talks to the board over whatever transport the MCP WRAPS — an HTTP endpoint, a local
@@ -44,11 +56,17 @@ the bridge needs a PROXY path. Three candidate architectures (the #1 Open Questi
   Cost: centralizes board I/O + load on the concierge, and the mirror lags the concierge's tick.
 - **(C) a dedicated bridge daemon agent** (`v-taskboard-bridge`) that holds the MCP session and mirrors
   registry + inbox + backlog → board. Isolates the load from the concierge; another daemon to run.
+- **(D) each agent uses its OWN in-session MCP tools** (available after a relaunch — see the corrected finding
+  above): a live agent calls `register_agent`/`comment_task`/`set_status` directly, NO proxy and NO Rust
+  client. Simplest for the RUNNING-agent path. Does NOT cover the register-on-spinup / reconcile moment (those
+  run before/without a live agent session), so pairs with a small (A) client for that.
 
-Recommendation pending the interface answer: if the board has an HTTP/CLI interface `fleet.rs` can call → **(A)**
-(cleanest, agents self-serve, extraction-compatible). If the ONLY interface is the MCP tools inside a Claude
-session → **(B)** first (concierge mirrors), because it needs no new transport and ships fastest, with **(C)**
-as the scale valve if concierge load becomes the bottleneck.
+Recommendation (now that transport + availability are known): a **HYBRID (D + a thin A)** — (D) for a live
+agent's ongoing progress/comments/status via its own session MCP (no new code, once agents relaunch), plus a
+thin `fleet.rs`-direct client (A) used ONLY at the sessionless moments: `fleet add`/`fleet up` register +
+reconcile. (B)/(C) remain fallbacks if we prefer a single board writer over per-agent self-service. This
+needs the operator to (i) pick the shape and (ii) decide whether to trigger a fleet relaunch so agents pick up
+the MCP (a rolling `fleet up` relaunch, or wait for natural window cycling).
 
 ## Verified transport + API surface (probed read-only 2026-09-27)
 
@@ -141,10 +159,12 @@ competes for `v-fleet-tooling` ticks. It INTERSECTS the extraction (both touch t
 ## Open Questions (operator steer, via concierge `ask`)
 
 1. **~~The board's callable interface~~ → ANSWERED (probed 2026-09-27): MCP JSON-RPC over HTTP at
-   `127.0.0.1:8880/board/mcp`, reachable by any host process — so `fleet.rs` can be a direct client (option A
-   is mechanically viable; see "Verified transport" above).** The only residual is the A/B/C **CHOICE**: build
-   the direct `fleet.rs` client now (A), have the concierge mirror via its MCP session first (B-interim), or
-   stand up a dedicated bridge daemon (C)? Concierge recommended **A-target / B-interim** to the operator.
+   `127.0.0.1:8880/board/mcp`, reachable by any host process (A viable); AND agents get the MCP tools
+   in-session after a relaunch (D viable) — see the corrected finding + "Verified transport" above.** Residual
+   for the operator: (i) pick the shape — recommend **HYBRID D + thin A** (agents self-serve via their own
+   session MCP for ongoing comments/status; a thin `fleet.rs`-direct client only for the sessionless
+   register-on-spinup/reconcile); (ii) decide whether to trigger a **fleet relaunch** so running agents pick
+   up the board MCP (rolling `fleet up`, or wait for natural window cycling).
 2. **Coexist vs migrate:** tracking-mirror ON TOP of the inbox (recommended), or is the board meant to
    eventually REPLACE the message-bus transport?
 3. **Granularity:** Project-per-vertical + Task-per-unit-of-work (proposed), or a different grain (e.g.
