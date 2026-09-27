@@ -11383,7 +11383,7 @@ todo	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — decline
 pass	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its let twin (should-work: both boundary-tail idioms are the documented form)
 todo	the try spelling of the performing bin-parse folds once try-under-effects lands
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
-todo	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err (should-work; today declines the runtime operand — try-operator lane)
+pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	two length-prefixed dependent frames chain at runtime
 pass	two map list elements in one arm each refine on a key

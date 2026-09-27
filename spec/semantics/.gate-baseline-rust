@@ -11157,7 +11157,7 @@ pass	tdd1 a runtime-operand `?` under the do-def binding idiom computes like its
 todo	the agent-return shape: three peers with a Cedar-gated escaping string result
 todo	the identity-less reducer-echo round-trips the real message shape into a step (via an imposed WIT world)
 todo	the try spelling of the performing bin-parse folds once try-under-effects lands
-todo	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err (should-work; today declines the runtime operand — try-operator lane)
+pass	trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err
 todo	two adapter records with different state types drive a take-while fold in one program
 todo	two compound arguments each cross as their own handle in one peer call
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)

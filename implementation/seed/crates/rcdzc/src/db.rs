@@ -2815,6 +2815,15 @@ impl Db {
         // parent index + resolution so the rewritten `let` resolves like hand-written source. TRY-SPECIFIC +
         // two-form-only, so every other do-block is untouched (`try_desugar` module docs).
         crate::try_desugar::desugar_try_do_defs(&mut ast);
+        // Hoist a single EXPRESSION-position `?` in each fallible-boundary function body to a boundary `let`
+        // — `C[(try e)]` -> `(let ((x (try e))) C[x])` (BRICK 3 slice 1, `DESIGN-try-operator-rcdzc.md`
+        // §7.1). The resulting binding-tail `let` rides the SAME inline-safe `lower_let` runtime-`?`
+        // `Core::MatchSum` short-circuit as the do-def form above (no `Core::Block`/`Break`, no new emit).
+        // Only hoists when every sub-expression evaluated BEFORE the `?` up to the boundary is a pure atom
+        // (no reordered effect/trap) and the path crosses no binding/control form — so a binding-tail `?`
+        // (handled by `lower_let`) and a control-flow `?` (a later slice) are left as clean CDZ0900 declines.
+        // Runs BEFORE the parent index + resolution so the rewritten `let` resolves like hand-written source.
+        crate::try_desugar::desugar_try_expr_position(&mut ast);
         // Reify every well-formed `(quote FORM)` into the `Ast` constructor application that BUILDS its
         // value (`(quote 42)` -> `(Ast.Int 42)`, `(quote (+ 1 2))` -> `(Ast.List (list …))`), so a quote
         // result and a hand-written `Ast.*` value are the SAME sum value (`metaprogramming.md` §Quote

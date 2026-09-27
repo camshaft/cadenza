@@ -24,8 +24,157 @@
 //! Runs at LOAD, BEFORE the parent index and resolution (alongside `reify_quotes` / `desugar_eval`), so the
 //! rewritten `let` resolves like hand-written source.
 
-use crate::ast::{Arenas, Leaf, Struct, StructId};
+use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
+
+/// The binding/control heads a hoist of an expression-position `?` MUST NOT cross (BRICK 3 slice 1,
+/// `DESIGN-try-operator-rcdzc.md` §7.1). Hoisting a `(try e)` out past one of these would change scoping
+/// (`let`/`do`/`fn`/`def`/`module`) or conditional evaluation (`if`/`match`/`handle`/`loop`) — so the
+/// downward search STOPS here, leaving such a `?` to `lower_let` (binding-tail) or a later slice
+/// (control-flow, which must distribute the `?` into the arm's continuation). Also stops at the special
+/// forms whose interior is not an ordinary evaluated sub-expression (`quote`/`eval`/`effect`/`type`).
+fn is_boundary_or_control_head(h: &str) -> bool {
+    matches!(
+        h,
+        "let"
+            | "do"
+            | "match"
+            | "if"
+            | "handle"
+            | "handle-abort"
+            | "fn"
+            | "def"
+            | "quote"
+            | "eval"
+            | "effect"
+            | "module"
+            | "type"
+            | "loop"
+    )
+}
+
+/// Whether `node` is a bare ATOM — a literal or a name reference. Such a node has NO observable effect and
+/// cannot trap, so REORDERING its evaluation (which hoisting a later `?` before it does) is unobservable.
+/// A `List` (an application) is conservatively treated as impure (it may call / perform / trap).
+fn is_pure_atom(ast: &Arenas, node: StructId) -> bool {
+    matches!(ast.get(node), Struct::Atom(_))
+}
+
+/// Find a single hoistable expression-position `(try e)` reachable from `node`, or `None`. Descends only
+/// through ASCRIPTIONS and pure APPLICATIONS/CONSTRUCTORS (a name head not in the stop-set), and only past
+/// an argument once every argument evaluated BEFORE it is a pure atom — so the `?` it returns can be lifted
+/// to a boundary `let` WITHOUT reordering any observable effect or trap (BRICK 3 slice 1 gate, §7.1). Stops
+/// at binding/control heads (`is_boundary_or_control_head`) so a binding-tail `?` (handled by `lower_let`)
+/// and a control-flow `?` (a later slice) are left untouched, and at a non-name head (an applied lambda).
+fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<StructId> {
+    let Struct::List(kids) = ast.get(node) else {
+        return None;
+    };
+    if kids.is_empty() {
+        return None;
+    }
+    let kids: Vec<StructId> = kids.clone();
+    let hname = ast.as_name(kids[0]);
+    // `(try e)` — the node to hoist (exactly the arity-1 operator form).
+    if hname == Some("try") && kids.len() == 2 {
+        return Some(node);
+    }
+    // A binding/control head, or a non-name head (an applied lambda / compound-ctor form not yet handled):
+    // do not cross it.
+    match hname {
+        Some(h) if !is_boundary_or_control_head(h) => {}
+        _ => return None,
+    }
+    // A pure application / constructor / ascription: descend into the FIRST argument (left-to-right, so the
+    // scrutinee-first evaluation order is preserved) that contains a hoistable `?`, provided every earlier
+    // argument is a pure atom.
+    for i in 1..kids.len() {
+        if let Some(tn) = find_hoistable_try(ast, kids[i]) {
+            return if kids[1..i].iter().all(|&a| is_pure_atom(ast, a)) {
+                Some(tn)
+            } else {
+                // An earlier argument is a non-atom (may call/perform/trap) — hoisting the `?` before it
+                // would reorder that effect. Decline the hoist (safe floor); a later slice with real
+                // effect/trap analysis can relax this.
+                None
+            };
+        }
+    }
+    None
+}
+
+/// Hoist a single EXPRESSION-position `?` in each fallible-boundary function body to a boundary `let`
+/// (BRICK 3 slice 1, `DESIGN-try-operator-rcdzc.md` §7.1): `C[(try e)]` => `(let ((x (try e))) C[x])`.
+/// The resulting binding-tail `let` rides the proven `lower_let` runtime-`?` `Core::MatchSum` short-circuit
+/// (the same path tdd1 / stored-closure use) — no `Core::Block`/`Break` and no new emit, and it is
+/// INLINE-SAFE because the `match` is local (an emit-time boundary-block wrap is NOT, since inlining moves
+/// the `?` into a caller with a different result type). Runs at LOAD, AFTER `desugar_try_do_defs` (so a
+/// binding-tail do-def is already a `let` the search stops at) and before resolution.
+pub fn desugar_try_expr_position(ast: &mut Arenas) {
+    // FAST BAIL: no `(try …)` form anywhere (the common case) → no interned `try` name leaf.
+    if !ast
+        .leaves
+        .iter()
+        .any(|l| matches!(l, Leaf::Name(n) if n.as_ref() == "try"))
+    {
+        return;
+    }
+    let original_len = ast.structure.len() as u32;
+    // Each fallible-boundary body is a `def`/`fn` node's LAST child (`(def target body)` / `(fn params
+    // body)`, both arity-3). Plan `(body_node, try_node)` for each body with a hoistable expression-position
+    // `?`; only ORIGINAL nodes are boundary bodies (the rewrite APPENDS the `let` scaffolding).
+    let mut plans: Vec<(StructId, StructId)> = Vec::new();
+    for i in 0..original_len {
+        let id = StructId(i);
+        let Struct::List(kids) = ast.get(id) else {
+            continue;
+        };
+        if kids.len() != 3 {
+            continue;
+        }
+        let is_def_or_fn = matches!(ast.as_name(kids[0]), Some("def") | Some("fn"));
+        if !is_def_or_fn {
+            continue;
+        }
+        let body = kids[2];
+        if let Some(tn) = find_hoistable_try(ast, body) {
+            plans.push((body, tn));
+        }
+    }
+    for (body, tn) in plans {
+        // `tn` = `(try e)`; capture its head + operand before overwriting it in place.
+        let Struct::List(tn_kids) = ast.get(tn) else {
+            continue;
+        };
+        if tn_kids.len() != 2 {
+            continue;
+        }
+        let try_head = tn_kids[0];
+        let operand = tn_kids[1];
+        // A fresh binder name, unique per `?` node (its original StructId index).
+        let xname: std::sync::Arc<str> = format!("__try_hoist_{}", tn.0).into();
+        // The let-INIT `(try e)` — a fresh node reusing the original head + operand (so the operand subtree
+        // is shared, not re-copied).
+        let try_init = push_list(ast, vec![try_head, operand]);
+        // The let-binding NAME atom.
+        let binder = push_atom(ast, Leaf::Name(xname.clone()));
+        // Overwrite `tn` IN PLACE to a NAME reference to the binder — its parent (the enclosing application)
+        // already points at `tn`, so this repoints the continuation's use to `x` with no parent surgery.
+        let ref_lid = LeafId(ast.leaves.len() as u32);
+        ast.leaves.push(Leaf::Name(xname));
+        ast.structure[tn.0 as usize] = Struct::Atom(ref_lid);
+        // Wrap the boundary body: move its current struct to a fresh `b_inner` node (the continuation `C[x]`,
+        // now carrying the `x` reference), then overwrite the body node IN PLACE to `(let ((x (try e)))
+        // b_inner)` — preserving the body's StructId/span as the `let`, mirroring `desugar_try_do_defs`.
+        let b_struct = ast.structure[body.0 as usize].clone();
+        let b_inner = StructId(ast.structure.len() as u32);
+        ast.structure.push(b_struct);
+        let let_head = push_atom(ast, Leaf::Name("let".into()));
+        let pair = push_list(ast, vec![binder, try_init]);
+        let bindings = push_list(ast, vec![pair]);
+        ast.structure[body.0 as usize] = Struct::List(vec![let_head, bindings, b_inner]);
+    }
+}
 
 /// Rewrite every two-form `(do (def x (try e)) body)` in `ast` to `(let ((x (try e))) body)` in place.
 pub fn desugar_try_do_defs(ast: &mut Arenas) {

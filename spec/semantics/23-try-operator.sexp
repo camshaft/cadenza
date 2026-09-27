@@ -1036,18 +1036,18 @@
   (output (: -1 Int64)))
 
 (case
-  "trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err (should-work; today declines the runtime operand — try-operator lane)"
+  "trr1 a runtime-Result `?` in a fallible-boundary fn unwraps Ok and PROPAGATES Err"
   (doc
-    "Idealistic TODO fence (corpus policy; breaker adv 2026-09-02, cross-verified). A `?`/`try` over a
-     RUNTIME-selected `Result` operand — `step`'s param `r` fed a runtime `(if … (Ok 41) (Err …))` — must
-     UNWRAP on the Ok leg (42 = 41+1, re-wrapped through the `(Result …)` boundary) and PROPAGATE on the Err
-     leg (`(try (Err …))` short-circuits `step` to the Err, which the outer match maps to -1). Today the
-     try-operator lowering (`diag.rs` TRY_ONLY_CONSTANT_OPERAND / `lower.rs`) handles only a CONSTANT operand,
-     so this RUNTIME operand DECLINES CDZ0900 on all three targets — the SAFE FLOOR (matches rust; the wasm
-     wrong-value miscompile the breaker found at a d33a2d1045-era main is FIXED — it now declines, no garbage).
-     The CONST-arg twin `(step (Ok 41))` folds 42 (the fold path is fine). Auto-flips to PASS when the
-     runtime-Result `?` lowering (the `Core::MatchSum` block-br emit, BRICK 3b) lands. OWNER: try-operator lane
-     (not effects — no handlers); fenced here per corpus policy so it tracks + auto-flips.")
+    "A `?`/`try` over a RUNTIME-selected `Result` operand in EXPRESSION position — `step`'s param `r` fed a
+     runtime `(if … (Ok 41) (Err …))` — UNWRAPS on the Ok leg (42 = 41+1, re-wrapped through the `(Result …)`
+     boundary) and PROPAGATES on the Err leg (`(try r)` short-circuits `step` to the Err, which the outer
+     match maps to -1). The `?` sits inside `(Ok (+ 1 •))`, not a binding tail, so it computes via the BRICK-3
+     expression-position hoist (`try_desugar::desugar_try_expr_position`): `(Ok (+ 1 (try r)))` is rewritten
+     to `(let ((x (try r))) (Ok (+ 1 x)))`, which then rides the SAME inline-safe `lower_let` runtime-`?`
+     `Core::MatchSum` short-circuit as the do-def / stored-closure cases (NO `Core::Block`/`Break`, no
+     non-local jump — inline-safe where an emit-time block wrap is not, since `step` inlines into `main`).
+     Verified tri-path leak-clean (live-objects 0 on both the Ok and the String-carrying Err leg). The
+     CONST-arg twin `(step (Ok 41))` folds 42 (the fold path is unaffected).")
   (input
     (do
       (def (step (: r (Result Int64 String))) (: (Ok (+ 1 (try r))) (Result Int64 String)))
