@@ -6705,7 +6705,17 @@ fn arm_borrows_heap_subvalue_seen(
         }
         | Core::ListLen { operand }
         | Core::BytesLen { operand }
-        | Core::StrScalarLen { operand } => arm_borrows_heap_subvalue_seen(db, operand, true, seen),
+        | Core::StrScalarLen { operand }
+        // `MapSize` (`Map.len`) / `SetLen` (`Set.len`) are the CHAMP-collection companions of `ListLen`:
+        // `map-size`/`set-size` BORROW the collection (an O(1) root-count read) and return a scalar `i64`,
+        // retaining NO handle — so a heap sub-value reached THROUGH the collection operand (a matched-scrutinee
+        // Ok payload fed to `Map.len`/`Set.len`) is only READ, never escapes. Relax the operand to `borrowed`,
+        // EXACTLY like `ListLen`, un-blocking the enclosing `MatchSum` shell-reclaim for a `Result<Map/Set,_>`
+        // Ok arm. Without it the CHAMP-collection try-desugar shell leaked one cell (`(Ok #map(..))`'s
+        // re-wrapped Err husk left unreclaimed because `Map.len m` was mis-read as CONSUMING `m` — the
+        // omission of the CHAMP length ops from this list, while `List.len` reclaimed clean).
+        | Core::MapSize { map: operand }
+        | Core::SetLen { set: operand } => arm_borrows_heap_subvalue_seen(db, operand, true, seen),
         Core::SumPayload { scrutinee, .. } => {
             arm_borrows_heap_subvalue_seen(db, scrutinee, true, seen)
         }

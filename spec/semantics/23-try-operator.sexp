@@ -1442,3 +1442,55 @@
   (output (: -99579 Int64))
   (call main (: 3 Int64))
   (output (: -99546 Int64)))
+
+(case
+  "trmp1 a `?`-bound value in a `(Ok #map)` Ok arm reclaims on the Err short-circuit and the Ok path"
+  (doc
+    "The CHAMP-collection (Map) face of the compound-ctor `?` reclaim family: a `?`-bound scalar is used
+     to BUILD a `#map` under the Ok arm of a `(Result (Map Int64 Int64) Int64)` boundary — `(do (def x
+     (try r)) (Ok #map((= x x))))`. When `r` is Err the `try` short-circuits `mk` to a fresh re-wrapped
+     `(Err …)` husk of the MAP-Ok sum type; when `r` is Ok the map is built and `Map.len` reads it. The
+     enclosing `main` match extracts `e`/reads `Map.len m` and must drop the sum shell on BOTH paths.
+     REGRESSION WITNESS (v-memory-safety): the re-wrapped Err husk LEAKED one cell because `Map.len m` in
+     the Ok arm was mis-classified as CONSUMING its `m` operand (the CHAMP length ops `MapSize`/`SetLen`
+     were absent from `arm_borrows_heap_subvalue`'s borrowing-read relax list, while `List.len`/`ListLen`
+     reclaimed clean) → the escape check blocked the enclosing `MatchSum` shell-reclaim. Fixed by relaxing
+     the `MapSize`/`SetLen` operand to `borrowed` exactly like `ListLen` (they `map-size`/`set-size` BORROW,
+     O(1), returning a scalar and retaining no handle). Verified leak-clean (live-objects 0 every path).")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok #map((= x x)))) (Result (Map Int64 Int64) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok m) (Map.len m))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
+  "trst1 a `?`-bound value in a `(Ok #set)` Ok arm reclaims on the Err short-circuit and the Ok path"
+  (doc
+    "The Set sibling of trmp1 (CHAMP-collection compound-ctor `?` reclaim family): a `?`-bound scalar
+     builds a `#set` under the Ok arm of a `(Result (Set Int64) Int64)` boundary. `Set.len`/`SetLen`
+     BORROWS (`set-size`, O(1), scalar result) exactly like `Map.len`/`MapSize` and `List.len`/`ListLen`;
+     the same `arm_borrows_heap_subvalue` borrow-relax fix reclaims the re-wrapped Err husk (Err path) and
+     the built set (Ok path). Verified leak-clean (live-objects 0 every path).")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok #set(x))) (Result (Set Int64) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok m) (Set.len m))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
