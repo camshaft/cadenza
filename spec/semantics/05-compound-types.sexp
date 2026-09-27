@@ -30396,7 +30396,7 @@
       (def
         (main (: mode Int64))
         (let ((src (build 0 3 #list())) (probe (build 0 mode #list())))
-          (+ (* (List.len (match probe ((list) src) (_ (build 0 4 #list())))) 10) (List.len src))))
+          (+ (* (List.len (match probe (#list() src) (_ (build 0 4 #list())))) 10) (List.len src))))
       (export main)))
   (call main (: 1 Int64))
   (output (: 43 Int64))
