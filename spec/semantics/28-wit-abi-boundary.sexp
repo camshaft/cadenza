@@ -5986,3 +5986,54 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<record-with-a-Bytes-field> host-op arg marshals its Some payload (byte-leaf + reorder)"
+  (doc
+    "SHAPE 132 — a top-level `option<record{n: s64, data: list<u8>}>` bare host-op arg, extending SHAPE 130's
+           option<record-of-scalars> to a record whose leaf is a BYTES field. `emit_option_reg_flatten`'s record
+           branch recurses `emit_record_arg_marshal`, which reads each WIT field from its name-lex cell, copies
+           the Bytes field's rope into shared mem at the reserved cursor, and pushes it as `(ptr, len)` — TWO
+           slots — while `n` pushes one. The record's value-heap cells are NAME-LEX ordered ({data, n}) but the
+           host WIT declares {n, data}, so BOTH the reorder AND the byte-leaf slot count are load-bearing: the
+           WIT-order flatten is `(disc, n:i64, ptr:i32, len:i32)`, whereas a name-lex order OR a scalar-count of
+           the Bytes field would emit a different core signature that the runtime rejects at instantiation. Pins
+           the two SHAPE-129/130 lessons combined: the payload record abi is reordered to WIT order
+           (`reorder_record_fields_to_wit`) AND a Bytes field expands to 2 scratch slots (`valtype_of(Bytes)` is
+           `Some(I32)`) AND the emit.rs cursor pre-scan reserves for an `option<record-with-bytes>` arg. run()
+           builds Some({n:9, data:b\"hi\"}), performs probe.push, returns the stub 55.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= n (s64)) (= data (list (u8)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: n Int64) (: data Bytes))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= n 9) (= data b"hi"))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<record-with-a-Bytes-field> host-op arg = None zero-fills every payload slot"
+  (doc
+    "SHAPE 133 — the NONE arm of the top-level option<record-with-a-Bytes-field> arg marshal (SHAPE 132
+           exercised only Some). An `option<record{n: s64, data: list<u8>}>` bare arg that is None flattens to
+           `(disc=0, 0, 0, 0)` — the record branch else-arm zero-fills the `n` slot (i64) AND both `(ptr,len)`
+           slots of the absent Bytes field (a None option never reads its payload rope, so no cursor copy) and
+           pushes disc=0. run() builds None, performs probe.push, returns the stub 42. Complements SHAPE 132.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= n (s64)) (= data (list (u8)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: n Int64) (: data Bytes))) Int64)))
+      (def (run) (host (probe) (probe.push None)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
