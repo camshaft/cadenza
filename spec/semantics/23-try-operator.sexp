@@ -1605,3 +1605,32 @@
   (call main (: 2 Int64))
   (output (: 7 Int64))
   (live-objects 0))
+
+(case
+  "trhe1 a `?` short-circuit propagates a HEAP Err payload through the boundary re-wrap, reclaim-clean"
+  (doc
+    "The heap-Err-payload face of the runtime `?`: unlike the scalar-Err fences (trc1/trmc1/trl1 use an
+     Int64 or String Err), here the boundary is `(Result Int64 (List Int64))` — the ERR arm carries a HEAP
+     `List`. `(Ok (+ (try r) 1))` in a fallible-boundary body hoists to `(let ((x (try r))) (Ok (+ x 1)))`;
+     on the Ok path `x` unwraps and the result is `10 + 1 = 11`; on the Err path the `?` short-circuits,
+     re-wrapping the caught heap-`List` Err into `mk`'s Result type and propagating it — the caller reads
+     `List.len` of the payload (3). Verified leak-clean (live-objects 0 both paths): the try short-circuit's
+     `Core::Block`/`Break` emit threads and reclaims a HEAP Err payload correctly. Complements the nested-Sum
+     Ok-arm husk case (trnt1, held on a reclaim fix) — this locks the ORTHOGONAL axis (heap Err, scalar Ok),
+     which reclaims correctly today, guarding the Err-propagation path adjacent to that fix.")
+  (input
+    (do
+      (def
+        (mk (: r (Result Int64 (List Int64))))
+        (: (Ok (+ (try r) 1)) (Result Int64 (List Int64))))
+      (def
+        (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 10) (Err #list(7 8 9))))
+          ((Ok v) v)
+          ((Err xs) (List.len xs))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 11 Int64))
+  (call main (: 0 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
