@@ -6531,3 +6531,54 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL list<option<record{a, b}>> host-op arg writes each option element in place (compound payload) — Some + None"
+  (doc
+    "SHAPE 152 (v-wit-boundary) — a top-level `list<option<record{a: s64, b: s64}>>` bare host-op arg: an option
+           element whose payload is a COMPOUND (record). `emit_option_to_mem` gained a compound-payload branch —
+           on Some it writes the payload record IN PLACE at the option's payload offset via `emit_record_to_mem`
+           (the same product writer `list<record>` uses), threading the running spill cursor + the payload record's
+           WIT (from the element's `option<…>` WIT) for field order; on None the payload area is left unwritten (a
+           none option's payload is never read at the canonical lift). `list_elem_marshalable`'s option arm was
+           widened from scalar-only to also admit a record/tuple payload whose fields are `product_field_marshalable`
+           (in lockstep with the marshal + `collect_list_elem_ops`, which recurses the payload's field ops). Each
+           element occupies the canonical `option<record{a,b}>` stride (disc byte + 8-byte-aligned record payload).
+           run() builds [Some({a:1, b:2}), None, Some({a:3, b:4})], performs probe.push, returns the stub 55. A
+           VALID component that runs is the pin (a wrong option/record layout traps at the host's list.lift).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (record (= a (s64)) (= b (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Option (Record (: a Int64) (: b Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some #record((= a 1) (= b 2))) None (Some #record((= a 3) (= b 4)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL list<option<tuple<s64, s64>>> host-op arg writes each option element in place (tuple payload) — Some + None"
+  (doc
+    "SHAPE 153 (v-wit-boundary) — a top-level `list<option<tuple<s64, s64>>>` bare host-op arg: the tuple-payload
+           twin of SHAPE 152. On Some `emit_option_to_mem` writes the payload tuple IN PLACE at the payload offset
+           via `emit_tuple_to_mem` (positional — a tuple's WIT order IS its element order, no WIT threading needed);
+           None leaves the payload area unwritten. Each element occupies the canonical `option<tuple<s64,s64>>`
+           stride (disc byte + 8-byte-aligned 16-byte tuple payload). run() builds [Some((1, 2)), None], performs
+           probe.push, returns the stub 55. Complements SHAPE 152 (record payload).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (tuple (s64) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Option (Tuple Int64 Int64))) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some #tuple(1 2)) None))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
