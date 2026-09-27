@@ -1139,7 +1139,17 @@
 ; n=3 where inner Errs -> the whole loop short-circuits -> -1. Auto-flips with BRICK 3b (then also
 ; pins loop-exit-unwind composition in one case). (breaker probe tm1.)
 (case
-  "a try over a mutual-recursive callee short-circuits out of the converted loop once BRICK 3b lands"
+  "a try over a mutual-recursive callee short-circuits out of the converted loop"
+  (doc
+    "The expression-position `?` in a MUTUAL-recursion argument (BRICK 3 slice 2b): `ev`/`od` alternate,
+     each threading `(+ 1 (try (inner …)))` (resp. `(+ 2 …)`) into the OTHER's accumulator argument. The
+     `?` sits in the ELSE arm of the tail `if` (a tail position — slice 2a) inside `(od (- n 1) (+ acc …))`,
+     where the FIRST argument `(- n 1)` is evaluated before it and can trap (a non-atom prefix). The hoist
+     binds that impure prefix to its OWN `let` ahead of the `?`'s `let` — `(let ((t (- n 1))) (let ((x (try
+     (inner …)))) (od t (+ acc (+ 1 x)))))` — preserving evaluation order and trap timing, then both `let`s
+     ride the inline-safe `lower_let` short-circuit. inner is Ok(5) except at n=3 (Err \"stop\"). n=2: the
+     recursion reaches n=0 without hitting n=3, summing acc = (1+5)+(2+5) = 13; n=10: passes through n=3, the
+     `?` short-circuits the whole mutual loop to Err, mapped to -1. Verified leak-clean (live-objects 0).")
   (input
     (do
       (def (inner (: b Bool)) (: (if b (Ok 5) (Err "stop")) (Result Int64 String)))

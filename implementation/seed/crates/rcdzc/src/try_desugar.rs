@@ -60,13 +60,18 @@ fn is_pure_atom(ast: &Arenas, node: StructId) -> bool {
     matches!(ast.get(node), Struct::Atom(_))
 }
 
-/// Find a single hoistable expression-position `(try e)` reachable from `node`, or `None`. Descends only
-/// through ASCRIPTIONS and pure APPLICATIONS/CONSTRUCTORS (a name head not in the stop-set), and only past
-/// an argument once every argument evaluated BEFORE it is a pure atom — so the `?` it returns can be lifted
-/// to a boundary `let` WITHOUT reordering any observable effect or trap (BRICK 3 slice 1 gate, §7.1). Stops
-/// at binding/control heads (`is_boundary_or_control_head`) so a binding-tail `?` (handled by `lower_let`)
-/// and a control-flow `?` (a later slice) are left untouched, and at a non-name head (an applied lambda).
-fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<StructId> {
+/// Find a single hoistable expression-position `(try e)` reachable from `node`, and the impure operands
+/// evaluated BEFORE it (in evaluation order) that must be let-bound to preserve that order. Returns
+/// `(try_node, impure_prefix)`, or `None`. Descends through ASCRIPTIONS and APPLICATIONS/CONSTRUCTORS (a
+/// name head not in the stop-set), into the FIRST argument (left-to-right, so `match`'s scrutinee-first
+/// order is preserved) that contains a `?`. Every EARLIER argument is evaluated before the `?`, so a
+/// PURE-ATOM one (literal / bare name — no effect, no trap) is inlined unchanged, and a NON-ATOM one (may
+/// call / perform / trap) is collected into `impure_prefix` to be bound to its own `let` ahead of the `?`
+/// (`hoist_try_at`) — preserving evaluation order and any trap/effect timing relative to the short-circuit
+/// (BRICK 3 slices 1/2b, `DESIGN-try-operator-rcdzc.md` §7.1). Stops at binding/control heads
+/// (`is_boundary_or_control_head`) — a binding-tail `?` is `lower_let`'s, a control-flow arm is descended by
+/// `collect_tail_positions`, not here — and at a non-name head (an applied lambda / compound-ctor form).
+fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<(StructId, Vec<StructId>)> {
     let Struct::List(kids) = ast.get(node) else {
         return None;
     };
@@ -75,9 +80,9 @@ fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<StructId> {
     }
     let kids: Vec<StructId> = kids.clone();
     let hname = ast.as_name(kids[0]);
-    // `(try e)` — the node to hoist (exactly the arity-1 operator form).
+    // `(try e)` — the node to hoist (exactly the arity-1 operator form); no prefix at this level.
     if hname == Some("try") && kids.len() == 2 {
-        return Some(node);
+        return Some((node, Vec::new()));
     }
     // A binding/control head, or a non-name head (an applied lambda / compound-ctor form not yet handled):
     // do not cross it.
@@ -85,19 +90,18 @@ fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<StructId> {
         Some(h) if !is_boundary_or_control_head(h) => {}
         _ => return None,
     }
-    // A pure application / constructor / ascription: descend into the FIRST argument (left-to-right, so the
-    // scrutinee-first evaluation order is preserved) that contains a hoistable `?`, provided every earlier
-    // argument is a pure atom.
+    // Descend into the FIRST argument containing a `?`. Every earlier argument (positions `1..i`) is
+    // evaluated before it; collect the NON-ATOM ones as the impure prefix to bind (OUTER level first), then
+    // append the inner prefix from the recursive descent (inner level after).
     for i in 1..kids.len() {
-        if let Some(tn) = find_hoistable_try(ast, kids[i]) {
-            return if kids[1..i].iter().all(|&a| is_pure_atom(ast, a)) {
-                Some(tn)
-            } else {
-                // An earlier argument is a non-atom (may call/perform/trap) — hoisting the `?` before it
-                // would reorder that effect. Decline the hoist (safe floor); a later slice with real
-                // effect/trap analysis can relax this.
-                None
-            };
+        if let Some((tn, inner_prefix)) = find_hoistable_try(ast, kids[i]) {
+            let mut prefix: Vec<StructId> = kids[1..i]
+                .iter()
+                .copied()
+                .filter(|&a| !is_pure_atom(ast, a))
+                .collect();
+            prefix.extend(inner_prefix);
+            return Some((tn, prefix));
         }
     }
     None
@@ -151,40 +155,64 @@ fn collect_tail_positions(ast: &Arenas, node: StructId, out: &mut Vec<StructId>)
     }
 }
 
-/// Rewrite `target` (a tail-position node holding `C[(try e)]`) in place to `(let ((x (try e))) C[x])`,
-/// where `tn` is the `(try e)` node reachable within it. Overwrites `tn` to a fresh name reference and wraps
-/// `target` as the `let`, preserving `target`'s StructId/span (mirrors `desugar_try_do_defs`). The resulting
-/// binding-tail `let` rides the inline-safe `lower_let` runtime-`?` `Core::MatchSum` short-circuit.
-fn hoist_try_at(ast: &mut Arenas, target: StructId, tn: StructId) {
-    // `tn` = `(try e)`; capture its head + operand before overwriting it in place.
+/// Let-bind `node` in place: move its current content to a fresh init node and overwrite `node` to a fresh
+/// NAME reference to `binder_name`, returning `(binder_atom, init_node)` for the enclosing `let`. Its parent
+/// already points at `node`, so this repoints the continuation's use to the binder with no parent surgery.
+fn bind_node_in_place(ast: &mut Arenas, node: StructId) -> (StructId, StructId) {
+    let xname: std::sync::Arc<str> = format!("__try_hoist_{}", node.0).into();
+    // The let-INIT — a fresh node holding `node`'s current content (its child ids shared, not re-copied).
+    let init_struct = ast.structure[node.0 as usize].clone();
+    let init = StructId(ast.structure.len() as u32);
+    ast.structure.push(init_struct);
+    // The binder NAME atom, and the in-place NAME reference overwriting `node`.
+    let binder = push_atom(ast, Leaf::Name(xname.clone()));
+    let ref_lid = LeafId(ast.leaves.len() as u32);
+    ast.leaves.push(Leaf::Name(xname));
+    ast.structure[node.0 as usize] = Struct::Atom(ref_lid);
+    (binder, init)
+}
+
+/// Rewrite `target` (a tail-position node holding `C[(try e)]`) in place to bind the impure prefix operands
+/// (evaluated before the `?`) and then the `?` itself, as NESTED `let`s wrapping the continuation:
+/// `(let ((t0 p0)) … (let ((x (try e))) C[t0…/x]))` (BRICK 3 slices 1/2b, `DESIGN-try-operator-rcdzc.md`
+/// §7.1). `prefix` is the impure operands in EVALUATION order (outermost `let` first); `tn` is the `(try e)`
+/// node (innermost). Preserves `target`'s StructId/span. Each resulting binding-tail `let` rides the
+/// inline-safe `lower_let` runtime-`?` `Core::MatchSum` short-circuit (the impure-prefix `let`s bind ordinary
+/// values; only the innermost `let` binds a `?`).
+fn hoist_try_at(ast: &mut Arenas, target: StructId, tn: StructId, prefix: &[StructId]) {
     let Struct::List(tn_kids) = ast.get(tn) else {
         return;
     };
     if tn_kids.len() != 2 {
         return;
     }
-    let try_head = tn_kids[0];
-    let operand = tn_kids[1];
-    // A fresh binder name, unique per `?` node (its original StructId index).
-    let xname: std::sync::Arc<str> = format!("__try_hoist_{}", tn.0).into();
-    // The let-INIT `(try e)` — a fresh node reusing the original head + operand (operand subtree shared).
-    let try_init = push_list(ast, vec![try_head, operand]);
-    // The let-binding NAME atom.
-    let binder = push_atom(ast, Leaf::Name(xname.clone()));
-    // Overwrite `tn` IN PLACE to a NAME reference to the binder — its parent already points at `tn`, so this
-    // repoints the continuation's use to `x` with no parent surgery.
-    let ref_lid = LeafId(ast.leaves.len() as u32);
-    ast.leaves.push(Leaf::Name(xname));
-    ast.structure[tn.0 as usize] = Struct::Atom(ref_lid);
-    // Wrap `target`: move its current struct to a fresh `b_inner` node (the continuation `C[x]`, now carrying
-    // the `x` reference), then overwrite `target` IN PLACE to `(let ((x (try e))) b_inner)`.
-    let b_struct = ast.structure[target.0 as usize].clone();
-    let b_inner = StructId(ast.structure.len() as u32);
-    ast.structure.push(b_struct);
-    let let_head = push_atom(ast, Leaf::Name("let".into()));
-    let pair = push_list(ast, vec![binder, try_init]);
-    let bindings = push_list(ast, vec![pair]);
-    ast.structure[target.0 as usize] = Struct::List(vec![let_head, bindings, b_inner]);
+    // Bind each impure prefix operand (eval order) and the `?` last — overwriting each in place to a name
+    // reference within `target`'s subtree. `pairs` is `(binder, init)` in eval order.
+    let mut pairs: Vec<(StructId, StructId)> = Vec::new();
+    for &p in prefix {
+        pairs.push(bind_node_in_place(ast, p));
+    }
+    pairs.push(bind_node_in_place(ast, tn));
+    // The continuation `C[…]` — `target`'s content moved to a FRESH node (carrying the name references), so
+    // `target`'s original children are re-parented under this node, not left as twins of `target`.
+    let mut body = StructId(ast.structure.len() as u32);
+    let target_struct = ast.structure[target.0 as usize].clone();
+    ast.structure.push(target_struct);
+    // Wrap in nested `let`s INNERMOST-first (the `?` binds closest to the continuation, the first-evaluated
+    // prefix operand outermost) so evaluation order is preserved. The OUTERMOST `let` is written IN PLACE into
+    // `target` (preserving its StructId/span) — never via a clone of a separate node, which would leave
+    // `target` and that node as twin parents of the same children and break scope resolution.
+    let n = pairs.len();
+    for (idx, (binder, init)) in pairs.into_iter().rev().enumerate() {
+        let let_head = push_atom(ast, Leaf::Name("let".into()));
+        let pair = push_list(ast, vec![binder, init]);
+        let bindings = push_list(ast, vec![pair]);
+        if idx + 1 == n {
+            ast.structure[target.0 as usize] = Struct::List(vec![let_head, bindings, body]);
+        } else {
+            body = push_list(ast, vec![let_head, bindings, body]);
+        }
+    }
 }
 
 /// Hoist a single EXPRESSION-position `?` in each fallible-boundary function body to a boundary `let`
@@ -207,8 +235,8 @@ pub fn desugar_try_expr_position(ast: &mut Arenas) {
     // Each fallible-boundary body is a `def`/`fn` node's LAST child (`(def target body)` / `(fn params
     // body)`, both arity-3). For each body, collect its TAIL positions and hoist the FIRST that holds a
     // hoistable expression-position `?`; only ORIGINAL nodes are boundary bodies (the rewrite APPENDS the
-    // `let` scaffolding). Plan `(target_node, try_node)`, one hoist per body per pass.
-    let mut plans: Vec<(StructId, StructId)> = Vec::new();
+    // `let` scaffolding). Plan `(target_node, try_node, impure_prefix)`, one hoist per body per pass.
+    let mut plans: Vec<(StructId, StructId, Vec<StructId>)> = Vec::new();
     for i in 0..original_len {
         let id = StructId(i);
         let Struct::List(kids) = ast.get(id) else {
@@ -224,14 +252,14 @@ pub fn desugar_try_expr_position(ast: &mut Arenas) {
         let mut tails: Vec<StructId> = Vec::new();
         collect_tail_positions(ast, body, &mut tails);
         for t in tails {
-            if let Some(tn) = find_hoistable_try(ast, t) {
-                plans.push((t, tn));
+            if let Some((tn, prefix)) = find_hoistable_try(ast, t) {
+                plans.push((t, tn, prefix));
                 break; // one hoist per body per pass
             }
         }
     }
-    for (target, tn) in plans {
-        hoist_try_at(ast, target, tn);
+    for (target, tn, prefix) in plans {
+        hoist_try_at(ast, target, tn, &prefix);
     }
 }
 
