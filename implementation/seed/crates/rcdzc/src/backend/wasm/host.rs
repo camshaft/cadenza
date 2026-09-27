@@ -1305,7 +1305,10 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                         }))
                                 || matches!(p.strip_nominal(), Ty::Record(sub)
                                     if !sub.is_empty()
-                                        && sub.values().all(|f| abi_val_type(f).is_some()))
+                                        && sub.values().all(|f| {
+                                            abi_val_type(f).is_some()
+                                                || matches!(f.strip_nominal(), Ty::Bytes)
+                                        }))
                         }) =>
                     {
                         let payload = option_payload_ty(db, &at).unwrap();
@@ -1325,25 +1328,25 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                 .collect();
                             RecordFieldAbi::Tuple(abis)
                         } else {
-                            // option<record-of-scalars> → the payload's `RecordFieldAbi::Record(…)`, each field
-                            // a scalar by the guard. Built name-lex, then REORDERED to the option payload WIT
-                            // record's DECLARATION order (`reorder_record_fields_to_wit`) — the emitted
-                            // `(option (record …))` component type + its core flatten must be WIT order to match
-                            // `emit_option_reg_flatten`'s WIT-order marshal (a name-lex order silently fails the
-                            // component-linker structural match — a codegen defect the runtime rejects).
+                            // option<record-of-scalars-or-bytes> → the payload's `RecordFieldAbi::Record(…)`,
+                            // each field a scalar OR `Bytes` by the guard. Built name-lex, then REORDERED to the
+                            // option payload WIT record's DECLARATION order (`reorder_record_fields_to_wit`) —
+                            // the emitted `(option (record …))` component type + its core flatten must be WIT
+                            // order to match `emit_option_reg_flatten`'s WIT-order marshal (a name-lex order
+                            // silently fails the component-linker structural match — a codegen defect the runtime
+                            // rejects).
                             let Ty::Record(sub) = payload.strip_nominal() else {
-                                unreachable!("option payload is scalar/bytes/tuple/record-of-scalars by the guard")
+                                unreachable!("option payload is scalar/bytes/tuple/record by the guard")
                             };
                             let sub = sub.clone();
                             let fields: Vec<(String, RecordFieldAbi)> = sub
                                 .iter()
                                 .map(|(sym, fty)| {
-                                    (
-                                        sym.name.to_string(),
-                                        RecordFieldAbi::Scalar(
-                                            abi_val_type(fty).expect("scalar field by the guard"),
-                                        ),
-                                    )
+                                    let abi = match abi_val_type(fty) {
+                                        Some(pv) => RecordFieldAbi::Scalar(pv),
+                                        None => RecordFieldAbi::Bytes, // Bytes field by the guard
+                                    };
+                                    (sym.name.to_string(), abi)
                                 })
                                 .collect();
                             let fields = match wit_params.as_ref().and_then(|ps| ps.get(arg_i)) {
@@ -1908,7 +1911,10 @@ pub fn first_unrepresentable_host_op(
                             }))
                         || matches!(p.strip_nominal(), Ty::Record(sub)
                         if !sub.is_empty()
-                            && sub.values().all(|f| abi_val_type(f).is_some()))
+                            && sub.values().all(|f| {
+                                abi_val_type(f).is_some()
+                                    || matches!(f.strip_nominal(), Ty::Bytes)
+                            }))
                 });
             // A top-level `tuple<…>` arg crosses NATIVELY as the built-in WIT `tuple<T…>` — the guest flattens
             // the value-heap tuple positionally (`select::emit_tuple_reg_flatten`; a Bytes element copies its

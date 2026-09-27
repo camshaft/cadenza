@@ -1117,16 +1117,19 @@ pub(super) fn emit_option_reg_flatten(
         }
         return Ok(());
     }
-    // A top-level `option<record-of-scalars>` arg flattens to `(disc, flatten(record))` = disc + one core slot
-    // per record field, in the host WIT DECLARATION order (`emit_record_arg_marshal` reorders the value-heap
-    // name-lex cells to WIT order — so `payload_wit` must be the payload's declared WIT record type). Some →
+    // A top-level `option<record-of-scalars-or-bytes>` arg flattens to `(disc, flatten(record))` = disc + one
+    // core slot per SCALAR field / TWO `(ptr,len)` slots per `Bytes` field, in the host WIT DECLARATION order
+    // (`emit_record_arg_marshal` reorders the value-heap name-lex cells to WIT order + copies each Bytes rope
+    // into `mem` at the cursor — so `payload_wit` must be the payload's declared WIT record type). Some →
     // recurse `emit_record_arg_marshal` on the SUM_PAYLOAD record handle, its N pushes captured in REVERSE;
-    // None → each field's width zero; push `disc` + the N slots AFTER the single-value `if`. MUST precede the
+    // None → each slot's width zero; push `disc` + the N slots AFTER the single-value `if`. MUST precede the
     // scalar branch below: a record's `valtype_of` is `Some(I32)` (an opaque handle), so the scalar branch's
-    // guard would else match it. Scoped to an all-scalar payload record this increment (a Bytes/nested field is
-    // a later slice) — the guard MUST agree with the classifier + gate, in lockstep.
+    // guard would else match it. The field guard is `abi_val_type OR Bytes` (a nested-compound field is a later
+    // slice) — MUST agree with the classifier + gate, in lockstep.
     if matches!(payload_ty.strip_nominal(), Ty::Record(sub)
-        if !sub.is_empty() && sub.values().all(|f| crate::backend::wasm::host::abi_val_type(f).is_some()))
+        if !sub.is_empty()
+            && sub.values().all(|f| crate::backend::wasm::host::abi_val_type(f).is_some()
+                || matches!(f.strip_nominal(), Ty::Bytes)))
     {
         let Ty::Record(sub) = payload_ty.strip_nominal() else {
             unreachable!("record payload by the guard")
@@ -1137,8 +1140,10 @@ pub(super) fn emit_option_reg_flatten(
                 "a top-level option<record> arg has no matching WIT record payload type (needed to order fields)",
             ));
         };
-        // Slot valtypes in WIT declaration order (matching `emit_record_arg_marshal`'s push order); each field a
-        // scalar → 1 slot this increment.
+        // Slot valtypes in WIT declaration order (matching `emit_record_arg_marshal`'s push order); each SCALAR
+        // field → 1 slot, each `Bytes` field → 2 `(ptr,len)` slots. The Bytes expansion is the byte-leaf
+        // slot-count pin (`valtype_of(Bytes)` is `Some(I32)`, a handle — a scalar-first count under-reserves and
+        // leaves a value on the stack, CDZ0910); check `Ty::Bytes` BEFORE `valtype_of`.
         let names: Vec<String> = sub.keys().map(|s| s.name.to_string()).collect();
         let mut slot_vts: Vec<ValType> = Vec::with_capacity(wit_fields.len());
         for (fname, _) in wit_fields {
@@ -1148,9 +1153,14 @@ pub(super) fn emit_option_reg_flatten(
                 ));
             };
             let fty = sub.values().nth(idx).expect("name-lex index in range");
-            slot_vts.push(valtype_of(fty).ok_or_else(|| {
-                Reject::decline("an option<record> payload field has no valtype")
-            })?);
+            if matches!(fty.strip_nominal(), Ty::Bytes) {
+                slot_vts.push(ValType::I32); // ptr
+                slot_vts.push(ValType::I32); // len
+            } else {
+                slot_vts.push(valtype_of(fty).ok_or_else(|| {
+                    Reject::decline("an option<record> payload field has no valtype")
+                })?);
+            }
         }
         let wit = wit.clone();
         let n = slot_vts.len() as u32;
