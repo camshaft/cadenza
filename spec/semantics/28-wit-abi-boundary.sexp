@@ -7917,3 +7917,54 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a bare result<tuple<s64,f64>, enum> host-op arg crosses on the Ok arm (float in a non-slot-0 element)"
+  (doc
+    "SHAPE 206 (v-wit-boundary) — a FLOAT tuple element in a NON-slot-0 position. The payloadless-enum Err arm
+           flattens to a single `i32` (its disc), so the result flatten joins that `i32` with ONLY the Ok payload's
+           FIRST slot; slots 1+ have no Err counterpart and keep their own core type. Here slot 0 is the `s64`
+           (an integer that absorbs the `i32` disc by widening to `i64`) and slot 1 is the `f64`, which rides its
+           own `f64` slot on Ok and is zero-filled (`F64ConstBits(0)`) on Err — no reinterpret join needed. Core
+           `(param i32 i64 f64)`, exactly the canonical `result<tuple<f64…>, enum>` flatten. `result_tuple_enum`
+           admits a float element in any position EXCEPT slot 0 (a float FIRST slot would need the canonical
+           reinterpret join, which is DECLINED for now). run() emits `(Ok #tuple(7 1.5))`; a VALID running
+           component (live-objects=0) is the pin. The record twin = SHAPE 207.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (s64) (f64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Int64 Float64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple(7 1.5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare result<record{n:s64,x:f64}, enum> host-op arg crosses on the Ok arm (float in a non-slot-0 field)"
+  (doc
+    "SHAPE 207 (v-wit-boundary) — the record twin of SHAPE 206: a FLOAT field in a NON-slot-0 (WIT-order) position.
+           The fields are marshalled in WIT declaration order, so slot 0 is `n:s64` (an integer that absorbs the
+           `i32` err disc by widening to `i64`) and slot 1 is `x:f64` (its own `f64` slot on Ok, `F64ConstBits(0)`
+           on Err). Core `(param i32 i64 f64)`. `result_record_enum` admits any boundary field; a float field only
+           needs care when it lands in slot 0 (the err-disc join slot) — here it does not. run() emits
+           `(Ok #record((= n 7) (= x 1.5)))`; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= n (s64)) (= x (f64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: n Int64) (: x Float64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= n 7) (= x 1.5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

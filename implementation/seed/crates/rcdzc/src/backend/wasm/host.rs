@@ -142,16 +142,16 @@ pub enum HostParam {
     /// flattens (canonical variant flatten) to `(disc:i32, elem0, elem1, …)` — the discriminant then the Ok
     /// tuple's elements POSITIONALLY (element = declaration = component order, NO name-lex/WIT reorder — a tuple
     /// is positional, unlike a record), with the `i32` err discriminant riding the FIRST element's slot on the
-    /// Err arm. Every Ok element is a non-float SCALAR, so each is one register slot and joining the first with
-    /// the `i32` err disc never widens beyond that element's own width — the slot widths are exactly the tuple's
-    /// element widths, no `mem`. Carries the Ok element scalar ABIs (positional) and the err enum's case names.
-    /// The guest marshals it via `select::emit_result_tuple_arg_reg_flatten`: Ok recurses `emit_tuple_reg_flatten`
-    /// on the payload tuple (its N pushes captured into the join slots), Err puts the err enum's disc in the
-    /// first slot + zero-fills the rest. A tuple with a COMPOUND / float element is a later increment; the
-    /// classifier only pushes this for `result_tuple_enum`. Carries each Ok element's boundary ABI (positional,
-    /// no field names — a tuple is positional) so the core flatten + component type derive from it; an element may
-    /// be a scalar OR any compound `emit_tuple_reg_flatten` handles (Bytes/list/record/nested-tuple/option), a
-    /// mem-writing element forcing `set_needs_memory` + the cursor like the record result.
+    /// Err arm. Only slot 0 joins the `i32` err disc (the payloadless-enum Err flattens to a single `i32`); an
+    /// integer/ptr first slot absorbs it by widening to `i64`, so slot 0 must NOT be a float — a float FIRST
+    /// element would need the canonical reinterpret join, which `result_tuple_enum` declines (a float in a LATER
+    /// element is fine — it rides its own `f64` slot, zero-filled on Err). The guest marshals it via
+    /// `select::emit_result_tuple_arg_reg_flatten`: Ok recurses `emit_tuple_reg_flatten` on the payload tuple (its
+    /// N pushes captured into the join slots), Err puts the err enum's disc in the first slot + zero-fills the
+    /// rest. Carries each Ok element's boundary ABI (positional, no field names — a tuple is positional) so the
+    /// core flatten + component type derive from it; an element may be a scalar OR any compound
+    /// `emit_tuple_reg_flatten` handles (Bytes/list/record/nested-tuple/option), a mem-writing element forcing
+    /// `set_needs_memory` + the cursor like the record result.
     ResultTuple(Vec<RecordFieldAbi>, Vec<String>),
     /// A bare `result<list<scalar>, enum>` param (the top-level position, not nested) — crosses as the built-in
     /// WIT `result<list<T>, err-enum>` type, referenced by a per-param structural `CRef`. The list-Ok sibling of
@@ -522,9 +522,10 @@ pub fn result_list_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
     Some((elem, err_cases))
 }
 
-/// Whether `ty` is `result<tuple-of-scalars, enum>` — an Ok arm that is a TUPLE every element of which is a
-/// non-float SCALAR (so it flattens to registers, no `mem`; the `i32` err disc joins the first element's slot,
-/// which stays clean for an integer element — a float element / a compound element is a later increment) and an
+/// Whether `ty` is `result<tuple, enum>` — an Ok arm that is a TUPLE every element of which is a boundary field
+/// (`field_boundary_abi` — scalar/bytes/list/nested-compound), EXCEPT that the FIRST element may not be a float
+/// (the `i32` err disc joins slot 0; an integer/ptr first slot absorbs it, a float first slot would need the
+/// canonical reinterpret join, declined for now — a float in a LATER element is fine) and an
 /// Err arm that is a PAYLOAD-LESS enum. Returns `(the Ok tuple Ty, err-enum case names)` if so, else `None`. A
 /// `Sum` whose decl has exactly `Ok`/`Err` variants, instantiated at `[tuple, enum]`. The register flatten is
 /// `emit_result_tuple_arg_reg_flatten` (positional — no field reorder). Reads through erased nominal wrappers,
@@ -548,8 +549,24 @@ pub fn result_tuple_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
         return None;
     }
     let elems = elems.clone(); // release the borrow of `args`/`ty` before the `&mut db` calls
-    for ety in elems.iter() {
-        field_boundary_abi(db, ety)?;
+    // SLOT-0 CONSTRAINT: the payloadless-enum Err arm flattens to a SINGLE `i32` (its disc), so the result
+    // flatten joins that `i32` with ONLY the Ok payload's FIRST slot (slots 1+ have no Err counterpart and
+    // stay their own type). An integer/ptr first slot absorbs the `i32` disc cleanly (widen to `i64`); a FLOAT
+    // first slot would need the canonical reinterpret join (`f64`↔`i64` bit-cast on each arm) which this
+    // increment does not emit — so a FLOAT first element is DECLINED here (a clean decline, not a miscompile).
+    // Only a bare scalar first slot can BE a float: every compound element (bytes/list/record/tuple/option)
+    // flattens with an `i32` ptr/disc first, so a float can only reach slot 0 as `Scalar(F32|F64)`. A float in
+    // a LATER element is fine (it never joins the disc) — TESTED.
+    for (i, ety) in elems.iter().enumerate() {
+        let abi = field_boundary_abi(db, ety)?;
+        if i == 0
+            && matches!(
+                abi,
+                RecordFieldAbi::Scalar(AbiValType::F32) | RecordFieldAbi::Scalar(AbiValType::F64)
+            )
+        {
+            return None;
+        }
     }
     // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
     {
@@ -1845,9 +1862,10 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     // positional), each element flattened by its `RecordFieldAbi` (scalar → one slot; a compound
                     // element → its in-mem `(ptr,len)` slots via the scratch cursor), the `i32` err disc riding
                     // the first element's slot on Err. Marshalled by `emit_result_tuple_arg_reg_flatten` (Ok
-                    // recurses `emit_tuple_reg_flatten`). Checked BEFORE the scalar `_` arm; a float element
-                    // (needing the reinterpret join at slot 0) is a later increment (`result_tuple_enum` declines
-                    // it → `_` declines).
+                    // recurses `emit_tuple_reg_flatten`). Checked BEFORE the scalar `_` arm; a FLOAT FIRST element
+                    // (its slot 0 would need the canonical reinterpret join with the `i32` err disc) is a later
+                    // increment (`result_tuple_enum` declines it → `_` declines) — a float in a LATER element
+                    // rides its own `f64` slot and crosses fine.
                     _ if !peer_bound && result_tuple_enum(db, &at).is_some() => {
                         let (ok_tuple, err_cases) = result_tuple_enum(db, &at).unwrap();
                         if let Ty::Tuple(elems) = ok_tuple.strip_nominal() {
