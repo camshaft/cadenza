@@ -63,12 +63,18 @@ pub(super) fn emit_list_arg_marshal(
         None
     };
     let is_tuple = tuple_elem.is_some();
-    // An `option<scalar>` element (`list<option<s64>>`): written in place at its canonical option layout (disc
-    // byte + payload scalar) by `emit_option_to_mem`. Carries the payload `Ty` + the guest decl's some-disc.
+    // An `option<scalar|record|tuple>` element (`list<option<s64>>`, `list<option<record>>`): written in place
+    // at its canonical option layout (disc byte + payload) by `emit_option_to_mem`. Carries the payload `Ty` +
+    // the guest decl's some-disc. The admitted payload set matches `host::list_elem_marshalable`'s option arm
+    // (scalar, or a record/tuple product) — the representability gate; an option<bytes>/list/option is excluded
+    // (the gate declines it before emit, so a broader detector here would only ever see an admitted shape).
     let option_elem: Option<(Ty, i32)> = if is_bytes || is_nested_list || is_record || is_tuple {
         None
     } else if let Some(payload) =
-        crate::backend::wasm::host::option_payload_ty(db, elem).filter(|p| valtype_of(p).is_some())
+        crate::backend::wasm::host::option_payload_ty(db, elem).filter(|p| {
+            crate::backend::wasm::host::abi_val_type(p).is_some()
+                || matches!(p.strip_nominal(), Ty::Record(_) | Ty::Tuple(_))
+        })
     {
         let crate::ty::Ty::Sum { decl, .. } = elem.strip_nominal() else {
             unreachable!("option is a Sum")
@@ -313,15 +319,23 @@ pub(super) fn emit_list_arg_marshal(
             out,
         )?;
     } else if let Some((payload_ty, some_disc)) = &option_elem {
-        // OPTION element (`list<option<scalar>>`): write the value-heap Option IN PLACE into the outer slot at
-        // `slotaddr` per its canonical option layout (disc byte + payload scalar), via `emit_option_to_mem`.
-        // `eh` is the borrowed element Option handle. work_base ABOVE this level's scratch (`+9`).
+        // OPTION element (`list<option<scalar|record|tuple>>`): write the value-heap Option IN PLACE into the
+        // outer slot at `slotaddr` per its canonical option layout (disc byte + payload), via
+        // `emit_option_to_mem`. `eh` is the borrowed element Option handle. A RECORD/TUPLE payload is written at
+        // the payload offset via the product writer (a Bytes field's rope spilling at `cursor`), so thread the
+        // `cursor` + the payload's WIT (from the element's `WitType::Option(inner)`) for the record field order.
+        let payload_wit = match elem_wit {
+            Some(crate::wit_world::WitType::Option(inner)) => Some(inner.as_ref()),
+            _ => None,
+        };
         emit_option_to_mem(
             db,
             eh,
             slotaddr,
             payload_ty,
             *some_disc,
+            cursor,
+            payload_wit,
             work_base + 9,
             high,
             scratch_ty,
@@ -498,6 +512,8 @@ pub(super) fn emit_product_to_mem(
                     field_addr,
                     &payload,
                     some_disc,
+                    cursor,
+                    None, // this arm is scalar-payload only (guard above); a record payload WIT is not threaded
                     work_base + 5,
                     high,
                     scratch_ty,
@@ -612,12 +628,15 @@ pub(super) fn emit_tuple_to_mem(
     )
 }
 
-/// Marshal a value-heap `option<scalar>` (handle in `opt_slot`) as a host `list<option>` ELEMENT — writing it
-/// IN PLACE into linear memory at `dest_addr` per the canonical option layout: a 1-byte discriminant at
-/// offset 0 (WIT `option` some=1 / none=0) then the payload scalar at `align_up(1, align(payload))` — the
-/// exact layout `emit_option_sum_lift` (the result side) reads back. `some_disc` is the guest decl's
-/// single-payload variant index. Scratch (`is_some`) at `work_base`. A SCALAR payload only (no `cursor`; an
-/// option<bytes>/compound element is a later slice).
+/// Marshal a value-heap `option<T>` (handle in `opt_slot`) as a host `list<option>` ELEMENT — writing it IN
+/// PLACE into linear memory at `dest_addr` per the canonical option layout: a 1-byte discriminant at offset 0
+/// (WIT `option` some=1 / none=0) then the payload at `align_up(1, align(payload))` — the exact layout
+/// `emit_option_sum_lift` (the result side) reads back. `some_disc` is the guest decl's single-payload variant
+/// index. `cursor` is the running spill cursor a compound payload's `Bytes`/nested field copies into (unused for
+/// a scalar payload). `payload_wit` is the payload's declared WIT (needed to order a RECORD payload's fields;
+/// `None`/ignored for scalar/tuple). A SCALAR payload writes its width inline; a RECORD/TUPLE payload is written
+/// via [`emit_record_to_mem`]/[`emit_tuple_to_mem`] at the payload offset (its own fields recursed). An
+/// `option<bytes>`/`option<list>`/`option<option>` payload is a later slice (declines). Scratch from `work_base`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_option_to_mem(
     db: &mut Db,
@@ -625,6 +644,8 @@ pub(super) fn emit_option_to_mem(
     dest_addr: u32,
     payload_ty: &Ty,
     some_disc: i32,
+    cursor: u32,
+    payload_wit: Option<&crate::wit_world::WitType>,
     work_base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
@@ -632,35 +653,11 @@ pub(super) fn emit_option_to_mem(
 ) -> Result<(), Reject> {
     let (psize, palign) = canonical_layout(db, payload_ty);
     let payload_off = align_up_u32(disc_size_for(2), palign); // disc is 1 byte for a 2-variant option
-    let pv = valtype_of(payload_ty)
-        .ok_or_else(|| Reject::decline("an option<scalar> element payload has no valtype"))?;
-    let read = get_op_ty(db, payload_ty)?
-        .ok_or_else(|| Reject::decline("an option<scalar> element payload has no unbox op"))?;
-    let width_store = |offset: u32| -> Result<Lir, Reject> {
-        Ok(match (pv, psize) {
-            (ValType::I64, _) => Lir::I64Store { offset },
-            (ValType::F64, _) => Lir::F64Store { offset },
-            (ValType::F32, _) => Lir::F32Store { offset },
-            (ValType::I32, 4) => Lir::I32Store { offset },
-            (ValType::I32, 2) => Lir::I32Store16 { offset },
-            (ValType::I32, 1) => Lir::I32Store8 { offset },
-            _ => {
-                return Err(Reject::decline(
-                    "an option<scalar> element payload has no width store",
-                ));
-            }
-        })
-    };
-    let zero = match pv {
-        ValType::I64 => Lir::ConstI64(0),
-        ValType::F64 => Lir::F64ConstBits(0),
-        ValType::F32 => Lir::F32ConstBits(0),
-        _ => Lir::ConstI32(0),
-    };
     let is_some = work_base;
     scratch_ty.insert(is_some, ValType::I32);
     *high = (*high).max(work_base + 1);
-    // is_some = (guest sum-disc == some_disc); this IS the WIT option disc (some=1 / none=0).
+    // is_some = (guest sum-disc == some_disc); this IS the WIT option disc (some=1 / none=0). Store the 1-byte
+    // disc at offset 0 unconditionally, then write the payload area on the Some arm.
     out.push(Lir::LocalGet(opt_slot));
     out.push(Lir::CallImport(OP_SUM_DISC));
     out.push(Lir::ConstI32(some_disc));
@@ -669,21 +666,113 @@ pub(super) fn emit_option_to_mem(
     out.push(Lir::LocalGet(dest_addr));
     out.push(Lir::LocalGet(is_some));
     out.push(Lir::I32Store8 { offset: 0 }); // 1-byte disc
-    out.push(Lir::LocalGet(is_some));
-    out.push(Lir::If(BlockType::Empty)); // Some: dest[payload_off] = unbox(sum-payload)
-    out.push(Lir::LocalGet(dest_addr));
-    out.push(Lir::LocalGet(opt_slot));
-    out.push(Lir::CallImport(OP_SUM_PAYLOAD));
-    out.push(Lir::CallImport(read));
-    if read == OP_GET_INT && matches!(pv, ValType::I32) {
-        out.push(Lir::I32WrapI64);
+
+    // A SCALAR payload: write its width inline at `payload_off` on Some, or a zero of that width on None.
+    if crate::backend::wasm::host::abi_val_type(payload_ty).is_some() {
+        let pv = valtype_of(payload_ty)
+            .ok_or_else(|| Reject::decline("an option<scalar> element payload has no valtype"))?;
+        let read = get_op_ty(db, payload_ty)?
+            .ok_or_else(|| Reject::decline("an option<scalar> element payload has no unbox op"))?;
+        let width_store = |offset: u32| -> Result<Lir, Reject> {
+            Ok(match (pv, psize) {
+                (ValType::I64, _) => Lir::I64Store { offset },
+                (ValType::F64, _) => Lir::F64Store { offset },
+                (ValType::F32, _) => Lir::F32Store { offset },
+                (ValType::I32, 4) => Lir::I32Store { offset },
+                (ValType::I32, 2) => Lir::I32Store16 { offset },
+                (ValType::I32, 1) => Lir::I32Store8 { offset },
+                _ => {
+                    return Err(Reject::decline(
+                        "an option<scalar> element payload has no width store",
+                    ));
+                }
+            })
+        };
+        let zero = match pv {
+            ValType::I64 => Lir::ConstI64(0),
+            ValType::F64 => Lir::F64ConstBits(0),
+            ValType::F32 => Lir::F32ConstBits(0),
+            _ => Lir::ConstI32(0),
+        };
+        out.push(Lir::LocalGet(is_some));
+        out.push(Lir::If(BlockType::Empty)); // Some: dest[payload_off] = unbox(sum-payload)
+        out.push(Lir::LocalGet(dest_addr));
+        out.push(Lir::LocalGet(opt_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+        out.push(Lir::CallImport(read));
+        if read == OP_GET_INT && matches!(pv, ValType::I32) {
+            out.push(Lir::I32WrapI64);
+        }
+        out.push(width_store(payload_off)?);
+        out.push(Lir::Else); // None: dest[payload_off] = 0
+        out.push(Lir::LocalGet(dest_addr));
+        out.push(zero);
+        out.push(width_store(payload_off)?);
+        out.push(Lir::End);
+        return Ok(());
     }
-    out.push(width_store(payload_off)?);
-    out.push(Lir::Else); // None: dest[payload_off] = 0
+
+    // A RECORD or TUPLE payload: on Some, write the payload product IN PLACE at `dest_addr + payload_off` via the
+    // shared product writer (each field/element recursed at its own offset; a Bytes/option<scalar> field handled
+    // there, a Bytes rope spilling at `cursor`). On None the payload area is NOT written — a `none` option's
+    // payload is never read at the canonical lift, so leaving it as-is is sound (the scalar arm zeroes only
+    // because a single-slot zero is cheaper than a conditional skip; a compound zero-fill would be a dead loop).
+    let payload_handle = work_base + 1;
+    let payload_addr = work_base + 2;
+    scratch_ty.insert(payload_handle, ValType::I32);
+    scratch_ty.insert(payload_addr, ValType::I32);
+    *high = (*high).max(work_base + 3);
+    out.push(Lir::LocalGet(is_some));
+    out.push(Lir::If(BlockType::Empty)); // Some
     out.push(Lir::LocalGet(dest_addr));
-    out.push(zero);
-    out.push(width_store(payload_off)?);
-    out.push(Lir::End);
+    out.push(Lir::ConstI32(payload_off as i32));
+    out.push(Lir::I32Add);
+    out.push(Lir::LocalSet(payload_addr)); // payload_addr = dest_addr + payload_off
+    out.push(Lir::LocalGet(opt_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload product handle] (borrows the option)
+    out.push(Lir::LocalSet(payload_handle));
+    match payload_ty.strip_nominal() {
+        Ty::Record(fields) => {
+            let fields = (**fields).clone();
+            let wit = payload_wit.ok_or_else(|| {
+                Reject::decline(
+                    "an option<record> list element needs the payload record's WIT type to order its fields",
+                )
+            })?;
+            emit_record_to_mem(
+                db,
+                payload_handle,
+                payload_addr,
+                &fields,
+                wit,
+                cursor,
+                work_base + 3,
+                high,
+                scratch_ty,
+                out,
+            )?;
+        }
+        Ty::Tuple(elems) => {
+            let elems: Vec<Ty> = elems.iter().cloned().collect();
+            emit_tuple_to_mem(
+                db,
+                payload_handle,
+                payload_addr,
+                &elems,
+                cursor,
+                work_base + 3,
+                high,
+                scratch_ty,
+                out,
+            )?;
+        }
+        _ => {
+            return Err(Reject::decline(
+                "an option list element payload is not a scalar/record/tuple this increment",
+            ));
+        }
+    }
+    out.push(Lir::End); // (no Else — a none option's payload area is left unwritten, never read on lift)
     Ok(())
 }
 

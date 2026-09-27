@@ -159,11 +159,16 @@ pub(super) fn collect_list_elem_ops(
     } else if let Some(payload) =
         crate::backend::wasm::host::option_payload_ty(db, elem).filter(|p| valtype_of(p).is_some())
     {
-        // An OPTION<scalar> element (`emit_option_to_mem`): reads `sum-disc`, and on Some `sum-payload` + the
-        // payload scalar's unbox op.
+        // An OPTION<scalar|record|tuple> element (`emit_option_to_mem`): reads `sum-disc`, and on Some
+        // `sum-payload` + the payload's own ops. A scalar payload unboxes with its get-op; a RECORD/TUPLE payload
+        // is written via the product writer (`arr-get` per field + each field's ops) — declare exactly that via
+        // the shared recursive `collect_list_elem_ops` (its Record/Tuple arms), else a compound-payload field's
+        // op resolves to an out-of-range func index.
         out.insert(OP_SUM_DISC);
         out.insert(OP_SUM_PAYLOAD);
-        if let Ok(Some(read)) = get_op_ty(db, &payload) {
+        if matches!(payload.strip_nominal(), Ty::Record(_) | Ty::Tuple(_)) {
+            collect_list_elem_ops(db, &payload, out);
+        } else if let Ok(Some(read)) = get_op_ty(db, &payload) {
             out.insert(read);
         }
     } else if let Some(cases) = crate::backend::wasm::host::variant_scalar_payload_cases(db, elem) {
