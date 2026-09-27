@@ -5908,3 +5908,31 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<tuple<Bytes,s64>> host-op arg marshals its Some payload (byte-leaf rope copy)"
+  (doc
+    "SHAPE 129 — a top-level `option<tuple<list<u8>, s64>>` bare host-op arg whose payload tuple carries a
+           BYTES element (probe.push : func(option<tuple<list<u8>,s64>>) -> s64), extending SHAPE 127's
+           option<tuple-of-scalars> to a byte-leaf tuple element. `emit_option_reg_flatten`'s tuple branch
+           recurses `emit_tuple_reg_flatten`, which copies the Bytes element's rope into shared linear memory at
+           the reserved scratch cursor and pushes it as `(ptr, len)` — TWO core slots — while the `s64` element
+           pushes one. So the payload flattens POSITIONALLY to `(disc, ptr, len, s64)` = FOUR slots on Some. The
+           pin is the byte-leaf slot COUNT: the option branch must expand a Bytes element to 2 scratch slots
+           (`valtype_of(Bytes)` is a handle = `Some(I32)`, so a scalar-first count leaves a value on the stack
+           and fails component validation, CDZ0910) AND the emit.rs cursor pre-scan must reserve the cursor for
+           an `option<tuple-with-bytes>` arg. run() builds Some((b\"hi\", 9)), performs probe.push, returns the
+           stub 55. Complements SHAPE 127/128 (tuple-of-scalars Some/None).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (tuple (list (u8)) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Tuple Bytes Int64)) Int64)))
+      (def (run) (host (probe) (probe.push (Some #tuple(b"hi" 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

@@ -1298,23 +1298,33 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             abi_val_type(&p).is_some()
                                 || matches!(p, Ty::Bytes)
                                 || matches!(p.strip_nominal(), Ty::Tuple(es)
-                                    if !es.is_empty() && es.iter().all(|e| abi_val_type(e).is_some()))
+                                    if !es.is_empty()
+                                        && es.iter().all(|e| {
+                                            abi_val_type(e).is_some()
+                                                || matches!(e.strip_nominal(), Ty::Bytes)
+                                        }))
                         }) =>
                     {
                         let payload = option_payload_ty(db, &at).unwrap();
                         let abi = match abi_val_type(&payload) {
                             Some(pv) => RecordFieldAbi::Scalar(pv),
                             None if matches!(payload, Ty::Bytes) => RecordFieldAbi::Bytes,
-                            // option<tuple-of-scalars> → the payload's `RecordFieldAbi::Tuple(…)` (scalars). The
-                            // guard above restricts this arm to a non-empty all-scalar tuple, so every element's
-                            // `abi_val_type` is `Some` and this cannot panic.
+                            // option<tuple-of-scalars-or-bytes> → the payload's `RecordFieldAbi::Tuple(…)`. The
+                            // guard above restricts this arm to a non-empty tuple whose every element is a scalar
+                            // (`abi_val_type`) OR `Bytes`, so each element maps to `Scalar`/`Bytes` and this
+                            // cannot panic.
                             None => {
                                 let Ty::Tuple(elems) = payload.strip_nominal() else {
-                                    unreachable!("option payload is a scalar/bytes/tuple-of-scalars by the guard")
+                                    unreachable!(
+                                        "option payload is a scalar/bytes/tuple-of-scalars-or-bytes by the guard"
+                                    )
                                 };
                                 let abis = elems
                                     .iter()
-                                    .map(|e| RecordFieldAbi::Scalar(abi_val_type(e).unwrap()))
+                                    .map(|e| match abi_val_type(e) {
+                                        Some(pv) => RecordFieldAbi::Scalar(pv),
+                                        None => RecordFieldAbi::Bytes, // Bytes element by the guard
+                                    })
                                     .collect();
                                 RecordFieldAbi::Tuple(abis)
                             }
@@ -1866,7 +1876,11 @@ pub fn first_unrepresentable_host_op(
                     abi_val_type(&p).is_some()
                         || matches!(p, Ty::Bytes)
                         || matches!(p.strip_nominal(), Ty::Tuple(es)
-                            if !es.is_empty() && es.iter().all(|e| abi_val_type(e).is_some()))
+                        if !es.is_empty()
+                            && es.iter().all(|e| {
+                                abi_val_type(e).is_some()
+                                    || matches!(e.strip_nominal(), Ty::Bytes)
+                            }))
                 });
             // A top-level `tuple<…>` arg crosses NATIVELY as the built-in WIT `tuple<T…>` — the guest flattens
             // the value-heap tuple positionally (`select::emit_tuple_reg_flatten`; a Bytes element copies its

@@ -6158,6 +6158,11 @@ pub(super) fn emit(
                     // A top-level `option<bytes>` arg copies the payload rope into `mem` on Some → needs the cursor.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
                         .is_some_and(|p| matches!(p, Ty::Bytes))
+                    // A top-level `option<tuple-with-a-bytes-element>` arg copies the payload tuple's Bytes
+                    // ropes into `mem` on Some (`emit_option_reg_flatten`'s tuple branch → `emit_tuple_reg_
+                    // flatten`) → needs the cursor, like the `tuple<…,bytes,…>` arg one line down.
+                    || crate::backend::wasm::host::option_payload_ty(db, &at)
+                        .is_some_and(|p| crate::backend::wasm::host::tuple_has_bytes_element(&p))
                     // A top-level `tuple<…,bytes,…>` arg copies each Bytes element's rope into `mem` → the cursor.
                     || crate::backend::wasm::host::tuple_has_bytes_element(&at)
             });
@@ -6451,6 +6456,7 @@ pub(super) fn emit(
                                 if !es.is_empty()
                                     && es.iter().all(|e| {
                                         crate::backend::wasm::host::abi_val_type(e).is_some()
+                                            || matches!(e.strip_nominal(), Ty::Bytes)
                                     }))
                         },
                     ) =>
