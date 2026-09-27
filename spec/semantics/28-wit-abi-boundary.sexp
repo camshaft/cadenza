@@ -7808,3 +7808,57 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a bare result<record-with-a-Bytes-field, enum> host-op arg crosses on the Ok arm (mem-writing field)"
+  (doc
+    "SHAPE 202 (v-wit-boundary) — widens the `result<record, enum>` arg (SHAPE 189) from all-scalar fields to
+           any boundary record (`result_record_enum` now admits `is_boundary_record` — the SAME field set the
+           direct record arg uses). A `record{n:s64, b:list<u8>}` Ok: `emit_result_record_arg_reg_flatten` now
+           threads a `cursor` to `emit_record_arg_marshal`, whose Bytes-field arm copies the rope into `mem` and
+           writes `(ptr,len)` into the field's two slots. This is the first `result<record>` that needs `mem` —
+           `set_needs_memory` (grouped per-field like the direct record arg) + the emit.rs cursor pre-scan admit
+           it, and `collect_used_ops` declares the field ops via `collect_record_field_ops` (the scalar-only
+           `get_op_ty` would miss `bytes-len`/`bytes-get` → CDZ0910 u32::MAX). The component boundary is
+           `result<record{n, b:list<u8>}, enum>`; the `(list u8)` type is built structurally from the declared WIT
+           (no `has_list_param` shared-type change). run() emits `(Ok #record((= n 5) (= b (Bytes.of #list(1 2)))))`;
+           a VALID running component (live-objects=0) is the pin. A `list` field = SHAPE 203.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= n (s64)) (= b (list (u8)))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: n Int64) (: b Bytes)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= n 5) (= b (Bytes.of #list(1 2))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare result<record-with-a-list-field, enum> host-op arg crosses on the Ok arm (mem-writing field)"
+  (doc
+    "SHAPE 203 (v-wit-boundary) — the list-field counterpart of SHAPE 202. A `record{n:s64, xs:list<s64>}` Ok:
+           the `list<s64>` field is marshalled into `mem` (an outer `(ptr,count)` header in the record layout, the
+           backing array spilled at the cursor) by `emit_record_arg_marshal`'s list-field arm. Same cursor +
+           `set_needs_memory` + `collect_record_field_ops` machinery as SHAPE 202. Component boundary
+           `result<record{n, xs:list<s64>}, enum>`. run() emits `(Ok #record((= n 5) (= xs #list(1 2 3))))`; a
+           VALID running component (live-objects=0) is the pin. Completes the compound-record-FIELD widening of the
+           `result<record, enum>` arg.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= n (s64)) (= xs (list (s64)))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: n Int64) (: xs (List Int64))) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= n 5) (= xs #list(1 2 3)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

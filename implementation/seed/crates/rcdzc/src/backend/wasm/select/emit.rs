@@ -6530,6 +6530,15 @@ pub(super) fn emit(
                     // A top-level `result<list<scalar>, enum>` arg marshals the Ok payload list into `mem` on the
                     // Ok arm (`emit_result_list_arg_reg_flatten` → `emit_list_arg_marshal`) → needs the cursor too.
                     || crate::backend::wasm::host::result_list_enum(db, &at).is_some()
+                    // A top-level `result<record, enum>` arg whose Ok record has a runtime-compound FIELD copies
+                    // that field's bytes into `mem` on the Ok arm (`emit_result_record_arg_reg_flatten` →
+                    // `emit_record_arg_marshal`) → needs the cursor, exactly like the direct `record` arg above.
+                    || crate::backend::wasm::host::result_record_enum(db, &at).is_some_and(|(ok, _)| {
+                        crate::backend::wasm::host::record_has_bytes_field(&ok)
+                            || crate::backend::wasm::host::record_has_list_field(&ok)
+                            || crate::backend::wasm::host::record_has_option_field_needing_mem(db, &ok)
+                            || crate::backend::wasm::host::record_has_tuple_field(&ok)
+                    })
                     // A top-level `tuple<…>` arg needs the cursor when SOME leaf (recursing nested tuples +
                     // record elements) copies runtime bytes into `mem` — a `Bytes` element, or a record
                     // element with a `Bytes` / `list` / `result` / `option<bytes>` field. Broader than the
@@ -6985,9 +6994,20 @@ pub(super) fn emit(
                                 ));
                             }
                         };
+                        // A Bytes/list field of the Ok record copies into `mem` at the cursor (a record of only
+                        // scalars needs none). `scratch_cursor_slot` is reserved by the pre-scan when the record
+                        // has such a field (below); pass it through (None for an all-scalar record).
                         let work_base = *high;
                         emit_result_record_arg_reg_flatten(
-                            db, res_slot, &ok_record, &ok_wit, work_base, high, scratch_ty, out,
+                            db,
+                            res_slot,
+                            &ok_record,
+                            &ok_wit,
+                            scratch_cursor_slot,
+                            work_base,
+                            high,
+                            scratch_ty,
+                            out,
                         )?;
                         // MARSHALED-ARG RECLAIM (result-record twin): the flatten borrowed the handle (sum-disc/
                         // sum-payload/arr-get/unbox) — no dup, no handle moved out — so the Result handle in

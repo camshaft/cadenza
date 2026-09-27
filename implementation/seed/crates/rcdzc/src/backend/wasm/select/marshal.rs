@@ -1451,6 +1451,7 @@ pub(super) fn emit_result_record_arg_reg_flatten(
     result_slot: u32,
     ok_record_ty: &Ty,
     ok_wit: &crate::wit_world::WitType,
+    cursor: Option<u32>,
     work_base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
@@ -1538,7 +1539,7 @@ pub(super) fn emit_result_record_arg_reg_flatten(
         rec_slot,
         &fields,
         ok_wit,
-        None, // all-scalar fields → no rope → no cursor
+        cursor, // a Bytes/list field copies into `mem` at the cursor; None for an all-scalar record
         rec_slot + 1,
         high,
         scratch_ty,
