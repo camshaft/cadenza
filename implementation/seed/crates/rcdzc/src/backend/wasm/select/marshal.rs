@@ -1347,6 +1347,36 @@ pub(super) fn emit_tuple_reg_flatten(
             out.push(Lir::LocalGet(len_slot));
             continue;
         }
+        // A `list<T>` element (NON-`Bytes`; a `list<u8>` element is `Ty::Bytes`, handled above): `arr-get i` its
+        // `List` handle (borrows the tuple) → marshal the list into `mem` (its backing array + elements at the
+        // running cursor) and push `(ptr, count)` — the SAME 2 core slots a `list<T>` ARG / a record list FIELD
+        // lowers to. `emit_list_arg_marshal` rides here mid-flatten exactly as the `Bytes` arm does; the element
+        // WIT comes from `elem_wits[i]` (`WitType::List(elem)`), so a nested element still orders correctly.
+        if let Ty::List(elem) = ety.strip_nominal() {
+            let cursor =
+                cursor.expect("a tuple<…,list,…> arg reserves the scratch cursor (pre-scan)");
+            let elem = (**elem).clone();
+            let list_slot = work_base;
+            scratch_ty.insert(list_slot, ValType::I32);
+            *high = (*high).max(work_base + 1);
+            out.push(Lir::LocalGet(tup_slot));
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::CallImport(OP_ARR_GET)); // [element List handle] (borrows the tuple)
+            out.push(Lir::LocalSet(list_slot));
+            let elem_wit = elem_wits
+                .as_ref()
+                .and_then(|ws| ws.get(i))
+                .and_then(|w| match w {
+                    crate::wit_world::WitType::List(ew) => Some(ew.as_ref()),
+                    _ => None,
+                });
+            let lwb = *high;
+            emit_list_arg_marshal(
+                db, &elem, elem_wit, list_slot, cursor, lwb, high, scratch_ty, out,
+            )?;
+            // (outer-ptr, count) left on the stack = the list element's 2 flattened core slots.
+            continue;
+        }
         // A NESTED tuple element (`tuple<…, tuple<…>, …>`): read its handle (`arr-get i`, borrows the outer
         // tuple) and RECURSE — its elements flatten POSITIONALLY inline onto the operand stack, matching
         // serialize's `RecordFieldAbi::Tuple` recursion + the component `tuple<tuple<…>>` type. No capture/disc:
