@@ -6447,6 +6447,11 @@ pub(super) fn emit(
                         |p| {
                             crate::backend::wasm::host::abi_val_type(&p).is_some()
                                 || matches!(p, Ty::Bytes)
+                                || matches!(p.strip_nominal(), Ty::Tuple(es)
+                                if !es.is_empty()
+                                    && es.iter().all(|e| {
+                                        crate::backend::wasm::host::abi_val_type(e).is_some()
+                                    }))
                         },
                     ) =>
                     {
