@@ -5936,3 +5936,53 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<record-of-scalars> host-op arg marshals its Some payload in WIT field order"
+  (doc
+    "SHAPE 130 — a top-level `option<record{lo: s64, hi: bool}>` bare host-op arg (probe.push :
+           func(option<record{lo,hi}>) -> s64), the register-twin entry point of the option<record> record-FIELD
+           flatten (SHAPE 124). Unlike a tuple (positional), a record's value-heap cells are NAME-LEX ordered
+           ({hi, lo}) but the host WIT declares {lo, hi}, so `emit_option_reg_flatten`'s record branch recurses
+           `emit_record_arg_marshal` which reads each WIT field from its name-lex cell and PUSHES in WIT order,
+           and the `option`'s payload record abi is REORDERED to WIT order (`reorder_record_fields_to_wit`) so
+           the emitted `(option (record …))` component type + core flatten agree with the marshal. The DISTINCT
+           widths (lo: s64 = i64 slot, hi: bool = i32 slot) make the reorder LOAD-BEARING: a name-lex-order
+           flatten would emit core `(disc, hi:i32, lo:i64)` against the WIT-order component param `(disc, lo:i64,
+           hi:i32)` — a signature mismatch the runtime rejects at instantiation. run() builds Some({lo:3,
+           hi:true}), performs probe.push, returns the stub 55. Complements SHAPE 124 (option<record> field).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= lo (s64)) (= hi (bool))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: lo Int64) (: hi Bool))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= lo 3) (= hi true))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<record-of-scalars> host-op arg = None exercises the zero-fill flatten branch"
+  (doc
+    "SHAPE 131 — the NONE arm of the top-level option<record> arg marshal (SHAPE 130 exercised only Some). An
+           `option<record{lo: s64, hi: bool}>` bare arg that is None flattens to `(disc=0, 0, 0)` —
+           `emit_option_reg_flatten`'s record branch else-arm zero-fills every payload field scratch slot at its
+           field width (i64 lo = 0i64, i32 hi = 0) and pushes disc=0. run() builds None, performs probe.push,
+           returns the stub 42. Complements SHAPE 130 (Some).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= lo (s64)) (= hi (bool))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: lo Int64) (: hi Bool))) Int64)))
+      (def (run) (host (probe) (probe.push None)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))

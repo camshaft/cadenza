@@ -6458,6 +6458,11 @@ pub(super) fn emit(
                                         crate::backend::wasm::host::abi_val_type(e).is_some()
                                             || matches!(e.strip_nominal(), Ty::Bytes)
                                     }))
+                                || matches!(p.strip_nominal(), Ty::Record(sub)
+                                if !sub.is_empty()
+                                    && sub.values().all(|f| {
+                                        crate::backend::wasm::host::abi_val_type(f).is_some()
+                                    }))
                         },
                     ) =>
                     {
@@ -6467,10 +6472,17 @@ pub(super) fn emit(
                         emit(db, arg, slots, opt_slot + 1, high, scratch_ty, layout, out)?; // [handle]
                         out.push(Lir::LocalSet(opt_slot));
                         let work_base = *high;
+                        // The payload's declared WIT type — an `option<record>` marshal reorders the record's
+                        // name-lex fields to the host WIT declaration order, so thread the `option`'s inner WIT.
+                        let payload_wit = match wit_params.as_ref().and_then(|p| p.get(arg_i)) {
+                            Some(crate::wit_world::WitType::Option(inner)) => Some(inner.as_ref()),
+                            _ => None,
+                        };
                         emit_option_reg_flatten(
                             db,
                             opt_slot,
                             &at,
+                            payload_wit,
                             scratch_cursor_slot,
                             work_base,
                             high,

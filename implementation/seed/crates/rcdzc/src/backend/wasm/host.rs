@@ -1303,31 +1303,56 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                             abi_val_type(e).is_some()
                                                 || matches!(e.strip_nominal(), Ty::Bytes)
                                         }))
+                                || matches!(p.strip_nominal(), Ty::Record(sub)
+                                    if !sub.is_empty()
+                                        && sub.values().all(|f| abi_val_type(f).is_some()))
                         }) =>
                     {
                         let payload = option_payload_ty(db, &at).unwrap();
-                        let abi = match abi_val_type(&payload) {
-                            Some(pv) => RecordFieldAbi::Scalar(pv),
-                            None if matches!(payload, Ty::Bytes) => RecordFieldAbi::Bytes,
-                            // option<tuple-of-scalars-or-bytes> → the payload's `RecordFieldAbi::Tuple(…)`. The
-                            // guard above restricts this arm to a non-empty tuple whose every element is a scalar
-                            // (`abi_val_type`) OR `Bytes`, so each element maps to `Scalar`/`Bytes` and this
-                            // cannot panic.
-                            None => {
-                                let Ty::Tuple(elems) = payload.strip_nominal() else {
-                                    unreachable!(
-                                        "option payload is a scalar/bytes/tuple-of-scalars-or-bytes by the guard"
+                        let abi = if let Some(pv) = abi_val_type(&payload) {
+                            RecordFieldAbi::Scalar(pv)
+                        } else if matches!(payload, Ty::Bytes) {
+                            RecordFieldAbi::Bytes
+                        } else if let Ty::Tuple(elems) = payload.strip_nominal() {
+                            // option<tuple-of-scalars-or-bytes> → the payload's `RecordFieldAbi::Tuple(…)`; each
+                            // element is a scalar OR `Bytes` by the guard, so this cannot panic.
+                            let abis = elems
+                                .iter()
+                                .map(|e| match abi_val_type(e) {
+                                    Some(pv) => RecordFieldAbi::Scalar(pv),
+                                    None => RecordFieldAbi::Bytes, // Bytes element by the guard
+                                })
+                                .collect();
+                            RecordFieldAbi::Tuple(abis)
+                        } else {
+                            // option<record-of-scalars> → the payload's `RecordFieldAbi::Record(…)`, each field
+                            // a scalar by the guard. Built name-lex, then REORDERED to the option payload WIT
+                            // record's DECLARATION order (`reorder_record_fields_to_wit`) — the emitted
+                            // `(option (record …))` component type + its core flatten must be WIT order to match
+                            // `emit_option_reg_flatten`'s WIT-order marshal (a name-lex order silently fails the
+                            // component-linker structural match — a codegen defect the runtime rejects).
+                            let Ty::Record(sub) = payload.strip_nominal() else {
+                                unreachable!("option payload is scalar/bytes/tuple/record-of-scalars by the guard")
+                            };
+                            let sub = sub.clone();
+                            let fields: Vec<(String, RecordFieldAbi)> = sub
+                                .iter()
+                                .map(|(sym, fty)| {
+                                    (
+                                        sym.name.to_string(),
+                                        RecordFieldAbi::Scalar(
+                                            abi_val_type(fty).expect("scalar field by the guard"),
+                                        ),
                                     )
-                                };
-                                let abis = elems
-                                    .iter()
-                                    .map(|e| match abi_val_type(e) {
-                                        Some(pv) => RecordFieldAbi::Scalar(pv),
-                                        None => RecordFieldAbi::Bytes, // Bytes element by the guard
-                                    })
-                                    .collect();
-                                RecordFieldAbi::Tuple(abis)
-                            }
+                                })
+                                .collect();
+                            let fields = match wit_params.as_ref().and_then(|ps| ps.get(arg_i)) {
+                                Some(crate::wit_world::WitType::Option(pw)) => {
+                                    reorder_record_fields_to_wit(fields, pw.as_ref())
+                                }
+                                _ => fields,
+                            };
+                            RecordFieldAbi::Record(fields)
                         };
                         params.push(HostParam::Option(Box::new(abi)));
                     }
@@ -1881,6 +1906,9 @@ pub fn first_unrepresentable_host_op(
                                 abi_val_type(e).is_some()
                                     || matches!(e.strip_nominal(), Ty::Bytes)
                             }))
+                        || matches!(p.strip_nominal(), Ty::Record(sub)
+                        if !sub.is_empty()
+                            && sub.values().all(|f| abi_val_type(f).is_some()))
                 });
             // A top-level `tuple<…>` arg crosses NATIVELY as the built-in WIT `tuple<T…>` — the guest flattens
             // the value-heap tuple positionally (`select::emit_tuple_reg_flatten`; a Bytes element copies its
