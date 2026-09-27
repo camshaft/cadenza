@@ -209,10 +209,11 @@ pub(super) fn collect_list_elem_ops(
 /// the arm-dup's `CallImport(OP_DUP)` resolves to an unregistered function index (CDZ0910 `call u32::MAX`)
 /// whenever no other construct in the module happens to import dup/drop (the masked node#6 family gap).
 fn matchjoin_equalize_may_import(db: &mut Db, operand: StructId) -> bool {
-    // The equalize fires on a divergent `Core::Match` (N arm bodies) or `Core::If` (then/else). Both need
-    // ≥1 owned-fresh arm AND ≥1 bare-alias arm; a uniform operand (or a non-Match/If) never dups.
+    // The equalize fires on a divergent `Core::Match`/`Core::MatchList` (N arm bodies) or `Core::If`
+    // (then/else). Each needs ≥1 owned-fresh arm AND ≥1 bare-alias arm; a uniform operand never dups.
     let arm_bodies: Vec<StructId> = match core_of(db, operand) {
         Core::Match { arms, .. } => arms.iter().map(|a| a.body).collect(),
+        Core::MatchList { arms, .. } => arms.iter().map(|a| a.body).collect(),
         Core::If { then_, else_, .. } => vec![then_, else_],
         _ => return false,
     };

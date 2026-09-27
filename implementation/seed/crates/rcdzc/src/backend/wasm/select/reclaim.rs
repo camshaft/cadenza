@@ -2388,7 +2388,22 @@ fn binding_escapes_dup_aware_inner(
                     db,
                     a.body,
                     binder,
-                    false,
+                    // c2236 VARIANT (node#6 MatchList extension, Scenario-B fix 085417): a runtime-list
+                    // match's arm RESULT inherits the parent borrow context under `arms_inherit_borrow`,
+                    // exactly as the `Core::Match`/`Core::If` arms do — WITHOUT this, a `MatchList`
+                    // arm-result reference to a live-after binder always counts as consuming, so
+                    // `keep_scope_drop_despite_body_escape` (escapes(false) && !escapes(true)) can never
+                    // hold → the node#6 `divergent_match_borrow_dupable` MatchList alias arm never
+                    // classifies → the owned-fresh sibling arm leaks. The DFBAR self-exclusion is
+                    // unaffected: it is driven by a NON-arm-result consume (a sibling arm's
+                    // `(List.concat src …)` without a live-after dup), which still escapes under the
+                    // true-variant → keep_scope false → no dup (leak-over-UAF). Default mode keeps the
+                    // force-consuming `false`.
+                    if arms_inherit_borrow {
+                        tail_borrowed
+                    } else {
+                        false
+                    },
                     dup_sites,
                     borrow_aware_calls,
                     arms_inherit_borrow,

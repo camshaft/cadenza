@@ -107,14 +107,24 @@ fn divergent_match_borrow_dupable(
     fn_body: Option<StructId>,
     dup_sites: &HashSet<StructId>,
 ) -> Option<Vec<StructId>> {
-    let Core::Match { arms, .. } = core_of(db, operand) else {
-        return None;
+    // Collect the arm BODY ids for either a scalar/sum `Core::Match` or a runtime-list `Core::MatchList`
+    // (node#6 operand-node-kind extension #2, v-core-opt SCENARIO-B co-design 085417). Both are
+    // divergent-arm heap producers whose arm-blind ownership join reads `Borrowed` when ≥1 arm is a bare
+    // alias, so the length-op's post-borrow reclaim is suppressed and the owned-fresh arm leaks. The
+    // classification + emit path is IDENTICAL: a `MatchList` alias arm body routes through `emit_arm_body`
+    // (dispatch.rs 526/608/631, `arm_slots` a superset of `slots` — v-core-opt RED-review), which consults
+    // `matchjoin_dup_arms`. The branchless-list `select` fold (dispatch.rs) EXCLUDES heap-result arms, so a
+    // divergent-heap `MatchList` is always the block form → the dup fires on exactly one path (Match-equivalent
+    // safety). SELECT-safe, DFBAR-safe (keep_scope self-excludes a transfer alias), same as the Match family.
+    let arm_bodies: Vec<StructId> = match core_of(db, operand) {
+        Core::Match { arms, .. } => arms.iter().map(|a| a.body).collect(),
+        Core::MatchList { arms, .. } => arms.iter().map(|a| a.body).collect(),
+        _ => return None,
     };
     let fn_body = fn_body?;
     let mut alias_ids: Vec<StructId> = Vec::new();
     let mut has_owned_fresh = false;
-    for a in arms.iter() {
-        let body = a.body;
+    for body in arm_bodies {
         if matches!(heap_operand_ownership(db, body), Ok(HandleOwnership::Owned)) {
             has_owned_fresh = true;
             continue;
