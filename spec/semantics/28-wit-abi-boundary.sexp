@@ -7684,3 +7684,54 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a bare result<list<record-of-scalars>, enum> host-op arg crosses on the Ok arm (compound list element)"
+  (doc
+    "SHAPE 197 (v-wit-boundary) — widens the `result<list, enum>` arg (SHAPE 195) from a scalar element to an
+           all-scalar-PRODUCT element: a `list<record{x:s64, y:s64}>` Ok. `result_list_enum` now admits a record
+           (or tuple) every field/element of which is a scalar — such an element marshals inline via
+           `emit_list_arg_marshal` → `emit_record_to_mem` (each field at its offset in the outer array slot) and
+           never reaches `list<u8>` (so `has_list_param` stays false). The 3-slot `(disc, ptr, count)` flatten is
+           unchanged; only the per-element in-`mem` layout differs. The component boundary is `result<list<record{
+           x,y}>, enum>`. run() emits `(Ok #list(#record((= x 1) (= y 2)) #record((= x 3) (= y 4))))`; a VALID
+           component that runs and crosses is the pin. A `list<tuple>` element = SHAPE 198.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (record (= x (s64)) (= y (s64)))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (List (Record (: x Int64) (: y Int64))) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #list(#record((= x 1) (= y 2)) #record((= x 3) (= y 4)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare result<list<tuple-of-scalars>, enum> host-op arg crosses on the Ok arm (compound list element)"
+  (doc
+    "SHAPE 198 (v-wit-boundary) — the tuple-element counterpart of SHAPE 197. A `list<tuple<s64, s64>>` Ok:
+           each element is a positional all-scalar tuple, marshalled inline via `emit_list_arg_marshal` →
+           `emit_tuple_to_mem` (element i at cell i, no name reorder). Same 3-slot `(disc, ptr, count)` flatten;
+           component boundary `result<list<tuple<s64,s64>>, enum>`. run() emits `(Ok #list(#tuple(1 2)
+           #tuple(3 4)))`; a VALID component that runs and crosses is the pin. Completes the compound-element
+           `result<list<all-scalar-product>, enum>` increment (a Bytes/nested-list element — which reaches
+           `list<u8>` — is a further increment).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (tuple (s64) (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (List (Tuple Int64 Int64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #list(#tuple(1 2) #tuple(3 4))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

@@ -277,9 +277,14 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   disc, 0)`, live-objects=0 confirms no list leak on Err). Widened in LOCKSTEP: classifier, `first_unrepresentable_
   host_op`'s `arg_is_boundary_result_list`, emit dispatch (+ cursor + reclaim), the emit.rs cursor pre-scan,
   `collect_used_ops` (`sum-disc`/`sum-payload` + `vec-len`/`vec-get` + `collect_list_elem_ops` + `drop`), `serialize`
-  (3 i32, same as Bytes), `set_needs_memory`, and `host_imports` (all five `Result*` arms). REMAINING (result
-  family): a compound list element (`result<list<record/tuple/bytes>,enum>`); a compound/float tuple element; a
-  record with a compound field; `result<_, variant>`.
+  (3 i32, same as Bytes), `set_needs_memory`, and `host_imports` (all five `Result*` arms).
+  **WIDENED (SHAPE 197/198):** the element may also be an all-scalar PRODUCT — a `list<record-of-scalars>` /
+  `list<tuple-of-scalars>` — which `emit_list_arg_marshal` writes inline (`emit_record_to_mem`/`emit_tuple_to_mem`)
+  and which never reaches `list<u8>` (so `has_list_param` stays false, no shared-list-type change). This was a
+  single-line `result_list_enum` element-gate relaxation (scalar OR all-scalar record/tuple); the emit + used_ops
+  already handle product elements via the shared list marshal. REMAINING (result family): a list element that
+  reaches `list<u8>` (Bytes/nested-list/option element — needs the shared list type + `has_list_param`); a
+  compound/float tuple element; a record with a compound field; `result<_, variant>`.
 - **[emit, register-path] a top-level `option<variant>` host-op ARG — ✅ DONE (SHAPE 167/168).** The option
   payload is a scalar-payload `variant`: `option_arg_crosses` now admits it, and `emit_option_reg_flatten`'s
   variant branch flattens the value-heap option to `(opt-disc, var-disc, payload-join)` = the option disc + the
