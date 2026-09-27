@@ -10924,7 +10924,7 @@ todo	a named-variant result writer name-matches (not positionally) with a revers
 todo	a nested option<option<s64>> EXPORT result crosses — a SUM inside an option payload
 todo	a nested record param with a bytes leaf compiles and runs (via an imposed WIT world)
 todo	a non-kebab (camelCase) peer op name agrees across both sides and runs
-todo	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
+todo	a non-tail inner handle with a ONE-SHOT foreign perform sibling folds — the foreign op routes to the enclosing handler
 todo	a none-only option<s64> record field resolves its element type from an imposed WIT world
 todo	a payloadless enum EXPORT result crosses as a TYPED WIT enum (imposed world) — Direction A
 todo	a payloadless enum PARAM member (order matches) crosses as a TYPED WIT enum — Direction B (the param twin of SHAPE 60)
