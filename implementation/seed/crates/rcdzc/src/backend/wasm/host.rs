@@ -689,6 +689,11 @@ pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
         // `field_boundary_abi`) — the same admit set the direct record ARG uses, so an `option<record>`
         // accepts a `list`/nested-record/tuple field exactly where a bare record ARG does.
         || is_boundary_record(db, p.strip_nominal())
+        // a scalar-payload `variant` payload crosses — `emit_option_reg_flatten`'s variant branch flattens the
+        // payload variant via `emit_variant_reg_flatten` (the SAME helper the bare-variant ARG / a record
+        // variant FIELD uses) and pushes `(opt-disc, var-disc, payload-join)`, the register analogue of the
+        // `option<scalar>` branch with the variant's own `(disc, join)` flatten in the payload position.
+        || variant_scalar_payload_cases(db, &p).is_some()
 }
 
 fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
@@ -1495,6 +1500,15 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                 })
                                 .collect();
                             RecordFieldAbi::Tuple(abis)
+                        } else if variant_scalar_payload_cases(db, &payload).is_some() {
+                            // option<variant> → `RecordFieldAbi::Variant(cases)` via the shared
+                            // `field_boundary_abi` Variant arm (the SAME abi the bare-variant ARG / a record
+                            // variant FIELD builds). Marshalled by `emit_option_reg_flatten`'s variant branch:
+                            // `(opt-disc, var-disc, payload-join)`. The `(option (variant …))` component type
+                            // builds from this abi. Checked before the record `else` (a variant is a Sum but
+                            // NOT a `Ty::Record`, so the `else`'s `unreachable!` would fire).
+                            field_boundary_abi(db, &payload)
+                                .expect("option<variant> payload crosses by the arm guard")
                         } else {
                             // option<record> → the payload's `RecordFieldAbi::Record(…)`, each field's abi from
                             // the shared recursive `field_boundary_abi` (scalar / Bytes / nested record / list /

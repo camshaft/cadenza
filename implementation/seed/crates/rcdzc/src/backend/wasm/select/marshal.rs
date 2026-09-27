@@ -1730,6 +1730,75 @@ pub(super) fn emit_option_reg_flatten(
         }
         return Ok(());
     }
+    // A top-level `option<variant>` arg flattens (canonical variant flatten) to `(disc:i32, flatten(variant))`
+    // = the option disc + the payload variant's `(var-disc:i32, payload-join)` — 3 core slots. On Some: read the
+    // payload variant handle (SUM_PAYLOAD, a borrow of the option) and flatten it via the shared
+    // `emit_variant_reg_flatten` (the SAME helper the bare-variant ARG / a record variant FIELD uses), its 2
+    // pushed slots captured in REVERSE; None: zero-fill both. Push `disc` + the 2 slots AFTER the single-value
+    // `if`. MUST precede the scalar fallthrough (a variant has no `valtype_of`, so the fallthrough would decline).
+    if let Some(cases) = crate::backend::wasm::host::variant_scalar_payload_cases(db, &payload_ty) {
+        let payload_discs: Vec<i32> = cases
+            .iter()
+            .enumerate()
+            .filter_map(|(d, (_, p))| p.map(|_| d as i32))
+            .collect();
+        // The payload-join valtype MUST match `emit_variant_reg_flatten`'s pushed valtype (a mixed-width variant
+        // reads back correctly) — the SAME `variant_register_join_vt` the field/param marshals use.
+        let pv = variant_register_join_vt(db, &payload_ty, &payload_discs)?;
+        let slot_vts = [ValType::I32, pv]; // (variant-disc, payload-join)
+        let n = slot_vts.len() as u32;
+        let disc_out = work_base;
+        let base_slot = work_base + 1;
+        scratch_ty.insert(disc_out, ValType::I32);
+        for (k, vt) in slot_vts.iter().enumerate() {
+            scratch_ty.insert(base_slot + k as u32, *vt);
+        }
+        *high = (*high).max(base_slot + n);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_DISC)); // [guest opt disc]
+        out.push(Lir::ConstI32(some_disc));
+        out.push(Lir::I32Eq);
+        out.push(Lir::If(BlockType::Empty)); // Some: flatten the payload variant into the 2 scratch slots
+        out.push(Lir::ConstI32(1)); // WIT `option` some = 1
+        out.push(Lir::LocalSet(disc_out));
+        let pay_slot = base_slot + n;
+        scratch_ty.insert(pay_slot, ValType::I32);
+        *high = (*high).max(pay_slot + 1);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [variant handle] (borrow — caller reclaims the option)
+        out.push(Lir::LocalSet(pay_slot));
+        emit_variant_reg_flatten(
+            db,
+            pay_slot,
+            &payload_ty,
+            pay_slot + 1,
+            high,
+            scratch_ty,
+            out,
+        )?;
+        // Capture the 2 pushed values into scratch in REVERSE (stack top = the payload join).
+        for k in (0..n).rev() {
+            out.push(Lir::LocalSet(base_slot + k));
+        }
+        out.push(Lir::Else); // None: zero-fill both slots
+        out.push(Lir::ConstI32(0)); // WIT `option` none = 0
+        out.push(Lir::LocalSet(disc_out));
+        for (k, vt) in slot_vts.iter().enumerate() {
+            out.push(match vt {
+                ValType::I64 => Lir::ConstI64(0),
+                ValType::F64 => Lir::F64ConstBits(0),
+                ValType::F32 => Lir::F32ConstBits(0),
+                _ => Lir::ConstI32(0),
+            });
+            out.push(Lir::LocalSet(base_slot + k as u32));
+        }
+        out.push(Lir::End);
+        out.push(Lir::LocalGet(disc_out)); // push (opt-disc, var-disc, payload-join)
+        for k in 0..n {
+            out.push(Lir::LocalGet(base_slot + k));
+        }
+        return Ok(());
+    }
     let pv = valtype_of(&payload_ty).ok_or_else(|| {
         Reject::decline("a top-level option arg payload is not a scalar/bytes this increment")
     })?;
