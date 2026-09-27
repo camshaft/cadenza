@@ -6064,3 +6064,32 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL tuple with a RECORD-of-scalars element flattens the record inline in WIT field order"
+  (doc
+    "SHAPE 135 — a top-level `tuple<record{lo: s64, hi: bool}, s64>` bare host-op arg, extending the tuple-arg
+           marshal (scalar/Bytes/nested-tuple elements, SHAPE 134) to a RECORD element. `emit_tuple_reg_flatten`
+           reads the record element's handle (`arr-get`, borrows the outer tuple) and recurses
+           `emit_record_arg_marshal`, which reads each WIT field from its name-lex cell and pushes in the host
+           WIT DECLARATION order — so `tuple_wit` (the tuple's declared WIT type, threaded from the caller) gives
+           element `i`'s WIT record type. The record's value-heap cells are NAME-LEX ordered ({hi, lo}) but the
+           WIT declares {lo, hi}, so the classifier REORDERS the element's record abi to WIT order
+           (`reorder_record_fields_to_wit`) — matching the marshal + the component `tuple<record<…>, …>` type.
+           The DISTINCT widths (lo: s64 = i64, hi: bool = i32) make the reorder LOAD-BEARING: a name-lex-order
+           flatten would emit `(hi:i32, lo:i64, outer1:i64)` against the WIT-order component param `(lo:i64,
+           hi:i32, outer1:i64)`, rejected at instantiation. run() builds ({lo:7, hi:true}, 9), performs
+           probe.push, returns the stub 55. The tuple analogue of the nested-record record FIELD.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (record (= lo (s64)) (= hi (bool))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Record (: lo Int64) (: hi Bool)) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple(#record((= lo 7) (= hi true)) 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

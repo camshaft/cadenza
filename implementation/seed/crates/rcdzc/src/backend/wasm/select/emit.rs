@@ -6443,10 +6443,13 @@ pub(super) fn emit(
                         emit(db, arg, slots, tup_slot + 1, high, scratch_ty, layout, out)?; // [handle]
                         out.push(Lir::LocalSet(tup_slot));
                         let work_base = *high;
+                        // The tuple's declared WIT type — a record element reorders its fields to WIT order.
+                        let tuple_wit = wit_params.as_ref().and_then(|p| p.get(arg_i));
                         emit_tuple_reg_flatten(
                             db,
                             tup_slot,
                             &at,
+                            tuple_wit,
                             scratch_cursor_slot,
                             work_base,
                             high,
