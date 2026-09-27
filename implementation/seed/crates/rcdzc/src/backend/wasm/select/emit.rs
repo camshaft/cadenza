@@ -6996,6 +6996,47 @@ pub(super) fn emit(
                             out.push(Lir::CallImport(OP_DROP));
                         }
                     }
+                    // A top-level `result<tuple-of-scalars, enum>` argument: the guest emits the value-heap Result
+                    // HANDLE into a slot, then decomposes it into `(disc, elem0, elem1, …)` via
+                    // `emit_result_tuple_arg_reg_flatten` (the tuple-Ok twin of the record-Ok result) — Ok
+                    // marshals the payload tuple's elements into the join slots (positional), Err puts the err
+                    // enum's disc in the first slot. No rope, so NO cursor. Checked BEFORE the scalar `_` arm; the
+                    // other result arms above are mutually exclusive by the Ok shape.
+                    _ if crate::backend::wasm::host::result_tuple_enum(db, &at).is_some() => {
+                        let res_slot = arg_base.max(*high);
+                        scratch_ty.insert(res_slot, ValType::I32);
+                        *high = (*high).max(res_slot + 1);
+                        emit(db, arg, slots, res_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(res_slot));
+                        let (ok_tuple, _errs) =
+                            crate::backend::wasm::host::result_tuple_enum(db, &at).unwrap();
+                        let ok_wit = match wit_params.as_ref().and_then(|p| p.get(arg_i)) {
+                            Some(crate::wit_world::WitType::Result { ok: Some(w), .. }) => {
+                                Some((**w).clone())
+                            }
+                            _ => None,
+                        };
+                        let work_base = *high;
+                        emit_result_tuple_arg_reg_flatten(
+                            db,
+                            res_slot,
+                            &ok_tuple,
+                            ok_wit.as_ref(),
+                            work_base,
+                            high,
+                            scratch_ty,
+                            out,
+                        )?;
+                        // MARSHALED-ARG RECLAIM (result-tuple twin): the flatten borrowed the handle — no dup, no
+                        // handle moved out — so the Result handle in `res_slot` is DEAD. Deep-drop iff Owned / a
+                        // dup-site. Import mirror in `collect_used_ops`.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(res_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
                     // A scalar argument emits its value directly.
                     _ => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
                 }

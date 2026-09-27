@@ -136,6 +136,20 @@ pub enum HostParam {
     /// the rest. A record with a COMPOUND field (Bytes/list/nested) is a later increment (needs the in-mem
     /// marshal); the classifier only pushes this for `result_record_enum` (all-scalar Ok fields).
     ResultRecord(Vec<(String, RecordFieldAbi)>, Vec<String>),
+    /// A bare `result<tuple-of-scalars, enum>` param (the top-level position, not nested) — crosses as the
+    /// built-in WIT `result<tuple<T…>, err-enum>` type, referenced by a per-param structural `CRef` (like
+    /// [`ResultRecord`](HostParam::ResultRecord)). The tuple analogue of the record-Ok result: its core form
+    /// flattens (canonical variant flatten) to `(disc:i32, elem0, elem1, …)` — the discriminant then the Ok
+    /// tuple's elements POSITIONALLY (element = declaration = component order, NO name-lex/WIT reorder — a tuple
+    /// is positional, unlike a record), with the `i32` err discriminant riding the FIRST element's slot on the
+    /// Err arm. Every Ok element is a non-float SCALAR, so each is one register slot and joining the first with
+    /// the `i32` err disc never widens beyond that element's own width — the slot widths are exactly the tuple's
+    /// element widths, no `mem`. Carries the Ok element scalar ABIs (positional) and the err enum's case names.
+    /// The guest marshals it via `select::emit_result_tuple_arg_reg_flatten`: Ok recurses `emit_tuple_reg_flatten`
+    /// on the payload tuple (its N pushes captured into the join slots), Err puts the err enum's disc in the
+    /// first slot + zero-fills the rest. A tuple with a COMPOUND / float element is a later increment; the
+    /// classifier only pushes this for `result_tuple_enum` (all-non-float-scalar Ok elements).
+    ResultTuple(Vec<AbiValType>, Vec<String>),
 }
 
 /// Whether a record-field ABI bottoms out at a `list<u8>` (`Bytes`) leaf — so a `list<T>` param carrying it
@@ -411,6 +425,62 @@ pub fn result_record_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
         // A SCALAR field only — `field_boundary_abi` yields `Scalar`. A Bytes/list/nested field declines here.
         if !matches!(field_boundary_abi(db, fty), Some(RecordFieldAbi::Scalar(_))) {
             return None;
+        }
+    }
+    // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
+    {
+        let d = db.type_decl_by_occ(*decl)?;
+        if !(d.variants.len() == 2
+            && d.variants.iter().any(|v| v.name == "Ok")
+            && d.variants.iter().any(|v| v.name == "Err"))
+        {
+            return None;
+        }
+    }
+    // The err arm (args[1]) must be a payload-less enum — a `Sum` whose every variant is nullary.
+    let Ty::Sum { decl: err_decl, .. } = args[1].strip_nominal() else {
+        return None;
+    };
+    let ed = db.type_decl_by_occ(*err_decl)?;
+    if ed.variants.is_empty() || ed.variants.iter().any(|v| !v.payloads.is_empty()) {
+        return None;
+    }
+    let err_cases = ed
+        .variants
+        .iter()
+        .map(|v| kebab_extern_name(&v.name))
+        .collect();
+    Some((args[0].clone(), err_cases))
+}
+
+/// Whether `ty` is `result<tuple-of-scalars, enum>` — an Ok arm that is a TUPLE every element of which is a
+/// non-float SCALAR (so it flattens to registers, no `mem`; the `i32` err disc joins the first element's slot,
+/// which stays clean for an integer element — a float element / a compound element is a later increment) and an
+/// Err arm that is a PAYLOAD-LESS enum. Returns `(the Ok tuple Ty, err-enum case names)` if so, else `None`. A
+/// `Sum` whose decl has exactly `Ok`/`Err` variants, instantiated at `[tuple, enum]`. The register flatten is
+/// `emit_result_tuple_arg_reg_flatten` (positional — no field reorder). Reads through erased nominal wrappers,
+/// mirroring [`result_record_enum`].
+pub fn result_tuple_enum(db: &mut Db, ty: &Ty) -> Option<(Ty, Vec<String>)> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let stripped = ty.strip_nominal();
+    let Ty::Sum { decl, args } = stripped else {
+        return None;
+    };
+    if args.len() != 2 {
+        return None;
+    }
+    // The Ok arm (args[0]) must be a TUPLE with ≥1 element, every element a non-float scalar (this increment's
+    // scope — a float element needs the reinterpret join at slot 0; a compound element needs the in-mem marshal).
+    let Ty::Tuple(elems) = args[0].strip_nominal() else {
+        return None;
+    };
+    if elems.is_empty() {
+        return None;
+    }
+    for ety in elems.iter() {
+        match abi_val_type(ety) {
+            Some(v) if !matches!(v, AbiValType::F32 | AbiValType::F64) => {}
+            _ => return None,
         }
     }
     // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
@@ -1701,6 +1771,33 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             }
                         }
                     }
+                    // A top-level `result<tuple-of-scalars, enum>` arg crosses as the built-in WIT
+                    // `result<tuple<T…>, err-enum>`. It flattens to `(disc:i32, elem0, elem1, …)` — the
+                    // discriminant then the Ok tuple's elements POSITIONALLY (no reorder — a tuple is positional),
+                    // the `i32` err disc riding the first element's slot on Err. Marshalled by
+                    // `emit_result_tuple_arg_reg_flatten` (Ok recurses `emit_tuple_reg_flatten`; no rope → NO
+                    // `mem`). Checked BEFORE the scalar `_` arm; a compound/float element is a later increment
+                    // (`result_tuple_enum` declines it → `_` declines).
+                    _ if !peer_bound && result_tuple_enum(db, &at).is_some() => {
+                        let (ok_tuple, err_cases) = result_tuple_enum(db, &at).unwrap();
+                        if let Ty::Tuple(elems) = ok_tuple.strip_nominal() {
+                            let elems = elems.to_vec();
+                            let mut elem_abis = Vec::with_capacity(elems.len());
+                            let mut all_ok = !elems.is_empty();
+                            for ety in &elems {
+                                match abi_val_type(ety) {
+                                    Some(v) => elem_abis.push(v),
+                                    None => {
+                                        all_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if all_ok {
+                                params.push(HostParam::ResultTuple(elem_abis, err_cases));
+                            }
+                        }
+                    }
                     // A top-level `option<scalar>` / `option<bytes>` / `option<tuple-of-scalars>` arg crosses as
                     // the built-in WIT `option<T>` (its own arm — `variant_scalar_payload_cases` above EXCLUDES
                     // option-shaped sums, since option needs the distinct built-in type, not a `variant` DEFINED
@@ -2468,6 +2565,12 @@ pub fn first_unrepresentable_host_op(
             // increment (`result_record_enum` declines it), matching the classifier + the marshal, in lockstep.
             let arg_is_boundary_result_record =
                 allow_option_bytes && !peer_bound && result_record_enum(db, &at).is_some();
+            // A top-level `result<tuple-of-scalars, enum>` arg crosses NATIVELY as the built-in WIT
+            // `result<tuple<T…>, err-enum>` — the guest flattens it to `(disc, elem0, elem1, …)`
+            // (`select::emit_result_tuple_arg_reg_flatten`; no rope → no `mem`). A compound/float element is a
+            // later increment (`result_tuple_enum` declines it), matching the classifier + marshal, in lockstep.
+            let arg_is_boundary_result_tuple =
+                allow_option_bytes && !peer_bound && result_tuple_enum(db, &at).is_some();
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
@@ -2480,6 +2583,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_result
                 && !arg_is_boundary_result_scalar
                 && !arg_is_boundary_result_record
+                && !arg_is_boundary_result_tuple
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }

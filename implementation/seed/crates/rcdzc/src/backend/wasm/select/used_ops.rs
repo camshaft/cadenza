@@ -1527,6 +1527,32 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_DROP);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
+                    // A top-level `result<tuple-of-scalars, enum>` arg is decomposed by
+                    // `emit_result_tuple_arg_reg_flatten`: `sum-disc` (result disc), `sum-payload`, and on Ok
+                    // `arr-get` + each element's unbox `get-*` (the tuple marshal), on Err a further `sum-disc`
+                    // (the err enum disc). Declare them (else a marshal `CallImport` resolves to u32::MAX →
+                    // invalid module), then descend. Checked BEFORE the `_` fallthrough; the other result arms are
+                    // mutually exclusive by the Ok shape.
+                    at if !peer_bound
+                        && crate::backend::wasm::host::result_tuple_enum(db, &at).is_some() =>
+                    {
+                        out.insert(OP_SUM_DISC);
+                        out.insert(OP_SUM_PAYLOAD);
+                        out.insert(OP_ARR_GET);
+                        if let Some((ok_tuple, _)) =
+                            crate::backend::wasm::host::result_tuple_enum(db, &at)
+                            && let Ty::Tuple(elems) = ok_tuple.strip_nominal()
+                        {
+                            let etys: Vec<Ty> = elems.to_vec();
+                            for ety in etys {
+                                if let Ok(Some(read)) = get_op_ty(db, &ety) {
+                                    out.insert(read);
+                                }
+                            }
+                        }
+                        out.insert(OP_DROP);
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     _ => collect_used_ops_into_seen(db, arg, out, visited),
                 }
             }

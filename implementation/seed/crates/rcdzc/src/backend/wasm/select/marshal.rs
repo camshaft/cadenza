@@ -1556,6 +1556,102 @@ pub(super) fn emit_result_record_arg_reg_flatten(
     Ok(())
 }
 
+/// Marshal a top-level value-heap `result<tuple-of-scalars, enum>` host argument whose handle is in
+/// `result_slot` into the canonical `(disc:i32, elem0, elem1, …)` core-slot flatten the built-in
+/// `result<tuple<T…>, err-enum>` param lowers to, pushing the values onto the operand stack. The tuple analogue
+/// of `emit_result_record_arg_reg_flatten` — the Ok payload is a TUPLE, so its elements ride the join slots
+/// POSITIONALLY (element order, NO reorder — a tuple is positional), the `i32` err disc riding the FIRST slot on
+/// Err. On Ok (disc 0) recurse `emit_tuple_reg_flatten` on the payload tuple handle, its N pushes captured into
+/// the slots in REVERSE; on Err (disc≠0) the err enum's disc goes into slot 0 (widened to its width) and the rest
+/// zero-fill. Every Ok element is a non-float SCALAR, so each is ONE slot and joining the first with the `i32`
+/// err disc never widens beyond the element's own width — `slot_vts` is exactly the tuple's element widths, NO
+/// `mem`. `ok_wit` is the Ok arm's declared WIT tuple type (passed through to `emit_tuple_reg_flatten`).
+/// `work_base` is the first free scratch slot.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_result_tuple_arg_reg_flatten(
+    db: &mut Db,
+    result_slot: u32,
+    ok_tuple_ty: &Ty,
+    ok_wit: Option<&crate::wit_world::WitType>,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let Ty::Tuple(elems) = ok_tuple_ty.strip_nominal() else {
+        return Err(Reject::decline(
+            "a result<tuple,enum> Ok arm is not a tuple",
+        ));
+    };
+    // Slot valtypes in element (= positional = component) order — the SAME order + count `emit_tuple_reg_flatten`
+    // pushes. Every element is a non-float scalar (the detector's scope), so each is one slot of its own width;
+    // the first also holds the `i32` err disc on Err, which fits (an integer scalar joins `i32` without widening).
+    let mut slot_vts: Vec<ValType> = Vec::with_capacity(elems.len());
+    for ety in elems.iter() {
+        slot_vts.push(
+            valtype_of(ety)
+                .ok_or_else(|| Reject::decline("a result Ok tuple element has no valtype"))?,
+        );
+    }
+    let n = slot_vts.len() as u32;
+    let disc_out = work_base;
+    let base_slot = work_base + 1;
+    let tup_slot = base_slot + n;
+    scratch_ty.insert(disc_out, ValType::I32);
+    for (k, vt) in slot_vts.iter().enumerate() {
+        scratch_ty.insert(base_slot + k as u32, *vt);
+    }
+    scratch_ty.insert(tup_slot, ValType::I32);
+    *high = (*high).max(tup_slot + 1);
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component result disc, decl order Ok=0)
+    out.push(Lir::LocalSet(disc_out));
+    out.push(Lir::LocalGet(disc_out));
+    out.push(Lir::If(BlockType::Empty)); // disc != 0 → Err
+    // Err arm: slot 0 = the err enum's disc (widened to slot-0 width); the rest zero-fill.
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [err enum handle]
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [err enum disc: i32]
+    if slot_vts.first() == Some(&ValType::I64) {
+        out.push(Lir::I64ExtendI32U);
+    }
+    out.push(Lir::LocalSet(base_slot));
+    for (k, vt) in slot_vts.iter().enumerate().skip(1) {
+        out.push(match vt {
+            ValType::I64 => Lir::ConstI64(0),
+            ValType::F64 => Lir::F64ConstBits(0),
+            ValType::F32 => Lir::F32ConstBits(0),
+            _ => Lir::ConstI32(0),
+        });
+        out.push(Lir::LocalSet(base_slot + k as u32));
+    }
+    out.push(Lir::Else); // disc == 0 → Ok: marshal the payload tuple's elements into the slots
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [Ok tuple handle]
+    out.push(Lir::LocalSet(tup_slot));
+    emit_tuple_reg_flatten(
+        db,
+        tup_slot,
+        ok_tuple_ty,
+        ok_wit,
+        None, // all-scalar elements → no rope → no cursor
+        tup_slot + 1,
+        high,
+        scratch_ty,
+        out,
+    )?;
+    // Capture the N pushed element values into the slots in REVERSE (stack top = last element).
+    for k in (0..n).rev() {
+        out.push(Lir::LocalSet(base_slot + k));
+    }
+    out.push(Lir::End);
+    out.push(Lir::LocalGet(disc_out)); // push (disc, elem0, elem1, …)
+    for k in 0..n {
+        out.push(Lir::LocalGet(base_slot + k));
+    }
+    Ok(())
+}
+
 /// Marshal a top-level value-heap `option<scalar>` host argument whose handle is in `var_slot` into the
 /// canonical `(disc:i32, payload)` core-slot flatten the built-in `option<T>` param lowers to, pushing the two
 /// values onto the operand stack. The register twin of the `RecordFieldAbi::Option` field flatten (the
