@@ -2552,20 +2552,23 @@ fn ensure_drain_nudge_cron(fleet: &Fleet) {
     }
 }
 
-/// The desired every-3-min user-crontab line for the autonomous LEAKED-LEASE reaper (v-fleet-tooling
+/// The desired EVERY-MINUTE user-crontab line for the autonomous LEAKED-LEASE reaper (v-fleet-tooling
 /// 2026-09-11, concierge coverage-hole), tagged `# fleet:reap-leases` so [`reconcile_tagged_crons`] can
 /// find/heal it. Runs the HUB copy of `reap-leases.sh` → a worktree's `xtask fleet reap-leases`.
-/// TIGHTENED */10 → */3 (2026-09-21, concierge recurring-toil signal): a leaked check-lease (dead-PID/
-/// TTL-stale, e.g. from a gate-local launcher the harness low-mem killer reaped mid-run — see #79845/#9081)
-/// STALLS the merge gate until reaped, and at */10 a lease leaked just after a fire sat up to ~10min — long
-/// enough that the concierge kept catching + hand-reaping them inside its ~4min maintenance ticks (3 across
-/// recent ticks). reap-leases is idempotent + no-op when clean + touches NO tmux window (its own help text
-/// says it is safe to run frequently/spuriously), so a */3 cadence (matching `# fleet:drain-nudge`) beats the
-/// concierge tick and closes the stall gap WITHOUT any window action — the automated cleanup the reaper was
-/// built for, just on a tighter timer. Especially relevant while the destructive watchdog is banned (nothing
-/// else reaps leases out-of-band).
+/// TIGHTENED */10 → */3 (2026-09-21) → EVERY-MINUTE (2026-09-27), each time on the SAME concierge
+/// recurring-toil signal: a leaked check-lease (dead-PID/TTL-stale, e.g. from a gate-local launcher the
+/// harness low-mem killer reaped mid-run — see #79845/#9081) STALLS the merge gate until reaped. At */3 the
+/// window was already below the concierge's ~4min maintenance tick, but under the dcQUIC PERF-PUSH nix
+/// contention the leak RATE rose so far that a sub-3min-old leak was STILL being caught + hand-reaped by the
+/// concierge "almost every tick" (2026-09-27 coord) — the toil the autonomous cron exists to remove. reap-leases
+/// is idempotent + no-op when clean + touches NO tmux window + flock-singleton-guarded (its own help text says
+/// it is safe to run frequently/spuriously) — the CHEAPEST cron in the fleet — while a leaked PRIORITY lease
+/// stalls EVERY vertical's merge gate, so the impact-per-miss is high and the cost-per-run is ~nil. At the cron
+/// floor (every minute) the reap reliably beats the leak-catch window, so the concierge stops hand-reaping and
+/// the worst-case gate stall drops to ≤1min. Especially relevant while the destructive watchdog is banned
+/// (nothing else reaps leases out-of-band).
 fn reap_leases_cron_line(hub_script: &str) -> String {
-    format!("*/3 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:reap-leases")
+    format!("* * * * * bash {hub_script} >/dev/null 2>&1 # fleet:reap-leases")
 }
 
 /// Ensure the `# fleet:reap-leases` per-3-min user-crontab entry exists + points at THIS hub's
@@ -23726,14 +23729,16 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
-    fn reap_leases_cron_line_is_every_3min_silent_and_tagged() {
+    fn reap_leases_cron_line_is_every_minute_silent_and_tagged() {
         let line = reap_leases_cron_line("/hub/reap-leases.sh");
-        // Every 3 min (tightened from */10 2026-09-21 to beat the concierge's ~4min tick — a leaked lease
-        // stalls the merge gate and reap-leases is safe to run frequently), runs the hub script, silent,
-        // tagged for reconcile/heal.
+        // EVERY MINUTE (tightened */10 → */3 2026-09-21 → */1 2026-09-27: under the perf-push nix contention
+        // the leak RATE rose so far that even a sub-3min-old leak was caught + hand-reaped by the concierge
+        // ~every tick; reap-leases is the cheapest cron in the fleet — idempotent, no-op when clean, no window
+        // action, flock-guarded — while a leaked priority lease stalls every vertical's merge gate, so run it
+        // at the cron floor), runs the hub script, silent, tagged for reconcile/heal.
         assert!(
-            line.starts_with("*/3 * * * * bash /hub/reap-leases.sh"),
-            "every-3-min, invoking the hub script: {line}"
+            line.starts_with("* * * * * bash /hub/reap-leases.sh"),
+            "every-minute, invoking the hub script: {line}"
         );
         assert!(
             line.contains(">/dev/null 2>&1"),
