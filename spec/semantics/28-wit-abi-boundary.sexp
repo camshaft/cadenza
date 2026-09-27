@@ -7360,3 +7360,52 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a bare named-variant host-op arg (3 cases, one scalar payload) crosses on the payload arm"
+  (doc
+    "SHAPE 184 (v-wit-boundary) — the top-level BARE-VARIANT ARG marshal, which `emit_variant_reg_flatten`
+           has always handled but the corpus never pinned directly (every prior `variant` case sat inside a
+           record field / element / result). A 3-case `variant{a, b, c(s64)}` arg flattens to `(disc:i32, join)`:
+           on the `c` arm (decl-disc 2) the payload s64 rides the join slot, so run() emits `(C 9)` -> `(2, 9)`.
+           A 3-case variant is NOT reducible to an option (unlike the 2-case some/none), so this genuinely
+           exercises the N-case bare-variant register flatten. The host stub returns a fixed 55; a VALID
+           component that runs and crosses the boundary is the pin (the marshal shape is pinned by the module
+           validating with the right core signature). The nullary arm = SHAPE 185.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b) (c (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B) (C Int64))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (probe.push (C 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a bare named-variant host-op arg crosses on a nullary arm (payload join slot zero-filled)"
+  (doc
+    "SHAPE 185 (v-wit-boundary) — the nullary-arm counterpart of SHAPE 184. The same 3-case
+           `variant{a, b, c(s64)}` arg on its `b` arm (decl-disc 1, no payload) flattens to `(1, 0)`: the disc
+           1 with the join slot zero-filled (a nullary variant case never reads the payload), via the same
+           `emit_variant_reg_flatten`. run() emits `(B)`; the host stub returns 42. Completes the bare-variant
+           ARG pin (payload arm = SHAPE 184).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b) (c (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B) (C Int64))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (probe.push (B))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
