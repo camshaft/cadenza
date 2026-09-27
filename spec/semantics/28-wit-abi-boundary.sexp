@@ -6710,3 +6710,76 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a record host-op ARG with an option<list<s64>> FIELD flattens (disc, ptr, count) — Some marshals the payload list"
+  (doc
+    "SHAPE 159 (v-wit-boundary) — a record host-op arg (`probe.push : func(record{n: s64, o: option<list<s64>>})
+           -> s64)`) whose FIELD is an `option<list>`. `emit_record_arg_marshal` gained an option<list> field arm
+           (the list analogue of its option<bytes> field arm): on Some it marshals the payload list into `mem` at
+           the running cursor via `emit_list_arg_marshal` (which leaves `(outer-ptr, count)`), captures them, and
+           pushes `(disc=1, ptr, count)`; on None `(0,0,0)`. `field_boundary_abi`'s option arm was widened to admit
+           `option<list>` (an `Option(List(<elem>))` abi), so `is_boundary_record` now admits a record carrying an
+           option<list> field — in lockstep with the new marshal arm (decline-don't-miscompile). The whole record
+           flattens to `(n: i64, o_disc: i32, o_ptr: i32, o_count: i32)`. The cursor pre-scan
+           (`record_has_option_field_needing_mem`) reserves the scratch cursor for an option<list>-field record.
+           run() builds {n: 7, o: Some([1, 2])}, performs probe.push, returns the stub 55. A VALID component that
+           runs is the pin. Completes the option<list> family (arg + tuple element = SHAPE 156-158; this is the
+           record-field position).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= n (s64)) (= o (option (list (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: n Int64) (: o (Option (List Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push #record((= n 7) (= o (Some #list(1 2)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a record host-op ARG with an option<list<s64>> FIELD = None flattens to (0, 0, 0)"
+  (doc
+    "SHAPE 160 (v-wit-boundary) — the NONE arm of SHAPE 159. An `option<list>` record field that is None flattens
+           to `(disc=0, ptr=0, count=0)` — the marshal's else branch zero-fills the three slots (a none option
+           never reads its payload, so the list is not marshalled). run() builds {n: 7, o: None}, performs
+           probe.push, returns the stub 42. Complements SHAPE 159 (Some).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= n (s64)) (= o (option (list (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: n Int64) (: o (Option (List Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push #record((= n 7) (= o None)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<record{n, o: option<list<s64>>}> host-op arg composes the option<record> + option<list> field marshals"
+  (doc
+    "SHAPE 161 (v-wit-boundary) — a top-level `option<record{n: s64, o: option<list<s64>>}>` bare host-op arg: the
+           COMPOSED shape proving the option<list> field marshal (SHAPE 159) rides inside an option<record>
+           payload. `option_arg_crosses` → `is_boundary_record` admits the payload record (its option<list> field
+           now crosses via `field_boundary_abi`), and `emit_option_reg_flatten`'s record branch recurses
+           `emit_record_arg_marshal`, whose option<list> field arm marshals the inner list. run() builds Some({n:
+           7, o: Some([1, 2])}), performs probe.push, returns the stub 55. Pins the two-level compound composition.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= n (s64)) (= o (option (list (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: n Int64) (: o (Option (List Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= n 7) (= o (Some #list(1 2))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

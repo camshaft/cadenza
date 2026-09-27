@@ -202,18 +202,19 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `field_boundary_abi` element recursion builds the `(list (record …))` field type and the marshal +
   `collect_record_field_ops` recurse it in lockstep. (A record ARG with a `list<scalar>`/nested-record/tuple
   field, and the reverse `list<record{…}>` whole-arg, were already covered.)
-- **[emit, register-path] `option<list<T>>` — ✅ DONE for the ARG + tuple-ELEMENT positions (SHAPE 156/157/158).**
-  `emit_option_reg_flatten` gained a list-payload branch — the register analogue of the option<bytes>
-  `(disc, ptr, len)` branch: on Some it marshals the payload list into `mem` at the running cursor via
-  `emit_list_arg_marshal` (which leaves `(outer-ptr, count)`), captures them, and pushes `(disc=1, ptr, count)`;
-  on None `(0, 0, 0)`. `option_arg_crosses` was widened to admit a `list<T>` payload whose element crosses
-  (`field_boundary_abi`), in lockstep with the classifier option-arg build (`Option(List(<elem>))`, built INLINE),
-  the emit dispatch, the cursor pre-scan, and `used_ops` (`vec-len`/`vec-get` + element ops). The tuple-ELEMENT
-  path (SHAPE 158) routes through the same `emit_option_reg_flatten` branch, its abi built INLINE in the
-  tuple-element classifier (mirroring the top-level arg). REMAINING: `field_boundary_abi` itself is DELIBERATELY
-  NOT widened — an `option<list>` RECORD FIELD (probe B; `emit_record_arg_marshal`'s inline option-field arms have
-  no list arm) still declines CDZ0903 cleanly (no miscompile). Closing the record-field position needs an
-  `option<list>` arm in `emit_record_arg_marshal`'s option-field marshal + widening `field_boundary_abi`.
+- **[emit, register-path] `option<list<T>>` — ✅ DONE at EVERY register position (SHAPE 156-161).** The ARG +
+  tuple-ELEMENT (SHAPE 156/157/158) route through `emit_option_reg_flatten`'s list-payload branch — the register
+  analogue of the option<bytes> `(disc, ptr, len)` branch: on Some it marshals the payload list into `mem` at the
+  running cursor via `emit_list_arg_marshal` (leaves `(outer-ptr, count)`), captures them, pushes
+  `(disc=1, ptr, count)`; on None `(0, 0, 0)`. The RECORD-FIELD position (SHAPE 159/160) uses a new option<list>
+  arm in `emit_record_arg_marshal` (the list analogue of its option<bytes> field arm), and `field_boundary_abi`'s
+  option arm was widened to `Option(List(<elem>))` so `is_boundary_record` admits an option<list>-field record in
+  lockstep with that marshal arm. The COMPOSED `option<record{…option<list>…}>` (SHAPE 161) follows for free
+  (`emit_option_reg_flatten`'s record branch recurses `emit_record_arg_marshal`). `option_arg_crosses` +
+  the emit dispatch + the cursor pre-scan (`record_has_option_field_needing_mem`, renamed from
+  `record_has_option_bytes_field`) + `used_ops` all widened in lockstep. REMAINING: a `list<option<list>>` element
+  (the in-place `emit_option_to_mem` writer has no nested-list payload arm) still declines CDZ0903 cleanly, and an
+  `option<option<…>>` payload anywhere.
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
 - **[emit, export] typed enum RESULT under a DECLARED world — ✅ DONE (SHAPE 60).** A payloadless-enum

@@ -459,6 +459,16 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                     let inner = field_boundary_abi(db, &payload)?;
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
                 }
+                // An `option<list<T>>` payload crosses as `option<list<elem>>` — `(disc, ptr, count)`; on Some
+                // the payload list is marshalled into `mem` (`emit_list_arg_marshal`), on None `(0,0,0)`.
+                // Admitted iff the list ELEMENT crosses at the boundary (`field_boundary_abi`, recursed via the
+                // `List` arm above). Marshalled by `emit_record_arg_marshal`'s option<list> field arm (a record
+                // FIELD) / `emit_option_reg_flatten`'s list branch (a top-level arg / tuple element) — MUST agree
+                // with those marshal arms (decline-don't-miscompile).
+                if let Ty::List(_) = payload.strip_nominal() {
+                    let inner = field_boundary_abi(db, &payload)?; // `List(elem)`, or `None` if the elem declines
+                    return Some(RecordFieldAbi::Option(Box::new(inner)));
+                }
                 // An `option<record>` payload (each field a scalar OR `Bytes`) crosses as `option<record<…>>`.
                 // Unlike the tuple case, a record's fields are name-lex in the value-heap cell but DECLARATION-
                 // ordered in the host WIT, so `reorder_record_fields_to_wit` recurses into this `Option(Record)`
@@ -812,18 +822,21 @@ pub fn tuple_arg_needs_cursor(db: &mut Db, ty: &Ty) -> bool {
 /// its Some arm copies the payload rope into shared `mem`, so the arg needs the running scratch cursor. An
 /// `option<scalar>` does NOT (it flattens to core slots). Complements [`record_has_bytes_field`]/
 /// [`record_has_list_field`] for the cursor-reservation gate (an option is a `Sum`, invisible to those).
-pub fn record_has_option_bytes_field(db: &mut Db, ty: &Ty) -> bool {
+pub fn record_has_option_field_needing_mem(db: &mut Db, ty: &Ty) -> bool {
     let Ty::Record(fields) = ty.strip_nominal() else {
         return false;
     };
     let fields = (**fields).clone(); // release the borrow of `ty` before the recursive `&mut db` calls
     fields.values().any(|f| {
         option_payload_ty(db, f).is_some_and(|p| {
-            // A direct `option<bytes>`/`option<string>` field, OR an `option<record>` whose payload record
-            // carries a `Bytes` field (the byte-leaf option<record> marshal copies that rope into `mem` on
-            // Some) — both reserve the running scratch cursor.
-            matches!(p.strip_nominal(), Ty::Bytes | Ty::String) || record_has_bytes_field(&p)
-        }) || record_has_option_bytes_field(db, f)
+            // An option FIELD reserves the running scratch cursor iff its payload copies bytes into `mem` on
+            // Some: a direct `option<bytes>`/`option<string>`, an `option<list>` (the payload list marshals its
+            // backing array into `mem`), or an `option<record/tuple>` whose payload carries a `Bytes`/`list`
+            // field (the recursive marshal spills those). Over-reservation is a harmless unused cursor slot.
+            matches!(p.strip_nominal(), Ty::Bytes | Ty::String | Ty::List(_))
+                || record_has_bytes_field(&p)
+                || record_has_list_field(&p)
+        }) || record_has_option_field_needing_mem(db, f)
     })
 }
 
