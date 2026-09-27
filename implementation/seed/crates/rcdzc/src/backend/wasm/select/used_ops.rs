@@ -1206,6 +1206,14 @@ pub(super) fn collect_used_ops_into_seen(
                                         out.insert(read);
                                     }
                                 }
+                            } else if let Ty::List(inner) = e.strip_nominal() {
+                                // A `list<T>` element: `arr-get` (already inserted) the List handle + the list
+                                // marshal's `vec-len`/`vec-get` walk + the element's own ops (via the shared
+                                // `collect_list_elem_ops`, the used_ops twin of `emit_list_arg_marshal`).
+                                out.insert(OP_VEC_LEN);
+                                out.insert(OP_VEC_GET);
+                                let inner = (**inner).clone();
+                                collect_list_elem_ops(db, &inner, out);
                             } else if let Ty::Record(sub) = e.strip_nominal() {
                                 // A record element: `arr-get` (already inserted) + each field's ops via the shared
                                 // recursive `collect_record_field_ops` (the used_ops twin of `field_boundary_abi`/

@@ -639,9 +639,10 @@ pub fn is_boundary_record(db: &mut Db, ty: &Ty) -> bool {
 /// Whether a top-level `tuple<…>` host-op ARGUMENT crosses natively as the built-in WIT `tuple<T…>`. Keyed to
 /// [`emit_tuple_reg_flatten`]'s ELEMENT capability (the marshal), so the gate + classifier stay in lockstep: an
 /// element crosses iff it is a SCALAR (`abi_val_type`), a `Bytes` leaf, a nested `tuple<…>` whose inner leaves
-/// are all scalar/`Bytes` (recursed inline), OR a `record` whose EVERY field crosses at the boundary
-/// ([`is_boundary_record`] → [`field_boundary_abi`], recursed by `emit_record_arg_marshal`). A list/option/
-/// variant ELEMENT (no such arm in `emit_tuple_reg_flatten`) does NOT cross this increment.
+/// are all scalar/`Bytes` (recursed inline), a `list<T>` whose ELEMENT crosses at the boundary
+/// ([`field_boundary_abi`], marshalled into `mem` by `emit_list_arg_marshal`), OR a `record` whose EVERY field
+/// crosses at the boundary ([`is_boundary_record`], recursed by `emit_record_arg_marshal`). An option/variant
+/// ELEMENT (no such arm in `emit_tuple_reg_flatten`) does NOT cross this increment.
 fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
     let Ty::Tuple(elems) = ty.strip_nominal() else {
         return false;
@@ -658,6 +659,15 @@ fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
                 && inner.iter().all(|x| {
                     abi_val_type(x).is_some() || matches!(x.strip_nominal(), Ty::Bytes)
                 }))
+            || match e.strip_nominal() {
+                // a `list<T>` element crosses iff its ELEMENT crosses as a field boundary abi (the same
+                // recursion the direct `list<T>` ARG + a record list FIELD use).
+                Ty::List(inner) => {
+                    let inner = (**inner).clone();
+                    field_boundary_abi(db, &inner).is_some()
+                }
+                _ => false,
+            }
             || is_boundary_record(db, e.strip_nominal())
     })
 }
@@ -1466,6 +1476,14 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                     })
                                     .collect();
                                 RecordFieldAbi::Tuple(inner_abis)
+                            } else if matches!(e.strip_nominal(), Ty::List(_)) {
+                                // a `list<T>` element crosses as a component `(list <elem>)` DEFINED type, core
+                                // `(ptr, count)` — `emit_list_arg_marshal` writes the backing array + elements
+                                // into `mem` at the cursor. Its abi is the shared recursive `field_boundary_abi`
+                                // (`RecordFieldAbi::List(<elem abi>)`), the SAME as a direct list ARG / a record
+                                // list FIELD. `tuple_arg_crosses` guarantees the element crosses.
+                                field_boundary_abi(db, e)
+                                    .expect("list element crosses by `tuple_arg_crosses`")
                             } else {
                                 // a RECORD element: build each field's boundary abi via the shared recursive
                                 // builder (`field_boundary_abi` — scalar/`Bytes`/nested record/list/tuple/option/
@@ -1474,7 +1492,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                 // so the component type + core flatten must match — a name-lex order mis-links).
                                 // `tuple_arg_crosses` guarantees every field crosses.
                                 let Ty::Record(sub) = e.strip_nominal() else {
-                                    unreachable!("tuple element is scalar/bytes/tuple/record by the guard")
+                                    unreachable!("tuple element is scalar/bytes/list/tuple/record by the guard")
                                 };
                                 let sub = sub.clone();
                                 let mut fields: Vec<(String, RecordFieldAbi)> =

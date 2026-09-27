@@ -6241,6 +6241,33 @@ cases
   (live-objects 0))
 
 (case
+  "a TOP-LEVEL tuple with a list<s64> ELEMENT marshals the list into shared mem inline"
+  (doc
+    "SHAPE 144 (v-wit-boundary) — a top-level `tuple<list<s64>, s64>` bare host-op arg: a `list<T>` as a tuple
+           ELEMENT (not a record field). `emit_tuple_reg_flatten` gained a list-element arm symmetric to the
+           record marshal's list-FIELD arm: it `arr-get`s the element's List handle and runs `emit_list_arg_
+           marshal`, which writes the list's backing array + elements into shared `mem` at the running cursor and
+           leaves `(ptr, count)` — the SAME 2 core slots a `list<T>` ARG / a record list FIELD lowers to. So the
+           whole arg flattens to `(xs_ptr: i32, xs_count: i32, outer1: i64)` = 3 core slots. `tuple_arg_crosses`
+           now admits a list element whose element crosses (`field_boundary_abi`), and `tuple_arg_needs_cursor`
+           already reserves the scratch cursor for a list leaf. run() builds ([5, 6], 9), performs probe.push,
+           returns the stub 55. Completes the tuple ELEMENT set to scalar / Bytes / nested-tuple / record / list
+           (an option/variant element remains a later increment — `emit_tuple_reg_flatten` has no such arm).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (list (s64)) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (List Int64) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple(#list(5 6) 9))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
   "a payloadless enum as a FIELD of a typed record EXPORT result crosses BY NAME"
   (doc
     "SHAPE 136 — a payloadless `enum` as a FIELD of a typed `record` EXPORT result under a declared world:
