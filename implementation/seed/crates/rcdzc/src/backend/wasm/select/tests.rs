@@ -1227,6 +1227,7 @@ fn map_lookup_project_escape_is_monotone_in_dup_sites_rules_out_the_4405_gate() 
         false,
         None,
         false,
+        false,
     );
     let dup_aware = binding_escapes_dup_aware(
         &mut db,
@@ -1234,6 +1235,7 @@ fn map_lookup_project_escape_is_monotone_in_dup_sites_rules_out_the_4405_gate() 
         EscapeTarget::Binder(m_binder),
         false,
         Some(&dup_sites),
+        false,
         false,
     );
     assert!(

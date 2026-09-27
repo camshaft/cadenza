@@ -189,6 +189,7 @@ pub(super) fn binding_escapes(
         tail_borrowed,
         None,
         false,
+        false,
     )
 }
 
@@ -201,7 +202,15 @@ pub(super) fn binding_escapes(
 /// Reuses v-core-opt's vetted `def_consumes_param` as the callee-borrow oracle (back-edge-aware, invariance-
 /// gated, default-deny) — no co-induction needed (a non-member forward is a non-borrow use ⇒ consumes).
 pub(crate) fn param_borrow_aware_escapes(db: &mut Db, body: StructId, binder: StructId) -> bool {
-    binding_escapes_dup_aware(db, body, EscapeTarget::Binder(binder), false, None, true)
+    binding_escapes_dup_aware(
+        db,
+        body,
+        EscapeTarget::Binder(binder),
+        false,
+        None,
+        true,
+        false,
+    )
 }
 
 /// The CONSUMING-SLICE acyclicity guard (v-core-opt reclaim-envelope design): whether the entry param
@@ -724,6 +733,7 @@ pub(super) fn binding_escapes_fresh_dup_aware(
         tail_borrowed,
         Some(&dup_sites),
         false,
+        false,
     )
 }
 
@@ -744,6 +754,7 @@ pub(crate) fn capture_escapes_via_body(db: &mut Db, body: StructId, capture_inde
         EscapeTarget::Capture(capture_index),
         false,
         None,
+        false,
         false,
     )
 }
@@ -794,6 +805,7 @@ pub(crate) fn record_cell_param_droppable(db: &mut Db, body: StructId, binder: S
         EscapeTarget::Binder(binder),
         false,
         Some(&dup_sites),
+        false,
         false,
     );
     db.record_cell_param_droppable_memo
@@ -1004,21 +1016,31 @@ pub(super) fn binding_escapes_dup_aware(
     // BORROWS its param k is not an escape. DEFAULTS FALSE for every existing caller (byte-identical), so the
     // dup-aware / droppable query is provably unchanged; only [`param_borrow_aware_escapes`] passes true.
     borrow_aware_calls: bool,
+    // c2236 arms-inherit-borrow variant (v-core-opt-proven differential): when true, a `Core::If`/`Core::Match`
+    // arm RESULT inherits the parent `tail_borrowed` instead of the hardcoded consuming `false`. DEFAULTS FALSE
+    // for every existing caller (byte-identical) — only [`keep_scope_drop_despite_body_escape`] passes true.
+    arms_inherit_borrow: bool,
 ) -> bool {
     // FRONT-3 MEMO (v-memory-safety sign-off): the escape verdict is a pure function of
     // (id, binder, tail_borrowed) + the build-once-immutable Core graph — so memoize it, keyed by that FULL
     // context (tail_borrowed is the position-dependence, so it MUST be in the key; the full EscapeTarget too,
-    // as Node/Binder/Capture are distinct verdicts). GATED on `dup_sites.is_none()` (the sumpayload/cont-
-    // escape blowup path; the `Some` drop-site path neither reads nor writes the memo — no cross-
-    // contamination). Linearizes the DAG-as-tree escape re-walk (db-query-diff / db-query-perfield front-3).
-    // NO in_progress/tainted-withhold: the memo writes only AFTER the recursive call returns and the walk is
-    // acyclic by spec (recursive defs refer to themselves via a static code ref, not a heap-value cycle; the
-    // `Core::Call` arm recurses only into args, not the callee body), so no cycle-artifact can ever be cached
-    // (see `Db::escape_verdict_memo`). The worker's recursion calls THIS wrapper, so nested queries memoize.
+    // as Node/Binder/Capture are distinct verdicts; borrow_aware_calls + arms_inherit_borrow are variant modes
+    // that MUST be in the key so a variant verdict never poisons the default query's cache). GATED on
+    // `dup_sites.is_none()` (the sumpayload/cont-escape blowup path; the `Some` drop-site path neither reads
+    // nor writes the memo — no cross-contamination). Linearizes the DAG-as-tree escape re-walk (db-query-diff /
+    // db-query-perfield front-3). NO in_progress/tainted-withhold: the memo writes only AFTER the recursive
+    // call returns and the walk is acyclic by spec (recursive defs refer to themselves via a static code ref,
+    // not a heap-value cycle; the `Core::Call` arm recurses only into args, not the callee body), so no
+    // cycle-artifact can ever be cached (see `Db::escape_verdict_memo`). The worker's recursion calls THIS
+    // wrapper, so nested queries memoize.
     if dup_sites.is_none()
-        && let Some(&v) =
-            db.escape_verdict_memo
-                .get(&(id, binder, tail_borrowed, borrow_aware_calls))
+        && let Some(&v) = db.escape_verdict_memo.get(&(
+            id,
+            binder,
+            tail_borrowed,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ))
     {
         return v;
     }
@@ -1029,12 +1051,45 @@ pub(super) fn binding_escapes_dup_aware(
         tail_borrowed,
         dup_sites,
         borrow_aware_calls,
+        arms_inherit_borrow,
     );
     if dup_sites.is_none() {
-        db.escape_verdict_memo
-            .insert((id, binder, tail_borrowed, borrow_aware_calls), v);
+        db.escape_verdict_memo.insert(
+            (
+                id,
+                binder,
+                tail_borrowed,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ),
+            v,
+        );
     }
     v
+}
+
+/// c2236 (v-core-opt-designed + soundness-proven): whether a heap binding that [`binding_escapes_dup_aware`]
+/// reports as ESCAPING should NONETHELESS get its scope-end drop — i.e. the escape is a FALSE-POSITIVE (an
+/// If/Match arm-RESULT alias that is re-borrowed post-body), NOT a real ownership transfer. The differential:
+/// the binding escapes under the STANDARD walk but NOT under the `arms_inherit_borrow` variant (where an
+/// arm-result reached in a borrow context is a borrow, not a consume). A real transfer (a call-arg / ctor-embed
+/// / function-result) is a consuming position that escapes under BOTH walks → returns FALSE → the drop stays
+/// suppressed (this is the #8976 threaded-slice UAF bar: `orig` in `(pint rest orig)` is a call-arg → FALSE →
+/// no over-reclaim of the buffer `fin` later slices). SOUND in the safe direction: a mis-verdict can only be a
+/// false-FALSE (a residual leak, leak-over-UAF), never a false-TRUE UAF, as long as the variant leaves every
+/// transfer position consuming — which it does (it touches ONLY If/Match arm-RESULTS, never call-args/ctors).
+/// Consulted at the scope-end-drop gates (the non-tail `emit` loop + `emit_tail`'s `any_drop`) and their
+/// `used_ops.rs` import twin (import==emit). Uses `Some(dup_sites)` so a dup-backed consume (concat) is already
+/// non-escaping — matching the drop-site query exactly.
+pub(super) fn keep_scope_drop_despite_body_escape(
+    db: &mut Db,
+    body: StructId,
+    binder: StructId,
+    dup_sites: &HashSet<StructId>,
+) -> bool {
+    let target = EscapeTarget::Binder(binder);
+    binding_escapes_dup_aware(db, body, target, false, Some(dup_sites), false, false)
+        && !binding_escapes_dup_aware(db, body, target, false, Some(dup_sites), false, true)
 }
 
 /// Whether the RESULT of the RestFrom extraction node `restfrom_node` (a `(.. r)` tail slice) ESCAPES —
@@ -1060,6 +1115,7 @@ pub(super) fn restfrom_result_escapes(
         false,
         None,
         false,
+        false,
     )
 }
 
@@ -1072,6 +1128,9 @@ fn binding_escapes_dup_aware_inner(
     tail_borrowed: bool,
     dup_sites: Option<&HashSet<StructId>>,
     borrow_aware_calls: bool,
+    // c2236 variant: If/Match arm RESULTS inherit `tail_borrowed` instead of force-consuming `false` (see the
+    // wrapper doc). Threaded UNCHANGED through every recursion; consumed only at the Core::If/Core::Match arms.
+    arms_inherit_borrow: bool,
 ) -> bool {
     // NODE target: THIS extraction node's value escapes iff the walk reached it in a CONSUMING position
     // (`!tail_borrowed` — a parent `Proj`/borrow-op relaxes to `tail_borrowed`, a ctor-child/result/call-arg
@@ -1145,24 +1204,56 @@ fn binding_escapes_dup_aware_inner(
         // (`vec-len`/`bytes-len`) read a scalar count — always a borrow. `String.scalar-len` likewise walks
         // its string buffer via borrowing `bytes-len`/`bytes-get` reads and returns a scalar count.
         Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                operand,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `Blake3.of` BORROWS its Bytes operand (reads it, returns a FRESH hash — operand not retained).
-        Core::Blake3Of { operand } => {
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites, borrow_aware_calls)
-        }
+        Core::Blake3Of { operand } => binding_escapes_dup_aware(
+            db,
+            operand,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // `Ast.print` (runtime) BORROWS its Ast operand (renders a fresh String — operand not retained).
-        Core::AstPrint { operand, .. } => {
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites, borrow_aware_calls)
-        }
+        Core::AstPrint { operand, .. } => binding_escapes_dup_aware(
+            db,
+            operand,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // `Ast.encode` (runtime) BORROWS its Ast operand (serializes to a fresh Bytes — operand not retained).
-        Core::AstEncode { operand, .. } => {
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites, borrow_aware_calls)
-        }
+        Core::AstEncode { operand, .. } => binding_escapes_dup_aware(
+            db,
+            operand,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // `Ast.decode` (runtime) BORROWS its Bytes operand (parses to a fresh Ast handle — operand not retained).
-        Core::AstDecode { operand, .. } => {
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites, borrow_aware_calls)
-        }
+        Core::AstDecode { operand, .. } => binding_escapes_dup_aware(
+            db,
+            operand,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         Core::Proj { operand, .. } => {
             // A projection reads a field/element (`arr-get`) without transferring the aggregate's ownership,
             // but whether the OPERAND escapes THROUGH the projection depends on what happens to the extracted
@@ -1198,34 +1289,58 @@ fn binding_escapes_dup_aware_inner(
                     scalar_element || tail_borrowed || sites.contains(&id)
                 }
             };
-            binding_escapes_dup_aware(db, operand, binder, borrow, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                operand,
+                binder,
+                borrow,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `List.at` BORROWS its list (`vec-len`/`vec-get` both borrow; the read element is DUP'd into the
         // `Some` payload rather than moved) — so a list bound here does not escape through `List.at`. The
         // index is a scalar. Recurse borrowing the list; the index cannot hold a heap reference.
         Core::ListAt { list, index, .. } => {
-            binding_escapes_dup_aware(db, list, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(
-                    db,
-                    index,
-                    binder,
-                    false,
-                    dup_sites,
-                    borrow_aware_calls,
-                )
+            binding_escapes_dup_aware(
+                db,
+                list,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                index,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `Bytes.at` BORROWS its bytes (`bytes-len`/`bytes-get` both borrow; the byte read is a raw i32
         // VALUE, not a heap handle, so nothing is retained from the sequence). The index is a scalar.
         Core::BytesAt { bytes, index, .. } => {
-            binding_escapes_dup_aware(db, bytes, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(
-                    db,
-                    index,
-                    binder,
-                    false,
-                    dup_sites,
-                    borrow_aware_calls,
-                )
+            binding_escapes_dup_aware(
+                db,
+                bytes,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                index,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `String.at` BORROWS its string — the `Some` branch `dup`s it before the `bytes-slice` consumes
         // the copy (so the returned slice owns an INDEPENDENT reference, not part of the source), and the
@@ -1234,28 +1349,44 @@ fn binding_escapes_dup_aware_inner(
         // The index is a scalar. (This borrow discipline is why `String.at` composes in a recursive char
         // scan that threads the same string through both `String.at` and the recursive call.)
         Core::StrAt { string, index, .. } => {
-            binding_escapes_dup_aware(db, string, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(
-                    db,
-                    index,
-                    binder,
-                    false,
-                    dup_sites,
-                    borrow_aware_calls,
-                )
+            binding_escapes_dup_aware(
+                db,
+                string,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                index,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `String.scalar-at` BORROWS its string operand (bytes-scalar-at reads the buffer, does not consume
         // it) — same discipline as `String.at`: the string binding does NOT escape, the index is a scalar.
         Core::StrScalarAt { operand, index, .. } => {
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(
-                    db,
-                    index,
-                    binder,
-                    false,
-                    dup_sites,
-                    borrow_aware_calls,
-                )
+            binding_escapes_dup_aware(
+                db,
+                operand,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                index,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `String.slice` BORROWS its string operand (the Some branch `dup`s it before the consuming
         // `bytes-slice`, the None branch takes no reference — same discipline as `String.at`), so a binding
@@ -1263,23 +1394,53 @@ fn binding_escapes_dup_aware_inner(
         Core::StrSlice {
             string, start, end, ..
         } => {
-            binding_escapes_dup_aware(db, string, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(
-                    db,
-                    start,
-                    binder,
-                    false,
-                    dup_sites,
-                    borrow_aware_calls,
-                )
-                || binding_escapes_dup_aware(db, end, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                string,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                start,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                end,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `Bytes.concat`/`slice`/`compact` all CONSUME their bytes operand(s) into the new sequence
         // (`bytes-concat`/`bytes-slice`/`bytes-compact` consume, per `value-heap-runtime.md §Constructors
         // Consume`). A binding used as an operand escapes into the result. `slice`'s start/len are scalars.
         Core::BytesConcat { lhs, rhs } => {
-            binding_escapes_dup_aware(db, lhs, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, rhs, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                lhs,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                rhs,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // The runtime BigInt ops BORROW their operand handles (`bigint-add`/…/`to-i64-checked` `unbox_
         // bigint`-read without consuming, then the `emit_bigint_borrow_*` helpers drop only an OWNED
@@ -1290,21 +1451,56 @@ fn binding_escapes_dup_aware_inner(
         // direct `LocalRef` borrows; a producer arm resets to consuming). `bigint-of-i64`'s operand is an
         // i64 scalar (no heap ref) — always consuming, `false`.
         Core::BigIntBinOp { lhs, rhs, .. } | Core::BigIntCmp { lhs, rhs, .. } => {
-            binding_escapes_dup_aware(db, lhs, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, rhs, binder, true, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                lhs,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                rhs,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
-        Core::BigIntOfI64 { value } => {
-            binding_escapes_dup_aware(db, value, binder, false, dup_sites, borrow_aware_calls)
-        }
-        Core::BigIntToI64 { operand } => {
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites, borrow_aware_calls)
-        }
+        Core::BigIntOfI64 { value } => binding_escapes_dup_aware(
+            db,
+            value,
+            binder,
+            false,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
+        Core::BigIntToI64 { operand } => binding_escapes_dup_aware(
+            db,
+            operand,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // `Value.encode`/`decode` BORROW their operand: `value-encode` is an inspector (walks `v` to a fresh
         // owned doc); `value-decode` reads `bytes` to CONSTRUCT a fresh owned value. Neither retains a
         // reference to the operand in the result, so a binding used directly as the operand does NOT escape
         // through it (recurse `tail_borrowed: true`, like `BigIntToI64`/`ListLen`).
         Core::ValueEncode { value: operand, .. } | Core::ValueDecode { bytes: operand, .. } => {
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                operand,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `Char.to-int`'s operand is a `Char` (an i32 SCALAR code point, never a heap handle), so it cannot
         // retain a heap reference — a binding used as the operand does NOT escape (recurse `tail_borrowed:
@@ -1312,7 +1508,15 @@ fn binding_escapes_dup_aware_inner(
         Core::CharToInt { operand } | Core::IntToCharChecked { operand, .. } => {
             // The operand is a scalar (Char's i32 code point / Int64), never a heap handle, so it retains no
             // reference — recurse `tail_borrowed: true` (like the scalar-yielding `BigIntToI64`).
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                operand,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // The runtime Rational arithmetic/comparison ops BORROW their operand handles (`rational-add`/…/
         // `rational-cmp` unbox-read without consuming; the borrow helpers drop only an OWNED temporary), so
@@ -1320,67 +1524,172 @@ fn binding_escapes_dup_aware_inner(
         // arith). `RationalOfInts`'s num/den + `RationalOfIntWiden`'s value are i64 SCALARS (no heap ref) —
         // always consuming, `false`.
         Core::RationalBinOp { lhs, rhs, .. } | Core::RationalCmp { lhs, rhs, .. } => {
-            binding_escapes_dup_aware(db, lhs, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, rhs, binder, true, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                lhs,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                rhs,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         Core::RationalOfInts { num, den } => {
-            binding_escapes_dup_aware(db, num, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, den, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                num,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                den,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
-        Core::RationalOfIntWiden { value } => {
-            binding_escapes_dup_aware(db, value, binder, false, dup_sites, borrow_aware_calls)
-        }
+        Core::RationalOfIntWiden { value } => binding_escapes_dup_aware(
+            db,
+            value,
+            binder,
+            false,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // `rational-num`/`rational-den` BORROW the Rational operand (unbox-read without consuming),
         // returning a fresh BigInt handle — so a binding used directly as the operand does NOT escape.
-        Core::RationalNum { operand } | Core::RationalDen { operand } => {
-            binding_escapes_dup_aware(db, operand, binder, true, dup_sites, borrow_aware_calls)
-        }
+        Core::RationalNum { operand } | Core::RationalDen { operand } => binding_escapes_dup_aware(
+            db,
+            operand,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
-            binding_escapes_dup_aware(db, bytes, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(
-                    db,
-                    start,
-                    binder,
-                    false,
-                    dup_sites,
-                    borrow_aware_calls,
-                )
-                || binding_escapes_dup_aware(db, len, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                bytes,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                start,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                len,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
-        Core::BytesCompact { operand } => {
-            binding_escapes_dup_aware(db, operand, binder, false, dup_sites, borrow_aware_calls)
-        }
+        Core::BytesCompact { operand } => binding_escapes_dup_aware(
+            db,
+            operand,
+            binder,
+            false,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // `String.from-bytes` CONSUMES its bytes operand (`str-from-bytes` transfers ownership out as the
         // String on success, drops it on failure), so a binding used as the operand escapes into the result.
-        Core::StrFromBytes { bytes, .. } => {
-            binding_escapes_dup_aware(db, bytes, binder, false, dup_sites, borrow_aware_calls)
-        }
+        Core::StrFromBytes { bytes, .. } => binding_escapes_dup_aware(
+            db,
+            bytes,
+            binder,
+            false,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // `String.to-bytes` CONSUMES its string operand (`bytes-compact` transfers the handle out as the
         // Bytes result), so a binding used as the operand escapes into the result.
-        Core::StrToBytes { string } => {
-            binding_escapes_dup_aware(db, string, binder, false, dup_sites, borrow_aware_calls)
-        }
+        Core::StrToBytes { string } => binding_escapes_dup_aware(
+            db,
+            string,
+            binder,
+            false,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // `str-nfc-normalize` CONSUMES its string operand (returns the same handle when already NFC, else a
         // fresh leaf with the original dropped), so a binding used as the operand escapes into the result.
-        Core::NfcNormalize { string } => {
-            binding_escapes_dup_aware(db, string, binder, false, dup_sites, borrow_aware_calls)
-        }
+        Core::NfcNormalize { string } => binding_escapes_dup_aware(
+            db,
+            string,
+            binder,
+            false,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
         // `Bytes.of`'s elements are scalar bytes (Int64 0..=255), consumed into the sequence like a list's.
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
             elems.iter().any(|&e| {
-                binding_escapes_dup_aware(db, e, binder, false, dup_sites, borrow_aware_calls)
+                binding_escapes_dup_aware(
+                    db,
+                    e,
+                    binder,
+                    false,
+                    dup_sites,
+                    borrow_aware_calls,
+                    arms_inherit_borrow,
+                )
             })
         }
         // A runtime `(bin …)` construction consumes each segment's scalar int value into the built bytes.
         Core::BinBuild { segs } => segs.iter().any(|s| {
-            binding_escapes_dup_aware(db, s.value, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                s.value,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }),
         // A runtime bit-field run consumes each field's scalar value (packed into the built bytes).
         Core::BinBitsBuild { fields } => fields.iter().any(|f| {
-            binding_escapes_dup_aware(db, f.value, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                f.value,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }),
         // A `BinIntRead` reads (borrows) its bytes operand to decode a segment: `bytes-get` COPIES each byte
         // out as a raw i32, retaining nothing from the sequence. A `BinRestRead` slices the tail but DUPs the
@@ -1400,10 +1709,25 @@ fn binding_escapes_dup_aware_inner(
         | Core::BinRestRead {
             bytes, off_plus, ..
         } => {
-            binding_escapes_dup_aware(db, bytes, binder, true, dup_sites, borrow_aware_calls)
-                || off_plus.is_some_and(|op| {
-                    binding_escapes_dup_aware(db, op, binder, false, dup_sites, borrow_aware_calls)
-                })
+            binding_escapes_dup_aware(
+                db,
+                bytes,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || off_plus.is_some_and(|op| {
+                binding_escapes_dup_aware(
+                    db,
+                    op,
+                    binder,
+                    false,
+                    dup_sites,
+                    borrow_aware_calls,
+                    arms_inherit_borrow,
+                )
+            })
         }
         // A `BinSizedRead` borrows its bytes operand (DUP-then-`bytes-slice` the copy — the original survives,
         // like `BinRestRead`) and borrows its runtime length operand (a `BinIntRead` scalar read). The binding
@@ -1415,40 +1739,144 @@ fn binding_escapes_dup_aware_inner(
             len,
             ..
         } => {
-            binding_escapes_dup_aware(db, bytes, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, len, binder, false, dup_sites, borrow_aware_calls)
-                || off_plus.is_some_and(|op| {
-                    binding_escapes_dup_aware(db, op, binder, false, dup_sites, borrow_aware_calls)
-                })
+            binding_escapes_dup_aware(
+                db,
+                bytes,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                len,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || off_plus.is_some_and(|op| {
+                binding_escapes_dup_aware(
+                    db,
+                    op,
+                    binder,
+                    false,
+                    dup_sites,
+                    borrow_aware_calls,
+                    arms_inherit_borrow,
+                )
+            })
         }
         // `List.push`/`prepend`/`concat` CONSUME both operands (the persistent op takes ownership of the list
         // and the pushed/prepended/concatenated value into the result).
         Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
-            binding_escapes_dup_aware(db, list, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, elem, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                list,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                elem,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         Core::ListConcat { lhs, rhs } | Core::MapMerge { lhs, rhs } => {
-            binding_escapes_dup_aware(db, lhs, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, rhs, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                lhs,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                rhs,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `List.update` CONSUMES the list and the replacement element into the new list; the `index` is a
         // scalar (passed by value, never a heap handle) so it cannot escape into the result.
         Core::ListUpdate { list, elem, .. } => {
-            binding_escapes_dup_aware(db, list, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, elem, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                list,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                elem,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // A map construction CONSUMES each entry's key AND value into the built map — a binding used as a
         // key or value escapes into it (like a tuple/list element).
         Core::MapNew { entries, .. } => entries.iter().any(|&(k, v)| {
-            binding_escapes_dup_aware(db, k, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, v, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                k,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                v,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }),
         // `Map.insert` CONSUMES the map, the key, and the value into the new map (the persistent op takes
         // ownership of all three) — any of them used here escapes into the result.
         Core::MapInsert { map, key, val, .. } => {
-            binding_escapes_dup_aware(db, map, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, key, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, val, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                map,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                key,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                val,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `Map.lookup` BORROWS both the map AND the key (`map-lookup` reads them and returns a fresh Option;
         // emit.rs:2019 — "map-lookup BORROWS the key (never consumes it)"). The boxed/compacted key TEMPORARY
@@ -1459,65 +1887,195 @@ fn binding_escapes_dup_aware_inner(
         // key AND `Bytes.len k`: dup 1→2, one epilogue drop 2→1, rc1 leak). Matches the already-borrow
         // `collect_consuming_payload_sites` seam-b (reclaim.rs:1661), v-mem-safety co-designed.
         Core::MapLookup { map, key, .. } => {
-            binding_escapes_dup_aware(db, map, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, key, binder, true, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                map,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                key,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `Map.remove` CONSUMES the map into the new map (persistent op takes ownership), but BORROWS the
         // key: the boxed/compacted key temporary is a FRESH value the emit builds+drops after the borrow-
         // compare (bytes-compact refcount-neutral), not the binder. So a live-after key binder does NOT
         // escape and must NOT be dup'd (10-bytes CHAMP sibling of MapLookup:711 / 2482 — same 2-site fix).
         Core::MapRemove { map, key, .. } => {
-            binding_escapes_dup_aware(db, map, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, key, binder, true, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                map,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                key,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `Map.size` BORROWS its map operand (`map-size` reads the root without consuming) — like `List.len`.
-        Core::MapSize { map } => {
-            binding_escapes_dup_aware(db, map, binder, true, dup_sites, borrow_aware_calls)
-        }
+        Core::MapSize { map } => binding_escapes_dup_aware(
+            db,
+            map,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // A set construction CONSUMES each element into the built set — a binding used as an element
         // escapes into it (like a list element / a map key).
         Core::SetOf { elems, .. } => elems.iter().any(|&e| {
-            binding_escapes_dup_aware(db, e, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                e,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }),
         // `Set.insert` CONSUMES the set AND the element into the new set (persistent op takes ownership) —
         // both escape if used here.
         Core::SetInsert { set, elem, .. } => {
-            binding_escapes_dup_aware(db, set, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, elem, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                set,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                elem,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `Set.remove` CONSUMES the set, but BORROWS the element: the boxed/compacted elem temporary is a
         // FRESH value the emit builds+drops after the borrow-compare (bytes-compact refcount-neutral), not
         // the binder. A live-after elem binder does NOT escape and must NOT be dup'd (CHAMP sibling of
         // MapLookup:711 / MapRemove — same 2-site borrow fix; SetInsert genuinely consumes so stays split off).
         Core::SetRemove { set, elem, .. } => {
-            binding_escapes_dup_aware(db, set, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, elem, binder, true, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                set,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                elem,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `Set.contains` BORROWS the set (returns a bool) AND the element: the boxed/compacted element is a
         // FRESH temporary the emit builds+drops, not the binder — so neither escapes (CHAMP sibling of 711).
         Core::SetContains { set, elem, .. } => {
-            binding_escapes_dup_aware(db, set, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, elem, binder, true, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                set,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                elem,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `Set.len` BORROWS its set operand (`set-size` reads the root without consuming) — like `Map.size`.
-        Core::SetLen { set } => {
-            binding_escapes_dup_aware(db, set, binder, true, dup_sites, borrow_aware_calls)
-        }
-        Core::SetToList { set, .. } => {
-            binding_escapes_dup_aware(db, set, binder, true, dup_sites, borrow_aware_calls)
-        }
-        Core::MapToList { map, .. } => {
-            binding_escapes_dup_aware(db, map, binder, true, dup_sites, borrow_aware_calls)
-        }
+        Core::SetLen { set } => binding_escapes_dup_aware(
+            db,
+            set,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
+        Core::SetToList { set, .. } => binding_escapes_dup_aware(
+            db,
+            set,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
+        Core::MapToList { map, .. } => binding_escapes_dup_aware(
+            db,
+            map,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // A set-algebra op CONSUMES both operand sets into the result — either escapes if used here.
         Core::SetAlgebra { lhs, rhs, .. } => {
-            binding_escapes_dup_aware(db, lhs, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, rhs, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                lhs,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                rhs,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // A HOST call OR a cross-component call CONSUMES its arguments across the boundary — unconditionally
         // (the borrow-aware relaxation is for GUEST direct calls only; a boundary crossing always transfers).
         Core::HostCall { args, .. } => args.iter().any(|&a| {
-            binding_escapes_dup_aware(db, a, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                a,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }),
         // A direct GUEST call CONSUMES its arguments — EXCEPT, in borrow-aware entry-wrapper mode (el1), a
         // DIRECT binder occurrence passed as arg `k` to a callee that only BORROWS its param `k`
@@ -1550,75 +2108,176 @@ fn binding_escapes_dup_aware_inner(
                         return false;
                     }
                 }
-                binding_escapes_dup_aware(db, a, binder, false, dup_sites, borrow_aware_calls)
+                binding_escapes_dup_aware(
+                    db,
+                    a,
+                    binder,
+                    false,
+                    dup_sites,
+                    borrow_aware_calls,
+                    arms_inherit_borrow,
+                )
             })
         }
         // A sequencing block: the binding escapes if it escapes any statement or the tail.
         Core::Seq { stmts, tail } => {
             stmts.iter().any(|&s| {
-                binding_escapes_dup_aware(db, s, binder, false, dup_sites, borrow_aware_calls)
-            }) || binding_escapes_dup_aware(db, tail, binder, false, dup_sites, borrow_aware_calls)
+                binding_escapes_dup_aware(
+                    db,
+                    s,
+                    binder,
+                    false,
+                    dup_sites,
+                    borrow_aware_calls,
+                    arms_inherit_borrow,
+                )
+            }) || binding_escapes_dup_aware(
+                db,
+                tail,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // A boundary block / break — the binding escapes if it escapes the body / break value.
-        Core::Block { body, .. } => {
-            binding_escapes_dup_aware(db, body, binder, false, dup_sites, borrow_aware_calls)
-        }
-        Core::Break { value } => {
-            binding_escapes_dup_aware(db, value, binder, false, dup_sites, borrow_aware_calls)
-        }
+        Core::Block { body, .. } => binding_escapes_dup_aware(
+            db,
+            body,
+            binder,
+            false,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
+        Core::Break { value } => binding_escapes_dup_aware(
+            db,
+            value,
+            binder,
+            false,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // Control flow: the binding escapes if it escapes any reachable sub-position.
         Core::If { cond, then_, else_ } => {
-            binding_escapes_dup_aware(db, cond, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(
-                    db,
-                    then_,
-                    binder,
-                    false,
-                    dup_sites,
-                    borrow_aware_calls,
-                )
-                || binding_escapes_dup_aware(
-                    db,
-                    else_,
-                    binder,
-                    false,
-                    dup_sites,
-                    borrow_aware_calls,
-                )
+            binding_escapes_dup_aware(
+                db,
+                cond,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                then_,
+                binder,
+                // c2236 VARIANT: the arm RESULT inherits the parent borrow context (an If in a borrowed
+                // position — its result borrow-consumed downstream — makes its arms borrows, so an
+                // arm-result alias is NOT a real escape). Default mode keeps the force-consuming `false`.
+                if arms_inherit_borrow {
+                    tail_borrowed
+                } else {
+                    false
+                },
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                else_,
+                binder,
+                if arms_inherit_borrow {
+                    tail_borrowed
+                } else {
+                    false
+                },
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         Core::Match { scrutinee, arms } => {
-            binding_escapes_dup_aware(db, scrutinee, binder, false, dup_sites, borrow_aware_calls)
-                || arms.iter().any(|a| {
-                    a.guard.is_some_and(|g| {
-                        binding_escapes_dup_aware(
-                            db,
-                            g,
-                            binder,
-                            false,
-                            dup_sites,
-                            borrow_aware_calls,
-                        )
-                    }) || binding_escapes_dup_aware(
+            binding_escapes_dup_aware(
+                db,
+                scrutinee,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || arms.iter().any(|a| {
+                a.guard.is_some_and(|g| {
+                    binding_escapes_dup_aware(
                         db,
-                        a.body,
+                        g,
                         binder,
                         false,
                         dup_sites,
                         borrow_aware_calls,
+                        arms_inherit_borrow,
                     )
-                })
+                }) || binding_escapes_dup_aware(
+                    db,
+                    a.body,
+                    binder,
+                    // c2236 VARIANT: the match arm RESULT inherits the parent borrow context (see the
+                    // Core::If arm). Default mode keeps the force-consuming `false`.
+                    if arms_inherit_borrow {
+                        tail_borrowed
+                    } else {
+                        false
+                    },
+                    dup_sites,
+                    borrow_aware_calls,
+                    arms_inherit_borrow,
+                )
+            })
         }
         Core::Let { bindings, body } => {
             bindings.iter().any(|(_, v)| {
-                binding_escapes_dup_aware(db, *v, binder, false, dup_sites, borrow_aware_calls)
-            }) || binding_escapes_dup_aware(db, body, binder, false, dup_sites, borrow_aware_calls)
+                binding_escapes_dup_aware(
+                    db,
+                    *v,
+                    binder,
+                    false,
+                    dup_sites,
+                    borrow_aware_calls,
+                    arms_inherit_borrow,
+                )
+            }) || binding_escapes_dup_aware(
+                db,
+                body,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => {
-            binding_escapes_dup_aware(db, lhs, binder, false, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, rhs, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                lhs,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                rhs,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
         // `value-eq` and `StrCmp` BORROW both operands (each drops only an OWNED temporary, never a
         // `LocalRef`), so a binding used DIRECTLY as an operand does NOT escape — the enclosing `let` still
@@ -1634,18 +2293,55 @@ fn binding_escapes_dup_aware_inner(
         | Core::StrCmp { lhs, rhs, .. }
         | Core::ValueCmp { lhs, rhs, .. }
         | Core::ValueEqShaped { lhs, rhs, .. } => {
-            binding_escapes_dup_aware(db, lhs, binder, true, dup_sites, borrow_aware_calls)
-                || binding_escapes_dup_aware(db, rhs, binder, true, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                lhs,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || binding_escapes_dup_aware(
+                db,
+                rhs,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }
-        Core::Convert { operand, .. } | Core::Not { operand } => {
-            binding_escapes_dup_aware(db, operand, binder, false, dup_sites, borrow_aware_calls)
-        }
+        Core::Convert { operand, .. } | Core::Not { operand } => binding_escapes_dup_aware(
+            db,
+            operand,
+            binder,
+            false,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         Core::Record { fields } => fields.values().any(|&v| {
-            binding_escapes_dup_aware(db, v, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                v,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }),
         // A sum construction CONSUMES each payload (it becomes part of the heap sum value).
         Core::SumNew { payloads, .. } => payloads.iter().any(|&p| {
-            binding_escapes_dup_aware(db, p, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                p,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }),
         // A sum match BORROWS its scrutinee — it reads the discriminant + payload (`sum-disc`/`sum-payload`)
         // WITHOUT consuming the shell, exactly like `SumPayload`/`SumExpect` (which recurse `tail_borrowed =
@@ -1658,8 +2354,15 @@ fn binding_escapes_dup_aware_inner(
         // matched twice was NEVER dropped). Borrow-classify the scrutinee so the `let`-drop reclaims it; a
         // payload that genuinely escapes an ARM is still caught by `cont_binding_escapes`.
         Core::MatchSum { scrutinee, root } => {
-            binding_escapes_dup_aware(db, scrutinee, binder, true, dup_sites, borrow_aware_calls)
-                || cont_binding_escapes(db, &root, binder, dup_sites)
+            binding_escapes_dup_aware(
+                db,
+                scrutinee,
+                binder,
+                true,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            ) || cont_binding_escapes(db, &root, binder, dup_sites)
         }
         // A list match: escapes if the binding escapes the scrutinee or any arm body. The SCRUTINEE position
         // is CONSUMING iff an arm REST-MINTS it (a `(.. r)` → `SumPayload` with a trailing `RestFrom` over the
@@ -1679,26 +2382,55 @@ fn binding_escapes_dup_aware_inner(
                 scrutinee_tail_borrowed,
                 dup_sites,
                 borrow_aware_calls,
+                arms_inherit_borrow,
             ) || arms.iter().any(|a| {
-                binding_escapes_dup_aware(db, a.body, binder, false, dup_sites, borrow_aware_calls)
+                binding_escapes_dup_aware(
+                    db,
+                    a.body,
+                    binder,
+                    false,
+                    dup_sites,
+                    borrow_aware_calls,
+                    arms_inherit_borrow,
+                )
             })
         }
         // A sum-payload read BORROWS the scrutinee (`sum-payload` reads without consuming), like a
         // projection operand — so a `LocalRef` reached through it does not escape.
-        Core::SumPayload { scrutinee, .. } => {
-            binding_escapes_dup_aware(db, scrutinee, binder, true, dup_sites, borrow_aware_calls)
-        }
+        Core::SumPayload { scrutinee, .. } => binding_escapes_dup_aware(
+            db,
+            scrutinee,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // `expect` reads the scrutinee's payload (a borrow, like `SumPayload`) — a `LocalRef` reached
         // through it does not escape (the payload is unboxed/used in place, not moved out).
-        Core::SumExpect { scrutinee, .. } => {
-            binding_escapes_dup_aware(db, scrutinee, binder, true, dup_sites, borrow_aware_calls)
-        }
+        Core::SumExpect { scrutinee, .. } => binding_escapes_dup_aware(
+            db,
+            scrutinee,
+            binder,
+            true,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // A closure CONSUMES each captured value (it becomes part of the closure cell); a closure
         // application consumes both the closure value and its argument. (This increment's no-capture
         // closure has an empty `captures`, so it references no binding — but the arm is written for the
         // general case so a captured binding is correctly seen as escaping when captures land.)
         Core::Closure { captures, .. } => captures.iter().any(|&c| {
-            binding_escapes_dup_aware(db, c, binder, false, dup_sites, borrow_aware_calls)
+            binding_escapes_dup_aware(
+                db,
+                c,
+                binder,
+                false,
+                dup_sites,
+                borrow_aware_calls,
+                arms_inherit_borrow,
+            )
         }),
         Core::CallClosure { closure, args } => {
             // Applying a closure BORROWS it — the env-cell reclaim is a SEPARATE post-apply drop (SITE-A,
@@ -1724,15 +2456,30 @@ fn binding_escapes_dup_aware_inner(
                 !closure_owned,
                 dup_sites,
                 borrow_aware_calls,
+                arms_inherit_borrow,
             ) || args.iter().any(|&a| {
-                binding_escapes_dup_aware(db, a, binder, false, dup_sites, borrow_aware_calls)
+                binding_escapes_dup_aware(
+                    db,
+                    a,
+                    binder,
+                    false,
+                    dup_sites,
+                    borrow_aware_calls,
+                    arms_inherit_borrow,
+                )
             })
         }
         // The abort VALUE becomes the handle's result (a consuming position), so a binding occurring in it
         // may escape; descend it. `handle_id` is a reference to the target handle node, not a subexpression.
-        Core::HandleAbort { value, .. } => {
-            binding_escapes_dup_aware(db, value, binder, false, dup_sites, borrow_aware_calls)
-        }
+        Core::HandleAbort { value, .. } => binding_escapes_dup_aware(
+            db,
+            value,
+            binder,
+            false,
+            dup_sites,
+            borrow_aware_calls,
+            arms_inherit_borrow,
+        ),
         // Leaves reference no binding. (`Core::Captured` is handled by its own arm ABOVE — it matches a
         // `Capture(index)` query and is inert for a `Binder` query, so it is NOT in this leaf group.) `trap`
         // diverges with no operand, so it holds no binding to escape.
@@ -2350,12 +3097,12 @@ pub(super) fn cont_binding_escapes(
 ) -> bool {
     match cont {
         crate::core::SumCont::Leaf(body) => {
-            binding_escapes_dup_aware(db, *body, binder, false, dup_sites, false)
+            binding_escapes_dup_aware(db, *body, binder, false, dup_sites, false, false)
         }
         // A guarded arm's binder can escape through either the guarded body or the fall-through
         // continuation (the guard cond only reads, never escapes a binding).
         crate::core::SumCont::Guarded { body, els, .. } => {
-            binding_escapes_dup_aware(db, *body, binder, false, dup_sites, false)
+            binding_escapes_dup_aware(db, *body, binder, false, dup_sites, false, false)
                 || cont_binding_escapes(db, els, binder, dup_sites)
         }
         // A literal test's binder can escape through either continuation (the `path` walk only reads).
@@ -3613,7 +4360,15 @@ pub(super) fn collect_captured_escape_dup_sites(
             // Node`), so a capture both PROJECTED and ESCAPED (hczm2) dups ONLY the escaping occurrence —
             // the projection is a borrow. Reuses the exact borrow-vs-consume walk the snowflake
             // SumPayload-escape dup (#5833) already drives per node.
-            if binding_escapes_dup_aware(db, body, EscapeTarget::Node(occ), false, None, false) {
+            if binding_escapes_dup_aware(
+                db,
+                body,
+                EscapeTarget::Node(occ),
+                false,
+                None,
+                false,
+                false,
+            ) {
                 sites.insert(occ);
             }
         }
@@ -3735,7 +4490,15 @@ pub(super) fn collect_sumpayload_escape_dup_sites(
             continue;
         }
         // The extracted payload ESCAPES via a result ctor / the return (not borrow-only).
-        if binding_escapes_dup_aware(db, body, EscapeTarget::Node(node), false, None, false) {
+        if binding_escapes_dup_aware(
+            db,
+            body,
+            EscapeTarget::Node(node),
+            false,
+            None,
+            false,
+            false,
+        ) {
             sites.insert(node);
         }
     }
@@ -3989,8 +4752,15 @@ pub(super) fn collect_dup_sites(
         // conditional-escape binder like dqe17's `a` needs the taken-path dup for arm-conditional reclaim);
         // `true` (never escapes) ⇒ a pure borrow-only binder (dqe4's `a`) whose compound-projection chain
         // must NOT mint a spurious unbalanced dup. The `Core::Proj` arm reads this via `binder_never_escapes`.
-        let never_escapes =
-            !binding_escapes_dup_aware(db, body, EscapeTarget::Binder(binder), false, None, false);
+        let never_escapes = !binding_escapes_dup_aware(
+            db,
+            body,
+            EscapeTarget::Binder(binder),
+            false,
+            None,
+            false,
+            false,
+        );
         let _ne_guard = NeverEscapesGuard::install(never_escapes);
         // The dqe7/8-vs-dqe17 discriminator: when the binder DOES escape (`!never_escapes`), does it escape on
         // EVERY path (an unconditional straight-line consume — its own consume-dup covers the refcount, so the

@@ -212,6 +212,7 @@ pub(super) fn collect_surplus_skippable_dups(
                         true,
                         None,
                         false,
+                        false,
                     );
                     let mut cons = HashSet::new();
                     collect_consuming_payload_sites_expr(db, body, n, true, &mut cons);

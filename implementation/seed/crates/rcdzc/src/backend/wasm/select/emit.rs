@@ -47,7 +47,15 @@ fn ifjoin_arm_dead(
     net_borrow: bool,
 ) -> bool {
     for &a in aliases {
-        if binding_escapes_dup_aware(db, arm, EscapeTarget::Binder(a), false, Some(dup), false) {
+        if binding_escapes_dup_aware(
+            db,
+            arm,
+            EscapeTarget::Binder(a),
+            false,
+            Some(dup),
+            false,
+            false,
+        ) {
             return false;
         }
         let mut seen = HashSet::new();
@@ -4573,6 +4581,7 @@ pub(super) fn emit(
                             false,
                             Some(&out.dup_sites),
                             false,
+                            false,
                         );
                         let esc_else = binding_escapes_dup_aware(
                             db,
@@ -4580,6 +4589,7 @@ pub(super) fn emit(
                             EscapeTarget::Binder(pb),
                             false,
                             Some(&out.dup_sites),
+                            false,
                             false,
                         );
                         // DIVERGENT ownership iff `b` escapes exactly one arm — that arm is the ALIAS arm
@@ -4679,6 +4689,7 @@ pub(super) fn emit(
                         false,
                         Some(&dup_sites),
                         false,
+                        false,
                     );
                     let esc_else = binding_escapes_dup_aware(
                         db,
@@ -4686,6 +4697,7 @@ pub(super) fn emit(
                         EscapeTarget::Binder(binder),
                         false,
                         Some(&dup_sites),
+                        false,
                         false,
                     );
                     // DIVERGENT iff it escapes exactly one arm; the D (dead) arm is the one it does NOT
@@ -4723,6 +4735,7 @@ pub(super) fn emit(
                             EscapeTarget::Binder(a),
                             false,
                             Some(&dup_sites),
+                            false,
                             false,
                         )
                     });
@@ -4794,7 +4807,11 @@ pub(super) fn emit(
                 .collect();
             for &(binder, slot, value) in &heap_bindings {
                 // ESCAPES THE BODY → ownership transfers to the caller (it IS the result / a constructed
-                // element / a call arg) → do NOT drop (the ownership-transfer-on-return rule).
+                // element / a call arg) → do NOT drop (the ownership-transfer-on-return rule). EXCEPTION
+                // (c2236, v-core-opt-proven): a binding whose ONLY escape is an If/Match arm-RESULT alias
+                // re-borrowed post-body is a FALSE escape — it still needs its scope-end drop. keep_scope_drop_
+                // despite_body_escape detects that (escapes std, not the arms-inherit-borrow variant) while
+                // keeping a real transfer (call-arg/ctor/return, e.g. the #8976 threaded slice-source) suppressed.
                 if binding_escapes_dup_aware(
                     db,
                     body,
@@ -4802,7 +4819,9 @@ pub(super) fn emit(
                     false,
                     Some(&dup_sites),
                     false,
-                ) {
+                    false,
+                ) && !keep_scope_drop_despite_body_escape(db, body, binder, &dup_sites)
+                {
                     continue;
                 }
                 // DROP-ELIDE for a binder CONSUMED INTO A LATER SIBLING INITIALIZER (D1, the concat-child-of-
@@ -4827,6 +4846,7 @@ pub(super) fn emit(
                         EscapeTarget::Binder(binder),
                         false,
                         Some(&dup_sites),
+                        false,
                         false,
                     )
                 });

@@ -1813,6 +1813,7 @@ fn plan_nontail_selfrec_borrow_param_arm_drops(
             false,
             Some(&dup_sites),
             false,
+            false,
         ) {
             continue; // escapes verbatim → a drop here would double-free.
         }
@@ -1956,6 +1957,7 @@ fn nontail_selfrec_owned_closure_param_drops(
             EscapeTarget::Binder(*binder),
             false,
             Some(&dup_sites),
+            false,
             false,
         ) {
             continue; // (3) escapes verbatim (ctor-embed / return) → a frame-exit drop would double-free.
@@ -3435,20 +3437,19 @@ fn emit_tail(
                 return Ok(());
             }
             // DUP-AWARE (see the non-tail `Core::Let` drop): a binding whose only consuming occurrences are
-            // Perceus retains (`dup_sites`) still needs a scope-end drop of its surviving slot reference, so
-            // it must fall back to the non-tail `emit` (which emits the drop epilogue), not the drop-free
-            // tail fast path. Consult `dup_sites` so such a binding is detected here too.
+            // Perceus retains (`dup_sites`) still needs its scope-end drop → fall back to non-tail `emit`.
             let dup_sites = out.dup_sites.clone();
             let any_drop = bindings.iter().any(|(binder, _)| {
                 is_heap_type(&type_of(db, *binder))
-                    && !binding_escapes_dup_aware(
+                    && (!binding_escapes_dup_aware(
                         db,
                         body,
                         EscapeTarget::Binder(*binder),
                         false,
                         Some(&dup_sites),
                         false,
-                    )
+                        false,
+                    ) || keep_scope_drop_despite_body_escape(db, body, *binder, &dup_sites))
             });
             if any_drop {
                 return emit(db, id, slots, base, high, scratch_ty, layout, out);
@@ -4694,6 +4695,7 @@ fn emit_loop_iteration(
                     EscapeTarget::Binder(binder),
                     false,
                     Some(&dup_snapshot),
+                    false,
                     false,                ) && (rebind_produces_fresh(db, args[i]) || dup_snapshot.contains(&args[i]))
             });
             borrow_not_consumed || dup_forced_old_survives || drop_old_threaded_prev
