@@ -367,14 +367,33 @@ pub(super) fn compute(db: &mut Db, id: StructId) -> Core {
                 "a runtime record rest binder (residual-record construction) is not supported (a constant/inline record-rest is)",
             ))
         }
-        // A SET REST binder reaching lowering here is a FALLBACK: the set-matcher desugar
-        // (`desugar_runtime_set_match`) rewrites a set-rest arm into a `Set.remove` residual binding BEFORE
-        // this point, so a bare `SetRest` core is only reached if that desugar did not fire — decline
-        // gracefully (never a miscompile). The residual-set VALUE construction is the desugar's slice;
-        // this variant carries only the binder's TYPE (`infer` → `(Set E)`).
-        Resolved::SetRest { .. } => Core::Poison(Reject::unsupported(
-            "a set rest binder's residual set is built by the set-matcher desugar; a bare set-rest here is unsupported",
-        )),
+        // A SET REST binder — the residual set is the scrutinee set MINUS the named elements. On the EMIT
+        // path the set-matcher desugar (`lower_match_set`) binds `rest` to a `Set.remove` residual `let`, so
+        // a bare `SetRest` core reaches HERE only where that rebound copy does not cover the occurrence: a
+        // residual used as a NESTED-match scrutinee, a `let` RHS, or the standalone fault-probe
+        // (`match_pattern_fault`) of the original arm's inner match. Materialize the residual VALUE directly
+        // — the same `Set.remove(scrutinee, e₁ … eₙ)` chain the desugar builds — so `core_of` succeeds
+        // uniformly (a residual is a first-class `(Set E)`, matching its inferred type) rather than
+        // declining CDZ0900. The scrutinee and the named element expressions are DEEP-COPIED (a plain
+        // structural clone) so the LIVE match scrutinee is never reparented; the chain is grafted at this
+        // occurrence's slot so a free name in the copied scrutinee ascends the enclosing scope exactly as
+        // this occurrence did, then re-resolved before lowering.
+        Resolved::SetRest { scrutinee, named } => {
+            let named: Vec<StructId> = named.iter().copied().collect();
+            let mut residual = clone_subtree_plain(db, scrutinee);
+            for e in named {
+                let e_copy = clone_subtree_plain(db, e);
+                residual = set_member_call(db, "remove", residual, e_copy);
+            }
+            // Graft the synthesized chain where this occurrence sits so its free names resolve against the
+            // enclosing scope (mirrors `lower_match_set`'s rest-arm graft), then resolve + lower it.
+            if let Some(parent) = db.parent_of(id) {
+                let ix = db.child_ix_of(id) as u32;
+                db.reparent(residual, Some(parent), ix);
+            }
+            crate::resolve::resolve_subtree(db, residual);
+            core_of(db, residual)
+        }
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where

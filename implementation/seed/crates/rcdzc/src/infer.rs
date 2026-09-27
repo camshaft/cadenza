@@ -455,8 +455,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         },
         // A SET REST binder — the residual set is the SAME set type `(Set E)` as the scrutinee (removing
         // elements does not change the element type), the set twin of a `MapField` REST binder. `Ty::Any`
-        // (poison-safe) if the scrutinee is not a set. The residual VALUE is built by the set-matcher
-        // desugar (`Set.remove` chain); this arm just supplies the binder's TYPE for the body's type-check.
+        // (poison-safe) if the scrutinee is not a set. The residual VALUE is a `Set.remove` chain (built by
+        // `lower_match_set` on the emit path, or materialized by `compute`'s `SetRest` arm elsewhere); this
+        // arm just supplies the binder's TYPE for the body's type-check.
         Resolved::SetRest { scrutinee, .. } => match type_of(db, scrutinee).strip_nominal() {
             Ty::Set(elem) => Ty::Set(elem.clone()),
             _ => Ty::Any,

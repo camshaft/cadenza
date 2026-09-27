@@ -4702,12 +4702,33 @@ fn set_form_is_malformed_rest(db: &Db, pat: StructId) -> bool {
 /// surface a source `(Set.contains s e)` / `(Set.remove s e)` lowers through. A FRESH `.`/`Set`/member node
 /// set per call (a node has one parent); `s` and `e` are spliced verbatim (already-resolved / freshly
 /// cloned by the caller).
-fn set_member_call(db: &mut Db, member: &str, a: StructId, b: StructId) -> StructId {
+pub(super) fn set_member_call(db: &mut Db, member: &str, a: StructId, b: StructId) -> StructId {
     let dot = db.push_name(".");
     let set_mod = db.push_name("Set");
     let member_key = db.push_name(member);
     let access = db.push_list(vec![dot, set_mod, member_key]);
     db.push_list(vec![access, a, b])
+}
+
+/// Deep-copy a subtree, minting FRESH name occurrences (so a reused expression gets its own parent and
+/// re-resolves against its new home) and sharing literal leaves verbatim. Unlike
+/// [`clone_subtree_db_for_fused`] this has NO fusion/pin semantics — a plain structural copy. Used to
+/// materialize a residual-set VALUE (a `Set.remove` chain over a copy of the scrutinee) without
+/// reparenting the LIVE scrutinee into the synthesized chain.
+pub(super) fn clone_subtree_plain(db: &mut Db, id: StructId) -> StructId {
+    match db.ast.get(id).clone() {
+        crate::ast::Struct::Atom(lid) => match db.ast.leaf(lid).clone() {
+            leaf @ crate::ast::Leaf::Name(_) => db.push_atom(leaf),
+            _ => id,
+        },
+        crate::ast::Struct::List(children) => {
+            let copied: Vec<StructId> = children
+                .iter()
+                .map(|&c| clone_subtree_plain(db, c))
+                .collect();
+            db.push_list(copied)
+        }
+    }
 }
 
 /// Lower a match over a SET scrutinee by ELEMENT-MEMBERSHIP patterns (`core-semantics.md` §A Set Is Matched

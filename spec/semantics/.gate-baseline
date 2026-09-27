@@ -11417,7 +11417,7 @@ todo	phr3 an export extracting a param element into a fresh returned list declin
 todo	pr5 partial-resume op aborts alongside a tail-resume SIBLING op in a MULTI-op handler folds
 todo	prr1 a RUNTIME print-then-read Ast round-trip declines pending runtime Ast.read (constant strings only today)
 todo	sbn2 a runtime utf8 CONSTRUCTION segment declines pending the encode increment (utf8 is pattern-only)
-todo	srm2 a NESTED set-rest re-match peels two residual layers (should-work: the residual is a first-class set)
+pass	srm2 a NESTED set-rest re-match peels two residual layers (should-work: the residual is a first-class set)
 todo	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
 todo	the try spelling of the performing bin-parse folds once try-under-effects lands
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
