@@ -1011,11 +1011,32 @@ pub struct WrapperDesc {
     /// would cause. `None` = keep the all-or-nothing `record_param_drop_after` behavior (mutually exclusive:
     /// `escaped_field_projections` returns `None` when the shell is blanket-droppable).
     pub record_param_escaped_fields: Vec<Option<Vec<Vec<usize>>>>,
+    /// Parallel to `params`: for a TOP-LEVEL WIT `flags{…}` param (crossing the boundary as a single packed
+    /// `i32` bitset, bit i = the i-th DECLARED label), `Some(rebuild)` says to build the guest record-of-bools
+    /// cell by unpacking the bitset — each field's `bool` = the bit at that field's declaration-order position.
+    /// The guest models WIT `flags` as a `record{ label: bool, … }` (operator ruling: flags is a PRODUCT), so
+    /// the built cell is passed DIRECTLY as the def arg (like a record param, but sourced from ONE i32 leaf
+    /// rather than one leaf per field). `None` = a non-flags param. A flags value is a pure product of `bool`s
+    /// (no heap-borrowed leaf), so like a record cell it is dropped after the call per `record_param_drop_after`.
+    pub flags_params: Vec<Option<FlagsRebuild>>,
     /// The compiled def's absolute core func index to `call` after building its args.
     pub def_abs: u32,
     /// How the wrapper turns the def's return value into the boundary result — pass a scalar straight through,
     /// or read a returned record HANDLE's fields and spill them to a return area in memory.
     pub result: ResultLower,
+}
+
+/// How the wrapper rebuilds a guest record-of-bools CELL from a WIT `flags{…}` param's packed `i32` bitset
+/// (see [`WrapperDesc::flags_params`]). One entry per record field: `(slot, bit)` where `slot` is the field's
+/// NAME-LEX cell slot (where `arr-set` stores it — the guest record's canonical field order) and `bit` is the
+/// field's label position in WIT DECLARATION order (which bit of the bitset carries it). The wrapper emits
+/// `arr-alloc N` then, per entry, `box-bool((bits >> bit) & 1)` `arr-set` at `slot`. Pairing is BY LABEL NAME
+/// (the field named by declaration-order label `bit`), so a guest whose name-lex field order differs from the
+/// WIT label order still lands each flag in the right slot from the right bit.
+#[derive(Clone)]
+pub struct FlagsRebuild {
+    /// `(cell_slot, bitset_bit)` per record field. Length = the flags label count (≤ 32).
+    pub field_bits: Vec<(u32, u32)>,
 }
 
 /// Emit a payloadless-enum discriminant REMAP: given a source disc in local `src_local`, leave `map[src]`
@@ -1211,6 +1232,14 @@ pub enum ResultLower {
         read: &'static str,
         wrap_i64: bool,
     },
+    /// A WIT `flags{…}` result whose guest value is a record-of-bools HANDLE (operator ruling: flags is a
+    /// PRODUCT). The def returns the record cell; the wrapper packs it into the single i32 bitset — per
+    /// `(slot, bit)`, `get-bool(arr-get(handle, slot))` shifted into `bit` and OR-ed together — and returns the
+    /// i32 (`result_vts = [i32]`, `flatten(Flags) = [i32]` for ≤32 labels). No memory (a register-returned
+    /// i32). `(slot, bit)` = the field's NAME-LEX cell slot and its label's WIT DECLARATION-order bit, matched
+    /// by name — the writer twin of [`FlagsRebuild`] (the flags PARAM reader). The def's returned cell is a
+    /// borrowed-owned temp the wrapper drops after reading (`get-bool` BORROWS).
+    FlagsPack { field_bits: Vec<(u32, u32)> },
 }
 
 /// A recursive plan for writing ONE value-heap value's canonical-ABI form into linear memory — the reducer
@@ -1854,6 +1883,49 @@ fn core_module_impl(
                     leaf += 1;
                     continue;
                 }
+                // A TOP-LEVEL WIT `flags{…}` param: the packed i32 bitset arrives at `leaf` (bit i = the i-th
+                // declared label). Unpack it into the guest record-of-bools cell — `arr-alloc N`, then per field
+                // `arr-set(slot, box-bool((bits >> bit) & 1))` — and leave the cell handle DIRECTLY as the def
+                // arg (like a rebuilt record cell, but sourced from ONE i32 leaf rather than one leaf/field).
+                if let Some(fr) = wrap.flags_params.get(pi).and_then(|s| s.as_ref()) {
+                    let bits_leaf = leaf;
+                    inner.push(op::I32_CONST);
+                    crate::backend::wasm::encode::sleb128(fr.field_bits.len() as i64, &mut inner);
+                    inner.push(op::CALL);
+                    uleb128(imp("arr-alloc"), &mut inner); // [arr]
+                    for &(slot, bit) in &fr.field_bits {
+                        inner.push(op::I32_CONST);
+                        crate::backend::wasm::encode::sleb128(slot as i64, &mut inner); // [arr, slot]
+                        inner.push(op::LOCAL_GET);
+                        uleb128(bits_leaf as u64, &mut inner); // [arr, slot, bits]
+                        inner.push(op::I32_CONST);
+                        crate::backend::wasm::encode::sleb128(bit as i64, &mut inner);
+                        inner.push(op::I32_SHR_U); // [arr, slot, bits>>bit]
+                        inner.push(op::I32_CONST);
+                        crate::backend::wasm::encode::sleb128(1, &mut inner);
+                        inner.push(op::I32_AND); // [arr, slot, (bits>>bit)&1]
+                        inner.push(op::CALL);
+                        uleb128(imp("box-bool"), &mut inner); // [arr, slot, bool-handle]
+                        inner.push(op::CALL);
+                        uleb128(imp("arr-set"), &mut inner); // [arr]
+                    }
+                    leaf += 1; // consumed the ONE packed-bitset leaf
+                    // The freshly-built record cell is a borrowed-owned temp: drop it after the call per the
+                    // dup-aware `record_param_drop_after` gate (same as a record-cell param).
+                    if wrap
+                        .record_param_drop_after
+                        .get(pi)
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        let dl = next_local;
+                        next_local += 1;
+                        inner.push(op::LOCAL_TEE);
+                        uleb128(dl as u64, &mut inner); // handle stays on the stack; also saved in `dl`
+                        drop_locals.push(dl);
+                    }
+                    continue;
+                }
                 match pp {
                     None => {
                         if spilled {
@@ -2025,6 +2097,47 @@ fn core_module_impl(
                 uleb128(rec as u64, &mut inner); // [scalar, handle]
                 inner.push(op::CALL);
                 uleb128(imp("drop"), &mut inner); // [scalar]
+            }
+            // A WIT `flags{…}` result: the def left the record-of-bools HANDLE on the stack; pack it into the
+            // single i32 bitset — per `(slot, bit)`, `get-bool(arr-get(handle, slot))` shifted into `bit` and
+            // OR-ed into an accumulator — and return the accumulator. `get-bool`/`arr-get` BORROW the handle, so
+            // the wrapper deep-drops the OWNED record result after (the writer twin of the flags PARAM reader).
+            if let ResultLower::FlagsPack { field_bits } = &wrap.result {
+                let rec = next_local;
+                let acc = next_local + 1;
+                next_local += 2;
+                inner.push(op::LOCAL_SET);
+                uleb128(rec as u64, &mut inner); // rec = def record handle (consume stack)
+                inner.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(0, &mut inner);
+                inner.push(op::LOCAL_SET);
+                uleb128(acc as u64, &mut inner); // acc = 0
+                for &(slot, bit) in field_bits {
+                    inner.push(op::LOCAL_GET);
+                    uleb128(rec as u64, &mut inner); // [handle]
+                    inner.push(op::I32_CONST);
+                    crate::backend::wasm::encode::sleb128(slot as i64, &mut inner);
+                    inner.push(op::CALL);
+                    uleb128(imp("arr-get"), &mut inner); // [bool-box] (borrows handle)
+                    inner.push(op::CALL);
+                    uleb128(imp("get-bool"), &mut inner); // [0/1]
+                    inner.push(op::I32_CONST);
+                    crate::backend::wasm::encode::sleb128(bit as i64, &mut inner);
+                    inner.push(op::I32_SHL); // [(0/1) << bit]
+                    inner.push(op::LOCAL_GET);
+                    uleb128(acc as u64, &mut inner); // [contribution, acc]
+                    inner.push(op::I32_OR); // [acc | contribution]
+                    inner.push(op::LOCAL_SET);
+                    uleb128(acc as u64, &mut inner); // acc = acc | contribution
+                }
+                inner.push(op::LOCAL_GET);
+                uleb128(acc as u64, &mut inner); // [bitset] — the return value
+                // Reclaim the owned record result handle (borrowed by the get-bool reads above); deep-drop.
+                // Stack-neutral: the bitset stays below.
+                inner.push(op::LOCAL_GET);
+                uleb128(rec as u64, &mut inner); // [bitset, handle]
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner); // [bitset]
             }
             inner.push(op::END);
             let n_locals = next_local - p;

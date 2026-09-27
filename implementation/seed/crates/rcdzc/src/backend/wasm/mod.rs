@@ -666,6 +666,12 @@ pub fn emit(
             if w.record_param_drop_after.iter().any(|&d| d) {
                 used.insert("drop");
             }
+            // A WIT `flags` PARAM unpacks the packed i32 bitset into a record-of-bools cell via `box-bool`
+            // (+ the `arr-alloc`/`arr-set` inserted unconditionally above). Register `box-bool` so a flags-only
+            // member — one with no other bool-fielded record param to pull it in — still imports it.
+            if w.flags_params.iter().any(|f| f.is_some()) {
+                used.insert("box-bool");
+            }
             // 28-wit:310 SHAPE-9 shell-reclaim: a record/tuple cell param whose shell is reclaimed by
             // projecting + `dup`ing each escaped field (→ rc≥2) before the def call, then deep-dropping the
             // shell after it. The wrapper emits `arr-get` (project the field off the cell) + `dup` (retain the
@@ -706,6 +712,14 @@ pub fn emit(
                 // The wrapper reclaims the def's OWNED record result handle after the borrowing field read
                 // (deep-drop, exactly like the SpillRecord result path) — else the flat-1-value record cell +
                 // its boxed field LEAK one per call (the SpillRecord-result known-leak class, SHAPE 76).
+                used.insert("drop");
+            }
+            // A WIT `flags{…}` result (FlagsPack): the wrapper reads each bool field off the def's record handle
+            // (`arr-get` + `get-bool`), packs the bits into the i32 bitset, and deep-drops the OWNED record
+            // result after (the borrowing reads retained nothing). Register those ops.
+            if matches!(w.result, serialize::ResultLower::FlagsPack { .. }) {
+                used.insert("arr-get");
+                used.insert("get-bool");
                 used.insert("drop");
             }
             // A TOP-LEVEL memory-bearing leaf PARAM: a `Bytes`/`String` copies the incoming `(ptr, len)` out
@@ -7482,6 +7496,9 @@ fn try_bare_entry_param_component(
         // The plain-export route lifts no payloadless-ENUM param (that is the typed-interface-MEMBER route);
         // all-`None` keeps the wrapper body's disc-remap check inert (byte-neutral passthrough).
         enum_disc_params: vec![None; params.len()],
+        // The plain-export route lifts no WIT `flags` param either (typed-interface-MEMBER route only) —
+        // all-`None` keeps the wrapper's flags-unpack check inert.
+        flags_params: vec![None; params.len()],
         mem_leaf_params,
         value_form_descs,
         // The #9014 dup-aware shell-reclaim: drop a BORROWED rebuilt cell after the def call; the escaped-field
@@ -7650,6 +7667,33 @@ fn record_interface_export(
             };
             return Some((lower, vec![crate::backend::wasm::lir::ValType::I32.byte()]));
         }
+        // A WIT `flags{…}` RESULT: the guest returns a record-of-bools HANDLE (operator ruling: flags is a
+        // PRODUCT), which the wrapper packs into the single i32 bitset — per field, `get-bool(arr-get(handle,
+        // slot))` OR-ed into bit `bit` (the field's label position in WIT declaration order, matched BY NAME).
+        // The writer twin of the flags PARAM reader arm; `flatten(Flags) = [i32]` for ≤32 labels. Declines >32
+        // labels or a non-bool field (a multi-i32 flags is a later slice).
+        if let Ty::Record(gfields) = gr.strip_nominal()
+            && let WitType::Flags(labels) = wr
+        {
+            use crate::backend::common::export_name::kebab_extern_name;
+            if labels.len() > 32 || gfields.len() != labels.len() {
+                return None;
+            }
+            let label_kebab: Vec<String> = labels.iter().map(|l| kebab_extern_name(l)).collect();
+            let mut field_bits: Vec<(u32, u32)> = Vec::with_capacity(labels.len());
+            for (slot, (fname, fty)) in gfields.iter().enumerate() {
+                if !matches!(fty.strip_nominal(), Ty::Bool) {
+                    return None;
+                }
+                let fk = kebab_extern_name(fname.name.as_ref());
+                let bit = label_kebab.iter().position(|l| *l == fk)?;
+                field_bits.push((slot as u32, bit as u32));
+            }
+            return Some((
+                ResultLower::FlagsPack { field_bits },
+                vec![crate::backend::wasm::lir::ValType::I32.byte()],
+            ));
+        }
         // A FLAT single-scalar-field record (`record{v: s64}`) flattens to ONE core value, returned DIRECTLY
         // (not by pointer — MAX_FLAT_RESULTS=1), so it does NOT spill. The def returns the record HANDLE; the
         // wrapper reads its one field (`arr-get(handle, 0)` → unbox) and returns that scalar. This is the
@@ -7746,6 +7790,10 @@ fn record_interface_export(
         // to the guest disc; an order-matching enum param (or a non-enum param) is `None`. The PARAM twin of
         // `ResultLower::EnumRemap`.
         let mut enum_disc_params: Vec<Option<Vec<u32>>> = Vec::new();
+        // Parallel to `params`: a TOP-LEVEL WIT `flags{…}` param carries `Some(FlagsRebuild)` (unpack the packed
+        // `i32` bitset into a guest record-of-bools cell, bit i = declared label i, matched to the record field
+        // by name); a non-flags param is `None`.
+        let mut flags_params: Vec<Option<serialize::FlagsRebuild>> = Vec::new();
         // Parallel to `params`: whether the wrapper drops the rebuilt record/tuple cell after the def call
         // (the #9014 envelope shell-drop). `true` only for a record/tuple-cell param the dup-aware
         // `record_cell_param_droppable` gate proves safely reclaimable (every forwarded field dup'd); `false`
@@ -7756,6 +7804,60 @@ fn record_interface_export(
         let mut record_param_escaped_fields: Vec<Option<Vec<Vec<usize>>>> = Vec::new();
         for ((binder, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
+                // A TOP-LEVEL WIT `flags{…}` PARAM. The guest models it as a record-of-bools (operator ruling:
+                // flags is a PRODUCT — one independent on/off per label), so `gty` is `Ty::Record` while `wty`
+                // is `WitType::Flags`. It crosses as a SINGLE packed `i32` bitset (bit i = the i-th DECLARED
+                // label; ≤32 labels = one i32), which the wrapper unpacks into the guest record cell: each
+                // field's `bool` = the bit at that field's declaration-order position. Field↔bit is matched BY
+                // NAME (like `record_fields_rebuild`), so a guest whose name-lex field order differs from the
+                // WIT label order still lands each flag in the right cell slot from the right bit. This arm MUST
+                // precede the generic `Ty::Record` arm (whose `WitType::Record` guard would decline a flags
+                // param and fall it through to a bare-u32 handle-erased miscompile).
+                Ty::Record(map) if matches!(wty, WitType::Flags(_)) => {
+                    use crate::backend::common::export_name::kebab_extern_name;
+                    let WitType::Flags(labels) = wty else {
+                        unreachable!("guarded by the match arm")
+                    };
+                    // A flags with >32 labels flattens to multiple i32s (canonical ABI) — a later slice.
+                    if labels.len() > 32 || map.len() != labels.len() {
+                        return None;
+                    }
+                    // Guest record fields in name-lex (BTreeMap) order == the value-heap cell's slot order
+                    // (`Core::Record`); pair each field to its label bit BY kebab NAME. Every field must be a
+                    // `bool` (a flags label is on/off) and every label must match a field.
+                    let label_kebab: Vec<String> =
+                        labels.iter().map(|l| kebab_extern_name(l)).collect();
+                    let mut field_bits: Vec<(u32, u32)> = Vec::with_capacity(labels.len());
+                    for (slot, (fname, fty)) in map.iter().enumerate() {
+                        if !matches!(fty.strip_nominal(), Ty::Bool) {
+                            return None;
+                        }
+                        let fk = kebab_extern_name(fname.name.as_ref());
+                        let bit = label_kebab.iter().position(|l| *l == fk)?;
+                        field_bits.push((slot as u32, bit as u32));
+                    }
+                    // The flags bitset crosses as ONE i32; the wrapper unpacks it into the guest record cell.
+                    param_vts.push(crate::backend::wasm::lir::ValType::I32.byte());
+                    params.push(None);
+                    param_slots.push(None);
+                    mem_leaf_params.push(None);
+                    sum_params.push(None);
+                    enum_disc_params.push(None);
+                    flags_params.push(Some(serialize::FlagsRebuild { field_bits }));
+                    // The built record-of-bools cell is a fresh owned temp passed BORROWED to the def; drop it
+                    // after the call per the same dup-aware gate as a record param.
+                    record_param_drop_after.push(
+                        crate::backend::wasm::select::record_cell_param_droppable(
+                            db, e.body, *binder,
+                        ),
+                    );
+                    record_param_escaped_fields.push(
+                        crate::backend::wasm::select::escaped_field_projections(
+                            db, e.body, *binder,
+                        ),
+                    );
+                    any_record = true; // the flags cell is a record cell — route through the typed wrapper
+                }
                 Ty::Record(map) => {
                     // Build the record's per-field rebuild in WIT ORDER + the name-lex SLOTS the wrapper
                     // `arr-set`s each field at (`record_param_rebuild`, permuted by name) — so a declaration-
@@ -7771,6 +7873,7 @@ fn record_interface_export(
                     mem_leaf_params.push(None);
                     sum_params.push(None);
                     enum_disc_params.push(None);
+                    flags_params.push(None);
                     // #9014 envelope shell-drop: the wrapper owns the rebuilt cell — drop it after the call iff
                     // the dup-aware gate proves it safely reclaimable (a forwarded compound field is dup'd by
                     // the def, so it survives the cell's deep-drop; a moved-out field suppresses the drop).
@@ -7813,6 +7916,7 @@ fn record_interface_export(
                     mem_leaf_params.push(None);
                     sum_params.push(None);
                     enum_disc_params.push(None);
+                    flags_params.push(None);
                     // #9014 envelope shell-drop (a tuple cell shares the array rep — same dup-aware gate).
                     record_param_drop_after.push(
                         crate::backend::wasm::select::record_cell_param_droppable(
@@ -7874,6 +7978,7 @@ fn record_interface_export(
                     } else {
                         enum_disc_params.push(Some(inv_perm));
                     }
+                    flags_params.push(None);
                     // Either way the typed wrapper must take over — even an identity passthrough needs it to
                     // DECLARE + re-export the enum DEFINED type (the `note` pass) instead of the provider path's
                     // bare `u32` handle (the param twin of the enum-RESULT `needs_result_wrapper`).
@@ -7927,6 +8032,7 @@ fn record_interface_export(
                     // it after the call — the shell never escapes (checked above), so no double-free.
                     sum_params.push(Some((rebuild, true)));
                     enum_disc_params.push(None);
+                    flags_params.push(None);
                     record_param_drop_after.push(false); // sum cell handled by sum_params drop_after
                     record_param_escaped_fields.push(None);
                     any_sum_param = true;
@@ -7969,6 +8075,7 @@ fn record_interface_export(
                     mem_leaf_params.push(Some((kind, true))); // drop_after = borrowed (checked above)
                     sum_params.push(None);
                     enum_disc_params.push(None);
+                    flags_params.push(None);
                     record_param_drop_after.push(false); // mem-leaf handled by mem_leaf_params drop_after
                     record_param_escaped_fields.push(None);
                     any_mem_leaf_param = true;
@@ -7984,6 +8091,7 @@ fn record_interface_export(
                     mem_leaf_params.push(None);
                     sum_params.push(None);
                     enum_disc_params.push(None);
+                    flags_params.push(None);
                     record_param_drop_after.push(false); // scalar: no heap cell
                     record_param_escaped_fields.push(None);
                 }
@@ -8017,6 +8125,12 @@ fn record_interface_export(
         if matches!(result_lower, serialize::ResultLower::FlatScalarField { .. }) {
             needs_result_wrapper = true;
         }
+        // A WIT `flags{…}` result (FlagsPack) needs this wrapper to PACK the def's record-of-bools handle into
+        // the i32 bitset — else the export falls through to the provider path, which crosses the record as a
+        // bare `u32` handle instead of the declared `flags{…}`.
+        if matches!(result_lower, serialize::ResultLower::FlagsPack { .. }) {
+            needs_result_wrapper = true;
+        }
         // A payloadless-ENUM result is a `Passthrough` (raw i32 disc), NOT a `SpillRecord`, but it STILL needs
         // this typed wrapper: without it the `!any_record && !needs_result_wrapper` gate bails and the export
         // falls through to the PROVIDER path, which crosses the enum as a bare `u32` handle (`extern_abi_val_type`)
@@ -8038,6 +8152,7 @@ fn record_interface_export(
             // record-field `FieldRebuild::Sum` route instead).
             sum_params,
             enum_disc_params,
+            flags_params,
             params,
             param_slots,
             mem_leaf_params,

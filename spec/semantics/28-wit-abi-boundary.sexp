@@ -5492,3 +5492,49 @@ cases
   (host-calls (call cadenza:platform/probe.f))
   (output 5)
   (live-objects 0))
+
+(case
+  "a WIT flags PARAM member crosses as a bitset unpacked into a record-of-bools"
+  (doc
+    "SHAPE 113 — a TOP-LEVEL WIT `flags{read,write,execute}` PARAM of a typed export interface. WIT `flags`
+           is a PRODUCT (each label an independent on/off), so the guest models it as a `record{read: bool,
+           write: bool, execute: bool}` (operator ruling). It crosses as a SINGLE packed i32 bitset (bit i = the
+           i-th DECLARED label), which `record_interface_export`'s flags-param arm unpacks into the guest record
+           cell (`box-bool((bits>>bit)&1)` per field, matched to its label bit BY NAME). Guest `f` sums
+           1*read + 2*write + 4*execute; the guest record BTreeMap-sorts to execute,read,write so its cell SLOTS
+           differ from the WIT bit order — proving the by-name slot<->bit mapping. `(flags read execute)` -> 5,
+           all three -> 7. The flags twin of the enum-param SHAPE 77 (one-of-N choice -> a subset).")
+  (wit-world
+    (world w (export iface (member f (func (param c (flags read write execute)) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def
+        (f (: c (Record (: read Bool) (: write Bool) (: execute Bool))))
+        (+ (if (. c read) 1 0) (+ (if (. c write) 2 0) (if (. c execute) 4 0))))
+      (export f)))
+  (call f (: (flags read execute) (Record (: read Bool) (: write Bool) (: execute Bool))))
+  (output (: 5 Int64))
+  (call f (: (flags read write execute) (Record (: read Bool) (: write Bool) (: execute Bool))))
+  (output (: 7 Int64))
+  (live-objects 0))
+
+(case
+  "a WIT flags RESULT member packs a record-of-bools into the bitset"
+  (doc
+    "SHAPE 114 — a TOP-LEVEL WIT `flags{read,write,execute}` RESULT of a typed export interface: the RESULT
+           twin of SHAPE 113. The guest returns a `record{read,write,execute}` of bools; `record_result_lower`'s
+           flags arm (ResultLower::FlagsPack) packs it into the single i32 bitset — per field
+           `get-bool(arr-get(handle, slot))` shifted into its WIT-decl bit, OR-ed together — then deep-drops the
+           owned record result (`live-objects 0`). The guest returns read=true, write=false, execute=true, so the
+           bitset renders `(flags read execute)`. The flags twin of the enum-result SHAPE 52/60.")
+  (wit-world
+    (world w (export iface (member g (func (result (flags read write execute)))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (def (g) #record((= read true) (= write false) (= execute true)))
+      (export g)))
+  (call g)
+  (output (flags read execute))
+  (live-objects 0))
