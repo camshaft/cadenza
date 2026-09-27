@@ -8121,3 +8121,56 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a bare result<record{a:f64,b:s64}, enum> host-op arg crosses on the Ok arm (float slot-0 field, reinterpret join)"
+  (doc
+    "SHAPE 213 (v-wit-boundary) — a FLOAT in the WIT-first (slot-0) field of a `result<record, enum>` arg, the
+           record counterpart of the tuple float-slot-0 (SHAPE 211) and the scalar (SHAPE 209). Only slot 0 joins
+           the `i32` err disc, so the WIT-first field, when a float, bit-reinterprets into the integer slot-0 join
+           — `join(f64,i32)=i64` — while the `s64` field keeps its own `i64`. Here the WIT order `(a, b)` equals
+           name-lex `(a, b)` so no reorder; slot 0 = `a:f64`. Core `(param i32 i64 i64)`:
+           `emit_result_record_arg_reg_flatten` overrides `slot_vts[0]` to the join int and emits
+           `I64ReinterpretF64` at the k==0 reverse-capture (Ok arm), `serialize` emits the join int for slot 0.
+           run() emits `(Ok #record((= a 1.5) (= b 7)))`; a VALID running component (live-objects=0) is the pin.
+           The reorder case (float WIT-first but name-lex-second) = SHAPE 214.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= a (f64)) (= b (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: a Float64) (: b Int64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= a 1.5) (= b 7))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))
+
+(case
+  "a bare result<record, enum> host-op arg with a float WIT-first field reordered from name-lex-second crosses (reinterpret at the reordered slot 0)"
+  (doc
+    "SHAPE 214 (v-wit-boundary) — the RECORD-distinguishing case: the float lands in slot 0 by WIT REORDER, not
+           by declaration position. The guest record is `{a:s64, b:f64}` (name-lex order a, b) but the host WIT
+           declares `(record (= b (f64)) (= a (s64)))`, so `emit_result_record_arg_reg_flatten` reorders the fields
+           to WIT order — slot 0 = `b:f64` (the name-lex-SECOND field), slot 1 = `a:s64`. The reinterpret join
+           targets the REORDERED slot 0: `slot_vts[0]` (WIT order) is the `f64`, overridden to the `i64` join, and
+           the k==0 capture (which pops the first WIT field `emit_record_arg_marshal` pushed) reinterprets it. Core
+           `(param i32 i64 i64)`. run() emits `(Ok #record((= a 7) (= b 1.5)))`; a VALID running component
+           (live-objects=0) is the pin — proving the float reinterpret follows WIT slot-0, not name-lex position.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= b (f64)) (= a (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: a Int64) (: b Float64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= a 7) (= b 1.5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 42 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 42)
+  (live-objects 0))

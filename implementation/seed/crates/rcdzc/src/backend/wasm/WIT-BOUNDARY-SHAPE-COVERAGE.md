@@ -235,9 +235,9 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   Widened in LOCKSTEP: the classifier arm, `first_unrepresentable_host_op`'s `arg_is_boundary_result_scalar`, the
   emit dispatch (+ Owned/dup-site reclaim drop), `collect_used_ops` (`sum-disc`/`sum-payload` + the Ok unbox
   `get-*` — `get_op_ty` returns `get-float`/`get-float32` for a float — + `drop`), `serialize`, and `host_imports.rs`.
-  NOT the cursor pre-scan and NOT `set_needs_memory` (no rope → no `mem`). REMAINING: `result<_, variant>` (variant
-  err arm); a float in SLOT 0 of a `result<record/tuple>` (the reorder/reverse-capture reinterpret — the scalar
-  float-slot-0 is the standalone piece done here; a float in a LATER record/tuple slot already crosses, SHAPE 206/207).
+  NOT the cursor pre-scan and NOT `set_needs_memory` (no rope → no `mem`). The float reinterpret join is now DONE
+  across all three carriers — `result<scalar>` (209/210), `result<tuple>` slot-0 (211/212), `result<record>`
+  slot-0 incl. WIT-reorder (213/214). REMAINING: `result<_, variant>` (variant err arm).
 - **[emit, register-path] a top-level `result<record-of-scalars, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
   189/190/191).** The record-Ok sibling of the scalar-Ok result: a new `HostParam::ResultRecord(ok-fields, err-
   cases)` (detector `result_record_enum`, admitting a record every field of which is a SCALAR + a payloadless-enum
@@ -260,12 +260,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   admit it, and `collect_used_ops` declares the field ops via `collect_record_field_ops` (the scalar-only
   `get_op_ty` missed `bytes-len`/`bytes-get` → CDZ0910 u32::MAX — the bite this increment fixed). The `(list u8)`
   type is built structurally from WIT (no `has_list_param` change; verified — modules validate + run,
-  live-objects=0). **FLOAT FIELD (SHAPE 207):** a float field in a NON-slot-0 (WIT-order) position crosses — like
-  the tuple (SHAPE 206), only slot 0 joins the `i32` err disc, so a float in a later field rides its own `f64`
-  slot (zero-filled on Err), core e.g. `(param i32 i64 f64)`. REMAINING (result family): `result<_, variant>` (err
-  arm a variant); a float field/element that lands in SLOT 0 (the WIT-order-first field, or the tuple's first
-  element, or a `result<f64-scalar>`) — needs the canonical reinterpret join, a clean intentional DECLINE for now
-  and the defined next slice.
+  live-objects=0). **FLOAT FIELD — ANY position (SHAPE 207 non-slot-0; 213/214 slot-0):** a float field crosses in
+  every WIT position. A float in a NON-slot-0 field rides its own `f64` slot (zero-filled on Err), core e.g.
+  `(param i32 i64 f64)` (SHAPE 207). A float in the WIT-FIRST (slot-0) field bit-REINTERPRETS into the integer
+  slot-0 join — `join(f64,i32)=i64` / `join(f32,i32)=i32`: `emit_result_record_arg_reg_flatten` overrides
+  `slot_vts[0]` (WIT order) to the join int and emits `I64ReinterpretF64`/`I32ReinterpretF32` at the k==0
+  reverse-capture, `serialize` emits the join int for slot 0. The reinterpret follows the WIT-REORDERED slot 0, not
+  name-lex position — SHAPE 213 (`{a:f64,b:s64}`, no reorder) + 214 (guest `{a:s64,b:f64}` but WIT `(b:f64, a:s64)`
+  → the name-lex-second `b:f64` reorders into slot 0 and is reinterpreted there). REMAINING (result family):
+  `result<_, variant>` (err arm a variant).
 - **[emit, register-path] a top-level `result<tuple, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
   192/193/194 all-scalar; 204/205 compound element; 206 float non-slot-0 element).** The tuple-Ok sibling of the record-Ok result: a
   `HostParam::ResultTuple(elem-abis: Vec<RecordFieldAbi>, err-cases)` (detector `result_tuple_enum` + a

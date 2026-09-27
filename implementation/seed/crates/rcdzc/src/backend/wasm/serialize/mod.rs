@@ -247,14 +247,29 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                 };
                 params.extend_from_slice(&[wasm_abi::CORE_I32, join]);
             }
-            // A bare `result<record-of-scalars, enum>` param flattens to `(disc:i32, record-fields…)` — the
-            // discriminant then one core slot per Ok record field, in WIT declaration order. Because every field
-            // is a SCALAR, joining the first field with the `i32` err disc never widens beyond that field's own
-            // width, so the field slots are exactly the record's flattened field slots. The component boundary
-            // type is the built-in `result<record, err-enum>` (built from the declared WIT type).
+            // A bare `result<record, enum>` param flattens to `(disc:i32, record-fields…)` — the discriminant
+            // then the Ok record's fields in WIT declaration order (the classifier reorders `fields` to WIT order,
+            // so the first entry is slot 0). Slot 0 joins the `i32` err disc; a FLOAT first field reinterprets
+            // into the int join (`join(f64,i32)=i64`, `join(f32,i32)=i32`), so emit the join int for slot 0.
+            // The component boundary type is the built-in `result<record, err-enum>` (built from the declared WIT).
             HostParam::ResultRecord(fields, _) => {
+                use crate::backend::wasm::host::RecordFieldAbi;
+                use crate::backend::wasm::runtime_abi::AbiValType;
                 params.push(wasm_abi::CORE_I32); // the result discriminant
-                for (_, abi) in fields {
+                for (i, (_, abi)) in fields.iter().enumerate() {
+                    if i == 0 {
+                        match abi {
+                            RecordFieldAbi::Scalar(AbiValType::F64) => {
+                                params.push(wasm_abi::CORE_I64);
+                                continue;
+                            }
+                            RecordFieldAbi::Scalar(AbiValType::F32) => {
+                                params.push(wasm_abi::CORE_I32);
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                     flatten_record_field_abi(abi, &mut params);
                 }
             }
