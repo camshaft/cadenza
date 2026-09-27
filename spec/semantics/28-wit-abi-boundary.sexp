@@ -6481,3 +6481,53 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<record{n: s64, inner: record{a, b}}> host-op arg marshals a NESTED record field — Some"
+  (doc
+    "SHAPE 150 (v-wit-boundary) — a top-level `option<record>` arg whose payload record has a NESTED RECORD field.
+           The option<record> arm admits ANY payload record `is_boundary_record` accepts (SHAPE 148 generalized it
+           to `field_boundary_abi`), so a nested-record field crosses at the option position exactly where it
+           crosses at the bare-record position (`emit_record_arg_marshal` recurses the nested record inline). The
+           capture `slot_vts` come from each field's flattened boundary ABI, so the nested record's fields flatten
+           INLINE into the parent run: the arg flattens to `(disc=1, n: i64, a: i64, b: i64)` = 4 core slots (a
+           nested record does NOT spill — its fields join the parent's flattened run). run() builds Some({n: 7,
+           inner: {a: 1, b: 2}}), performs probe.push, returns the stub 55. Pins the `field_boundary_abi` recursion
+           at the option-arg position for a nested-record field.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= n (s64)) (= inner (record (= a (s64)) (= b (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: n Int64) (: inner (Record (: a Int64) (: b Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= n 7) (= inner #record((= a 1) (= b 2))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a TOP-LEVEL option<record{n: s64, o: option<s64>}> host-op arg marshals an OPTION field — Some"
+  (doc
+    "SHAPE 151 (v-wit-boundary) — a top-level `option<record>` arg whose payload record has an `option<s64>` FIELD.
+           The `field_boundary_abi` recursion admits an `option<scalar>` field (its `RecordFieldAbi::Option`), so an
+           option field crosses inside the option payload record: `emit_record_arg_marshal`'s option-field arm reads
+           the field's Option cell, flattens `(field_disc: i32, payload: i64)` inline. The whole arg flattens to
+           `(disc=1, n: i64, o_disc: i32, o_payload: i64)` = 4 core slots — the OUTER option's disc, the scalar n,
+           then the INNER option field's own `(disc, payload)`. run() builds Some({n: 7, o: Some(5)}), performs
+           probe.push, returns the stub 55. Pins the nested-option field recursion at the option-arg position.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= n (s64)) (= o (option (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: n Int64) (: o (Option Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= n 7) (= o (Some 5)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
