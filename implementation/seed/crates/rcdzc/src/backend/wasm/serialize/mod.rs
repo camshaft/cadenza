@@ -1283,6 +1283,15 @@ pub enum CanonWrite {
         payload_offset: u32,
         arms: Vec<VariantArm>,
     },
+    /// A WIT `flags{…}` field/result value (a guest record-of-bools cell): pack it into the canonical bitset —
+    /// per `(slot, bit)`, `get-bool(arr-get(handle, slot))` shifted into `bit` and OR-ed — then store the
+    /// bitset at the field offset with `store` (the flags canonical width: `i32.store8`/`16`/`32` for ≤8/≤16/
+    /// ≤32 labels). `(slot, bit)` = the nested field's name-lex cell slot and its label's WIT declaration-order
+    /// bit, matched by name. The result-side twin of [`FieldRebuild::Flags`].
+    Flags {
+        field_bits: Vec<(u32, u32)>,
+        store: u8,
+    },
 }
 
 /// One arm of a [`CanonWrite::Variant`], indexed by the guest's decl disc. `boundary_disc` is the canonical
@@ -3575,6 +3584,14 @@ pub enum FieldRebuild {
     /// (its `base_param` is IGNORED here — the disc is read at the record cursor). Consumes
     /// `flattened_param_count()` leaves.
     Sum(Box<SumArgRebuild>),
+    /// A WIT `flags{…}` FIELD (a `record` field whose type is `flags`). The guest models it as a nested
+    /// `record{ label: bool, … }` (operator ruling: flags is a PRODUCT); the canon lift flattens `flags` to a
+    /// SINGLE i32 bitset leaf. The wrapper builds the nested record-of-bools cell from that ONE leaf —
+    /// `arr-alloc N` + per `(slot, bit)` `box-bool((bits>>bit)&1)` `arr-set` — and stores the handle into the
+    /// parent slot AS-IS (no box op — a record handle, like `Nested`). Consumes ONE flattened leaf. The
+    /// record-FIELD twin of the top-level [`FlagsRebuild`] (the flags entry-param reader); `(slot, bit)` = the
+    /// nested field's name-lex cell slot and its label's WIT declaration-order bit, matched by name.
+    Flags { field_bits: Vec<(u32, u32)> },
 }
 
 impl FieldRebuild {
@@ -3589,6 +3606,8 @@ impl FieldRebuild {
             // A `list<scalar>` likewise flattens to `(ptr, len)` — two core params.
             FieldRebuild::ListLeaf(_) => 2,
             FieldRebuild::Sum(r) => r.flattened_param_count(),
+            // A WIT `flags{…}` flattens to a single i32 bitset — one core param.
+            FieldRebuild::Flags { .. } => 1,
         }
     }
 
@@ -3647,6 +3666,13 @@ impl FieldRebuild {
                 r.arm_false.collect_ops_gated(bulk_bytes, out);
                 out("sum-new");
             }
+            // A WIT `flags` field builds a nested record-of-bools cell (`arr-alloc`/`arr-set` + `box-bool` per
+            // label) from the one i32 bitset leaf.
+            FieldRebuild::Flags { .. } => {
+                out("arr-alloc");
+                out("arr-set");
+                out("box-bool");
+            }
         }
     }
 
@@ -3669,6 +3695,8 @@ impl FieldRebuild {
                     SumArmPayload::Compound(fs) => fs.iter().any(FieldRebuild::has_bytes_leaf),
                     _ => false,
                 }),
+            // A WIT `flags` field is a pure product of bools (unpacked from an i32 register) — no memory.
+            FieldRebuild::Flags { .. } => false,
         }
     }
 }
@@ -4131,6 +4159,33 @@ fn emit_cell_rebuild(
                 // a flat-list arm allocates no fresh locals and a throwaway `next_local` suffices.
                 let mut nl = 0u32;
                 emit_sum_field(rebuild, cursor, bulk_bytes, imp, scratch, &mut nl, out); // → [arr, i, sum-handle]
+            }
+            FieldRebuild::Flags { field_bits } => {
+                // A WIT `flags{…}` field: the packed i32 bitset is at `*cursor`. Build the nested record-of-
+                // bools cell (`arr-alloc N` + per `(fslot, bit)` `box-bool((bits>>bit)&1)` `arr-set`) and leave
+                // its handle for the parent `arr-set` — the record-FIELD twin of the top-level flags reader.
+                let bits_leaf = *cursor;
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(field_bits.len() as i64, out);
+                out.push(op::CALL);
+                uleb128(imp("arr-alloc"), out); // [arr, i, nested-arr]
+                for &(fslot, bit) in field_bits {
+                    out.push(op::I32_CONST);
+                    crate::backend::wasm::encode::sleb128(fslot as i64, out); // [.., nested-arr, fslot]
+                    out.push(op::LOCAL_GET);
+                    uleb128(bits_leaf as u64, out);
+                    out.push(op::I32_CONST);
+                    crate::backend::wasm::encode::sleb128(bit as i64, out);
+                    out.push(op::I32_SHR_U);
+                    out.push(op::I32_CONST);
+                    crate::backend::wasm::encode::sleb128(1, out);
+                    out.push(op::I32_AND); // [.., nested-arr, fslot, (bits>>bit)&1]
+                    out.push(op::CALL);
+                    uleb128(imp("box-bool"), out); // [.., nested-arr, fslot, bool]
+                    out.push(op::CALL);
+                    uleb128(imp("arr-set"), out); // [.., nested-arr]
+                }
+                *cursor += 1; // consumed the ONE packed-bitset leaf
             }
         }
         out.push(op::CALL);
@@ -4854,6 +4909,25 @@ fn emit_canon_write(
             get(dst_base, out);
             get(handle, out);
             out.push(*store);
+            out.push(0x00); // align hint (conservative)
+            uleb128(offset as u64, out);
+        }
+        CanonWrite::Flags { field_bits, store } => {
+            // store(dst_base + offset) = the packed bitset. `handle` is the guest record-of-bools cell; pack
+            // per `(slot, bit)`: `get-bool(arr-get(handle, slot))` shifted into `bit`, OR-ed onto a seeded 0.
+            // No unbox `read` (bools come from `get-bool`); no fresh locals (a pure stack expression).
+            get(dst_base, out); // [base]
+            const_i32(0, out); // [base, acc=0]
+            for &(slot, bit) in field_bits {
+                get(handle, out); // [.., acc, handle]
+                const_i32(slot as i64, out);
+                call("arr-get", out); // [.., acc, bool-box] (borrows handle)
+                call("get-bool", out); // [.., acc, 0/1]
+                const_i32(bit as i64, out);
+                out.push(op::I32_SHL); // [.., acc, (0/1)<<bit]
+                out.push(op::I32_OR); // [.., acc']
+            }
+            out.push(*store); // [base, bitset] → store
             out.push(0x00); // align hint (conservative)
             uleb128(offset as u64, out);
         }

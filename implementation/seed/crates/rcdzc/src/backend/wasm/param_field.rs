@@ -152,6 +152,35 @@ pub(super) fn param_field_rebuild(
             param_vts.push(ValType::I32.byte());
             Some(FieldRebuild::BytesLeaf)
         }
+        // A WIT `flags{…}` FIELD (a record field whose type is flags): the guest models it as a nested
+        // `record{ label: bool, … }` (operator ruling: flags is a PRODUCT), so `gty` is `Ty::Record` while
+        // `wty` is `WitType::Flags`. It flattens to a SINGLE i32 bitset leaf, which the wrapper unpacks into the
+        // nested record-of-bools cell (bit i = the i-th declared label, matched to the field BY NAME). This arm
+        // MUST precede the generic `Ty::Record` arm (whose `WitType::Record` guard would decline it). The
+        // record-FIELD twin of `record_interface_export`'s top-level flags-param arm. Declines >32 labels or a
+        // non-bool field.
+        Ty::Record(map) if matches!(wty, WitType::Flags(_)) => {
+            use crate::backend::common::export_name::kebab_extern_name;
+            let WitType::Flags(labels) = wty else {
+                unreachable!("guarded by the match arm")
+            };
+            if labels.len() > 32 || map.len() != labels.len() {
+                return None;
+            }
+            let label_kebab: Vec<String> = labels.iter().map(|l| kebab_extern_name(l)).collect();
+            let mut field_bits: Vec<(u32, u32)> = Vec::with_capacity(labels.len());
+            for (slot, (fname, fty)) in map.iter().enumerate() {
+                if !matches!(fty.strip_nominal(), Ty::Bool) {
+                    return None;
+                }
+                let fk = kebab_extern_name(fname.name.as_ref());
+                let bit = label_kebab.iter().position(|l| *l == fk)?;
+                field_bits.push((slot as u32, bit as u32));
+            }
+            // The flags field flattens to ONE i32 bitset leaf.
+            param_vts.push(ValType::I32.byte());
+            Some(FieldRebuild::Flags { field_bits })
+        }
         Ty::Record(map) => {
             let WitType::Record(wfs) = wty else {
                 return None;

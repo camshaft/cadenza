@@ -5966,6 +5966,35 @@ fn canon_write_of(
     }
     match gty.strip_nominal() {
         Ty::Bytes => Some(CanonWrite::Bytes),
+        // A WIT `flags{…}` field/result: the guest value is a record-of-bools cell (operator ruling: flags is
+        // a PRODUCT). Pack it into the canonical bitset (bit i = the i-th declared label, matched to the field
+        // BY NAME) and store it at the flags canonical width. MUST precede the generic `Ty::Record` arm (whose
+        // `WitType::Record` guard would decline a flags value). The writer twin of the flags reader.
+        Ty::Record(map) if matches!(wty, WitType::Flags(_)) => {
+            use crate::backend::common::export_name::kebab_extern_name;
+            let WitType::Flags(labels) = wty else {
+                unreachable!("guarded by the match arm")
+            };
+            if labels.len() > 32 || map.len() != labels.len() {
+                return None;
+            }
+            let label_kebab: Vec<String> = labels.iter().map(|l| kebab_extern_name(l)).collect();
+            let guest_names: Vec<String> = map
+                .keys()
+                .map(|s| kebab_extern_name(s.name.as_ref()))
+                .collect();
+            let gtys: Vec<Ty> = map.values().cloned().collect();
+            let mut field_bits: Vec<(u32, u32)> = Vec::with_capacity(labels.len());
+            for (slot, gname) in guest_names.iter().enumerate() {
+                if !matches!(gtys[slot].strip_nominal(), Ty::Bool) {
+                    return None;
+                }
+                let bit = label_kebab.iter().position(|l| l == gname)?;
+                field_bits.push((slot as u32, bit as u32));
+            }
+            let store = disc_store_of(wit_ctype::canonical_size(wty));
+            Some(CanonWrite::Flags { field_bits, store })
+        }
         Ty::Record(map) => {
             use crate::backend::common::export_name::kebab_extern_name;
             let WitType::Record(wfs) = wty else {
@@ -6332,6 +6361,11 @@ fn canon_write_ops(
                     canon_write_ops(p, bulk_bytes, out);
                 }
             }
+        }
+        // A flags value packs the record-of-bools cell into the bitset — reads each bool off the cell.
+        CanonWrite::Flags { .. } => {
+            out("arr-get");
+            out("get-bool");
         }
     }
 }
