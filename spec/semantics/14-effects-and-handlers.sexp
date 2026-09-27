@@ -14109,6 +14109,36 @@
   (live-objects 0))
 
 (case
+  "mrs1-consume a two-resume continuation that CONSUMES the hoisted list still reclaims to 0 (Perceus per-splice dup; borrow-vs-transfer negative control)"
+  (doc
+    "v-memory-safety negative control (consult 2026-09-27) for the mrs1 pure-List-prefix hoist: the SAME
+           hoisted `(let ((xs (bld 3))) …)` prefix, but the multi-shot continuation CONSUMES `xs` on the
+           spliced path — `(List.concat xs #list())` TAKES OWNERSHIP — rather than only borrowing it (mrs1's
+           `List.len`). With the hoist `xs` is allocated ONCE and BOTH resumes run: a naive splice would
+           transfer/free `xs` on the first resume and read freed memory on the second (a UAF). This PINS that
+           it does NOT — Perceus inserts the per-splice dup, so each `(List.concat xs …)` gets its own owned
+           reference: live-objects 0, no double-free. The load-bearing assertion is the `(live-objects 0)` +
+           correct value; a future hoist-widening that silently crossed into an unsafe transfer would trip
+           this pin (v-memory-safety's borrow-vs-transfer boundary). `case_b` admits it (List.concat is a Prim,
+           not this handler's own op, so the own-op exclusion does not fire); the reclaim keeps it sound.
+           Value 16: concat with the empty list = `xs`, `List.len` 3, + resume 5, summed over two resumes.")
+  (input
+    (do
+      (effect E (op ask (-> Int64)))
+      (def (bld (: i Int64)) (if (= i 0) #list() (List.push (bld (- i 1)) i)))
+      (def
+        (main (: n Int64))
+        (handle
+          E
+          n
+          ((ask () s (+ (resume s s) (resume s s))))
+          (let ((xs (bld 3))) (+ (List.len (List.concat xs #list())) (E.ask)))))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 16 Int64))
+  (live-objects 0))
+
+(case
   "mrs2 a PURE-body two-resume arm re-computes the continuation and sums (multi-shot on a re-computable body = 100; v-effects-ruled intended)"
   (doc
     "v-effects owner ruling (2026-08-28, verified by running): a two-resume arm over a PURE
