@@ -115,21 +115,23 @@ fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<(StructId, Vec<Str
     None
 }
 
-/// Collect the TAIL expression positions of `node` — the sub-expressions whose value becomes the enclosing
-/// boundary's value — by descending through the tail slots of control/binding forms (BRICK 3 slice 2a,
-/// `DESIGN-try-operator-rcdzc.md` §7.1): an ascription's expr, an `if`'s two arms, a `match`'s arm bodies,
-/// a `let`'s body, a `do`'s LAST form. Everything else is a tail LEAF (pushed). A `?` hoisted to a `let`
-/// wrapping one of these tail leaves sits in binding-tail position relative to the boundary, so `lower_let`'s
-/// runtime-`?` `Core::MatchSum` fires (verified: a runtime-`?` `let` in a tail `if`-arm compiles + runs). A
-/// `?` in a NON-tail slot (an `if` condition, a `match` scrutinee, a `do` non-last statement, a `let` init)
-/// is NOT collected — it is either `lower_let`'s (a binding-tail init) or a later slice's, a clean decline.
-fn collect_tail_positions(ast: &Arenas, node: StructId, out: &mut Vec<StructId>) {
+/// Collect the hoist candidates of `node` as `(target, search_root)` pairs — where `search_root` is
+/// searched for a hoistable `?` and `target` is the node WRAPPED in the boundary `let` (BRICK 3 slices
+/// 2a/2c, `DESIGN-try-operator-rcdzc.md` §7.1). Descends the tail slots of control/binding forms — an
+/// ascription's expr, an `if`'s two arms, a `match`'s arm bodies, a `let`'s body, a `do`'s LAST form — each
+/// yielding a tail LEAF as `(leaf, leaf)` (target == search_root). PLUS: for a `(do (def name V) …)` whose
+/// FIRST form is a VALUE-def, `V` is a search_root with `target = the do` — a `?` in the def value
+/// short-circuits the WHOLE do (its value becomes the boundary's), sound because the def is FIRST so no
+/// preceding statement's effect is reordered. A `?` in a NON-tail slot (an `if` condition, a `match`
+/// scrutinee, a `do` non-last/non-first-def statement, a `let` init) is NOT collected — it is `lower_let`'s
+/// (a binding-tail init) or a later slice's, a clean decline.
+fn collect_tail_positions(ast: &Arenas, node: StructId, out: &mut Vec<(StructId, StructId)>) {
     let Struct::List(kids) = ast.get(node) else {
-        out.push(node);
+        out.push((node, node));
         return;
     };
     if kids.is_empty() {
-        out.push(node);
+        out.push((node, node));
         return;
     }
     let kids: Vec<StructId> = kids.clone();
@@ -156,10 +158,21 @@ fn collect_tail_positions(ast: &Arenas, node: StructId, out: &mut Vec<StructId>)
         // `(let bindings body)` — the body is tail; a binding INIT `?` is `lower_let`'s (binding-tail), not
         // collected here.
         Some("let") if kids.len() == 3 => collect_tail_positions(ast, kids[2], out),
-        // `(do stmt… last)` — the LAST form is tail; earlier forms are sequenced statements.
-        Some("do") if kids.len() >= 2 => collect_tail_positions(ast, kids[kids.len() - 1], out),
+        // `(do stmt… last)` — the LAST form is tail. ADDITIONALLY, if the FIRST form is a VALUE-def
+        // `(def name V)`, `V` is a hoist search-root whose target is the WHOLE do: a `?` in the def value
+        // short-circuits the entire do to the boundary value. Sound ONLY because the def is FIRST (nothing is
+        // evaluated before it), so hoisting a `?` out of `V` reorders no preceding statement's effect.
+        Some("do") if kids.len() >= 2 => {
+            if let Some(dk) = ast.as_form(kids[1], "def")
+                && dk.len() == 2
+                && ast.as_name(dk[0]).is_some()
+            {
+                out.push((node, dk[1]));
+            }
+            collect_tail_positions(ast, kids[kids.len() - 1], out);
+        }
         // Any other node — a tail LEAF expression to search for a hoistable `?`.
-        _ => out.push(node),
+        _ => out.push((node, node)),
     }
 }
 
@@ -223,13 +236,49 @@ fn hoist_try_at(ast: &mut Arenas, target: StructId, tn: StructId, prefix: &[Stru
     }
 }
 
+/// Collect every node id that lives INSIDE a `(quote …)` form (the quote's argument subtrees, transitively).
+/// A `?` under `quote` is DATA, not control flow: `quote E` reifies `E` VERBATIM as the user wrote it, so a
+/// `(try e)` inside a quote must survive to `reify_quotes` unchanged — hoisting it would make `quote (try e)`
+/// reify the desugared `let` scaffolding instead of the source, and (because the hoist binder is named from a
+/// node id) two textually-identical `(quote E)` occurrences would desugar to DIFFERENT names, breaking the
+/// binary-AST round-trip identity the quote-corpus pass checks. The scan below skips these ids.
+fn collect_quoted_nodes(ast: &Arenas) -> std::collections::HashSet<u32> {
+    let mut quoted = std::collections::HashSet::new();
+    let len = ast.structure.len() as u32;
+    for i in 0..len {
+        let id = StructId(i);
+        if ast.as_name(id).is_some() {
+            continue;
+        }
+        let Struct::List(kids) = ast.get(id) else {
+            continue;
+        };
+        if kids.first().and_then(|&h| ast.as_name(h)) != Some("quote") {
+            continue;
+        }
+        // Mark the whole quoted subtree (every form after the `quote` head) as off-limits to the hoist.
+        let mut stack: Vec<StructId> = kids[1..].to_vec();
+        while let Some(n) = stack.pop() {
+            if !quoted.insert(n.0) {
+                continue;
+            }
+            if let Struct::List(ks) = ast.get(n) {
+                stack.extend(ks.iter().copied());
+            }
+        }
+    }
+    quoted
+}
+
 /// Hoist a single EXPRESSION-position `?` in each fallible-boundary function body to a boundary `let`
 /// (BRICK 3 slices 1/2a, `DESIGN-try-operator-rcdzc.md` §7.1): `C[(try e)]` => `(let ((x (try e))) C[x])`.
 /// The resulting binding-tail `let` rides the proven `lower_let` runtime-`?` `Core::MatchSum` short-circuit
 /// (the same path tdd1 / stored-closure use) — no `Core::Block`/`Break` and no new emit, and it is
 /// INLINE-SAFE because the `match` is local (an emit-time boundary-block wrap is NOT, since inlining moves
 /// the `?` into a caller with a different result type). Runs at LOAD, AFTER `desugar_try_do_defs` (so a
-/// binding-tail do-def is already a `let` the search stops at) and before resolution.
+/// binding-tail do-def is already a `let` the search stops at) and before resolution. A `def`/`fn` node that
+/// lives INSIDE a `quote` is EXCLUDED (`collect_quoted_nodes`) — a quoted `?` is source data, not evaluated
+/// control flow, and must reify verbatim.
 pub fn desugar_try_expr_position(ast: &mut Arenas) {
     // FAST BAIL: no `(try …)` form anywhere (the common case) → no interned `try` name leaf.
     if !ast
@@ -239,6 +288,10 @@ pub fn desugar_try_expr_position(ast: &mut Arenas) {
     {
         return;
     }
+    // Nodes inside a `(quote …)` — the hoist must NOT descend into these (they reify verbatim). Computed once
+    // on the source structure; the fixpoint below only APPENDS `let` scaffolding (never inside a quote), so
+    // the set stays valid across passes (new node ids are absent from it, hence scanned normally).
+    let quoted = collect_quoted_nodes(ast);
     // FIXPOINT: hoist ONE `?` per boundary body per pass, then repeat until a pass finds none. Each hoist
     // converts an expression-position `?` to a `let`-INIT (which the search stops at), so the count of
     // searchable `?`s strictly DECREASES — the loop terminates, and it handles MULTIPLE `?`s in one body
@@ -253,6 +306,10 @@ pub fn desugar_try_expr_position(ast: &mut Arenas) {
         let len = ast.structure.len() as u32;
         let mut plans: Vec<(StructId, StructId, Vec<StructId>)> = Vec::new();
         for i in 0..len {
+            // A `def`/`fn` inside a `(quote …)` is quoted data — never a hoist boundary.
+            if quoted.contains(&i) {
+                continue;
+            }
             let id = StructId(i);
             let Struct::List(kids) = ast.get(id) else {
                 continue;
@@ -260,15 +317,26 @@ pub fn desugar_try_expr_position(ast: &mut Arenas) {
             if kids.len() != 3 {
                 continue;
             }
-            if !matches!(ast.as_name(kids[0]), Some("def") | Some("fn")) {
+            // A boundary body is a FUNCTION def `(def (sig …) body)` (its `kids[1]` is the signature LIST) or
+            // a `fn` lambda `(fn params body)`. A VALUE def `(def name value)` (`kids[1]` a NAME atom) is NOT
+            // a boundary — its value's type is the binding's, not a function result — and crucially a
+            // do-LOCAL value-def's `?` belongs to the enclosing function's boundary (handled by the do-def
+            // value candidate in `collect_tail_positions`, which wraps the whole `do`), NOT to the value
+            // position. Treating a value-def as a boundary would hoist the `?` into the value and miscompile.
+            let is_boundary = match ast.as_name(kids[0]) {
+                Some("def") => matches!(ast.get(kids[1]), Struct::List(_)),
+                Some("fn") => true,
+                _ => false,
+            };
+            if !is_boundary {
                 continue;
             }
             let body = kids[2];
-            let mut tails: Vec<StructId> = Vec::new();
-            collect_tail_positions(ast, body, &mut tails);
-            for t in tails {
-                if let Some((tn, prefix)) = find_hoistable_try(ast, t) {
-                    plans.push((t, tn, prefix));
+            let mut candidates: Vec<(StructId, StructId)> = Vec::new();
+            collect_tail_positions(ast, body, &mut candidates);
+            for (target, search_root) in candidates {
+                if let Some((tn, prefix)) = find_hoistable_try(ast, search_root) {
+                    plans.push((target, tn, prefix));
                     break; // one hoist per body per pass
                 }
             }

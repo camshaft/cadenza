@@ -3827,7 +3827,7 @@ pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
 pass	a runtime-magnitude quotient divides the erased magnitudes
 pass	a runtime-magnitude same-unit difference subtracts the erased magnitudes
 pass	a runtime-magnitude same-unit sum adds the erased magnitudes
-pass	a runtime-operand try as a list element declines pending brick 3b
+pass	a runtime-operand try mid LIST-literal short-circuits the whole list, else the list builds
 pass	a runtime-parameter start and length are bounds-checked at run time, yielding Some or None
 pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
 pass	a runtime-reached shift with an out-of-range CONSTANT count and a TRAPPING lhs surfaces the lhs trap first (eval-order)
