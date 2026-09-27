@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(33);
+    let shape = c.variant(34);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -377,6 +377,19 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     } else {
         "None".to_string()
     };
+    // A record-of-bools value-form for the rob1 BOOL-LEAF shape (33) — the FIRST `Bool` leaf in the grammar
+    // (scalars so far are Int64/UInt64/Char/BigInt; no boolean). Three independent Bool fields driven by e0's
+    // low three bits, weighted 1/2/4 so EACH field's truthiness is independently observable. This is also the
+    // Cadenza representation a WIT `flags{…}` lowers to (#9794 operator ruling — flags = a record of bool
+    // fields), though a plain export crosses via the DEFAULT record marshal, NOT the WIT-world bitset packing
+    // (that path needs a `.wit`-declared flags type — out of this fuzzer's plain-`(export f)` surface). A
+    // wrong-width or wrong-truthiness Bool marshal, or a mis-resolved record field, corrupts the weighted sum.
+    // Value = (e0&1)*1 + (e0&2 -> 2) + (e0&4 -> 4) = e0 & 7. Rust `--arg` takes the bare `true`/`false` literal.
+    let bool_read = if e0 & 1 != 0 { "true" } else { "false" };
+    let bool_write = if e0 & 2 != 0 { "true" } else { "false" };
+    let bool_exec = if e0 & 4 != 0 { "true" } else { "false" };
+    let rob_arg =
+        format!("#record((= read {bool_read}) (= write {bool_write}) (= exec {bool_exec}))");
     let (source, args) = match shape {
         // 0 — DOUBLE: one Int64 param, multiply (the #9670 double(21)->42 witness).
         0 => (
@@ -686,10 +699,21 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      copy-in (the eop3 local-collision #9791 fixed) is value-observable. Distinct from shape 19
         //      (byte-leaf directly in a sum), shape 22 (list<string> at top level), shape 23/25 (compound
         //      sum payload): this is a HEAP list of BYTE-LEAVES nested inside a sum discriminant cell.
-        _ => (
+        32 => (
             "(do (def (f (: xs (Option (List String)))) (match xs ((Some l) (match (List.at l 0) ((Some h) (String.byte-len h)) (None 0))) (None -1))) (export f))"
                 .to_string(),
             vec![opt_list_str_arg],
+        ),
+        // 33 — rob1 record-of-bools entry param: the FIRST `Bool` leaf in the grammar. A record of three
+        //      independent Bool fields, weighted 1/2/4 so each field's truthiness is independently observable
+        //      (value = e0 & 7). Bool crosses the boundary as a distinct component type (i32 0/1) — a
+        //      wrong-width/wrong-truthiness marshal or a mis-resolved field corrupts the weighted sum. Also the
+        //      Cadenza representation a WIT `flags{…}` lowers to (#9794); the plain export exercises the DEFAULT
+        //      record marshal (not the WIT-world bitset packing, which needs a `.wit`-declared flags type).
+        _ => (
+            "(do (def (f (: r (Record (: read Bool) (: write Bool) (: exec Bool)))) (+ (if (. r read) 1 0) (+ (if (. r write) 2 0) (if (. r exec) 4 0)))) (export f))"
+                .to_string(),
+            vec![rob_arg],
         ),
     };
     ExportParam { source, args }
@@ -6077,13 +6101,13 @@ mod tests {
         // entry-param `f` + the tol1 tuple<Int64,list<Int64>> value-holding-a-heap entry-param `f` + the chr1
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
-        // sum-holding-a-byte-leaf-list entry-param `f`.
-        let mut reached = [false; 33];
-        for seed in 0u64..1980 {
+        // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f`.
+        let mut reached = [false; 34];
+        for seed in 0u64..2040 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(33) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-32 reuse e0/e1/e2/s0 — no new read.)
+            // variant(34) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-33 reuse e0/e1/e2/s0 — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6178,11 +6202,13 @@ mod tests {
                 reached[31] = true; // shape 31 = ssa1 String.scalar-at char-extraction entry-param `f`
             } else if ep.source.contains("(: xs (Option (List String)))") {
                 reached[32] = true; // shape 32 = eop3 option<list<string>> sum-holding-a-byte-leaf-list entry-param `f`
+            } else if ep.source.contains("(: read Bool)") {
+                reached[33] = true; // shape 33 = rob1 record-of-bools bool-leaf entry-param `f`
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all thirty-three export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all thirty-four export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
