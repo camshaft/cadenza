@@ -50,6 +50,44 @@ Recommendation pending the interface answer: if the board has an HTTP/CLI interf
 session → **(B)** first (concierge mirrors), because it needs no new transport and ships fastest, with **(C)**
 as the scale valve if concierge load becomes the bottleneck.
 
+## Verified transport + API surface (probed read-only 2026-09-27)
+
+Concierge (host + MCP access) reported the transport; I then PROBED it read-only from this agent session to
+ground the client design in the real surface (verify-before-building). Confirmed:
+
+- **Endpoint:** `http://127.0.0.1:8880/board/mcp` — a LOCAL HTTP MCP server (`task-board` v1.30.0, protocol
+  `2024-11-05`). `/health` → 200. Reachable by ANY host process (not bound to a Claude session), so option (A)
+  is mechanically viable. It sits behind Cloudflare Access — an `initialize` response auto-sets a
+  `CF_Authorization` cookie (localhost dev bypass); a real client keeps the cookie jar + the session id.
+- **Framing:** JSON-RPC over HTTP with **SSE responses** (`event: message\ndata: {json}`) — the client parses
+  the `data:` line. A **`Mcp-Session-Id`** response header from `initialize` must be echoed on every
+  subsequent call. Handshake: `initialize` → `notifications/initialized` → `tools/call`. No REST API
+  (`/openapi.json` is a stub; `/board/api*` 404s) — everything is MCP `tools/call`.
+- **Tool surface (18 tools; required(+optional) params), VERIFIED via `tools/list`:**
+  - `register_agent(agent_id, +display_name,kind,webhook_url)` · `set_status(agent_id,status)` · `list_agents()`
+  - `create_project(name, +description,created_by)` · `list_projects()` · `get_project(project_id)`
+  - `create_task(project_id,title, +description,assignee,priority,created_by,metadata)` · `update_task(task_id)`
+    · `get_task(task_id)` · `list_tasks()` · `set_task_props(task_id,props)` · `comment_task(task_id,body)`
+  - `send_message(from_agent,to_agent,body)` · `get_messages(agent_id)` — **a message bus that PARALLELS the
+    fleet inbox** (the natural `fleet send` ↔ board mapping).
+  - `subscribe(subscriber)` · `unsubscribe(subscriber)` · `check_notifications(agent_id)` · `get_events()`
+- **Board state (read-only snapshot):** projects `#1 MCP smoke test`, `#2 George checks`, `#3 Fleet Setup`
+  (created_by `george`). Agents `george` (kind `assistant`), `embedder`/`uploader` (kind `worker`) — each
+  carries a `webhook_url` at `127.0.0.1:807x/hook` + `status`(online)/`last_seen`. So the board PUSHES to a
+  per-agent webhook.
+
+**Client-design consequence (poll, don't serve):** a fleet agent ticks periodically and runs NO HTTP server,
+so instead of registering a `webhook_url` it **polls** `check_notifications(agent_id)` / `get_messages(agent_id)`
+on each tick (the tick loop is the poll). Fleet agents register with `kind="worker"`, `agent_id=<fleet name>`,
+`display_name=<fleet name>`, and OMIT `webhook_url`. `set_status` on heartbeat keeps `last_seen`/online fresh.
+
+**Option (A) concretized — a minimal MCP-JSON-RPC client in `fleet.rs`:** an `initialize` handshake (cache the
+`Mcp-Session-Id` + CF cookie for the process), a `tools/call` helper that POSTs the JSON-RPC + parses the SSE
+`data:` line, exposed as a `fleet task <verb>` subcommand family (`register` → `register_agent`, `status` →
+`set_status`, `project`/`task`/`comment` → the create/comment tools, `notifications` → `check_notifications`).
+No third-party MCP crate needed — it's one endpoint, a handshake, and `tools/call` over `reqwest`/`ureq`.
+(Still gated on the operator's A/B/C CHOICE; concierge recommended **A-target / B-interim** to the operator.)
+
 ## Concept mapping (proposed)
 
 | Fleet concept (today) | Task-board concept |
@@ -102,10 +140,11 @@ competes for `v-fleet-tooling` ticks. It INTERSECTS the extraction (both touch t
 
 ## Open Questions (operator steer, via concierge `ask`)
 
-1. **The board's callable interface + MCP session owner** (determines A/B/C): outside a Claude session with
-   the MCP loaded, how is the board called — an HTTP endpoint? a CLI? a local daemon socket? And who holds the
-   MCP session — concierge (→ B), a new bridge daemon (→ C), or is there a direct interface `fleet.rs` can
-   call (→ A)?
+1. **~~The board's callable interface~~ → ANSWERED (probed 2026-09-27): MCP JSON-RPC over HTTP at
+   `127.0.0.1:8880/board/mcp`, reachable by any host process — so `fleet.rs` can be a direct client (option A
+   is mechanically viable; see "Verified transport" above).** The only residual is the A/B/C **CHOICE**: build
+   the direct `fleet.rs` client now (A), have the concierge mirror via its MCP session first (B-interim), or
+   stand up a dedicated bridge daemon (C)? Concierge recommended **A-target / B-interim** to the operator.
 2. **Coexist vs migrate:** tracking-mirror ON TOP of the inbox (recommended), or is the board meant to
    eventually REPLACE the message-bus transport?
 3. **Granularity:** Project-per-vertical + Task-per-unit-of-work (proposed), or a different grain (e.g.
