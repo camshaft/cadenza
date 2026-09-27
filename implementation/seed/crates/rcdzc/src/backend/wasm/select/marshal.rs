@@ -2046,6 +2046,92 @@ pub(super) fn emit_record_arg_marshal(
             // An `option<bytes>` field flattens to `(disc:i32, ptr:i32, len:i32)`. Some → `(1, ptr, len)` with
             // the payload rope copied into `mem` at the cursor (the same copy the `result` Ok arm / a Bytes
             // field does); None → `(0, 0, 0)`. Side-effect scratch in the `if`, push the 3 values after.
+            // An `option<list<T>>` field flattens to `(disc:i32, ptr:i32, count:i32)` — the list analogue of the
+            // option<bytes> field arm below. On Some the payload list is marshalled into `mem` at the cursor via
+            // `emit_list_arg_marshal` (which leaves `(outer-ptr, count)`), captured into `(p0, p1)`; on None
+            // `(0,0,0)`. MUST precede the option<scalar> arm (a list handle's `valtype_of` is `Some(I32)`, so the
+            // scalar guard would else match). The element WIT comes from `fwit` (`option<list<elem>>`). Its abi is
+            // `field_boundary_abi`'s `Option(List(<elem>))` — in lockstep so `is_boundary_record` admits a record
+            // arg / an option<record> payload carrying an `option<list>` field exactly where this marshal runs.
+            None if crate::backend::wasm::host::option_payload_ty(db, fty)
+                .is_some_and(|p| matches!(p.strip_nominal(), Ty::List(_))) =>
+            {
+                let cursor =
+                    cursor.expect("an option<list> field reserves the scratch cursor (pre-scan)");
+                let payload_ty = crate::backend::wasm::host::option_payload_ty(db, fty)
+                    .expect("option-shaped by the guard");
+                let Ty::List(elem) = payload_ty.strip_nominal() else {
+                    unreachable!("list payload by the guard")
+                };
+                let elem = (**elem).clone();
+                let elem_wit = match fwit {
+                    crate::wit_world::WitType::Option(inner) => match inner.as_ref() {
+                        crate::wit_world::WitType::List(ew) => Some(ew.as_ref()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let crate::ty::Ty::Sum { decl, .. } = fty.strip_nominal() else {
+                    unreachable!("option is a Sum")
+                };
+                let some_disc = {
+                    let d = db.type_decl_by_occ(*decl).ok_or_else(|| {
+                        Reject::decline("the option field's sum decl was not found")
+                    })?;
+                    d.variants
+                        .iter()
+                        .position(|v| v.payloads.len() == 1)
+                        .ok_or_else(|| Reject::decline("the option field has no payload variant"))?
+                        as i32
+                };
+                let ans = work_base + 4;
+                let disc_out = work_base + 5;
+                let p0 = work_base + 6;
+                let p1 = work_base + 7;
+                let list_slot = work_base + 8;
+                for s in [ans, disc_out, p0, p1, list_slot] {
+                    scratch_ty.insert(s, ValType::I32);
+                }
+                *high = (*high).max(work_base + 9);
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [option handle] (borrows rec)
+                out.push(Lir::LocalSet(ans));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_DISC));
+                out.push(Lir::ConstI32(some_disc));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty)); // Some: marshal the payload list → (ptr, count)
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::LocalSet(disc_out));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload list handle]
+                out.push(Lir::LocalSet(list_slot));
+                emit_list_arg_marshal(
+                    db,
+                    &elem,
+                    elem_wit,
+                    list_slot,
+                    cursor,
+                    work_base + 9,
+                    high,
+                    scratch_ty,
+                    out,
+                )?; // leaves [outer-ptr, count]
+                out.push(Lir::LocalSet(p1)); // count (top of stack)
+                out.push(Lir::LocalSet(p0)); // ptr
+                out.push(Lir::Else); // None: (0, 0, 0)
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(disc_out));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(p0));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(p1));
+                out.push(Lir::End);
+                out.push(Lir::LocalGet(disc_out)); // push (disc, ptr, count)
+                out.push(Lir::LocalGet(p0));
+                out.push(Lir::LocalGet(p1));
+            }
             None if crate::backend::wasm::host::option_payload_ty(db, fty)
                 .is_some_and(|p| matches!(p.strip_nominal(), Ty::Bytes | Ty::String)) =>
             {

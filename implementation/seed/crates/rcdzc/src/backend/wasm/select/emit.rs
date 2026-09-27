@@ -6307,7 +6307,7 @@ pub(super) fn emit(
                     // A record arg with a `list<T>` FIELD marshals that list's backing into `mem` → cursor too.
                     || crate::backend::wasm::host::record_has_list_field(&at)
                     // A record arg with an `option<bytes>` FIELD copies the payload rope into `mem` → cursor.
-                    || crate::backend::wasm::host::record_has_option_bytes_field(db, &at)
+                    || crate::backend::wasm::host::record_has_option_field_needing_mem(db, &at)
                     // A record arg with a `tuple<…>` FIELD may copy a Bytes element's rope → reserve the cursor.
                     || crate::backend::wasm::host::record_has_tuple_field(&at)
                     // A `list<T>` arg marshals into `mem` (its outer array + each element) → needs the cursor.
@@ -6330,7 +6330,7 @@ pub(super) fn emit(
                     || crate::backend::wasm::host::option_payload_ty(db, &at).is_some_and(|p| {
                         crate::backend::wasm::host::record_has_bytes_field(&p)
                             || crate::backend::wasm::host::record_has_list_field(&p)
-                            || crate::backend::wasm::host::record_has_option_bytes_field(db, &p)
+                            || crate::backend::wasm::host::record_has_option_field_needing_mem(db, &p)
                             || crate::backend::wasm::host::record_has_tuple_field(&p)
                     })
                     // A top-level `option<list<T>>` arg marshals the payload list into `mem` on Some → cursor.
