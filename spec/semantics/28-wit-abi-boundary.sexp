@@ -5724,3 +5724,28 @@ cases
   (call cl (: -3 Int64))
   (output (: (Err unit) (Result Int64 Unit)))
   (live-objects 0))
+
+(case
+  "a variant case with ≥2 PAYLOADS (a multi-arg ctor) crosses as a WIT variant case with a tuple payload"
+  (doc
+    "SHAPE 122 — a guest sum ctor with TWO payloads (`(type V (Pair Int64 Int64) (One Int64))`), distinct from
+           SHAPE 63's single-TUPLE-payload ctor (`(Two (Tuple Int64 Int64))`). A multi-payload ctor's payloads
+           pack into the WIT variant case's single `tuple<…>` payload: `canon_write_of`'s Variant arm resolves
+           the case payload via the ctor + `payload_ty_at_instantiation` (which yields the tuple of the ctor's
+           payload types) and writes it through the Tuple arm at the canonical variant layout. cl(x) = x>0 ?
+           V.Pair(x,x) : V.One(-x); x=5 -> pair(tuple 5 5), x=-3 -> one(3). Closes the gap-map
+           `multi-payload variant case (≥2 payloads)` on the RESULT side.")
+  (wit-world
+    (world w (export cadenza:demo/iface
+      (member cl (func (param x (s64)) (result (variant (pair (tuple (s64) (s64))) (one (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input
+    (do
+      (type V (Pair Int64 Int64) (One Int64))
+      (def (cl (: x Int64)) (if (> x 0) (V.Pair x x) (V.One (- 0 x))))
+      (export cl)))
+  (call cl (: 5 Int64))
+  (output (: (pair #tuple(5 5)) V))
+  (call cl (: -3 Int64))
+  (output (: (one 3) V))
+  (live-objects 0))
