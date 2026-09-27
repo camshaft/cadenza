@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(37);
+    let shape = c.variant(38);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -751,8 +751,22 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      compound-ctor descent + the multi-hoist fixpoint + left-to-right short-circuit. Both Ok ->
         //      list len 2; the FIRST Err short-circuits (leaving the 2nd `?` unevaluated) -> -1. Arg = a
         //      (a>=2 -> both Ok -> 2; a<2 -> an Err -> -1). Verified rust/wasm AGREE (2->2, 1->-1, 0->-1, 5->2).
-        _ => (
+        36 => (
             "(do (def (mk (: r (Result Int64 String)) (: s (Result Int64 String))) (: (Ok #list((try r) (try s))) (Result (List Int64) String))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok 7) (Err \"a\")) (if (> k 1) (Ok 9) (Err \"b\"))) ((Ok xs) (List.len xs)) ((Err _e) -1))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 37 — trn1 NESTED-COMPOUND-CTOR `?` entry param (the #9892/#9894-era BRICK-3 corpus witness). Two
+        //      `?`s live at DIFFERENT nesting depths inside a nested compound: `(Ok #tuple(#record((= a (try
+        //      r))) #list((try s))))` under a `(Result (Tuple (Record (: a Int64)) (List Int64)) String)`
+        //      boundary in `mk`, INLINED into `main`. The RECURSIVE find_hoistable_try + fixpoint descends the
+        //      outer `#tuple`, then into the `#record` FIELD value (trr3, #9892) AND the `#list` element (trl1)
+        //      — pinning that the compound-ctor `?` descent COMPOSES through arbitrary nesting, not one level.
+        //      Distinct from shape 36 (FLAT `#list` elements). Both Ok -> tuple ({a=3},[4]) read as 3+len[4]=4;
+        //      the FIRST failing `?` (record's, then list's) short-circuits -> -1. Arg = a (a>=2 -> 4, a<2 ->
+        //      -1). Verified rust/wasm AGREE (2->4, 1->-1, 0->-1, 9->4).
+        _ => (
+            "(do (def (mk (: r (Result Int64 String)) (: s (Result Int64 String))) (: (Ok #tuple(#record((= a (try r))) #list((try s)))) (Result (Tuple (Record (: a Int64)) (List Int64)) String))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok 3) (Err \"a\")) (if (> k 1) (Ok 4) (Err \"b\"))) ((Ok t) (+ (. (. t 0) a) (List.len (. t 1)))) ((Err _e) -1))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6193,13 +6207,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main`.
-        let mut reached = [false; 37];
-        for seed in 0u64..2220 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main`.
+        let mut reached = [false; 38];
+        for seed in 0u64..2280 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(37) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-36 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(38) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-37 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6266,9 +6280,14 @@ mod tests {
                 reached[35] = true; // shape 35 = trr1 expression-position `?` entry-param `main` (#9859) —
             // checked BEFORE shape 20 since its `step` source CONTAINS shape 20's
             // `(: r (Result Int64 String))` marker (shape 20 is `(def (f (: r …`)
-            } else if ep.source.contains("(def (mk (: r (Result Int64 String))") {
-                reached[36] = true; // shape 36 = trl1 multi-`?` compound-ctor entry-param `main` (#9869) —
-            // also checked BEFORE shape 20 (its `mk` source CONTAINS shape 20's marker)
+            } else if ep.source.contains("(Ok #list((try r) (try s)))") {
+                reached[36] = true; // shape 36 = trl1 multi-`?` compound-ctor (flat #list) entry-param `main`
+            // (#9869) — checked BEFORE shape 20 (its `mk` source CONTAINS shape 20's
+            // marker); keyed on the FLAT-#list body to distinguish from shape 37's `mk`
+            } else if ep.source.contains("(Ok #tuple(#record((= a (try r)))") {
+                reached[37] = true; // shape 37 = trn1 NESTED-compound-ctor `?` entry-param `main` — checked
+            // BEFORE shape 20 too; keyed on the nested tuple/record body (shape 37's
+            // `mk` shares shape 36's `(def (mk (: r …` prefix, so key on the BODY)
             } else if ep.source.contains("(: r (Result Int64 String))") {
                 reached[20] = true; // shape 20 = #9747 rpp21/22 result<Int64,String> two-payload-sum-entry-param `f`
             } else if ep.source.contains("(: o (Option Bytes))") {
@@ -6312,7 +6331,7 @@ mod tests {
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all thirty-seven export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all thirty-eight export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
