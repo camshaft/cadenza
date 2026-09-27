@@ -7026,3 +7026,82 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a top-level list<variant> host-op arg crosses (each scalar-payload variant element written in place)"
+  (doc
+    "SHAPE 171 (v-wit-boundary) — a top-level `list<variant>` bare host-op ARGUMENT (probe.push :
+           func(list<variant{go, stop(s64)}>) -> s64). A scalar-payload `variant` as a list ELEMENT: the list
+           marshal (`emit_list_arg_marshal`) writes each element in place at the canonical variant layout (disc
+           + uniform scalar payload) via `emit_variant_to_mem`, the SAME writer a list-of-variant / record-field
+           variant uses; `list_elem_marshalable` admits it and `collect_list_elem_ops` declares its ops. Already
+           reachable (the variant algebra was widened across the element sites); SHAPE 171 locks in the value
+           round-trip that was previously untested. run() builds [Stop(7), Go] and performs probe.push; a VALID
+           component that runs is the pin (a wrong variant element layout traps at the host's list.lift).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (variant (go) (stop (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (List Sig) Int64)))
+      (def (run) (host (probe) (probe.push #list((Sig.Stop 7) (Sig.Go)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level tuple<variant, s64> host-op arg crosses (variant element flattened positionally)"
+  (doc
+    "SHAPE 172 (v-wit-boundary) — a top-level `tuple<variant, s64>` bare host-op ARGUMENT (probe.push :
+           func(tuple<variant{go, stop(s64)}, s64>) -> s64). A scalar-payload `variant` as a tuple ELEMENT:
+           `emit_tuple_reg_flatten` flattens the variant element positionally to `(var-disc, payload-join)` via
+           the shared `emit_variant_reg_flatten` (the SAME helper the bare-variant ARG / a record variant FIELD
+           uses), joined with the `s64` element's one slot. `tuple_arg_crosses` admits a variant element and
+           `field_boundary_abi` builds its `Variant` abi. Already reachable (the variant algebra was widened
+           across the tuple-element sites); SHAPE 172 locks in the value round-trip. run() builds (Stop(7), 5)
+           and performs probe.push; a VALID component that runs is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (variant (go) (stop (s64))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (Tuple Sig Int64) Int64)))
+      (def (run) (host (probe) (probe.push (tuple (Sig.Stop 7) 5))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level option<record-with-variant-field> host-op arg crosses on the Some arm"
+  (doc
+    "SHAPE 173 (v-wit-boundary) — a top-level `option<record{ v: variant{go, stop(s64)}, n: s64 }>` bare host-op
+           ARGUMENT (probe.push), the Some arm. Composes the option<record> arg (the payload record has a
+           scalar-payload `variant` FIELD, SHAPE 166's field shape): `is_boundary_record` admits the payload
+           record (its variant field crosses via `field_boundary_abi`'s Variant arm), and
+           `emit_option_reg_flatten`'s record branch recurses `emit_record_arg_marshal`, whose variant-field arm
+           flattens the variant to `(disc, join)` — so the option flattens to `(opt-disc, var-disc, join, n)`.
+           Already reachable (option<record> + the record variant-field arm compose); SHAPE 173 locks in the
+           value round-trip. run() builds Some({ v: Stop(7), n: 5 }) and performs probe.push; a VALID component
+           that runs is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= v (variant (go) (stop (s64)))) (= n (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (Option (Record (: v Sig) (: n Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= v (Sig.Stop 7)) (= n 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

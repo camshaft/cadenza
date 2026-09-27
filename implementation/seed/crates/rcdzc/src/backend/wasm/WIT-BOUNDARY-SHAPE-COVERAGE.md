@@ -237,6 +237,13 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   arm (a variant handle's `valtype_of` is `Some(I32)`, so that arm's guard would else miscompile it).
   `flatten_record_field_abi` (`Option(Variant)` → 3 slots) and `collect_record_field_ops`'s option arm (recurses
   into the variant payload) were already general. No cursor needed (scalar-payload variant does not touch `mem`).
+- **[emit] scalar-payload `variant` in the remaining COMPOUND positions — ✅ DONE / TESTED (SHAPE 171/172/173).**
+  Lock-ins of reachable-but-untested variant shapes (the variant algebra was widened across the element/field
+  sites in prior work; these pin the value round-trip): a `list<variant>` ELEMENT (171, `emit_variant_to_mem`),
+  a `tuple<variant, …>` ELEMENT (172, `emit_variant_reg_flatten` positional), and an `option<record-with-a-
+  variant-field>` ARG (173, `emit_option_reg_flatten`'s record branch → `emit_record_arg_marshal`'s variant-field
+  arm). REMAINING variant gaps: a multi-payload variant case at the ARG register-flatten position, and a mixed
+  int↔float / f32↔f64 single-payload variant (the canonical reinterpret join).
 - **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
   record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
   `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the
