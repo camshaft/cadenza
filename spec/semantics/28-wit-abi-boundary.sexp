@@ -7237,3 +7237,30 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record> host-op arg with an ENUM field in the record element crosses (enum disc written in place)"
+  (doc
+    "SHAPE 179 (v-wit-boundary) — a `list<record{ e: enum, n: s64 }>` bare host-op ARGUMENT (probe.push). A
+           payload-less `enum` FIELD of a record ELEMENT — the in-mem-writer analogue of the top-level record
+           enum FIELD (SHAPE 174). `product_field_marshalable` now admits an enum field (via `enum_cases`), so
+           `list_elem_marshalable` accepts the record element; the record element is written in place at its
+           canonical layout by `emit_record_to_mem`, whose scalar-field path writes the enum field's disc at the
+           field's canonical offset+width (`disc_size(n_cases)`) — no dedicated writer arm, the enum rides the
+           scalar store (its disc reads via the guest sum's disc-unbox). The `(list (record … (enum …) …))`
+           component type builds from the world WIT. run() builds [{ e: Green, n: 5 }] and performs probe.push;
+           a VALID component that runs is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= e (enum red green blue)) (= n (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (effect probe (op push (-> (List (Record (: e Col) (: n Int64))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= e (Col.Green)) (= n 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

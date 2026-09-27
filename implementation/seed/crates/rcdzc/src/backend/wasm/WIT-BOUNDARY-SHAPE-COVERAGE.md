@@ -270,6 +270,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   …))` component type builds from the world WIT (element type via `field_boundary_abi`'s enum arm). **The
   payload-less `enum` now crosses at EVERY nested position** — record FIELD (174), tuple ELEMENT (175), option
   PAYLOAD (176/177), and list ELEMENT (178), plus the pre-existing top-level arg (`HostParam::Enum`).
+- **[emit, ARG-side] a `list<record>` arg with an `enum` FIELD in the record element — ✅ DONE (SHAPE 179).** The
+  in-mem-writer analogue of the top-level record enum FIELD (174): `product_field_marshalable` now admits an
+  enum field (via `enum_cases`), so `list_elem_marshalable` accepts the record element; `emit_record_to_mem`'s
+  scalar-field path writes the enum field's disc at the field's canonical offset+width (`disc_size(n_cases)`) —
+  no dedicated writer arm (the enum rides the scalar store). (A nested record with an enum field already crossed
+  via the register path — `emit_record_arg_marshal` recurses.)
 - **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
   record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
   `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the
