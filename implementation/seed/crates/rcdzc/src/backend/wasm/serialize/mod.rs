@@ -265,6 +265,15 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                     params.push(e.core_byte());
                 }
             }
+            // A bare `result<list<scalar>, enum>` param flattens to `(disc:i32, ptr/errdisc:i32, count/0:i32)` —
+            // the SAME 3-slot core shape as the Bytes-Ok result (the Ok arm's `list<T>` marshals into `mem`, giving
+            // `(ptr, count)`; the Err arm gives `(err-enum-disc, 0)`). The component type is the built-in
+            // `result<list<T>, err-enum>` (from the declared WIT).
+            HostParam::ResultList(_) => params.extend_from_slice(&[
+                wasm_abi::CORE_I32,
+                wasm_abi::CORE_I32,
+                wasm_abi::CORE_I32,
+            ]),
         }
     }
     // `params` now holds exactly the FLATTENED core-slot bytes (a scalar = 1, a string/bytes = 2, a record

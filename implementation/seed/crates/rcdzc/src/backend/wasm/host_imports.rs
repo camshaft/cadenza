@@ -561,7 +561,8 @@ pub(super) fn host_op_comp_functype(
             HostParam::Result(_)
             | HostParam::ResultScalar(..)
             | HostParam::ResultRecord(..)
-            | HostParam::ResultTuple(..) => {
+            | HostParam::ResultTuple(..)
+            | HostParam::ResultList(_) => {
                 let cref = list_param_crefs
                     .get(i)
                     .cloned()
@@ -691,6 +692,7 @@ pub(super) fn build_host_result_types(
                     | host::HostParam::ResultScalar(..)
                     | host::HostParam::ResultRecord(..)
                     | host::HostParam::ResultTuple(..)
+                    | host::HostParam::ResultList(_)
             ) && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
             {
                 per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
@@ -1116,7 +1118,8 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::Result(_)
         | host::HostParam::ResultScalar(..)
         | host::HostParam::ResultRecord(..)
-        | host::HostParam::ResultTuple(..) => None,
+        | host::HostParam::ResultTuple(..)
+        | host::HostParam::ResultList(_) => None,
     }
 }
 

@@ -265,6 +265,21 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   component-validation failure; this bit once when a codemod dropped `ResultRecord` from that `matches!`). NOT the
   cursor pre-scan / `set_needs_memory`. REMAINING (result family): a compound/float tuple element; a record with a
   compound field; `result<list,enum>`; `result<_, variant>`.
+- **[emit, MEM-path] a top-level `result<list<scalar>, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 195/196).**
+  The list-Ok sibling of the Bytes-Ok result: a new `HostParam::ResultList(err-cases)` (detector
+  `result_list_enum`, admitting a `list<T>` whose ELEMENT is a scalar + a payloadless-enum Err; a `list<u8>` Ok is
+  `Bytes` = `result_bytes_enum`'s job, and a `list<u8>` arg type is `Ty::Bytes` not `Ty::List` so this never sees
+  it). It flattens to the SAME 3 slots as the Bytes result — `(disc:i32, ptr/errdisc:i32, count/0:i32)` — but Ok
+  MARSHALS the value-heap list into `mem` (`emit_result_list_arg_reg_flatten` → `emit_list_arg_marshal`) instead
+  of a rope copy, giving `(outer-ptr, count)`; Err gives `(err-enum-disc, 0)`. UNLIKE the register-only
+  scalar/record/tuple results, this DOES need `mem` — `set_needs_memory` (grouped with the Bytes `Result`) + the
+  emit.rs cursor pre-scan both admit it. SHAPE 195 (Ok `#list(3 4 5)`, core `(param i32 i32 i32)`) + 196 (Err, `(err
+  disc, 0)`, live-objects=0 confirms no list leak on Err). Widened in LOCKSTEP: classifier, `first_unrepresentable_
+  host_op`'s `arg_is_boundary_result_list`, emit dispatch (+ cursor + reclaim), the emit.rs cursor pre-scan,
+  `collect_used_ops` (`sum-disc`/`sum-payload` + `vec-len`/`vec-get` + `collect_list_elem_ops` + `drop`), `serialize`
+  (3 i32, same as Bytes), `set_needs_memory`, and `host_imports` (all five `Result*` arms). REMAINING (result
+  family): a compound list element (`result<list<record/tuple/bytes>,enum>`); a compound/float tuple element; a
+  record with a compound field; `result<_, variant>`.
 - **[emit, register-path] a top-level `option<variant>` host-op ARG — ✅ DONE (SHAPE 167/168).** The option
   payload is a scalar-payload `variant`: `option_arg_crosses` now admits it, and `emit_option_reg_flatten`'s
   variant branch flattens the value-heap option to `(opt-disc, var-disc, payload-join)` = the option disc + the

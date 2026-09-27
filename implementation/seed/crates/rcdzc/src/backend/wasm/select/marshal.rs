@@ -1652,6 +1652,73 @@ pub(super) fn emit_result_tuple_arg_reg_flatten(
     Ok(())
 }
 
+/// Marshal a top-level value-heap `result<list<scalar>, enum>` host argument whose handle is in `result_slot`
+/// into the canonical `(disc:i32, ptr/errdisc:i32, count/0:i32)` core-slot flatten the built-in
+/// `result<list<T>, err-enum>` param lowers to, pushing the three values. The list-Ok twin of
+/// `emit_result_arg_reg_flatten` (the Bytes-Ok result): branch on the value-heap Result sum's disc (Ok=0 declared
+/// first / Err≠0, decl order = the component result disc). Ok → the payload list is MARSHALLED into `mem` at the
+/// running `cursor` by `emit_list_arg_marshal` (an outer `count`-slot array, each element inline), which leaves
+/// `(outer-ptr, count)` on the stack → captured into `(p0, p1)`; Err → `(err-enum-disc, 0)`. `BlockType` is
+/// SINGLE-value, so the arms SIDE-EFFECT into scratch and the 3 values are pushed AFTER the `if`. `elem` is the
+/// list element `Ty`, `elem_wit` its declared WIT (both threaded to `emit_list_arg_marshal`). `cursor` is the
+/// running `mem` write slot; `work_base` the first free scratch slot.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_result_list_arg_reg_flatten(
+    db: &mut Db,
+    result_slot: u32,
+    elem: &Ty,
+    elem_wit: Option<&crate::wit_world::WitType>,
+    cursor: u32,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let disc = work_base;
+    let p0 = work_base + 1;
+    let p1 = work_base + 2;
+    let list_slot = work_base + 3;
+    for s in [disc, p0, p1, list_slot] {
+        scratch_ty.insert(s, ValType::I32);
+    }
+    *high = (*high).max(work_base + 4);
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component result disc, decl order Ok=0)
+    out.push(Lir::LocalSet(disc));
+    out.push(Lir::LocalGet(disc));
+    out.push(Lir::If(BlockType::Empty)); // disc != 0 → Err
+    // Err arm: p0 = the err enum's disc, p1 = 0.
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [err enum handle]
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [err enum disc]
+    out.push(Lir::LocalSet(p0));
+    out.push(Lir::ConstI32(0));
+    out.push(Lir::LocalSet(p1));
+    out.push(Lir::Else); // disc == 0 → Ok
+    // Ok arm: marshal the payload list into `mem` at the cursor → `(ptr, count)` captured into (p0, p1).
+    out.push(Lir::LocalGet(result_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [list handle]
+    out.push(Lir::LocalSet(list_slot));
+    emit_list_arg_marshal(
+        db,
+        elem,
+        elem_wit,
+        list_slot,
+        cursor,
+        work_base + 4,
+        high,
+        scratch_ty,
+        out,
+    )?; // pushes (outer-ptr, count)
+    out.push(Lir::LocalSet(p1)); // count (stack top)
+    out.push(Lir::LocalSet(p0)); // ptr
+    out.push(Lir::End);
+    out.push(Lir::LocalGet(disc)); // push the 3 flattened core values
+    out.push(Lir::LocalGet(p0));
+    out.push(Lir::LocalGet(p1));
+    Ok(())
+}
+
 /// Marshal a top-level value-heap `option<scalar>` host argument whose handle is in `var_slot` into the
 /// canonical `(disc:i32, payload)` core-slot flatten the built-in `option<T>` param lowers to, pushing the two
 /// values onto the operand stack. The register twin of the `RecordFieldAbi::Option` field flatten (the
