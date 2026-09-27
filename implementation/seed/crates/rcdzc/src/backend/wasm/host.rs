@@ -128,6 +128,8 @@ pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::Option(payload) => record_field_abi_reaches_bytes(payload),
         // A `variant` with only SCALAR payloads (this increment's scope) never reaches `(list u8)`.
         RecordFieldAbi::Variant(_) => false,
+        // A payload-less `enum` is a bare disc — never reaches `(list u8)`.
+        RecordFieldAbi::Enum(_) => false,
     }
 }
 
@@ -150,6 +152,8 @@ pub fn record_field_abi_needs_memory(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::Option(payload) => record_field_abi_needs_memory(payload),
         // A `variant` with only SCALAR payloads flattens to `(disc, scalar)` core slots — no memory.
         RecordFieldAbi::Variant(_) => false,
+        // A payload-less `enum` flattens to a single `i32` disc — no memory.
+        RecordFieldAbi::Enum(_) => false,
     }
 }
 
@@ -214,6 +218,12 @@ pub enum RecordFieldAbi {
     /// the guest branches on the value-heap sum's disc (Some payload → unbox; nullary → 0). A payload case with
     /// a `Bytes`/compound payload, or MIXED payload widths, is a later increment.
     Variant(Vec<(String, Option<AbiValType>)>),
+    /// A payload-less `enum` field (a `Sum` whose every variant is nullary) — crosses as a component `enum`
+    /// DEFINED type, ONE `i32` core slot (the discriminant, in declaration = discriminant order). The guest
+    /// reads the value-heap sum's `sum-disc` (a payloadless enum's in-guest rep is a bare disc) and writes it
+    /// inline — no payload, no `mem`. Carries the case names (kebab, declaration order). The nested (record
+    /// FIELD) analogue of the top-level [`HostParam::Enum`] arg.
+    Enum(Vec<String>),
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -515,8 +525,15 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                     err_is_variant: false,
                 });
             }
-            // A general `variant { c0, c1(scalar), … }` field (not option/result-shaped) with uniform scalar
-            // payloads — the `variant` DEFINED type + the `(disc, payload)` canonical flatten.
+            // A payload-less `enum` field (a `Sum` all of whose variants are nullary) — the `enum` DEFINED type
+            // + a single `i32` disc slot. Checked before the `variant` arm (an enum has no payload case, so
+            // `variant_scalar_payload_cases` returns None for it anyway, but naming it explicitly documents the
+            // shape). The nested analogue of the top-level enum arg (`HostParam::Enum`).
+            if let Some(cases) = enum_cases(db, ty) {
+                return Some(RecordFieldAbi::Enum(cases));
+            }
+            // A general `variant { c0, c1(scalar), … }` field (not option/result/enum-shaped) with uniform
+            // scalar payloads — the `variant` DEFINED type + the `(disc, payload)` canonical flatten.
             variant_scalar_payload_cases(db, ty).map(RecordFieldAbi::Variant)
         }
     }

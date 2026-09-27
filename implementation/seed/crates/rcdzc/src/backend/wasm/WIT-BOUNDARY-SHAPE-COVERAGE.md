@@ -244,6 +244,16 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   variant-field>` ARG (173, `emit_option_reg_flatten`'s record branch → `emit_record_arg_marshal`'s variant-field
   arm). REMAINING variant gaps: a multi-payload variant case at the ARG register-flatten position, and a mixed
   int↔float / f32↔f64 single-payload variant (the canonical reinterpret join).
+- **[emit, ARG-side] a RECORD host-op ARG with a payload-less `enum` FIELD — ✅ DONE (SHAPE 174).** A
+  payload-less `enum` crossed only at the TOP-LEVEL arg (`HostParam::Enum`); nested in a record it declined
+  because `field_boundary_abi` had no enum arm. A new `RecordFieldAbi::Enum(cases)` (via `enum_cases`) makes
+  `is_boundary_record` accept the record; `flatten_record_field_abi` flattens it to ONE i32 disc, and
+  `record_field_cref` lays a nominal `enum` DEFINED+EXPORTED type in the record's instance-type (the nested
+  analogue of the top-level enum arg's type). The guest reads the value-heap sum's disc inline (the field rides
+  the scalar-unbox marshal path — a payloadless enum's in-guest rep is a bare disc). `record_field_abi_reaches_
+  bytes`/`_needs_memory` return false for it. This is ISOLATED to the record-field position: `option<enum>` /
+  `tuple<enum>` / `list<enum>` still decline (their element gates don't route through `field_boundary_abi`) —
+  REMAINING enum gaps for future ticks.
 - **[emit, ARG-side] record host-op ARG with a `list<record>` FIELD — ✅ DONE (SHAPE 155).** The
   record-element twin of SHAPE 31 (a `list<scalar>` field): `emit_record_arg_marshal`'s list-field arm runs
   `emit_list_arg_marshal` whose element writer (`emit_record_to_mem`) writes each record element in place; the

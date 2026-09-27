@@ -465,6 +465,14 @@ pub(super) fn record_field_cref(
             table.push(emit_cdef(&CDef::Variant(vcases)));
             CRef::Idx(var_def + 1)
         }
+        // A payload-less `enum` field: lay an `enum` DEFINED type (NOMINAL → the export-aware remap gives it
+        // define+export, like a record/variant) over its case names, and reference its EXPORT index. The
+        // nested analogue of the top-level enum arg's `enum` DEFINED+EXPORTED type.
+        host::RecordFieldAbi::Enum(cases) => {
+            let enum_def = base + 2 * table.len() as u32;
+            table.push(emit_cdef(&CDef::Enum(cases.clone())));
+            CRef::Idx(enum_def + 1)
+        }
     }
 }
 
