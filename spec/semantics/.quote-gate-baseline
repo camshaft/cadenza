@@ -7239,6 +7239,7 @@ pass	trm2 an export returns a one-entry Map (one reachable cell)
 pass	trm3 an export returns a BigInt built from the scalar param (one reachable cell)
 pass	trm4 an export returns an exact Rational from the scalar param (three reachable cells)
 pass	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
+pass	trn1 two `?`s NESTED across compound constructors (record + list inside a tuple) each short-circuit
 pass	trr3 expression-position `?`s as `#record` FIELD values hoist left-to-right and short-circuit
 pass	true is greater than false
 pass	true is not less than false

@@ -1186,6 +1186,40 @@
   (call main (: 0 Int64))
   (output (: -1 Int64)))
 
+(case
+  "trn1 two `?`s NESTED across compound constructors (record + list inside a tuple) each short-circuit"
+  (doc
+    "The recursive/compositional face of the compound-constructor descent: the `?`s are not siblings in one
+     container but live at DIFFERENT nesting depths — `(Ok #tuple(#record((= a (try r))) #list((try s))))`
+     under a `(Result (Tuple (Record (: a Int64)) (List Int64)) String)` boundary. The hoist descends the
+     outer `#tuple`, then into the `#record` field value and the `#list` element (via the recursive
+     `find_hoistable_try` + fixpoint), lifting BOTH `?`s to nested boundary `let`s in evaluation order — the
+     record's `?` (first tuple element) before the list's `?` (second). Both Ok → tuple `({a=3}, [4])`,
+     read as `3 + len[4] = 4`; the FIRST failing `?` short-circuits `mk` to its Err (mapped to -1), leaving
+     the later one unevaluated (k=1: the list's Err; k=0: the record's Err). Verified leak-clean
+     (live-objects 0 every path). Pins that the list/tuple/set/record element-`?` descent COMPOSES through
+     arbitrary nesting, not just one level.")
+  (input
+    (do
+      (def
+        (mk (: r (Result Int64 String)) (: s (Result Int64 String)))
+        (:
+          (Ok #tuple(#record((= a (try r))) #list((try s))))
+          (Result (Tuple (Record (: a Int64)) (List Int64)) String)))
+      (def
+        (main (: k Int64))
+        (match
+          (mk (if (> k 0) (Ok 3) (Err "a")) (if (> k 1) (Ok 4) (Err "b")))
+          ((Ok t) (+ (. (. t 0) a) (List.len (. t 1))))
+          ((Err _e) -1)))
+      (export main)))
+  (call main (: 2 Int64))
+  (output (: 4 Int64))
+  (call main (: 1 Int64))
+  (output (: -1 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
 ; trx1: try-unwind THROUGH a handle whose LIST seed is read by a MATCH-shaped arm, with a leading
 ; tick — the four-factor conjunction (list seed x match-in-arm x pre-try perform x try early-return).
 ; FIXED (v-effects): previously REJECTED with `CDZ0101: unbound name #seed<n>` — under this conjunction
