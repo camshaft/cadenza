@@ -85,6 +85,9 @@ pub mod invariant_establish;
 // `(quote …)` reification — a quote rewritten to the `Ast` constructor application that BUILDS its value
 // (`(quote 42)` -> `(Ast.Int 42)`), so a quote result and a hand-built `Ast.*` value are one thing.
 pub mod quote;
+// Pre-resolution desugar of a two-form `(do (def x (try e)) body)` into the equivalent
+// `(let ((x (try e))) body)`, so a runtime-`?` do-def uses the inline-robust `let` lowering path.
+pub mod try_desugar;
 // `(eval AST)` desugar — the INVERSE of quote reification: reconstruct the source form an `Ast` value
 // denotes and splice it in, so `(eval (quote (+ 1 2)))` folds to `3` through the ordinary path.
 pub mod eval_ast;
