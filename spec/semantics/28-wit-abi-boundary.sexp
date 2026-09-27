@@ -6611,3 +6611,29 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a record host-op ARG whose FIELD is a list<record{a}> marshals the nested list of records into shared mem"
+  (doc
+    "SHAPE 155 (v-wit-boundary) — a record host-op arg (`probe.push : func(record{n: s64, xs: list<record{a:
+           s64}>}) -> s64)`) whose FIELD is a `list<record>` — the record-element twin of SHAPE 31 (a list<s64>
+           field). `emit_record_arg_marshal`'s list-field arm runs `emit_list_arg_marshal` on the field's List
+           handle, and its element writer (`emit_record_to_mem`) writes each record element IN PLACE into the
+           backing array at the running cursor; the record flattens to `(n: i64, xs_ptr: i32, xs_count: i32)` = 3
+           core slots. The `field_boundary_abi` element recursion (list → record) already builds the component
+           `(list (record …))` field type, and the marshal + `collect_record_field_ops` recurse it in lockstep.
+           run() builds {n: 7, xs: [{a: 1}, {a: 2}]}, performs probe.push, returns the stub 55. Pins the
+           record-field list-of-records path (SHAPE 31 covered only a list<scalar> field).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= n (s64)) (= xs (list (record (= a (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: n Int64) (: xs (List (Record (: a Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push #record((= n 7) (= xs #list(#record((= a 1)) #record((= a 2))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
