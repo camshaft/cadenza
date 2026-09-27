@@ -79,6 +79,45 @@ The kickoff/watchdog TICK is currently hardcoded cadenza framing ("cargo xtask f
 Generalize it to per-role/per-target: the tick recipe comes from the role + the target adapter, so a
 foreign-repo agent gets a correct tick natively instead of overriding it in prose (as `perf-agent` does now).
 
+### Concrete driver: off-tree daemon agents (capmesh cluster) — the FIRST live multi-repo need (2026-09-27)
+
+The `dcquic-perf` agent proved a fleet agent CAN drive a non-cadenza repo. The **capmesh cluster**
+(`v-capmeshd`, `v-nmidid`, `v-surfaced`) is now the first case that HITS the gap this design closes: they
+work OFF-TREE in the operator's own `camshaft/capmeshd` repo (`~/Projects/camshaft/capmeshd`), landing via
+THAT repo's GitHub PRs — not cadenza trunk (concierge note 2026-09-27). Two concrete symptoms of the
+not-yet-built multi-repo model:
+
+1. **No per-agent worktree in the external repo → collision.** These agents are registered in cadenza's
+   central `registry.json` with CADENZA worktree paths (`.claude/worktrees/v-capmeshd`, branch
+   `fleet/v-capmeshd`) — the registry has NO notion of their external repo, so nothing minted them an
+   isolated worktree of `capmeshd`. Pointed at the single shared `capmeshd` checkout, they shared one
+   HEAD/index/working-tree and COLLIDED (a commit landed atop another's in-progress branch; recovered
+   push-by-sha, no data lost). They SELF-SERVED separate `git worktree add` dirs to isolate — the exact
+   `ensure_worktree(target)` the design plans, done by hand.
+2. **Reboot-fragile.** Those self-served external worktrees are just on-disk dirs the fleet does not track;
+   `fleet up` reconstructs only cadenza worktrees from the registry, so on reboot they are NOT recreated.
+
+This is the design's `fleet up <target>` "mint its worktree off that repo's base" + decentralized-roster
+reconciliation, made concrete. **Sequencing FORK (needs an operator/concierge steer — flagged):**
+
+- **(a) Minimal-now:** add an optional `repo` field to the CENTRAL registry `Agent` (default `None` =
+  cadenza, backward-compatible); `ensure_worktree` cuts the worktree off `agent.repo` when set; `fleet up`
+  reconstructs it. Fast, additive, unblocks capmesh reboot-safety immediately. **But it is the WRONG
+  DIRECTION vs this design's end-state:** the plan is DECENTRALIZED per-repo rosters (each target repo
+  carries its own checked-in roster; the central `registry.json` becomes pure runtime state), NOT external
+  agents bolted into cadenza's central registry with a `repo` field. So (a) is likely THROWAWAY the P2
+  adapter reworks.
+- **(b) Fold into P2:** build the off-tree-worktree need as part of the P2 decentralized-roster +
+  `ensure_worktree(target)` + role-aware-tick work — the correct end-state, no throwaway. But P2 is
+  operator-gated behind the dcQUIC perf-push, so capmesh stays on the hand-served-worktree interim pattern
+  until then.
+
+Recommendation: prefer (b) — build it once, correctly, as the P2 slice — UNLESS the operator wants capmesh
+reboot-safety before P2 is greenlit, in which case (a) is an acceptable scoped stopgap knowing it is
+interim. Not urgent either way: the immediate collision self-resolved and the hand-served worktrees work
+until a reboot. **This entry is the standing capture so the requirement is not lost; the operator's
+sequencing answer decides which slice v-fleet-tooling builds.**
+
 ## Phased plan (live-fleet-safe: ~33 agents + dcquic-perf must not break)
 
 - **P1 — Scaffold (non-disruptive):** create the fleet repo; lift `fleet.rs` into a standalone `fleet`
