@@ -1327,6 +1327,136 @@ pub(super) fn emit_variant_reg_flatten(
     Ok(())
 }
 
+/// The canonical `wit_ctype::flatten_variant` reinterpret join of a set of core payload valtypes (the REGISTER
+/// join slot for a mixed int/float variant): `None` (empty); equal keeps; a SAME-WIDTH int/float pairs to the
+/// int (`join(i32,f32)=i32`, `join(i64,f64)=i64`); anything else (cross-width int/float, `f32`↔`f64`, `i32`↔`i64`)
+/// widens to `i64`. MUST mirror `serialize`'s `VariantScalarsMixed` flatten so the guest push matches the import's
+/// core slot; when a float is mixed in, the result is always an INTEGER slot (`i32`/`i64`).
+fn reinterpret_join_vt(slots: impl Iterator<Item = ValType>) -> Option<ValType> {
+    let mut join: Option<ValType> = None;
+    for vt in slots {
+        join = Some(match join {
+            None => vt,
+            Some(prev) if prev == vt => vt,
+            Some(ValType::I32) if vt == ValType::F32 => ValType::I32,
+            Some(ValType::F32) if vt == ValType::I32 => ValType::I32,
+            Some(ValType::I64) if vt == ValType::F64 => ValType::I64,
+            Some(ValType::F64) if vt == ValType::I64 => ValType::I64,
+            _ => ValType::I64,
+        });
+    }
+    join
+}
+
+/// Emit the coercion that turns a payload value of runtime valtype `rt` (the type its unbox op leaves on the
+/// stack: `get-int`→`i64`, `get-bool`→`i32`, `get-float`→`f64`, `get-float32`→`f32`) into the variant's join
+/// slot `slot` — a narrow int wraps / a bool extends, a float BIT-REINTERPRETS into the integer slot (the
+/// canonical variant `store_flat` coercion): `i32.reinterpret_f32` into an `i32` slot, `i64.reinterpret_f64` into
+/// an `i64` slot, and an `f32` into an `i64` slot reinterprets to `i32` then zero-extends. Equal types are a
+/// no-op. (`f64`→`i32` / `*`→float never occur: a mixed-in float forces the join to `≥ i64`; a same-width
+/// float/int pairs to the int.)
+fn emit_scalar_coerce_into_slot(rt: ValType, slot: ValType, out: &mut Emit) {
+    match (rt, slot) {
+        (a, b) if a == b => {}
+        (ValType::I64, ValType::I32) => out.push(Lir::I32WrapI64),
+        (ValType::I32, ValType::I64) => out.push(Lir::I64ExtendI32U),
+        (ValType::F64, ValType::I64) => out.push(Lir::I64ReinterpretF64),
+        (ValType::F32, ValType::I32) => out.push(Lir::I32ReinterpretF32),
+        (ValType::F32, ValType::I64) => {
+            out.push(Lir::I32ReinterpretF32);
+            out.push(Lir::I64ExtendI32U);
+        }
+        // Any other pair is unreachable for a reinterpret-join variant slot (the join lattice never yields a
+        // float slot when a float is mixed in, and `f64`→`i32` can't arise); leave the value as-is defensively.
+        _ => {}
+    }
+}
+
+/// Marshal a top-level value-heap `variant{nullary…, scalar-case(s)}` whose payloads MIX int with float (or `f32`
+/// with `f64`), handle in `var_slot`, into the canonical `(disc:i32, join)` core flatten — the REINTERPRET-join
+/// twin of [`emit_variant_reg_flatten`] (whose single-read fast path cannot serve payload cases with DIFFERENT
+/// unbox ops). Reads the guest sum disc (= the component disc, decl order), then a PER-CASE `if (disc == pd)`
+/// chain: each payload case unboxes with ITS own read op and coerces the value into the shared join slot
+/// (`emit_scalar_coerce_into_slot` — a float bit-reinterprets); a nullary/default case pushes the join-width zero.
+/// Pushes `(disc, join)`. All-scalar → touches no `mem`. `work_base..work_base+2` is scratch.
+pub(super) fn emit_variant_mixed_scalar_arg_reg_flatten(
+    db: &mut Db,
+    var_slot: u32,
+    fty: &Ty,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let cases = crate::backend::wasm::host::variant_mixed_scalar_payload_cases(db, fty)
+        .ok_or_else(|| Reject::decline("a variant arg is not a mixed int/float scalar variant"))?;
+    // The payload cases in declaration (= discriminant) order, with each payload's own Ty (for the read op) and
+    // core valtype (for the join). A nullary case (payload `None`) contributes no join slot.
+    let payload: Vec<(i32, Ty, ValType)> = {
+        let mut v = Vec::new();
+        for (disc, (_, p)) in cases.iter().enumerate() {
+            if p.is_some() {
+                let pty = variant_payload_ty_at(db, fty, disc as u32).ok_or_else(|| {
+                    Reject::decline("a variant payload type could not be resolved")
+                })?;
+                let vt = valtype_of(&pty)
+                    .ok_or_else(|| Reject::decline("a variant payload has no valtype"))?;
+                v.push((disc as i32, pty, vt));
+            }
+        }
+        v
+    };
+    let pv = reinterpret_join_vt(payload.iter().map(|(_, _, vt)| *vt))
+        .ok_or_else(|| Reject::decline("a mixed-scalar variant has no payload case to join"))?;
+    let disc_out = work_base;
+    let pval = work_base + 1;
+    scratch_ty.insert(disc_out, ValType::I32);
+    scratch_ty.insert(pval, pv);
+    *high = (*high).max(work_base + 2);
+    let zero = match pv {
+        ValType::I64 => Lir::ConstI64(0),
+        ValType::F64 => Lir::F64ConstBits(0),
+        ValType::F32 => Lir::F32ConstBits(0),
+        _ => Lir::ConstI32(0),
+    };
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component disc, decl order)
+    out.push(Lir::LocalSet(disc_out));
+    // A PER-CASE `if (disc == pd) { unbox+coerce } else …` chain — each payload case has its OWN read op, so a
+    // single shared read (as `emit_variant_reg_flatten`) will not do. The innermost else zero-fills (a nullary case).
+    for (pd, pty, rvt) in &payload {
+        out.push(Lir::LocalGet(disc_out));
+        out.push(Lir::ConstI32(*pd));
+        out.push(Lir::I32Eq);
+        out.push(Lir::If(BlockType::Empty));
+        let read = get_op_ty(db, pty)?
+            .ok_or_else(|| Reject::decline("a variant payload has no unbox op"))?;
+        // The runtime valtype the read op leaves on the stack (NOT the declared width — `get-int` normalizes
+        // every integer to `i64`), which `emit_scalar_coerce_into_slot` then coerces into the join slot.
+        let runtime_vt = match read {
+            OP_GET_INT => ValType::I64,
+            OP_GET_BOOL => ValType::I32,
+            OP_GET_FLOAT => ValType::F64,
+            OP_GET_FLOAT32 => ValType::F32,
+            _ => *rvt,
+        };
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+        out.push(Lir::CallImport(read));
+        emit_scalar_coerce_into_slot(runtime_vt, pv, out);
+        out.push(Lir::LocalSet(pval));
+        out.push(Lir::Else);
+    }
+    out.push(zero); // innermost else: a nullary case → the join-width zero
+    out.push(Lir::LocalSet(pval));
+    for _ in &payload {
+        out.push(Lir::End);
+    }
+    out.push(Lir::LocalGet(disc_out)); // push (disc, payload-join)
+    out.push(Lir::LocalGet(pval));
+    Ok(())
+}
+
 /// Marshal a top-level value-heap `result<list<u8>, enum>` host argument whose handle is in `result_slot` into
 /// the canonical `(disc:i32, i32, i32)` core-slot flatten the built-in `result<list<u8>, <enum>>` param lowers
 /// to, pushing the three values onto the operand stack. The register twin of the `result<list<u8>, enum>` FIELD

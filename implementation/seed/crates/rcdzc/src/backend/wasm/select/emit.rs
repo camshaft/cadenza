@@ -6990,6 +6990,32 @@ pub(super) fn emit(
                             out.push(Lir::CallImport(OP_DROP));
                         }
                     }
+                    // A bare scalar-payload VARIANT argument whose payloads MIX int with float (or f32 with f64):
+                    // decomposed into `(disc, join)` via `emit_variant_mixed_scalar_arg_reg_flatten` (per-case
+                    // unbox + reinterpret-coerce into the join slot). Disjoint from the uniform scalar-variant arm
+                    // above (`variant_scalar_payload_cases` declined the mix); all-scalar → no cursor. Same
+                    // pure-borrow reclaim as the uniform variant (the flatten borrows the disc + payload).
+                    _ if crate::backend::wasm::host::variant_mixed_scalar_payload_cases(
+                        db, &at,
+                    )
+                    .is_some() =>
+                    {
+                        let var_slot = arg_base.max(*high);
+                        scratch_ty.insert(var_slot, ValType::I32);
+                        *high = (*high).max(var_slot + 1);
+                        emit(db, arg, slots, var_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(var_slot));
+                        let work_base = *high;
+                        emit_variant_mixed_scalar_arg_reg_flatten(
+                            db, var_slot, &at, work_base, high, scratch_ty, out,
+                        )?;
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(var_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
                     // A top-level `variant{nullary…, bytes-case(s)}` argument: the guest emits the value-heap
                     // variant HANDLE into a slot, then decomposes it into the canonical `(disc, i32, i32)`
                     // register-flatten via `emit_variant_bytes_arg_reg_flatten` (the arbitrary-disc twin of the

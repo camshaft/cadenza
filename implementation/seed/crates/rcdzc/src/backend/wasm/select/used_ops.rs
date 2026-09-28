@@ -1466,6 +1466,34 @@ pub(super) fn collect_used_ops_into_seen(
                         }
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
+                    // A bare scalar-payload VARIANT arg whose payloads MIX int with float is decomposed by
+                    // `emit_variant_mixed_scalar_arg_reg_flatten`: `sum-disc`, `sum-payload`, and — because each
+                    // payload case has its OWN read op — EVERY payload case's unbox op (not just the first, unlike
+                    // the uniform variant arm). Declare them all (else the marshal's `CallImport` resolves to
+                    // u32::MAX → an invalid module), then descend. Disjoint from the uniform scalar-variant arm.
+                    at if !peer_bound
+                        && crate::backend::wasm::host::variant_mixed_scalar_payload_cases(
+                            db, &at,
+                        )
+                        .is_some() =>
+                    {
+                        out.insert(OP_SUM_DISC);
+                        out.insert(OP_SUM_PAYLOAD);
+                        out.insert(OP_DROP);
+                        if let Some(cases) =
+                            crate::backend::wasm::host::variant_mixed_scalar_payload_cases(db, &at)
+                        {
+                            for (cd, p) in cases.iter().enumerate() {
+                                if p.1.is_some()
+                                    && let Some(pty) = variant_payload_ty_at(db, &at, cd as u32)
+                                    && let Ok(Some(read)) = get_op_ty(db, &pty)
+                                {
+                                    out.insert(read);
+                                }
+                            }
+                        }
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     // A top-level `variant{…, bytes-case(s)}` arg is decomposed by
                     // `emit_variant_bytes_arg_reg_flatten`: `sum-disc` (the variant disc), and on a Bytes case
                     // `sum-payload` + `bytes-len`/`bytes-get` (the payload rope copy into `mem`). Declare them

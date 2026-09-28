@@ -530,7 +530,9 @@ pub(super) fn host_op_comp_functype(
             // func uses must be exported, like a record/enum) by the SAME `nominal_type_idx` — an op carries
             // at most one nominal param type this slice. Its `(disc, payload)` crosses as the flattened core
             // slots (serialize.rs); the defined type is built by `build_host_group` (the variant_params branch).
-            HostParam::Variant(_) => encode::uleb128(nominal_type_idx as u64, &mut param_items),
+            HostParam::Variant(_) | HostParam::VariantScalarsMixed(_) => {
+                encode::uleb128(nominal_type_idx as u64, &mut param_items)
+            }
             // A top-level `option<scalar>` param references its built-in `(option <payload>)` DEFINED type by
             // the per-param `CRef` the caller computed (`build_host_result_types`), like a `list<T>` param —
             // an `option` is STRUCTURAL (anonymous-allowed), NOT nominal, so it rides the same per-param
@@ -872,7 +874,11 @@ pub(super) fn build_host_group(
         .iter()
         .flat_map(|h| &h.params)
         .filter_map(|p| match p {
-            host::HostParam::Variant(cases) => Some(cases),
+            // VariantScalarsMixed rides the SAME nominal `variant` DEFINED type as Variant (its cases are the
+            // same `(name, Option<scalar>)` shape; `comp_byte` expresses the f32/f64 payloads) — collect both.
+            host::HostParam::Variant(cases) | host::HostParam::VariantScalarsMixed(cases) => {
+                Some(cases)
+            }
             _ => None,
         })
         .collect();
@@ -984,11 +990,12 @@ pub(super) fn build_host_group(
         ));
         let variant_export = base + 1;
         for (i, hi) in group.iter().enumerate() {
-            if hi
-                .params
-                .iter()
-                .any(|p| matches!(p, host::HostParam::Variant(_)))
-            {
+            if hi.params.iter().any(|p| {
+                matches!(
+                    p,
+                    host::HostParam::Variant(_) | host::HostParam::VariantScalarsMixed(_)
+                )
+            }) {
                 op_nominal[i] = variant_export;
             }
         }
@@ -1138,6 +1145,7 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::Enum(_)
         | host::HostParam::List(_)
         | host::HostParam::Variant(_)
+        | host::HostParam::VariantScalarsMixed(_)
         | host::HostParam::VariantBytes(_)
         | host::HostParam::VariantList(_)
         | host::HostParam::VariantTuple(..)

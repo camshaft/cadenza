@@ -131,9 +131,22 @@ pub enum HostParam {
     /// [`variant_mixed_join_slots`]). The guest marshals it via `select::emit_variant_mixed_arg_reg_flatten`
     /// (branch per case: scalar → unbox into slot 0 coerced to the joined width, rest 0; bytes → rope-copy at the
     /// cursor → `(ptr,len)`; nullary → zero). Crosses as the declared `variant` DEFINED type (structural WIT).
-    /// Carries each payload case's `(disc, kind)`. A list/tuple/record payload case, or an int↔float scalar mix,
-    /// is a later increment.
+    /// Carries each payload case's `(disc, kind)`. A list/tuple/record payload case is a later increment; an
+    /// int↔float scalar mix is [`VariantScalarsMixed`](HostParam::VariantScalarsMixed).
     VariantMixed(Vec<(i32, VariantPayloadKind)>),
+    /// A bare `variant{nullary…, scalar-case(s)}` param whose scalar payload cases MIX an integer with a float
+    /// (or `f32` with `f64`) — the canonical REINTERPRET-JOIN tagged union the uniform-join
+    /// [`Variant`](HostParam::Variant) declines. Its core form is the canonical variant flatten `(disc:i32,
+    /// join)` where `join` is `wit_ctype::flatten_variant`'s reinterpret join of the payload slots (a same-width
+    /// int/float → that int width, e.g. `join(s64,f64)=i64`; anything else → `i64`), always an INTEGER slot when
+    /// a float is mixed in. The guest marshals it via `select::emit_variant_mixed_scalar_arg_reg_flatten` (branch
+    /// per payload case: unbox with THAT case's read op, then COERCE the runtime value into the join slot — a
+    /// float bit-reinterprets [`i64.reinterpret_f64`/`i32.reinterpret_f32`], a narrow int wraps/extends; a nullary
+    /// case pushes the join-width zero). All-scalar → NO `mem`. Crosses as the declared `variant` DEFINED type via
+    /// the SAME nominal-`AbiValType` builder as [`Variant`](HostParam::Variant) (`comp_byte` expresses f32/f64), so
+    /// it carries the FULL case list `(name, Option<scalar>)` in declaration order and rides Variant's host_imports
+    /// nominal path. A `Bytes`/list/tuple/record payload case is a different flavor (`VariantBytes`/`VariantMixed`/…).
+    VariantScalarsMixed(Vec<(String, Option<AbiValType>)>),
     /// A bare `option<scalar>` param (the top-level position, not nested in a record/list) — crosses as the
     /// built-in WIT `option<T>` type (NOT a nominal `variant` DEFINED type; a `variant{none,some(T)}` substitute
     /// fails the structural component-link match against a host declaring `option`), referenced by a per-param
@@ -648,6 +661,40 @@ pub fn variant_scalar_payload_cases(
     db: &mut Db,
     ty: &Ty,
 ) -> Option<Vec<(String, Option<AbiValType>)>> {
+    let cases = variant_all_scalar_cases(db, ty)?;
+    // REJECT a payload set that mixes int with float, or f32 with f64 — those need the canonical reinterpret
+    // join lattice, handled by the sibling [`variant_mixed_scalar_payload_cases`] / `HostParam::VariantScalarsMixed`.
+    // All-integer widths (incl bool/char, which share the i32 slot) join cleanly to the widest int slot, and a
+    // uniform float is fine — those stay on this uniform-join scalar-variant path.
+    if scalar_cases_have_reinterpret_mix(&cases) {
+        return None;
+    }
+    Some(cases)
+}
+
+/// Every payload case of a scalar-payload `variant` shares one core-join family (all-int or uniform-float), so
+/// `true` iff the payload abis MIX an integer with a float, or an `f32` with an `f64` — the case the uniform
+/// [`variant_scalar_payload_cases`] declines and the reinterpret-join [`variant_mixed_scalar_payload_cases`]
+/// claims. Nullary cases (payload `None`) contribute nothing.
+fn scalar_cases_have_reinterpret_mix(cases: &[(String, Option<AbiValType>)]) -> bool {
+    let (mut has_int, mut has_f32, mut has_f64) = (false, false, false);
+    for pv in cases.iter().filter_map(|(_, p)| *p) {
+        match pv {
+            AbiValType::F32 => has_f32 = true,
+            AbiValType::F64 => has_f64 = true,
+            _ => has_int = true,
+        }
+    }
+    (has_int && (has_f32 || has_f64)) || (has_f32 && has_f64)
+}
+
+/// The case list of a scalar-payload `variant` boundary type WITHOUT the uniform-join restriction — a `Sum`
+/// that is NOT option-shaped ([`option_payload_ty`]) nor `result<Bytes,enum>` ([`result_bytes_enum`]), with AT
+/// LEAST ONE payload case, every case nullary or a SINGLE scalar payload (any int/float width). Returns
+/// `(kebab-case-name, Option<payload-scalar>)` per case in DECLARATION (= discriminant) order, else `None` (a
+/// payloadless enum, a `Bytes`/compound/multi-payload case). Shared by [`variant_scalar_payload_cases`] (which
+/// then rejects an int↔float / f32↔f64 mix) and [`variant_mixed_scalar_payload_cases`] (which requires it).
+pub fn variant_all_scalar_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(String, Option<AbiValType>)>> {
     use crate::backend::common::export_name::kebab_extern_name;
     let Ty::Sum { decl, .. } = ty.strip_nominal() else {
         return None;
@@ -666,7 +713,6 @@ pub fn variant_scalar_payload_cases(
             .collect()
     };
     let mut cases = Vec::with_capacity(variants.len());
-    let mut join: Option<AbiValType> = None;
     let mut any_payload = false;
     for (disc, (name, n)) in variants.into_iter().enumerate() {
         match n {
@@ -674,18 +720,6 @@ pub fn variant_scalar_payload_cases(
             1 => {
                 let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
                 let pv = abi_val_type(&pty)?; // a scalar payload only
-                // Admit MIXED payload widths as long as they JOIN cleanly: all-integer (incl bool/char, which
-                // share the i32 slot) join to the widest int slot, and a uniform float is fine. REJECT mixing
-                // int with float, or f32 with f64 — those need the canonical reinterpret join lattice (a later
-                // increment). The marshal computes the register join valtype + the memory max-natural width.
-                let is_float = |a: AbiValType| matches!(a, AbiValType::F32 | AbiValType::F64);
-                if let Some(prev) = join
-                    && prev != pv
-                    && (is_float(prev) || is_float(pv))
-                {
-                    return None;
-                }
-                join = Some(pv);
                 any_payload = true;
                 cases.push((name, Some(pv)));
             }
@@ -693,6 +727,22 @@ pub fn variant_scalar_payload_cases(
         }
     }
     any_payload.then_some(cases)
+}
+
+/// The case list of a scalar-payload `variant` whose payloads MIX an integer with a float (or `f32` with `f64`)
+/// — the canonical reinterpret-join tagged union (`HostParam::VariantScalarsMixed`). Same admission as
+/// [`variant_all_scalar_cases`] (every case nullary or one SCALAR payload, ≥1 payload, not option/result-shaped),
+/// but ONLY when the mix the uniform [`variant_scalar_payload_cases`] declines is present — so the two detectors
+/// are DISJOINT (a uniform-int / uniform-float variant stays on the scalar path). Returns `(kebab-case-name,
+/// Option<payload-scalar>)` per case in DECLARATION (= discriminant) order. The register-flatten join slot is the
+/// canonical `wit_ctype::flatten_variant` reinterpret join (a same-width int/float → that int width; anything
+/// else → `i64`); a float payload bit-reinterprets into the integer slot at marshal time.
+pub fn variant_mixed_scalar_payload_cases(
+    db: &mut Db,
+    ty: &Ty,
+) -> Option<Vec<(String, Option<AbiValType>)>> {
+    let cases = variant_all_scalar_cases(db, ty)?;
+    scalar_cases_have_reinterpret_mix(&cases).then_some(cases)
 }
 
 /// RESULT-SIDE ONLY: whether `ty` is a variant each of whose cases is nullary or carries ONE `leaf_liftable`
@@ -2165,6 +2215,17 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             variant_scalar_payload_cases(db, &at).unwrap(),
                         ));
                     }
+                    // A `variant{nullary…, scalar-case(s)}` arg whose payloads MIX int with float (or f32 with
+                    // f64) — the reinterpret-join tagged union the uniform `Variant` arm above declines (disjoint:
+                    // `variant_scalar_payload_cases` returns None for the mix, `variant_mixed_scalar_payload_cases`
+                    // returns None without it). Crosses as the declared `variant` DEFINED type via the SAME nominal
+                    // builder as `Variant` (`comp_byte` expresses f32/f64), flattening to `(disc, join)` with the
+                    // canonical reinterpret join. Marshalled by `emit_variant_mixed_scalar_arg_reg_flatten`.
+                    _ if !peer_bound && variant_mixed_scalar_payload_cases(db, &at).is_some() => {
+                        params.push(HostParam::VariantScalarsMixed(
+                            variant_mixed_scalar_payload_cases(db, &at).unwrap(),
+                        ));
+                    }
                     // A `variant{nullary…, bytes-case(s)}` arg — a variant whose payload cases each carry a
                     // `Bytes`/`String` (`list<u8>`). Crosses as the declared `variant` DEFINED type (laid
                     // structurally from the WIT), flattening to `(disc, ptr, len)` — the 3-slot Bytes shape a
@@ -3114,6 +3175,14 @@ pub fn first_unrepresentable_host_op(
             let arg_is_boundary_variant = allow_option_bytes
                 && !peer_bound
                 && variant_scalar_payload_cases(db, &at).is_some();
+            // A top-level scalar-payload variant whose payloads MIX int with float (or f32 with f64) crosses
+            // NATIVELY as the declared `variant` DEFINED type — the canonical REINTERPRET join (a float payload
+            // bit-reinterprets into the integer join slot; `select::emit_variant_mixed_scalar_arg_reg_flatten`;
+            // all-scalar → no `mem`). Disjoint from `arg_is_boundary_variant` (the uniform detector declines the
+            // mix). A `Bytes`/compound payload case is a different flavor, in lockstep with the classifier + marshal.
+            let arg_is_boundary_variant_scalars_mixed = allow_option_bytes
+                && !peer_bound
+                && variant_mixed_scalar_payload_cases(db, &at).is_some();
             // A top-level `variant{nullary…, bytes-case(s)}` arg crosses NATIVELY as the declared `variant`
             // DEFINED type — the guest flattens the value-heap variant to `(disc, ptr/0, len/0)` core slots
             // (`select::emit_variant_bytes_arg_reg_flatten`, the arbitrary-disc twin of the `result<list<u8>,
@@ -3206,6 +3275,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_enum
                 && !arg_is_boundary_list
                 && !arg_is_boundary_variant
+                && !arg_is_boundary_variant_scalars_mixed
                 && !arg_is_boundary_variant_bytes
                 && !arg_is_boundary_variant_list
                 && !arg_is_boundary_variant_tuple
