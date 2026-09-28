@@ -1817,6 +1817,102 @@ fn collect_nested_match_scrutinee_extractions_seen(
     }
 }
 
+/// Whether `id`'s subtree contains a `Core::Call` that CONSUMES a heap payload extracted off `outer_scrut` — an
+/// extraction (`SumPayload`/`Proj` chain rooting at the scrutinee; a match payload-binder reference IS such a
+/// `SumPayload`, core.rs:248) passed as arg `i` to a callee for which [`def_consumes_param`]`(callee, i)` holds.
+/// The node6xd escape: `main (match (mk..) ((Ok s) (drain s 3)))` — `s = SumPayload(mk-result)` is a heap Set
+/// passed to the CONSUMING user fn `drain` (`Set.remove s n` transforms `s` ⇒ `def_consumes_param(drain,0)`).
+/// A callee that only BORROWS the arg (`def_consumes_param` false) is EXCLUDED: reclaiming the producing husk
+/// would then orphan the extract-dup → a leak (leak-over-UAF decline), the BST-over-fire lesson generalized.
+fn arm_extraction_escapes_consuming_callee(
+    db: &mut Db,
+    id: StructId,
+    outer_scrut: StructId,
+    binder: Option<StructId>,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    if let Core::Call { callee, args } = core_of(db, id) {
+        for (i, &arg) in args.iter().enumerate() {
+            if is_heap_type(&type_of(db, arg))
+                && extraction_roots_at_scrutinee(db, arg, outer_scrut, binder)
+                && def_consumes_param(db, callee, i)
+            {
+                return true;
+            }
+        }
+    }
+    for c in core_child_ids(db, id) {
+        if arm_extraction_escapes_consuming_callee(db, c, outer_scrut, binder, seen) {
+            return true;
+        }
+    }
+    false
+}
+
+/// RECOGNIZER (v-core-opt-owned; node6xd sub-case — the CONSUMING-CALLEE producing-husk reclaim). PURE decision,
+/// DROP-ONLY (NO new dup — the escaping payload is ALREADY dup'd by the extract machinery; a fresh dup here would
+/// DOUBLE-dup → over-fire leak, the BST lesson). `true` ⟹ the PRODUCING husk (this owned scrutinee's shell)
+/// should be reclaimed: an extracted heap payload escapes into a downstream CONSUMER that manages the payload's
+/// own refcount, so only the husk's own reference leaks — reclaiming the husk cascades that reference away.
+///
+/// v-mem rctrace (node6xd k=1, leak 2): `main (match (mk..) ((Ok s) (drain s 3)))` — the extract DUPs `s`
+/// (node3) 1->2, `drain` CONSUMES its ref (2->1), leaving `s` at rc1 held by the never-reclaimed `(Ok s)` husk
+/// (node4) → husk + Set both leak. Fix = reclaim node4; its deep-drop cascade frees node3 (rc1->0). A pure LEAK
+/// (drain releases its ref BEFORE the producing drop by arm-body order), so the cascade-free is safe.
+///
+/// `true` iff the shared shell-reclaim floor holds (heap non-enum OWNED scrutinee, dead-after-destructure, not
+/// re-matched) AND an extraction off it escapes into a [`def_consumes_param`]-true callee arg. The OWNED gate is
+/// inherited from [`payload_escapes_to_consumer_dupable`] (a borrowed-source escape is excluded — the producing
+/// husk isn't reclaimed there, matching the drop side's stashed-I32). The DROP side ANDs stashed-I32.
+#[allow(dead_code)] // TEMP: inert until v-mem wires a DROP-ONLY producing-husk reclaim disjunct (no dup) + censuses node6xd -> 0.
+pub(crate) fn producing_husk_reclaim_consumed_callee_escape(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> bool {
+    if never_diverges
+        || !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+        || !scrutinee_dead_after_destructure(db, scrutinee, root)
+    {
+        return false;
+    }
+    // SUM-HUSK gate: the producing husk must be a discriminated-union (Result/Option/user-enum) box — node6xd's
+    // `(Ok s)` husk from a try-producing fn is the un-reclaimed node#6-nonlen gap. A TUPLE/RECORD producing box
+    // is reclaimed by other (already-working) machinery, so firing here would DOUBLE-reclaim it → double-free.
+    // v-mem's BST del-min main `(match (del-min t) (#tuple(m t2) …))` is exactly that trap: `t2` escapes into
+    // the consuming `inorder`, but the tuple husk is already clean — without this gate the recognizer FALSE-fired
+    // on it (the tuple-vs-sum distinction, confirmed by scrut_ty: node6xd = Ty::Sum, BST-main = Ty::Tuple).
+    if !matches!(scrut_ty.strip_nominal(), Ty::Sum { .. }) {
+        return false;
+    }
+    if !matches!(
+        heap_operand_ownership(db, scrutinee),
+        Ok(HandleOwnership::Owned)
+    ) {
+        return false;
+    }
+    let binder = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+        _ => None,
+    };
+    let mut leaves = Vec::new();
+    collect_cont_leaf_bodies(root, &mut leaves);
+    let mut seen = HashSet::new();
+    for body in leaves {
+        if arm_extraction_escapes_consuming_callee(db, body, scrutinee, binder, &mut seen) {
+            return true;
+        }
+    }
+    false
+}
+
 /// CLASSIFIER (v-core-opt-owned; the UNIFIED producing-side "payload escapes into a downstream consumer"
 /// recognizer — trnt1-inner). PURE decision, DUP-SIDE (ownership-UNGATED, leak-safe), the exact structural twin
 /// of [`matchsum_rebuild_moved_child_nodes`]: it returns the escaping payload-extraction node(s) to dup; the
