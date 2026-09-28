@@ -1915,6 +1915,35 @@
   (output (: 7 Int64))
   (live-objects 0))
 
+(case
+  "trae2 a `?`-bound bare-alias Result with a HEAP Err payload — KNOWN-LEAK (the S2 fence declines the equalize; must never TRAP)"
+  (doc
+    "The HEAP-ERROR sibling of trae1 — DELIBERATELY a KNOWN-LEAK, guarding the UAF boundary v-core-opt's
+     RED-review caught. `mk` returns the `?`-bound value bare over a `(Result Int64 Bytes)` boundary, so
+     the try-desugar FAILURE value re-wraps the error as a bare `SumPayload` VIEW of the scrutinee too
+     (runtime_try_failure_value, lower.rs:5007-5019) — NOT independently owned. If the (a) equalize fired
+     here it would deep-drop the scrutinee shell while the failure husk still holds that heap Bytes error
+     view → a double-free/UAF on the outer-Err short-circuit. The classifier S2 fence (v-core-opt
+     a99b600472: every failure SumNew payload must be SCALAR) DECLINES the equalize for a heap error, so
+     the pre-(a) leak persists (one cell on the k=0 outer-Err path) — a SAFE leak (leak-over-UAF). Pinned
+     known-leak to LOCK the fence: it must never silently start reclaiming (→ the UAF trap). Flips to
+     live-objects 0 only if the failure view is ALSO dup'd (the S2-relax follow-up). A SCALAR error is
+     trae1 (live-objects 0).")
+  (input
+    (do
+      (def (mk (: rr (Result (Result Int64 Bytes) Bytes)))
+        (: (do (def ir (try rr)) ir) (Result Int64 Bytes)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok (Ok 7)) (Err (Bytes.of #list((UInt8.of 9))))))
+          ((Ok v) v)
+          ((Err b) (Bytes.len b))))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64))
+  (call main (: 1 Int64))
+  (output (: 7 Int64))
+  (live-objects known-leak))
+
 ; trnt1 (TODO): the NESTED try `(try (try rr))` — a `?` whose OPERAND is itself a `?`. The desugar for
 ; this is known and small (inner-first hoisting in `find_hoistable_try`'s `(try e)` arm: descend the
 ; operand FIRST so `(try (try rr))` lifts to `(let ((a (try rr))) (let ((b (try a))) …))`, each level a
