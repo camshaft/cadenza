@@ -408,6 +408,7 @@ pub(super) fn emit_list_arg_marshal(
             eh,
             slotaddr,
             elem,
+            elem_wit, // the element's declared WIT variant — orders a mixed record payload case's fields
             cursor,
             work_base + 9,
             high,
@@ -614,6 +615,7 @@ pub(super) fn emit_product_to_mem(
                     var_slot,
                     field_addr,
                     fty,
+                    None, // this arm admits only scalar/tuple variant fields — no mixed record case here
                     cursor,
                     work_base + 5,
                     high,
@@ -1169,6 +1171,10 @@ pub(super) fn emit_variant_to_mem(
     var_slot: u32,
     dest_addr: u32,
     variant_ty: &Ty,
+    // The variant's declared WIT type (a `WitType::Variant`), when known — needed to order a mixed variant's
+    // RECORD payload case's fields to the host's DECLARATION order. `None` for the scalar/tuple/bytes/list cases
+    // (offset-agnostic) and for the product-field caller (which admits only scalar/tuple variant fields).
+    variant_wit: Option<&crate::wit_world::WitType>,
     // The running byte-position local for `Bytes`/`List` payload SPILLS (a mixed variant's `Bytes` case copies
     // its rope here). The scalar/tuple paths never touch it; the list-element / product-field callers pass their
     // own backing cursor.
@@ -1197,7 +1203,16 @@ pub(super) fn emit_variant_to_mem(
         if let Some(mixed) = crate::backend::wasm::host::variant_mixed_payload_cases(db, variant_ty)
         {
             return emit_variant_mixed_to_mem(
-                db, var_slot, dest_addr, variant_ty, &mixed, cursor, work_base, high, scratch_ty,
+                db,
+                var_slot,
+                dest_addr,
+                variant_ty,
+                &mixed,
+                variant_wit,
+                cursor,
+                work_base,
+                high,
+                scratch_ty,
                 out,
             );
         }
@@ -1439,6 +1454,9 @@ fn emit_variant_mixed_to_mem(
     dest_addr: u32,
     variant_ty: &Ty,
     cases: &[(i32, crate::backend::wasm::host::VariantPayloadKind)],
+    // The variant's declared WIT type (a `WitType::Variant`), when known — needed to order a RECORD payload
+    // case's fields to the host's DECLARATION order. `None`/absent declines a record case cleanly.
+    variant_wit: Option<&crate::wit_world::WitType>,
     cursor: u32,
     work_base: u32,
     high: &mut u32,
@@ -1668,11 +1686,69 @@ fn emit_variant_mixed_to_mem(
                 out.push(Lir::I32Store { offset: 4 }); // count
                 out.push(Lir::End);
             }
-            // A record payload case needs a WIT-ordered record write — a later slice.
-            _ => {
-                return Err(Reject::decline(
-                    "a mixed variant element has a record payload case (not this increment)",
-                ));
+            // A RECORD payload case: write the record PRODUCT at the payload offset via `emit_record_to_mem`
+            // (each field at its canonical offset, WIT-ordered) — the mem twin of the register mixed Record arm.
+            // The record's declared WIT (this case's payload in the variant WIT) orders the fields. GUARD: the
+            // per-element stride the enclosing list marshal reserved comes from `canonical_layout(record)` in
+            // GUEST name-lex order, so a WIT field order that diverges from the guest order could write past the
+            // reserved slot (record padding is field-order-dependent) — decline cleanly in that case.
+            VariantPayloadKind::Record(..) => {
+                let pty = variant_payload_ty_at(db, variant_ty, *pd as u32).ok_or_else(|| {
+                    Reject::decline("a mixed variant record payload type could not be resolved")
+                })?;
+                let Ty::Record(fs) = pty.strip_nominal() else {
+                    return Err(Reject::decline(
+                        "a mixed variant record case is not a record",
+                    ));
+                };
+                let fields = (**fs).clone();
+                let rec_wit = match variant_wit {
+                    Some(crate::wit_world::WitType::Variant(c)) => {
+                        c.get(*pd as usize).and_then(|(_, p)| p.as_ref())
+                    }
+                    _ => None,
+                }
+                .ok_or_else(|| {
+                    Reject::decline(
+                        "a mixed variant record payload has no declared WIT record type",
+                    )
+                })?;
+                let crate::wit_world::WitType::Record(wit_fields) = rec_wit else {
+                    return Err(Reject::decline(
+                        "a mixed variant record payload's declared WIT is not a record",
+                    ));
+                };
+                // WIT field order MUST equal guest name-lex order (see GUARD above), else the WIT-ordered write
+                // extent can exceed the guest-order stride the list marshal reserved.
+                let guest_names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
+                let wit_names: Vec<String> =
+                    wit_fields.iter().map(|(n, _)| n.to_string()).collect();
+                if guest_names != wit_names {
+                    return Err(Reject::decline(
+                        "a mixed variant record payload whose WIT field order diverges from the \
+                         guest order is a later slice",
+                    ));
+                }
+                out.push(Lir::LocalGet(disc));
+                out.push(Lir::ConstI32(*pd));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty));
+                out.push(Lir::LocalGet(var_slot));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                out.push(Lir::LocalSet(tup_slot)); // reuse the tuple slot for the record handle
+                emit_record_to_mem(
+                    db,
+                    tup_slot,
+                    field_addr,
+                    &fields,
+                    rec_wit,
+                    cursor,
+                    work_base + 6, // ABOVE this fn's disc/field_addr/tup_slot/rope/pos/blen scratch
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+                out.push(Lir::End);
             }
         }
     }
