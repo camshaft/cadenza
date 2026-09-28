@@ -1860,6 +1860,32 @@
   (output (: 2 Int64))
   (live-objects known-leak))
 
+(case
+  "trct1 a `?`-bound COMPOUND (tuple carrying a Set) Ok-arm payload reclaims the try shell + nested heap on both paths"
+  (doc
+    "The COMPOUND-payload sibling of the node#6-nonlen family (trml1..trsi1 are single-level: the
+     payload IS the collection). Here a `?`-bound scalar builds a `(tuple x #set(x))` under the Ok arm
+     of a `(Result (Tuple Int64 (Set Int64)) Int64)` boundary — a HEAP tuple carrying a NESTED heap
+     Set (a 2-level payload). The Ok arm destructures the tuple and reads both fields
+     (`(+ a (Set.len s))`). This exercises the try-shell reclaim's DEEP-DROP cascading THROUGH the
+     tuple into the nested Set — distinct from the single-level locks, which never recurse a compound.
+     The node#6-nonlen admit reclaims the try-materialized scrutinee shell + tuple + nested Set on BOTH
+     paths (Err short-circuit re-wraps 111; Ok destructures then reclaims). Verified live-objects 0.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok (tuple x #set(x)))) (Result (Tuple Int64 (Set Int64)) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok t) (match t ((tuple a s) (+ a (Set.len s)))))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 6 Int64))
+  (live-objects 0))
+
 ; trnt1 (TODO): the NESTED try `(try (try rr))` — a `?` whose OPERAND is itself a `?`. The desugar for
 ; this is known and small (inner-first hoisting in `find_hoistable_try`'s `(try e)` arm: descend the
 ; operand FIRST so `(try (try rr))` lifts to `(let ((a (try rr))) (let ((b (try a))) …))`, each level a

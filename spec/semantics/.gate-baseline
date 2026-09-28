@@ -10953,6 +10953,7 @@ pass	trmi1 a `?`-bound Map CONSUMED by Map.insert in the Ok arm reclaims the try
 pass	trob1 an Option `?`-bound Set read by Set.len in the Some arm reclaims the try shell on both paths
 pass	troc1 an Option `?`-bound Set CONSUMED by Set.insert in the Some arm reclaims the try shell on both paths
 pass	trbs1 a `?`-bound Bytes sliced by Bytes.slice in the Ok arm — KNOWN-LEAK (queue (e) Bytes.slice buffer-share)
+pass	trct1 a `?`-bound COMPOUND (tuple carrying a Set) Ok-arm payload reclaims the try shell + nested heap on both paths
 pass	trm1 a NESTED tuple-rest re-match peels two layers, through an if-selected scrutinee, with a RUNTIME element
 pass	trm1 an export returns a two-element Set (one reachable cell, constructor-application render)
 pass	trm2 an EXACT-arity tuple leaves the rest binder EMPTY, and a rest-only pattern gathers the whole tuple
