@@ -7100,6 +7100,54 @@ pub(super) fn emit(
                             out.push(Lir::CallImport(OP_DROP));
                         }
                     }
+                    // A top-level `variant{nullary…, one record-of-scalars case}` argument: the record sibling of
+                    // the tuple-payload variant. Decomposes into `(disc, f0, f1, …)` via
+                    // `emit_variant_record_arg_reg_flatten` (recurses `emit_record_arg_marshal`, WIT-order fields;
+                    // all-scalar → NO `mem`/cursor); a nullary case zero-fills. The record case's WIT `record` type
+                    // (for field ordering) is extracted from the arg's `WitType::Variant` at the record disc.
+                    _ if crate::backend::wasm::host::variant_record_payload_case(db, &at)
+                        .is_some() =>
+                    {
+                        let (record_disc, record_ty) =
+                            crate::backend::wasm::host::variant_record_payload_case(db, &at)
+                                .expect("gated by the arm guard");
+                        let record_wit = match wit_params.as_ref().and_then(|p| p.get(arg_i)) {
+                            Some(crate::wit_world::WitType::Variant(cases)) => {
+                                cases.get(record_disc as usize).and_then(|(_, p)| p.clone())
+                            }
+                            _ => None,
+                        };
+                        let Some(record_wit) = record_wit else {
+                            return Err(Reject::decline(
+                                "a variant record-payload arg has no WIT record case type",
+                            ));
+                        };
+                        let var_slot = arg_base.max(*high);
+                        scratch_ty.insert(var_slot, ValType::I32);
+                        *high = (*high).max(var_slot + 1);
+                        emit(db, arg, slots, var_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(var_slot));
+                        let work_base = *high;
+                        emit_variant_record_arg_reg_flatten(
+                            db,
+                            var_slot,
+                            record_disc,
+                            &record_ty,
+                            &record_wit,
+                            work_base,
+                            high,
+                            scratch_ty,
+                            out,
+                        )?;
+                        // MARSHALED-ARG RECLAIM (variant-record twin): pure-borrow flatten → the variant handle is
+                        // DEAD after. Deep-drop when OWNED or a dup-site.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(var_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
                     // A top-level `result<list<u8>, enum>` argument: the guest emits the value-heap Result
                     // HANDLE into a slot, then decomposes it into the canonical `(disc, i32, i32)`
                     // register-flatten via `emit_result_arg_reg_flatten` (the register twin of the `result<list

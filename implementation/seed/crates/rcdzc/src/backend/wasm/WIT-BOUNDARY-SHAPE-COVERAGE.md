@@ -404,11 +404,20 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   a nullary case zero-fills ALL payload slots). All-scalar → NO `mem`/cursor (so NOT wired into the cursor pre-scan
   or `set_needs_memory`). Detector `variant_tuple_payload_case` scopes to a SINGLE tuple case + all-scalar elements.
   Additive across detector/HostParam/classifier/first_unrepresentable/marshal/emit-dispatch/serialize (positional
-  flatten)/host_imports structural-CRef/used_ops. REMAINING variant-payload gaps: a MIXED scalar+Bytes+list payload
-  set (per-case marshal dispatch), a `list<compound>` element / mixed element types, a RECORD payload case (the
-  near-twin of the tuple — add field reorder), a SECOND product case / MULTI-payload case (≥2 payloads/case, the
-  multi-case join), and VariantBytes/List/Tuple at the FIELD / list-element positions (`RecordFieldAbi::Variant` is
-  scalar-only).
+  flatten)/host_imports structural-CRef/used_ops. Detector `variant_tuple_payload_case` scopes to a SINGLE tuple
+  case + all-scalar elements.
+- **[emit, ARG-side] a RECORD (of-scalars) single-payload variant host-op ARG — ✅ DONE / TESTED (SHAPE 231).** The
+  RECORD near-twin of VariantTuple, via `HostParam::VariantRecord(disc, wit-ordered-field-abis)`. Same variable
+  positional flatten `(disc, f0, f1, …)`, but the fields are WIT-REORDERED (the classifier builds the field ABIs
+  then `reorder_record_fields_to_wit` — the SAME helper the `result<record,enum>` arg uses — extracting the record
+  case's WIT from the arg's `WitType::Variant` at the record disc). `emit_variant_record_arg_reg_flatten` recurses
+  `emit_record_arg_marshal` (WIT-order field push) on the record case; a nullary case zero-fills. All-scalar → NO
+  `mem`/cursor. SHAPE 231 uses DISTINCT field widths (s64 then bool) to pin the positional slot widths. This
+  COMPLETES the single-compound-payload variant ARG family: scalar (SHAPE 53) / bytes (227/228) / list (229) /
+  tuple (230) / record (231). REMAINING variant-payload gaps: a MIXED scalar+Bytes+list payload set (per-case
+  marshal dispatch), a compound (`list<compound>`/bytes/nested) tuple/record ELEMENT-or-FIELD, a SECOND product
+  case / MULTI-payload case (≥2 payloads/case, the multi-case join), and ALL of the compound-payload variants at
+  the FIELD / list-element positions (`RecordFieldAbi::Variant` is scalar-only).
 - **[emit, ARG-side] the BARE (top-level) named-variant host-op ARG — ✅ DONE / TESTED (SHAPE 184/185).**
   `emit_variant_reg_flatten` has always been documented as "the bare-variant ARG marshal", but the corpus never
   pinned it at the top-level param position directly — every prior `variant` case sat inside a record field /

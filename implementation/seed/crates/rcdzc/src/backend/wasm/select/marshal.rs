@@ -1679,6 +1679,116 @@ pub(super) fn emit_variant_tuple_arg_reg_flatten(
     Ok(())
 }
 
+/// Marshal a top-level value-heap `variant{nullary…, one record-of-scalars case}` host argument whose handle is
+/// in `var_slot` into the canonical `(disc:i32, f0, f1, …)` core-slot flatten (the discriminant then the record's
+/// fields POSITIONALLY in WIT declaration order), pushing `1 + n` values. The RECORD sibling of
+/// [`emit_variant_tuple_arg_reg_flatten`] — identical except the payload case recurses `emit_record_arg_marshal`
+/// (which reads each field WIT-ordered) and the slot valtypes are derived in WIT order. `record_ty` is the record
+/// case's payload type (all-scalar → NO `mem`/cursor); `record_wit` its declared WIT `record` type (for field
+/// ordering); `record_disc` its discriminant. A nullary case zero-fills ALL payload slots.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_variant_record_arg_reg_flatten(
+    db: &mut Db,
+    var_slot: u32,
+    record_disc: i32,
+    record_ty: &Ty,
+    record_wit: &crate::wit_world::WitType,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let Ty::Record(fields) = record_ty.strip_nominal() else {
+        return Err(Reject::decline(
+            "a variant record-payload case is not a record",
+        ));
+    };
+    let fields = fields.clone();
+    let crate::wit_world::WitType::Record(wit_fields) = record_wit else {
+        return Err(Reject::decline(
+            "a variant record-payload case has no matching WIT record type (needed to order fields)",
+        ));
+    };
+    let wit_fields = wit_fields.clone();
+    // Slot valtypes in WIT declaration order — the SAME order + per-field slot count `emit_record_arg_marshal`
+    // pushes. Every field is a SCALAR (the detector's scope) → one slot of its own width. NO err-disc/float-join
+    // (unlike the result record) — the variant disc is a separate leading slot and a nullary case zero-fills.
+    let names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
+    let mut slot_vts: Vec<ValType> = Vec::new();
+    for (fname, _) in &wit_fields {
+        let Some(idx) = names.iter().position(|n| n == fname) else {
+            return Err(Reject::decline(
+                "a WIT record field is absent from the guest variant payload record",
+            ));
+        };
+        let fty = fields
+            .values()
+            .nth(idx)
+            .expect("name-lex index in range")
+            .clone();
+        let abi = crate::backend::wasm::host::field_boundary_abi(db, &fty)
+            .ok_or_else(|| Reject::decline("a variant payload record field does not cross"))?;
+        let mut bytes = Vec::new();
+        crate::backend::wasm::serialize::flatten_record_field_abi(&abi, &mut bytes);
+        for b in bytes {
+            slot_vts.push(ValType::from_byte(b).ok_or_else(|| {
+                Reject::decline("a flattened variant record field slot is not a numeric core type")
+            })?);
+        }
+    }
+    let n = slot_vts.len() as u32;
+    let disc_out = work_base;
+    let base_slot = work_base + 1;
+    let rec_slot = base_slot + n;
+    scratch_ty.insert(disc_out, ValType::I32);
+    for (k, vt) in slot_vts.iter().enumerate() {
+        scratch_ty.insert(base_slot + k as u32, *vt);
+    }
+    scratch_ty.insert(rec_slot, ValType::I32);
+    *high = (*high).max(rec_slot + 1);
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component variant disc, decl order)
+    out.push(Lir::LocalSet(disc_out));
+    out.push(Lir::LocalGet(disc_out));
+    out.push(Lir::ConstI32(record_disc));
+    out.push(Lir::I32Eq);
+    out.push(Lir::If(BlockType::Empty)); // the record case → marshal the payload record's fields into the slots
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [record handle]
+    out.push(Lir::LocalSet(rec_slot));
+    emit_record_arg_marshal(
+        db,
+        rec_slot,
+        &fields,
+        record_wit,
+        None, // all-scalar fields → no `mem`/cursor
+        rec_slot + 1,
+        high,
+        scratch_ty,
+        out,
+    )?;
+    // Capture the N pushed field values into the slots in REVERSE (stack top = last WIT field).
+    for k in (0..n).rev() {
+        out.push(Lir::LocalSet(base_slot + k));
+    }
+    out.push(Lir::Else); // a nullary case → zero-fill ALL payload slots
+    for (k, vt) in slot_vts.iter().enumerate() {
+        out.push(match vt {
+            ValType::I64 => Lir::ConstI64(0),
+            ValType::F64 => Lir::F64ConstBits(0),
+            ValType::F32 => Lir::F32ConstBits(0),
+            _ => Lir::ConstI32(0),
+        });
+        out.push(Lir::LocalSet(base_slot + k as u32));
+    }
+    out.push(Lir::End); // if
+    out.push(Lir::LocalGet(disc_out)); // push (disc, field0, field1, …)
+    for k in 0..n {
+        out.push(Lir::LocalGet(base_slot + k));
+    }
+    Ok(())
+}
+
 /// Marshal a top-level value-heap `result<scalar, enum>` host argument whose handle is in `result_slot` into the
 /// canonical `(disc:i32, join)` core-slot flatten the built-in `result<ok-scalar, err-enum>` param lowers to,
 /// pushing the two values onto the operand stack. The 2-slot scalar-Ok twin of `emit_result_arg_reg_flatten`

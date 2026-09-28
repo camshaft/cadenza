@@ -259,6 +259,16 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                     flatten_record_field_abi(abi, &mut params);
                 }
             }
+            // A bare `variant{nullary…, one record-of-scalars case}` param flattens to `(disc:i32, f0, f1, …)` —
+            // the discriminant then the record's fields POSITIONALLY in the CARRIED (WIT-reordered) order, each
+            // by its scalar ABI width. MUST match `wit_ctype::flatten_variant` of the declared `variant` DEFINED
+            // type (structural WIT).
+            HostParam::VariantRecord(_, fields) => {
+                params.push(wasm_abi::CORE_I32); // the discriminant
+                for (_, abi) in fields.iter() {
+                    flatten_record_field_abi(abi, &mut params);
+                }
+            }
             // A bare `result<scalar, enum>` param flattens to `(disc:i32, join)` — 2 slots. The join is `i64`
             // iff the Ok scalar is 64-bit (the `i32` err disc widens into it), else `i32`. NOT the 3-slot Bytes
             // shape. The component boundary type is the built-in `result<ok, err-enum>` (mod.rs

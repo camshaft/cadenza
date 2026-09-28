@@ -8640,3 +8640,35 @@ cases
   (host-calls (call cadenza:platform/probe.push) (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a BARE variant{a, b(record{x: s64, y: bool})} as the direct host-op arg emits, loads, and runs (imposed WIT)"
+  (doc
+    "SHAPE 231 (v-wit-boundary) — a `variant{a, b(record{x: s64, y: bool})}` passed BARE as the TOP-LEVEL host-op
+           ARGUMENT (probe.push), the RECORD-payload variant ARG (the near-twin of the tuple-payload SHAPE 230).
+           Crosses via the NEW additive `HostParam::VariantRecord`: the component `variant` DEFINED type is laid
+           STRUCTURALLY from the declared WIT (`add_wit_type_deduped` → `CDef::Variant` with a `(record …)` payload
+           case, export-remapped), and the guest flattens POSITIONALLY to `(disc:i32, x:i64, y:i32)` — the
+           discriminant then the record's fields in WIT declaration order — via `emit_variant_record_arg_reg_flatten`
+           (recurses `emit_record_arg_marshal`, which reads each field WIT-ordered; a nullary case zero-fills ALL
+           payload slots). DISTINCT field widths (s64 then bool) pin the positional slot widths — a wrong flatten
+           (mis-ordered / mis-widthed slots) fails component instantiation. All-scalar record → NO `mem`/cursor.
+           Mirrors the VariantTuple family additively but with the record field-abi build + WIT reorder
+           (`reorder_record_fields_to_wit`, the SAME helper the `result<record,enum>` arg uses). run() performs TWO
+           pushes — `(B {x:7, y:#true})` the record case then `A` the nullary case — exercising BOTH arms; a VALID
+           running component (live-objects=0) is the pin. Completes the single-compound-payload variant ARG family
+           (scalar/bytes/list/tuple/record).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (record (= x (s64)) (= y (bool)))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B (Record (: x Int64) (: y Bool))))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B #record((= x 7) (= y true)))) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)) (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push) (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

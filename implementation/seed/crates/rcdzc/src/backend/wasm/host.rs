@@ -114,6 +114,16 @@ pub enum HostParam {
     /// via `select::emit_variant_tuple_arg_reg_flatten`. A compound/bytes tuple element, a second product case, or a
     /// record payload is a later increment.
     VariantTuple(i32, Vec<RecordFieldAbi>),
+    /// A bare `variant{nullary…, one record-of-scalars case}` param — the RECORD sibling of
+    /// [`VariantTuple`](HostParam::VariantTuple). Same VARIABLE positional flatten `(disc:i32, f0, f1, …)`, but the
+    /// fields are WIT-REORDERED (guest field order is name-lex; the component + marshal use the host WIT's
+    /// declaration order) exactly as [`ResultRecord`](HostParam::ResultRecord). All-scalar → NO `mem`. Crosses as
+    /// the declared `variant` DEFINED type (laid structurally from the WIT via `add_wit_type_deduped` →
+    /// `CDef::Variant` with a `(record …)` payload case). Carries the record case's DISCRIMINANT + the field
+    /// (name, ABI) pairs already REORDERED to WIT declaration order (so `serialize` + the marshal agree). The guest
+    /// marshals it via `select::emit_variant_record_arg_reg_flatten`. A compound field / second product case is a
+    /// later increment.
+    VariantRecord(i32, Vec<(String, RecordFieldAbi)>),
     /// A bare `option<scalar>` param (the top-level position, not nested in a record/list) — crosses as the
     /// built-in WIT `option<T>` type (NOT a nominal `variant` DEFINED type; a `variant{none,some(T)}` substitute
     /// fails the structural component-link match against a host declaring `option`), referenced by a per-param
@@ -864,6 +874,55 @@ pub fn variant_tuple_payload_case(db: &mut Db, ty: &Ty) -> Option<(i32, Vec<Reco
         }
     }
     tuple_case
+}
+
+/// ARG-SIDE: whether `ty` is a variant with EXACTLY ONE case carrying a `record` of scalars, the rest nullary.
+/// Returns the record case's DISCRIMINANT (declaration = component order) paired with the record payload `Ty`.
+/// The RECORD sibling of [`variant_tuple_payload_case`] — the same VARIABLE positional flatten `(disc:i32, f0,
+/// f1, …)` but the fields are WIT-REORDERED (a record's guest field order is name-lex; the component/marshal use
+/// the host WIT's declaration order), exactly as [`result_record_enum`]'s Ok arm. All-scalar → NO `mem`. The
+/// component boundary type is the declared `variant` DEFINED type laid STRUCTURALLY from the WIT
+/// (`add_wit_type_deduped` → `CDef::Variant` with a `(record …)` payload case). Scoped to a SINGLE record case +
+/// all-scalar fields (a compound field, a second product case is a later increment). Excludes option/result sums.
+pub fn variant_record_payload_case(db: &mut Db, ty: &Ty) -> Option<(i32, Ty)> {
+    let Ty::Sum { decl, .. } = ty.strip_nominal() else {
+        return None;
+    };
+    if option_payload_ty(db, ty).is_some() || result_bytes_enum(db, ty).is_some() {
+        return None;
+    }
+    let decl = *decl;
+    let payload_counts: Vec<usize> = {
+        let d = db.type_decl_by_occ(decl)?;
+        d.variants.iter().map(|v| v.payloads.len()).collect()
+    };
+    let mut record_case: Option<(i32, Ty)> = None;
+    for (disc, n) in payload_counts.into_iter().enumerate() {
+        match n {
+            0 => {} // a nullary case → no payload slot
+            1 => {
+                if record_case.is_some() {
+                    return None; // a SECOND payload case → a later increment (multi-payload-case join)
+                }
+                let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
+                let Ty::Record(fields) = pty.strip_nominal() else {
+                    return None; // a non-record payload → not this detector (bytes/list/tuple took their arms)
+                };
+                let fields = fields.clone();
+                if fields.is_empty() {
+                    return None;
+                }
+                // Every field MUST be a NO-mem scalar this increment (a Bytes/list/nested-compound field would
+                // need the cursor + a richer flatten — a later increment).
+                for fty in fields.values() {
+                    abi_val_type(fty)?;
+                }
+                record_case = Some((disc as i32, pty.clone()));
+            }
+            _ => return None, // a multi-payload case → a later increment
+        }
+    }
+    record_case
 }
 
 /// The boundary ABI of a shape-d record FIELD, or `None` if the field has no boundary form yet. Supports a
@@ -2029,6 +2088,51 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             variant_tuple_payload_case(db, &at).unwrap();
                         params.push(HostParam::VariantTuple(tuple_disc, elem_abis));
                     }
+                    // A `variant{nullary…, one record-of-scalars case}` arg — the RECORD sibling of the tuple
+                    // payload. Builds the record's field ABIs then REORDERS them to the host WIT record's
+                    // declaration order (extracted from the variant case's WIT), so the component type + core
+                    // flatten agree with `emit_record_arg_marshal`'s WIT-order push. Checked BEFORE the scalar
+                    // `_` arm and disjoint from the scalar/bytes/list/tuple variant arms above.
+                    _ if !peer_bound && variant_record_payload_case(db, &at).is_some() => {
+                        let (record_disc, record_ty) =
+                            variant_record_payload_case(db, &at).unwrap();
+                        if let Ty::Record(fields) = record_ty.strip_nominal() {
+                            let fields = fields.clone();
+                            let mut field_abis = Vec::with_capacity(fields.len());
+                            let mut all_ok = !fields.is_empty();
+                            for (sym, fty) in fields.iter() {
+                                match field_boundary_abi(db, fty) {
+                                    Some(v) => field_abis.push((sym.name.to_string(), v)),
+                                    None => {
+                                        all_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if all_ok {
+                                // Reorder the name-lex fields to the variant case's WIT record declaration order.
+                                let field_abis = match wit_params
+                                    .as_ref()
+                                    .and_then(|ps| ps.get(arg_i))
+                                {
+                                    Some(crate::wit_world::WitType::Variant(cases)) => {
+                                        match cases
+                                            .get(record_disc as usize)
+                                            .and_then(|(_, p)| p.as_ref())
+                                        {
+                                            Some(rec_wit) => {
+                                                reorder_record_fields_to_wit(field_abis, rec_wit)
+                                            }
+                                            None => field_abis,
+                                        }
+                                    }
+                                    _ => field_abis,
+                                };
+                                params
+                                    .push(HostParam::VariantRecord(record_disc, field_abis));
+                            }
+                        }
+                    }
                     // A top-level `result<list<u8>, enum>` arg crosses as the built-in WIT
                     // `result<list<u8>, <enum>>` — the answer-back envelope shape. It flattens to
                     // `(disc:i32, ptr/errdisc:i32, len/0:i32)`: on Ok the guest writes the `list<u8>` payload
@@ -2906,6 +3010,13 @@ pub fn first_unrepresentable_host_op(
             // product case is a later increment (`variant_tuple_payload_case` declines it), in lockstep.
             let arg_is_boundary_variant_tuple =
                 allow_option_bytes && !peer_bound && variant_tuple_payload_case(db, &at).is_some();
+            // A top-level `variant{nullary…, one record-of-scalars case}` arg crosses NATIVELY as the declared
+            // `variant` DEFINED type — the guest flattens the payload record's fields positionally (WIT order)
+            // into `(disc, f0, f1, …)` (`select::emit_variant_record_arg_reg_flatten`, the record sibling of the
+            // tuple-payload variant; all-scalar → no `mem`). Same gating; a compound field / second product case
+            // is a later increment (`variant_record_payload_case` declines it), in lockstep.
+            let arg_is_boundary_variant_record =
+                allow_option_bytes && !peer_bound && variant_record_payload_case(db, &at).is_some();
             // A top-level `option<scalar>` / `option<bytes>` / `option<tuple-of-scalars>` arg crosses NATIVELY
             // as the built-in WIT `option<T>` — the guest flattens the value-heap Option to `(disc, payload)`
             // core slots (`select::emit_option_reg_flatten`, the register twin of the `option<scalar>`/`::bytes`/
@@ -2965,6 +3076,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_variant_bytes
                 && !arg_is_boundary_variant_list
                 && !arg_is_boundary_variant_tuple
+                && !arg_is_boundary_variant_record
                 && !arg_is_boundary_option
                 && !arg_is_boundary_tuple
                 && !arg_is_boundary_result
