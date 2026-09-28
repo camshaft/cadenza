@@ -176,8 +176,7 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   reserved by the emit.rs pre-scan) still declines. Faithfully verified: status-0 shred-compile
   (1542-byte component, `wasm-tools validate` clean) emitting `push: func(record{v: variant{a, b(s64),
   c(record{p: s32, q: s64})}, n: s64})`. REMAINING at a register position: the same MIX with a Bytes/List case
-  (cursor reservation); a mixed-variant Record case at a TUPLE-ELEMENT position (SHAPE 265 still excludes Record —
-  `tuple_arg_crosses` has no per-element WIT for the divergence guard).
+  (cursor reservation).
 - **[emit] a HETEROGENEOUS MIXED `variant` at a REGISTER tuple-ELEMENT position — ✅ DONE / TESTED (SHAPE 265).**
   The tuple-element twin of SHAPE 264 (as SHAPE 257 was the tuple-element twin of the SHAPE 256 record-field
   variant-tuple). A `tuple<variant{a, b(s64), c(tuple<s32,s64>)}, s64>` arg previously DECLINED
@@ -186,14 +185,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   handle → `emit_variant_mixed_arg_reg_flatten`), and `tuple_arg_crosses` + the tuple-arg abi-builder (a
   VariantMemMixed element branch before the record else, which would else panic on a Sum) + the used_ops
   tuple-element collector gained the admission in lockstep; serialize's VariantMemMixed flatten is the canonical
-  join (aligned in SHAPE 264). SCOPED to **scalar + tuple** payload cases; a Bytes/List case and a **Record** case
-  both decline cleanly (the Record case hits the SAME register-position one-join-slot defect as the record-FIELD
-  arm — see SHAPE 264; excluded to keep decline-don't-miscompile). Faithfully verified: status-0 shred-compile
-  (1494-byte component, `wasm-tools validate` clean) emitting `push: func(tuple<variant{a, b(s64),
-  c(tuple<s32,s64>)}, s64>)`. ⚠ REGISTER-RECORD DEFECT (confirmed this tick via a probe: a record payload case in
-  a mixed variant at a record-FIELD position CDZ0910s — `expected (i32 i64 i64 i64)` vs `found (i32 i64 i64)`,
-  one join slot short — EVEN with matching WIT/name-lex field order, so it is a slot-COUNT bug, not an ordering
-  bug; the bare-ARG + mem `list`-element Record cases work). REMAINING at a register position: the same MIX with
+  join (aligned in SHAPE 264). Admits **scalar + tuple + WIT-ordered-record** payload cases: the scalar+tuple mix
+  is SHAPE 265; a **Record** payload case is SHAPE 267 (`tuple<variant{a, b(s64), c(record{p: s32, q: s64})}, s64>`)
+  — reachable once SHAPE 266 fixed `record_field_cref` to lay a proper `(record …)` type (the tuple-element CRef
+  path `build_host_result_types → record_field_cref` picks it up), guarded by `mixed_variant_record_cases_wit_ordered`
+  on the ELEMENT's WIT (`elem_wits[i]`) so a divergent-order record case declines cleanly. `tuple_arg_crosses`
+  admits the element (no per-element WIT there; the emit arm runs the guard). A Bytes/List case still declines
+  (cursor reservation). Faithfully verified: status-0 shred-compile (1494-byte scalar+tuple / 1518-byte record,
+  `wasm-tools validate` clean) emitting `push: func(tuple<variant{a, b(s64), c(tuple<s32,s64>)}, s64>)` and
+  `push: func(tuple<variant{a, b(s64), c(record{p: s32, q: s64})}, s64>)`. REMAINING at a register position: the same MIX with
   a Bytes/List case
   (cursor reservation via the emit.rs pre-scan — the recurring next frontier).
 - **[emit, ARG-side]** `option<compound>` host-op record-ARG FIELD — ✅ scalar/bytes (pre-existing) + **tuple-of-scalars (SHAPE 123)** + **record-of-scalars (SHAPE 124)** + **record-with-a-Bytes-field (SHAPE 126)**. `field_boundary_abi` recurses the payload; `emit_record_arg_marshal` SCRATCH-FLATTENS it (`(disc, flatten(payload))` — disc + one core slot per scalar payload field / TWO `(ptr,len)` slots per Bytes field, marshalled into N scratch slots since LIR blocks are single-value, pushed after the `if`; the Some arm recurses `emit_record_arg_marshal` on the payload record and captures its N pushed slots in reverse, the None arm zero-fills; a record payload reads each WIT field from its name-lex cell index, `reorder_record_fields_to_wit` recursing the `Option(Record)` to WIT order; a Bytes payload leaf copies its rope into shared mem at the reserved scratch cursor, `record_has_option_bytes_field` reserving the cursor in the emit.rs pre-scan). NB: the slot count checks `Ty::Bytes` BEFORE `valtype_of` (which is `Some(I32)` for a Bytes handle) so a byte leaf counts as 2 slots, not 1. The `option<compound>` LIST ELEMENT (`list<option<compound>>`) is now DONE — SHAPE 152/153/154 (see the list-element entry below). REMAINING: a nested-compound (option/tuple/record-of-compound) payload field inside the option that is not yet exercised. The RESULT side is DONE — SHAPE 66.
