@@ -92,17 +92,30 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   cannot self-declare (rolls into the nominal-decl increment).
 
 **Emit side — v-wit-boundary (custom import-only wit-world, plain host-delegating envelope):**
-- **[emit, tuple<record> — PRE-EXISTING BUG, found 2026-09-28] a `record` ELEMENT of a host-op `tuple<…>` arg
-  whose record has a SUB-i64 (s32/s16/s8) FIELD CDZ0910s** ("type mismatch for export `push` of module
-  instantiation argument `host`" — the guest core module's param signature ≠ the canonical component lower).
-  Reproduced on the DIRECT tuple arg: `tuple<record{p: s64, q: s64}, s64>` CROSSES but `tuple<record{p: s32,
-  q: s32}, s64>` / `tuple<record{p: s32, q: s64}, s64>` CDZ0910 (a single-field record element works). So a
-  multi-field record element with an i32-flattening field mismatches the tuple<record> flatten — NOT a WIT-order
-  reorder issue (the probed fields are already in order). This is a decline-don't-miscompile VIOLATION reachable
-  on the direct tuple path today; the `option<tuple>` widening (SHAPE 276-280) deliberately EXCLUDES a record
-  element so it declines cleanly rather than inherit it. FIX (a future unit): the tuple<record> element flatten
-  in `flatten_record_field_abi`/the canonical component lower for sub-i64 record fields; fixing it unblocks
-  option<tuple<record>> to full `tuple_arg_crosses`. Flagged to concierge.
+- **[emit, guest-width vs WIT-width divergence — ROOT DIAGNOSED 2026-09-28, same root as SHAPE 103/104] a
+  host-op arg whose GUEST value width is WIDER than the WIT-declared width (e.g. an `Int64` literal element
+  crossing a WIT `s32` slot) diverges.** Symptom: a `tuple<s32, s64>` arg with a bare `#tuple(3 7)` (literals
+  default to `Int64`) CDZ0910s — "type mismatch for export `push`": guest flatten `(i64, i64)` vs the canonical
+  component lower `(i32, i64)`. ROOT (confirmed by dumping the abi — `host_params=[Tuple([Scalar(S64),
+  Scalar(S64)])]`): a perform/host-call argument is NOT grounded against the operation's DECLARED parameter type
+  (capabilities-and-effects.md #Performing An Operation Is Typed), so the literal `3` stays `Int64` (never
+  coerced to the op's `Int32`) — the SAME infer:: gap SHAPE 103 (const-None) / SHAPE 104 (empty list) pin. The
+  guest-side flatten is keyed off the guest VALUE width (`Int64`→i64) while the tuple/option/result/list/variant
+  COMPONENT types are built WIT-authoritatively (`add_wit_type_deduped` → s32→i32); they diverge. The DIRECT
+  `record` path MASKS it (its component type is built from the guest abi, not the WIT — so it's self-consistent
+  at s64, but LATENTLY wrong vs a real s32 host). So this is NOT a `flatten_record_field_abi` bug — the flatten
+  is correct; the guest TYPE is ungrounded.
+  - **wit-boundary role = decline-don't-miscompile:** the compiler must DECLINE CLEANLY, not CDZ0910. DONE for
+    the bare-`tuple` scalar-element facet: `emit_tuple_reg_flatten`'s scalar arm now declines when a scalar
+    element's `valtype_of` (guest width) ≠ `wit_scalar_core_valtype(elem_wits[i])` (WIT width). No passing case
+    regresses (a divergent bare-tuple scalar element currently CDZ0910s, so none is a passing corpus case). The
+    idealistic behavior is that it CROSSES once the infer:: grounding fix lands (guest `Int32` == WIT s32).
+  - **STILL CDZ0910s (not yet covered):** a divergent scalar under a `record` element of a
+    tuple/option/result WRAPPER (`emit_record_arg_marshal`, whose component type is WIT-derived in those
+    contexts) — a blanket guard there would REGRESS direct records (guest-abi component, self-consistent). A
+    context-threaded coded decline (or the full WIT-authoritative-width fix) is the follow-up.
+  - **The real "make it cross" fix is the infer:: perform-arg grounding** (ground each perform arg against the
+    op's declared param type — the SHAPE 103/104 fix), NOT in wit-boundary. Routed/flagged to concierge.
 - **[emit, ARG] a NOMINAL/compound host-op ARGUMENT (record/enum/bare-variant param) on the PLAIN
   host-delegating envelope — ✅ DONE (B3, SHAPE 92).** The world-imposed plain path now routes through
   `build_host_group` (the SAME per-interface computation the reducer/bytes-provider path uses), which
