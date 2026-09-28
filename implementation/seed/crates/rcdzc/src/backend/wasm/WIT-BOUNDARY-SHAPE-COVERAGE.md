@@ -466,7 +466,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   (scalar + Bytes + Tuple simultaneously) is now ✅ DONE / TESTED (SHAPE 247), which exposed + fixed a slot-WIDTH
   bug: when a TUPLE case's i64 element widens slot 1 to i64, the Bytes/List arm's len/count (an i32) must be
   `i64.extend_i32_u`'d into slot 1 (it was stored raw → CDZ0910 "expected i64, found i32"). SHAPE 241/242 never
-  hit it (slot 1 stayed i32 with no tuple case). A TUPLE
+  hit it (slot 1 stayed i32 with no tuple case). The genuine-LIST sibling — scalar + `list<s64>` (NOT `list<u8>`/
+  Bytes) + tuple — is ✅ DONE / TESTED (SHAPE 248), which exposed + fixed a SECOND, distinct bug: the List arm and
+  the Tuple arm of `emit_variant_mixed_arg_reg_flatten` both allocated their sub-marshal scratch from a FIXED base
+  (`pay + 4`), so the List arm's i32 loop counter and a tuple case's i64 `s64`-element temp landed on the SAME
+  emit-local INDEX; since `scratch_ty` is ONE type map for the whole function, that index got a SINGLE declared
+  type (i64) and the List arm's i32 loop-counter store became an i32-into-i64 write → CDZ0910. SHAPE 247 dodged it
+  because its Bytes arm uses fixed LOW scratch locals and never allocates in that overlapping range. The fix bumps
+  each dynamic arm's scratch off the RUNNING high-water (`*high`) so the arms' locals are DISJOINT and no index
+  carries two ValTypes (the coalesce pass compacts them afterward). A TUPLE
   (multi-payload) compound payload case in a mixed variant is now ✅ DONE / TESTED (SHAPE 243): `variant{a, b(s64),
   c(tuple<s32,s64>)}` — the scalar+tuple mix routes to `VariantMixed` via `VariantPayloadKind::Tuple(elem-abis)`;
   the tuple case flattens POSITIONALLY inline (one slot per element) joined slot-wise with the scalar case

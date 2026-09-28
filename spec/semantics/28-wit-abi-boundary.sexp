@@ -9192,3 +9192,43 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a MIXED variant{a, b(s64), c(list<s64>), d(s32,s64)} with scalar + LIST + tuple cases as a host-op arg (imposed WIT)"
+  (doc
+    "SHAPE 248 (v-wit-boundary) — a `variant{a, b(s64), c(list<s64>), d(tuple<s32,s64>)}` passed BARE as the
+           TOP-LEVEL host-op ARGUMENT (probe.push), the genuine-LIST sibling of SHAPE 247: a SCALAR case (b: s64),
+           a LIST case (c: list<s64>, NOT list<u8>/Bytes — the value-heap list-marshal path), and a TUPLE case
+           (d: tuple<s32,s64>). This exposed + now pins a LOCAL-SLOT TYPE-CONFLICT bug distinct from SHAPE 247's
+           slot-width join: the List arm and the Tuple arm of `emit_variant_mixed_arg_reg_flatten` BOTH allocated
+           their sub-marshal scratch from a FIXED base (`pay + 4`), so the List arm's i32 loop counter and a tuple
+           case's i64 s64-element temp landed on the SAME emit-local INDEX. `scratch_ty` is ONE type map for the
+           whole function, so that index got a SINGLE declared type (i64) and the List arm's i32 loop-counter store
+           became an i32-into-i64 write → an invalid component (`expected i64, found i32`, CDZ0910). SHAPE 247
+           (scalar+BYTES+tuple) never hit it because the Bytes arm uses fixed LOW scratch locals and never allocates
+           in the overlapping range. The fix bumps each dynamic arm's scratch off the RUNNING high-water (`*high`)
+           so the arms' locals are DISJOINT and no index carries two ValTypes (the coalesce pass compacts them
+           afterward). run() performs FOUR pushes — `(B 42)`, `(C #list(1 2 3))`, `(D (: 1 Int32) 2)`, `A` —
+           exercising all four arms; a VALID running component (live-objects=0) pins the scalar+list+tuple mix.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (s64)) (c (list (s64))) (d (tuple (s32) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C (List Int64)) (D Int32 Int64))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B 42)) (probe.push (V.C #list(1 2 3))) (probe.push (V.D (: 1 Int32) 2)) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
