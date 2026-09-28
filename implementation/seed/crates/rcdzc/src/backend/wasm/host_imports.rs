@@ -511,8 +511,10 @@ pub(super) fn record_field_cref(
                         table.push(emit_cdef(&CDef::Tuple(elem_crefs)));
                         Some(CRef::Idx(tup_def + 1))
                     }
-                    // A Bytes/List/record payload kind is out of this increment's scope (the field abi is only
-                    // built for Scalar/Tuple cases); treat as nullary defensively (discarded on the decline path).
+                    // A `Bytes` case references the shared `(list u8)` DEFINED type.
+                    Some(host::VariantPayloadKind::Bytes) => Some(CRef::Idx(list_idx)),
+                    // A List/record payload kind is out of this increment's scope (the field abi is only built for
+                    // Scalar/Tuple/Bytes cases); treat as nullary defensively (discarded on the decline path).
                     _ => None,
                 };
                 vcases.push((name.clone(), payload));

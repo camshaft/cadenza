@@ -9570,3 +9570,35 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level list<variant{a, b(s64), c(bytes)}> host-op arg crosses (HETEROGENEOUS scalar+bytes variant element at mem)"
+  (doc
+    "SHAPE 259 (v-wit-boundary) — a top-level `list<variant{a, b(s64), c(list<u8>)}>` bare host-op ARGUMENT
+           (probe.push): each list element is a HETEROGENEOUS variant MIXING a scalar payload case (b) and a
+           BYTES payload case (c), plus a nullary case (a). Extends SHAPE 258 (scalar+tuple mem mix) with a Bytes
+           payload case: `emit_variant_mixed_to_mem` gained a Bytes arm that writes a `(ptr, len)` header at the
+           payload offset and copies the rope into `mem` at the running cursor (advancing it) — the canonical
+           `list<u8>` case layout. A real cursor is now threaded into `emit_variant_to_mem` (from the list-element
+           / product-field callers) for the spill; the scalar/tuple paths ignore it. `field_boundary_abi`'s
+           `VariantMemMixed` scope, `list_elem_marshalable`, the list marshal's `is_variant` gate, and
+           `collect_list_elem_ops` gained the Bytes-case admission in lockstep (a Bytes case → the shared
+           `(list u8)` type + `bytes-len`/`bytes-get` ops). The bare-ARG scalar+bytes mix already rode
+           `HostParam::VariantMixed` (SHAPE 244); this is its mem twin. run() pushes `[C(\"hi\"), B(42), A]` in one
+           list — exercising the bytes case, the scalar case, and the nullary case; a VALID running component
+           (live-objects=0) pins the round-trip. (A List/record payload case in such a mixed variant at mem
+           remains a clean decline — a later slice.)")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (variant (a) (b (s64)) (c (list (u8)))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (List V) Int64)))
+      (def (run) (host (probe) (probe.push #list((V.C b"hi") (V.B 42) V.A))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
