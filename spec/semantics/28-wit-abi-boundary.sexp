@@ -8266,3 +8266,30 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level option<option<bytes>> host-op arg crosses on the outer+inner Some arm (nested-option mem payload)"
+  (doc
+    "SHAPE 218 (v-wit-boundary) — a top-level `option<option<list<u8>>>` bare host-op ARGUMENT (probe.push),
+           outer+inner Some. Widens the nested-option arg (SHAPE at option<option<scalar>>) from a SCALAR inner
+           payload to a `Bytes` inner: `option_arg_crosses` admits it (the nested-option arm now accepts a Bytes
+           inner), and `emit_option_reg_flatten`'s nested-option branch computes the inner option's flatten width
+           DYNAMICALLY — `(inner-disc:i32, ptr:i32, len:i32)` for a Bytes inner (vs `(inner-disc, scalar)` for a
+           scalar), recursing into the inner option<bytes> branch which copies the rope into `mem` at the threaded
+           cursor and advances it. So the arg flattens to `(outer-disc, inner-disc, ptr, len)` = 4 core slots
+           `(param i32 i32 i32 i32)`. The cursor RESERVATION rides the emit.rs pre-scan's new option<option<bytes>>
+           check (a missing reservation panics the inner branch's `cursor.expect(...)`). run() builds
+           Some(Some(b\"hi\")) and performs probe.push; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (option (list (u8))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Option Bytes)) Int64)))
+      (def (run) (host (probe) (probe.push (Some (Some b"hi")))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

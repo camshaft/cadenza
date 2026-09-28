@@ -6543,6 +6543,13 @@ pub(super) fn emit(
                     // A top-level `option<bytes>` arg copies the payload rope into `mem` on Some → needs the cursor.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
                         .is_some_and(|p| matches!(p, Ty::Bytes))
+                    // A top-level `option<option<bytes>>` arg copies the INNER option's payload rope into `mem`
+                    // on outer+inner Some (`emit_option_reg_flatten`'s nested-option branch recurses into the
+                    // inner option<bytes> branch) → needs the cursor, like the direct `option<bytes>` arg above.
+                    || crate::backend::wasm::host::option_payload_ty(db, &at).is_some_and(|p| {
+                        crate::backend::wasm::host::option_payload_ty(db, &p)
+                            .is_some_and(|pp| matches!(pp.strip_nominal(), Ty::Bytes))
+                    })
                     // A top-level `option<tuple-with-a-bytes-element>` arg copies the payload tuple's Bytes
                     // ropes into `mem` on Some (`emit_option_reg_flatten`'s tuple branch → `emit_tuple_reg_
                     // flatten`) → needs the cursor, like the `tuple<…,bytes,…>` arg one line down.
