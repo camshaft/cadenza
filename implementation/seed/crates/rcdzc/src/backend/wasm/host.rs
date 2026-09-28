@@ -307,10 +307,17 @@ pub fn record_field_abi_needs_memory(f: &RecordFieldAbi) -> bool {
         // forces the shared memory; a variant-tuple never reaches mem OUTSIDE a list (a top-level record/tuple
         // arg is register-flattened), so this stays `false` and avoids a spurious memory on a pure-register op.
         RecordFieldAbi::VariantTuple { .. } => false,
-        // A heterogeneous `variant` FIELD: same reasoning as `VariantTuple` — it reaches mem only as a `list<…>`
-        // element (the enclosing `HostParam::List(_) => true` forces memory); a register-flattened field position
-        // declines at emit. So `false` here.
-        RecordFieldAbi::VariantMemMixed(_) => false,
+        // A heterogeneous `variant` FIELD needs memory iff it has a `Bytes`/`List` payload case — that case
+        // rope-copies / marshals its payload into shared `mem` at the cursor when the field is register-flattened
+        // (`emit_variant_mixed_arg_reg_flatten`'s Bytes/List arms), so the enclosing `HostParam::Record` must force
+        // the shared-memory core module + the canon `Lower`'s `Memory` option. A scalar/tuple/record-only mixed
+        // variant field flattens to pure core slots (no memory).
+        RecordFieldAbi::VariantMemMixed(cases) => cases.iter().any(|(_, k)| {
+            matches!(
+                k,
+                Some(VariantPayloadKind::Bytes) | Some(VariantPayloadKind::List(_))
+            )
+        }),
         // A payload-less `enum` flattens to a single `i32` disc — no memory.
         RecordFieldAbi::Enum(_) => false,
         // A `flags` field packs into i32 bitset word(s) inline — no memory.
@@ -1925,6 +1932,27 @@ pub fn record_has_list_field(ty: &Ty) -> bool {
             .any(|f| matches!(f.strip_nominal(), Ty::List(_)) || record_has_list_field(f)),
         _ => false,
     }
+}
+
+/// Whether a record ARG has a HETEROGENEOUS MIXED `variant` FIELD (anywhere in its tree, recursing nested
+/// records) with a `Bytes`/`List` payload case — such a case rope-copies / marshals its payload into shared
+/// `mem` at the running cursor (`emit_variant_mixed_arg_reg_flatten`'s Bytes/List arms), so the arg must reserve
+/// the scratch cursor. Complements [`record_has_bytes_field`]/[`record_has_list_field`] for the cursor gate — a
+/// variant is a `Sum`, invisible to those. A scalar/tuple/record-only mixed variant field needs no cursor (it
+/// declines to reserve here), and the register field emit's `cursor.is_some()` guard keeps a Bytes/List mixed
+/// variant field DECLINING cleanly wherever the arg's pre-scan does not reserve one (decline-don't-miscompile).
+pub fn record_has_mem_mixed_variant_field(db: &mut Db, ty: &Ty) -> bool {
+    let Ty::Record(fields) = ty.strip_nominal() else {
+        return false;
+    };
+    let ftys: Vec<Ty> = fields.values().cloned().collect();
+    ftys.iter().any(|f| {
+        variant_mixed_payload_cases(db, f).is_some_and(|cases| {
+            cases
+                .iter()
+                .any(|(_, k)| matches!(k, VariantPayloadKind::Bytes | VariantPayloadKind::List(_)))
+        }) || record_has_mem_mixed_variant_field(db, f)
+    })
 }
 
 /// Whether a record ARG has a `tuple<…>` FIELD anywhere in its tree (recursing into nested records) — a tuple

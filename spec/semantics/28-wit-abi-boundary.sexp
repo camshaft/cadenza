@@ -9865,3 +9865,60 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a RECORD host-op arg with a mixed variant{a, b(s64), c(bytes)} field crosses (BYTES payload case at a register field, cursor-reserved)"
+  (doc
+    "SHAPE 268 (v-wit-boundary) — a RECORD host-op ARGUMENT `record{ v: variant{a, b(s64), c(bytes)}, n: s64 }`
+           (probe.push) whose `v` FIELD is a HETEROGENEOUS MIXED variant with a BYTES payload case (c) at the
+           REGISTER record-FIELD position. SHAPE 264/266 landed the scalar/tuple/record mixes here but a Bytes/List
+           case was excluded (it rope-copies into shared `mem` at the running cursor, which was not reserved for a
+           mixed-variant field). Now `record_has_mem_mixed_variant_field` (in the emit.rs cursor pre-scan) reserves
+           the scratch cursor when a record arg has a mixed-variant field with a Bytes/List case, and
+           `record_field_abi_needs_memory`'s VariantMemMixed arm returns true for such a case (so the host import's
+           canon `Lower` gets the `Memory` option). The register field arm now admits a Bytes/List case guarded by
+           `cursor.is_some()` (a position whose arg does NOT reserve a cursor still declines cleanly,
+           decline-don't-miscompile). `emit_variant_mixed_arg_reg_flatten`'s Bytes arm (unchanged — the SAME one the
+           bare-ARG mixed variant uses) copies the rope into `mem` at the cursor + flattens to `(ptr, len)`. The
+           record flattens to `(v-disc:i32, ptr:i32, len:i32, n:i64)`. run() builds { v: C(b\"hi\"), n: 5 } and
+           performs probe.push; a VALID running component (live-objects=0) pins the register bytes-case round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= v (variant (a) (b (s64)) (c (list (u8))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (Record (: v Sig) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Sig.C b"hi")) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a RECORD host-op arg with a mixed variant{a, b(s64), c(list<s64>)} field crosses (LIST payload case at a register field, cursor-reserved)"
+  (doc
+    "SHAPE 269 (v-wit-boundary) — a RECORD host-op ARGUMENT `record{ v: variant{a, b(s64), c(list<s64>)}, n: s64 }`
+           (probe.push) whose `v` FIELD is a HETEROGENEOUS MIXED variant with a LIST-of-scalar payload case (c) at
+           the REGISTER record-FIELD position. The LIST twin of SHAPE 268 (bytes): `emit_variant_mixed_arg_reg_flatten`'s
+           List arm marshals the payload list's backing array into shared `mem` at the reserved cursor + flattens
+           to `(ptr, count)` — same cursor-reservation (`record_has_mem_mixed_variant_field`) + needs-memory
+           (`record_field_abi_needs_memory`) machinery as SHAPE 268. The record flattens to
+           `(v-disc:i32, ptr:i32, count:i32, n:i64)`. run() builds { v: C([1,2,3]), n: 5 } and performs probe.push;
+           a VALID running component (live-objects=0) pins the register list-case round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= v (variant (a) (b (s64)) (c (list (s64))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (List Int64)))
+      (effect probe (op push (-> (Record (: v Sig) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Sig.C #list(1 2 3))) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
