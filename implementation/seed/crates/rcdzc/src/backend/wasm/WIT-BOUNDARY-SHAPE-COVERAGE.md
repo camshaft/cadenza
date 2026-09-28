@@ -110,12 +110,23 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
     element's `valtype_of` (guest width) ≠ `wit_scalar_core_valtype(elem_wits[i])` (WIT width). No passing case
     regresses (a divergent bare-tuple scalar element currently CDZ0910s, so none is a passing corpus case). The
     idealistic behavior is that it CROSSES once the infer:: grounding fix lands (guest `Int32` == WIT s32).
-  - **STILL CDZ0910s (not yet covered):** a divergent scalar under a `record` element of a
-    tuple/option/result WRAPPER (`emit_record_arg_marshal`, whose component type is WIT-derived in those
-    contexts) — a blanket guard there would REGRESS direct records (guest-abi component, self-consistent). A
-    context-threaded coded decline (or the full WIT-authoritative-width fix) is the follow-up.
+  - **record-under-WRAPPER facet — DONE (clean decline):** a divergent scalar under a `record` element of a
+    tuple/option/result/variant WRAPPER (`emit_record_arg_marshal`, whose component type is WIT-derived there)
+    now declines cleanly instead of CDZ0910. `emit_record_arg_marshal` takes a `wit_widths_authoritative: bool`
+    (true from the wrapper callsites — option/result/tuple-element/variant-record/mixed-variant-record; nested
+    record fields inherit it; FALSE from the DIRECT record arg callsite in emit.rs whose component is guest-abi-
+    derived), and its scalar-field arm declines when the flag is set and a field's `valtype_of` (guest width) ≠
+    `wit_scalar_core_valtype(fwit)` (WIT width). The direct record arg is exempt → NO regression (verified:
+    `tuple/option/result<record{s32,…}>` decline cleanly; direct `record{s32,s64}` + matched
+    `tuple<record{s64,s64}>` still cross).
+  - **NOTE — declines are UNCODED** (`Reject::decline` from emit, not a classifier `CDZ0903`), so these shapes
+    are NOT yet pinned as corpus TODOs (an uncoded decline's grade is unconfirmed). Making them a coded
+    classifier decline (to pin as SHAPE 103/104-style TODOs) needs the width check in the admit predicates — a
+    follow-up, largely mooted by the grounding fix.
   - **The real "make it cross" fix is the infer:: perform-arg grounding** (ground each perform arg against the
-    op's declared param type — the SHAPE 103/104 fix), NOT in wit-boundary. Routed/flagged to concierge.
+    op's declared param type — the SHAPE 103/104 root, s32→i32 WIT-authoritative width): OWNED by
+    v-compiler-primitives (concierge-routed), coordinates with this vertical before landing. Once it lands,
+    guest width == WIT width everywhere and ALL these decline facets become crossings.
 - **[emit, ARG] a NOMINAL/compound host-op ARGUMENT (record/enum/bare-variant param) on the PLAIN
   host-delegating envelope — ✅ DONE (B3, SHAPE 92).** The world-imposed plain path now routes through
   `build_host_group` (the SAME per-interface computation the reducer/bytes-provider path uses), which
