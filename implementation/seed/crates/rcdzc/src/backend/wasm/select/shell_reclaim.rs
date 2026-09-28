@@ -1509,9 +1509,25 @@ pub(crate) fn divergent_alias_arm_dupable(
         }
         // S2: a PAYLOAD-CARRYING `SumNew` re-wrap (the fresh Err/Some husk). A payloadless nullary variant
         // (`None`/empty) is EXCLUDED (already live-0; equalizing it is a no-op / double-drop).
-        if let Core::SumNew { payloads, .. } = core_of(db, body)
-            && !payloads.is_empty()
-        {
+        if let Core::SumNew { payloads, .. } = core_of(db, body) {
+            if payloads.is_empty() {
+                return None; // payloadless nullary-variant failure — not the payload-carrying shape (S2)
+            }
+            // S2 HEAP-ERROR UAF FENCE (v-core-opt RED-review of the (a) wiring, 2026-09-28): the try-desugar
+            // failure re-wraps the error as a BARE `SumPayload` VIEW of the scrutinee (lower.rs:5007-5019
+            // `runtime_try_failure_value`: `SumNew{Err, [SumPayload{scrutinee, [Payload]}]}`), NOT an
+            // independently-owned value. The (a) equalize deep-drops the scrutinee shell on BOTH arms but dups
+            // ONLY the SUCCESS view — so if the FAILURE error payload is HEAP, that view aliases the scrutinee's
+            // error cell, the shell deep-drop frees it, and the failure husk is left holding a freed heap error
+            // → UAF/double-free on the failure short-circuit. A SCALAR error copies out (`get-int`, no shared
+            // handle) → the husk is self-contained → safe. So REQUIRE every failure payload SCALAR; a heap
+            // failure payload DECLINES (leak-over-UAF — the pre-(a) leak persists) until/unless the emit wiring
+            // also dups the failure payload. ctrl_singlenest/trnt1 (Int64 error) satisfy this; the scalar-error
+            // census could not have surfaced the heap-error hole, so the fence is the sound default.
+            let pv: Vec<StructId> = payloads.iter().copied().collect();
+            if pv.iter().any(|p| is_heap_type(&type_of(db, *p))) {
+                return None;
+            }
             if failure_payload_sumnew {
                 return None; // two husk arms — not the shape
             }
