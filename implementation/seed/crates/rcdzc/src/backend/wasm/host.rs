@@ -1029,9 +1029,10 @@ pub enum VariantPayloadKind {
 /// `i64`). The guest `select::emit_variant_mixed_arg_reg_flatten` branches per case (scalar → unbox into slot 0
 /// coerced to the joined width; bytes → rope-copy at the cursor → `(ptr,len)`; nullary → zero the slots). The
 /// component boundary type is the declared `variant` DEFINED type (structural WIT). Excludes option/result sums.
-/// Scoped to Scalar + Bytes + List-of-scalar + Tuple-of-scalars payload kinds (a record payload case, a list
-/// of a non-scalar element, or a tuple with a non-scalar element, is a later increment); a payload that mixes
-/// int with float across cases is declined (the join reinterpret is a later increment).
+/// Scoped to Scalar (int OR float) + Bytes + List-of-scalar + Tuple-of-INT-scalars payload kinds (a record
+/// payload case, a list of a non-scalar element, or a tuple with a non-scalar/float element, is a later
+/// increment); a float scalar case is joined with the other cases' integer slots via the canonical reinterpret
+/// lattice (`variant_mixed_join_slots` + `emit_scalar_coerce_into_slot`).
 pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, VariantPayloadKind)>> {
     let Ty::Sum { decl, .. } = ty.strip_nominal() else {
         return None;
@@ -1048,7 +1049,6 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
     let mut any_scalar = false;
     let mut any_mem = false; // a Bytes OR List case — both take the two-i32-slot `(ptr, len|count)` mem flatten
     let mut any_tuple = false; // a multi-payload / `tuple`-typed case — inline positional flatten (N slots)
-    let mut float_seen: Option<bool> = None; // track int-vs-float to reject an int↔float cross-case join
     for (disc, n) in payload_counts.into_iter().enumerate() {
         if n == 0 {
             continue; // a nullary case → no payload slot
@@ -1072,8 +1072,8 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
         } else if let Ty::Tuple(elems) = stripped {
             // A TUPLE payload case (a `tuple`-typed single payload OR a multi-payload case): it flattens
             // POSITIONALLY inline to one core slot per element, joined slot-wise with the other cases. Scoped
-            // to all-INTEGER-scalar elements this increment (a float element would need the reinterpret join;
-            // a Bytes/list/nested-compound element the cursor + a richer flatten — later increments).
+            // to all-INTEGER-scalar elements this increment (a float element would need per-element reinterpret
+            // in the Tuple arm; a Bytes/list/nested-compound element the cursor + a richer flatten — later).
             let mut abis = Vec::with_capacity(elems.len());
             for ety in elems.iter() {
                 let v = abi_val_type(ety)?;
@@ -1085,25 +1085,15 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
             if abis.is_empty() {
                 return None;
             }
-            match float_seen {
-                None => float_seen = Some(false),
-                Some(false) => {}
-                Some(true) => return None,
-            }
             any_tuple = true;
             cases.push((disc as i32, VariantPayloadKind::Tuple(abis)));
         } else if let Some(v) = abi_val_type(&pty) {
-            let is_float = matches!(v, AbiValType::F32 | AbiValType::F64);
-            // The Bytes/List cases contribute integer (ptr/len) slots; a float scalar joined with them needs
-            // the reinterpret lattice — a later increment. Reject any float scalar in a mixed variant.
-            if is_float {
-                return None;
-            }
-            match float_seen {
-                None => float_seen = Some(is_float),
-                Some(prev) if prev == is_float => {}
-                Some(_) => return None,
-            }
+            // A scalar payload — INT or FLOAT. The canonical variant JOIN reinterprets across cases
+            // (`variant_mixed_join_slots`'s lattice: a float joined with the integer ptr/len/tuple slots of the
+            // other cases → an integer slot), and `emit_variant_mixed_arg_reg_flatten`'s Scalar arm reinterprets
+            // the unboxed value into that join slot (`emit_scalar_coerce_into_slot`). So no int-only guard — a
+            // float scalar case mixed with a mem/tuple case is representable (an all-scalar int↔float mix, with
+            // no mem/tuple case, is not "mixed" here and routes to `VariantScalarsMixed` instead).
             any_scalar = true;
             cases.push((disc as i32, VariantPayloadKind::Scalar(v)));
         } else {

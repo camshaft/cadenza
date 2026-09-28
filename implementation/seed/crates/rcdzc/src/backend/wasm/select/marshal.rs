@@ -1958,8 +1958,9 @@ pub(super) fn emit_variant_record_arg_reg_flatten(
 /// pushing `1 + n` values. The HETEROGENEOUS generalization of the uniform variant marshals: the payload slots
 /// are the position-wise join over all payload cases ([`host::variant_mixed_join_slots`], matching
 /// `wit_ctype::flatten_variant`), and the guest DISPATCHES per case (a nested `if disc==d … else …` chain): a
-/// SCALAR case unboxes its payload into slot 0 (coerced to the joined width — wrap `i64→i32` when slot 0 joined
-/// narrow, else keep `i64`), zeroing the rest; a BYTES case rope-copies its payload into `mem` at the `cursor`
+/// SCALAR case unboxes its payload into slot 0 and coerces it into the joined width via
+/// `emit_scalar_coerce_into_slot` (wrap/extend for an int, reinterpret for a FLOAT joined with the integer
+/// slots of the mem/tuple cases), zeroing the rest; a BYTES case rope-copies its payload into `mem` at the `cursor`
 /// and writes `(ptr → slot 0 extended to the joined width, len → slot 1)`, zeroing the rest, advancing the
 /// cursor; a LIST case marshals its `list<scalar>` payload into `mem` (via [`emit_list_arg_marshal`], which
 /// advances the cursor) and writes `(ptr → slot 0 extended, count → slot 1)`, zeroing the rest; a TUPLE case
@@ -2033,11 +2034,19 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                 out.push(Lir::LocalGet(var_slot));
                 out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload scalar]
                 out.push(Lir::CallImport(read));
-                // Coerce to slot 0's joined width: the unbox `get-int` yields i64; wrap to i32 iff slot 0 joined
-                // narrow (all payload cases contribute an i32 to slot 0), else keep the i64.
-                if read == OP_GET_INT && slot_vts.first() == Some(&ValType::I32) {
-                    out.push(Lir::I32WrapI64);
-                }
+                // Coerce the unboxed value into slot 0's JOINED width. The runtime valtype the read op leaves on
+                // the stack (`get-int` normalizes every integer to i64; `get-float`/`get-float32` an f64/f32) is
+                // reinterpreted/wrapped/extended into the join slot by `emit_scalar_coerce_into_slot` — so a
+                // FLOAT scalar case joined with the integer slots of a mem/tuple case reinterprets correctly.
+                let runtime_vt = match read {
+                    OP_GET_INT => ValType::I64,
+                    OP_GET_BOOL => ValType::I32,
+                    OP_GET_FLOAT => ValType::F64,
+                    OP_GET_FLOAT32 => ValType::F32,
+                    _ => ValType::I64,
+                };
+                let slot0 = slot_vts.first().copied().unwrap_or(ValType::I64);
+                emit_scalar_coerce_into_slot(runtime_vt, slot0, out);
                 out.push(Lir::LocalSet(base_slot)); // slot 0
                 1
             }

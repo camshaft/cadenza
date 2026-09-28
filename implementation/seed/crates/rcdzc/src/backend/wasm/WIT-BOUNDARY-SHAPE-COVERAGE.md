@@ -458,11 +458,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   the tuple case flattens POSITIONALLY inline (one slot per element) joined slot-wise with the scalar case
   (`(disc:i32, i64, i64)`), the emit's Tuple arm marshalling via the shared `emit_tuple_reg_flatten` and coercing
   each element into its joined slot width (element 0 i32→i64 widened via `i64.extend_i32_u`). Gate =
-  `any_scalar && (any_mem || any_tuple)`. REMAINING variant-payload gaps: a mixed LIST case of a NON-scalar element
-  (needs the element WIT threaded), a RECORD compound payload case in a mixed variant, a mixed variant tuple case
-  with a NON-scalar or FLOAT element, and ALL of the compound-payload variants at the FIELD / list-element
-  positions (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case `b(s64,s64)` is ✅ DONE — SHAPE
-  236.)
+  `any_scalar && (any_mem || any_tuple)`. A FLOAT scalar case in a mixed variant is now ✅ DONE / TESTED (SHAPE
+  244): `variant{a, b(f64), c(bytes)}` — the int-only restriction is lifted; the float scalar case joins with the
+  mem case's integer slots via the canonical reinterpret lattice (`variant_mixed_join_slots` already reinterprets;
+  the emit's Scalar arm coerces via `emit_scalar_coerce_into_slot` — `i64.reinterpret_f64` here). REMAINING
+  variant-payload gaps: a mixed LIST case of a NON-scalar element (needs the element WIT threaded), a RECORD
+  compound payload case in a mixed variant (needs the payload record's WIT threaded into the detector — a
+  multi-site change since the detector has only the guest type), a mixed variant tuple case with a NON-scalar or
+  FLOAT element, and ALL of the compound-payload variants at the FIELD / list-element positions
+  (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case `b(s64,s64)` is ✅ DONE — SHAPE 236.)
 - **[emit, ARG-side] a scalar-payload variant MIXING int with float — the reinterpret join — ✅ DONE / TESTED
   (SHAPE 233/234/235).** A `variant{nullary…, scalar-case(s)}` whose payloads mix an integer with a float (or
   `f32` with `f64`) — the case the uniform `HostParam::Variant` declines (its join has no clean slot). Handled by
