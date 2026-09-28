@@ -75,8 +75,6 @@ use grandchild::arm_consumes_binder_grandchild;
 use surplus::collect_surplus_skippable_dups;
 mod static_emit;
 pub(crate) use static_emit::*;
-mod ifjoin_analysis;
-pub(crate) use ifjoin_analysis::*;
 mod ownership;
 mod tailcall;
 pub(crate) use ownership::*;
