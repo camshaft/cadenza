@@ -10944,6 +10944,15 @@ pass	trst1 a `?`-bound value in a `(Ok #set)` Ok arm reclaims on the Err short-c
 pass	trsc1 a `?`-bound Set probed by Set.contains in the Ok arm reclaims the try shell on both paths
 pass	trmtl1 a `?`-bound Map enumerated by Map.to-list in the Ok arm reclaims the try shell on both paths
 pass	trstl1 a `?`-bound Set enumerated by Set.to-list in the Ok arm reclaims the try shell on both paths
+pass	trml1 a `?`-bound Map read by Map.lookup in the Ok arm reclaims the try shell + payload on both paths
+pass	trla1 a `?`-bound List read by List.at in the Ok arm reclaims the try shell + payload on both paths
+pass	trsa1 a `?`-bound String read by String.at in the Ok arm reclaims the try shell + payload on both paths
+pass	trss1 a `?`-bound String read by String.slice in the Ok arm reclaims the try shell + payload on both paths
+pass	trsi1 a `?`-bound Set CONSUMED by Set.insert in the Ok arm reclaims the try shell on both paths
+pass	trmi1 a `?`-bound Map CONSUMED by Map.insert in the Ok arm reclaims the try shell on both paths
+pass	trob1 an Option `?`-bound Set read by Set.len in the Some arm reclaims the try shell on both paths
+pass	troc1 an Option `?`-bound Set CONSUMED by Set.insert in the Some arm reclaims the try shell on both paths
+pass	trbs1 a `?`-bound Bytes sliced by Bytes.slice in the Ok arm — KNOWN-LEAK (queue (e) Bytes.slice buffer-share)
 pass	trm1 a NESTED tuple-rest re-match peels two layers, through an if-selected scrutinee, with a RUNTIME element
 pass	trm1 an export returns a two-element Set (one reachable cell, constructor-application render)
 pass	trm2 an EXACT-arity tuple leaves the rest binder EMPTY, and a rest-only pattern gathers the whole tuple

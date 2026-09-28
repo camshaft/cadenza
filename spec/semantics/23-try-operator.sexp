@@ -1643,6 +1643,223 @@
   (output (: 1 Int64))
   (live-objects 0))
 
+(case
+  "trml1 a `?`-bound Map read by Map.lookup in the Ok arm reclaims the try shell + payload on both paths"
+  (doc
+    "The Map.lookup (fallible-extraction returning a Some(value) view) reclaim companion of trmp1/trmtl1: a
+     `?`-bound scalar builds a `#map` under the Ok arm of a `(Result (Map Int64 Int64) Int64)` boundary, then
+     the arm reads the payload via `(match (Map.lookup m 5) ((Some v) v) ((None) -9))`. Map.lookup BORROWS the
+     map and returns the stored value handle (dup'd so the map keeps its own ref) — a scalar Int64 here — so
+     the extracted view is dead-after. The node#6-nonlen shell-reclaim admit (v-core-opt: Owned + dead-after
+     Core::MatchSum in the fresh-producer set) reclaims the try-materialized scrutinee shell + Map payload on
+     BOTH paths (Err short-circuit re-wraps 111; Ok reads then reclaims). Verified live-objects 0 every path.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok #map((= x x)))) (Result (Map Int64 Int64) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok m) (match (Map.lookup m 5) ((Some v) v) ((None) -9)))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 5 Int64))
+  (live-objects 0))
+
+(case
+  "trla1 a `?`-bound List read by List.at in the Ok arm reclaims the try shell + payload on both paths"
+  (doc
+    "The List.at sibling of trml1: a `?`-bound scalar builds a `#list` under the Ok arm of a
+     `(Result (List Int64) Int64)` boundary, read via `(match (List.at xs 0) ((Some v) v) ((None) -9))`.
+     List.at BORROWS the list and returns the element handle (a scalar Int64 here), dead-after. The
+     node#6-nonlen admit reclaims the try shell + List payload on both paths. Verified live-objects 0.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok #list(x x x))) (Result (List Int64) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok xs) (match (List.at xs 0) ((Some v) v) ((None) -9)))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 5 Int64))
+  (live-objects 0))
+
+(case
+  "trsa1 a `?`-bound String read by String.at in the Ok arm reclaims the try shell + payload on both paths"
+  (doc
+    "The String.at (fallible-extraction returning a Some(char) view) reclaim companion: a `?`-bound scalar
+     builds a runtime String (via String.from-bytes) under the Ok arm of a `(Result String Int64)` boundary,
+     read via `(match (String.at s 0) ((Some c) (String.scalar-len c)) ((None) -9))`. String.at BORROWS the
+     String and returns a char view read by a scalar-len borrow, dead-after. The node#6-nonlen admit reclaims
+     the try shell + String payload on both paths. Verified live-objects 0.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r))
+               (def s (match (String.from-bytes (Bytes.of #list((UInt8.of x)))) ((Some ss) ss) ((None) "")))
+               (Ok s)) (Result String Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok s) (match (String.at s 0) ((Some c) (String.scalar-len c)) ((None) -9)))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
+  "trss1 a `?`-bound String read by String.slice in the Ok arm reclaims the try shell + payload on both paths"
+  (doc
+    "The String.slice sibling of trsa1: a `?`-bound scalar builds a runtime String under the Ok arm of a
+     `(Result String Int64)` boundary, read via `(match (String.slice s 0 1) ((Some sub) (String.scalar-len
+     sub)) ((None) -9))`. String.slice returns a Some(sub) view read by a scalar-len borrow, dead-after (unlike
+     Bytes.slice it does not buffer-share-collide with the shell deep-drop — verified clean under the fix). The
+     node#6-nonlen admit reclaims the try shell + String payload on both paths. Verified live-objects 0.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r))
+               (def s (match (String.from-bytes (Bytes.of #list((UInt8.of x) (UInt8.of x)))) ((Some ss) ss) ((None) "")))
+               (Ok s)) (Result String Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok s) (match (String.slice s 0 1) ((Some sub) (String.scalar-len sub)) ((None) -9)))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
+  "trsi1 a `?`-bound Set CONSUMED by Set.insert in the Ok arm reclaims the try shell on both paths"
+  (doc
+    "The consumed-payload (P7) companion: a `?`-bound scalar builds a `#set` under the Ok arm of a
+     `(Result (Set Int64) Int64)` boundary, then the arm CONSUMES the payload via `(Set.len (Set.insert s 9))`
+     — Set.insert consumes the matched Set and returns a fresh one. The try-materialized scrutinee shell +
+     payload base ref leaked (the shell-reclaim was BLOCKED because the inlined MatchSum scrutinee wasn't in
+     the fresh-producer set) until the node#6-nonlen admit. Verified live-objects 0 both paths.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok #set(x))) (Result (Set Int64) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok s) (Set.len (Set.insert s 9)))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
+  "trmi1 a `?`-bound Map CONSUMED by Map.insert in the Ok arm reclaims the try shell on both paths"
+  (doc
+    "The Map sibling of trsi1 (consumed-payload P7): a `?`-bound scalar builds a `#map` under the Ok arm of a
+     `(Result (Map Int64 Int64) Int64)` boundary, CONSUMED via `(Map.len (Map.insert m 9 9))`. Same shell-
+     reclaim block until the node#6-nonlen admit; verified live-objects 0 both paths.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok #map((= x x)))) (Result (Map Int64 Int64) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok m) (Map.len (Map.insert m 9 9)))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+; --- OPTION-BOUNDARY companions (found tick #205: v-core-opt's (b)/(c) fix covers the Option `?` boundary
+;     too — the inlined Option MatchSum is ALSO Owned+dead-after → admitted. Both clean under 372c0bd5a0;
+;     O2-consume was +2 on clean main. Payloadless None failure arm needs no equalize; the CONSUME case
+;     still needs the shell-reclaim admit, which the fix provides.) ---
+
+(case
+  "trob1 an Option `?`-bound Set read by Set.len in the Some arm reclaims the try shell on both paths"
+  (doc
+    "The Option-boundary borrow companion of trsi1/trmi1: a `?`-bound scalar builds a `#set` under the Some
+     arm of an `(Option (Set Int64))` boundary (payloadless None failure arm), read via `(Set.len s)`. The
+     node#6-nonlen admit reclaims the try-materialized Option MatchSum shell + Set payload on both paths
+     (None short-circuit → -1; Some → borrow-then-reclaim). Verified live-objects 0.")
+  (input
+    (do
+      (def (mk (: o (Option Int64)))
+        (: (do (def x (try o)) (Some #set(x))) (Option (Set Int64))))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Some 5) None))
+          ((Some s) (Set.len s))
+          ((None) -1)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: -1 Int64))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
+  "troc1 an Option `?`-bound Set CONSUMED by Set.insert in the Some arm reclaims the try shell on both paths"
+  (doc
+    "The Option-boundary CONSUME companion (the (c) P7 shape over an Option `?`): a `?`-bound scalar builds a
+     `#set` under the Some arm of an `(Option (Set Int64))` boundary, CONSUMED via `(Set.len (Set.insert s
+     9))`. The try-materialized Option MatchSum scrutinee shell + payload base ref leaked (+2 on the Some
+     path) until the node#6-nonlen admit (the inlined Option MatchSum is Owned + dead-after → admitted to the
+     fresh-producer set, same as the Result boundary). Verified live-objects 0 both paths.")
+  (input
+    (do
+      (def (mk (: o (Option Int64)))
+        (: (do (def x (try o)) (Some #set(x))) (Option (Set Int64))))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Some 5) None))
+          ((Some s) (Set.len (Set.insert s 9)))
+          ((None) -1)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: -1 Int64))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case
+  "trbs1 a `?`-bound Bytes sliced by Bytes.slice in the Ok arm — KNOWN-LEAK (queue (e) Bytes.slice buffer-share)"
+  (doc
+    "The Bytes.slice sibling of the node#6-nonlen family — DELIBERATELY a KNOWN-LEAK, not live-objects 0. A
+     `?`-bound scalar builds a runtime Bytes under the Ok arm of a `(Result Bytes Int64)` boundary, read via
+     `(match (Bytes.slice bs 0 2) ((Some sl) (Bytes.len sl)) ((None) -9))`. UNLIKE the other fallible-
+     extractions (Map.lookup/List.at/String.at/String.slice — all admitted to the try-shell reclaim, live-
+     objects 0), Bytes.slice is EXCLUDED from the node#6-nonlen admit: op_bytes_slice returns a view SHARING
+     bs's buffer without an independent buffer rc, so admitting the shell deep-drop DOUBLE-FREES the buffer the
+     slice view still points at (traps even view-unused — v-memory-safety caught this UAF on the pre-push fix,
+     tick #197/#198). Leak-over-UAF: BytesSlice stays consuming/declines, so the shell + payload safe-LEAK
+     rather than trap. Pinned known-leak to LOCK the exclusion (it must never silently start trapping again);
+     flips to live-objects 0 when queue (e) gives op_bytes_slice a clean independent buffer rc.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok (Bytes.of #list((UInt8.of x) (UInt8.of x) (UInt8.of x))))) (Result Bytes Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok bs) (match (Bytes.slice bs 0 2) ((Some sl) (Bytes.len sl)) ((None) -9)))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64))
+  (live-objects known-leak))
+
 ; trnt1 (TODO): the NESTED try `(try (try rr))` — a `?` whose OPERAND is itself a `?`. The desugar for
 ; this is known and small (inner-first hoisting in `find_hoistable_try`'s `(try e)` arm: descend the
 ; operand FIRST so `(try (try rr))` lifts to `(let ((a (try rr))) (let ((b (try a))) …))`, each level a
