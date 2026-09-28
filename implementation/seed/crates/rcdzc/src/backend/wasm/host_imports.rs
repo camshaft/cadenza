@@ -465,24 +465,33 @@ pub(super) fn record_field_cref(
             table.push(emit_cdef(&CDef::Variant(vcases)));
             CRef::Idx(var_def + 1)
         }
-        // A tuple-payload `variant` field: only reaches here at a REGISTER-flattened record/tuple ARG position,
-        // which this increment declines at emit (a LIST element / mem product-field crosses via a WIT-driven
-        // CRef, not this builder). Lay a best-effort well-formed `variant` DEFINED type with one payload case
-        // carrying the payload `(tuple <elem>…)` — discarded when the op declines, but keeps the type table
-        // children-first and structurally valid.
-        host::RecordFieldAbi::VariantTuple(elems) => {
-            let elem_crefs: Vec<CRef> = elems
+        // A tuple-payload `variant` field: lay the payload `(tuple <elem>…)` DEFINED type (children-first), then a
+        // `variant` DEFINED type over ALL cases in DECLARATION order — the `tuple_disc` case referencing the tuple,
+        // the rest nullary — and reference the variant's EXPORT index. The register-flatten
+        // (`emit_variant_tuple_arg_reg_flatten`) crosses `(disc, e0, …)` against exactly this type. (For a LIST
+        // element / mem product-field the CRef is WIT-driven, not built here.)
+        host::RecordFieldAbi::VariantTuple {
+            case_names,
+            tuple_disc,
+            elem_abis,
+        } => {
+            let elem_crefs: Vec<CRef> = elem_abis
                 .iter()
                 .map(|e| record_field_cref(e, list_idx, base, table))
                 .collect();
             let tup_def = base + 2 * table.len() as u32;
             table.push(emit_cdef(&CDef::Tuple(elem_crefs)));
             let tup_export = tup_def + 1;
+            let vcases: Vec<(String, Option<CRef>)> = case_names
+                .iter()
+                .enumerate()
+                .map(|(d, name)| {
+                    let payload = (d as u32 == *tuple_disc).then_some(CRef::Idx(tup_export));
+                    (name.clone(), payload)
+                })
+                .collect();
             let var_def = base + 2 * table.len() as u32;
-            table.push(emit_cdef(&CDef::Variant(vec![(
-                "c".to_string(),
-                Some(CRef::Idx(tup_export)),
-            )])));
+            table.push(emit_cdef(&CDef::Variant(vcases)));
             CRef::Idx(var_def + 1)
         }
         // A payload-less `enum` field: lay an `enum` DEFINED type (NOMINAL → the export-aware remap gives it

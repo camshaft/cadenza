@@ -9479,3 +9479,34 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level record{v: variant{go, stop(tuple<s32,s64>)}, n: s64} host-op arg crosses (register-flattened variant-tuple FIELD)"
+  (doc
+    "SHAPE 256 (v-wit-boundary) — a top-level `record{v: variant{go, stop(tuple<s32,s64>)}, n: s64}` bare host-op
+           ARGUMENT (probe.push), register-flattened. A tuple-payload `variant` as a RECORD FIELD at a REGISTER
+           position (not in `mem`). Closes the gap the SHAPE 254/255 correction left open: `field_boundary_abi`
+           returns `RecordFieldAbi::VariantTuple` (carrying the case names + tuple disc + element ABIs), and
+           `emit_record_arg_marshal` now flattens the field POSITIONALLY to `(disc:i32, e0, e1)` via
+           `emit_variant_tuple_arg_reg_flatten` (the SAME helper the top-level bare variant-tuple ARG uses, SHAPE
+           236) — where before this FIELD position DECLINED. `record_field_cref` builds the field's component
+           `variant` type (all cases in declaration order, the tuple case carrying `(tuple <elem>…)`); serialize
+           flattens `(disc, e0, e1)` — the two agree. The record's fields cross in WIT DECLARATION order (v, n),
+           so the guest name-lex order (n, v) is REORDERED (`reorder_record_fields_to_wit`) — exercised here. The
+           record flattens overall to `(v-disc:i32, e0:i32, e1:i64, n:i64)`. run() builds { v: Stop((3,7)), n: 5 }
+           and performs probe.push; a VALID running component (live-objects=0) pins the register field round-trip.
+           (The bare `tuple<variant-tuple, …>` ARG element position remains a clean decline — a later slice.)")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= v (variant (go) (stop (tuple (s32) (s64))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop (Tuple Int32 Int64)))
+      (effect probe (op push (-> (Record (: v Sig) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Sig.Stop #tuple(3 7))) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

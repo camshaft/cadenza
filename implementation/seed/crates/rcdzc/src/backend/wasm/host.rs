@@ -264,7 +264,9 @@ pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
         // A `variant` with only SCALAR payloads (this increment's scope) never reaches `(list u8)`.
         RecordFieldAbi::Variant(_) => false,
         // A tuple-payload `variant` reaches `(list u8)` iff any tuple element does (all-scalar → false).
-        RecordFieldAbi::VariantTuple(elems) => elems.iter().any(record_field_abi_reaches_bytes),
+        RecordFieldAbi::VariantTuple { elem_abis, .. } => {
+            elem_abis.iter().any(record_field_abi_reaches_bytes)
+        }
         // A payload-less `enum` is a bare disc — never reaches `(list u8)`.
         RecordFieldAbi::Enum(_) => false,
         // A `flags` field packs into i32 bitset word(s) — never reaches `(list u8)`.
@@ -291,10 +293,12 @@ pub fn record_field_abi_needs_memory(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::Option(payload) => record_field_abi_needs_memory(payload),
         // A `variant` with only SCALAR payloads flattens to `(disc, scalar)` core slots — no memory.
         RecordFieldAbi::Variant(_) => false,
-        // A tuple-payload `variant` is written in place at its canonical variant layout (disc + the payload
-        // tuple) by `emit_variant_to_mem` — it MARSHALS INTO MEMORY, so as a list element / mem product field
-        // (or a record/tuple FIELD that reaches it) it forces `set_needs_memory`.
-        RecordFieldAbi::VariantTuple(_) => true,
+        // A tuple-payload `variant` FIELD flattens (canonical variant flatten) POSITIONALLY to `(disc, e0, e1,
+        // …)` core slots — no memory, like the scalar `Variant`. When it is written to MEMORY instead (as a
+        // `list<…variant-tuple…>` element / nested under a list), the enclosing `HostParam::List(_) => true` arm
+        // forces the shared memory; a variant-tuple never reaches mem OUTSIDE a list (a top-level record/tuple
+        // arg is register-flattened), so this stays `false` and avoids a spurious memory on a pure-register op.
+        RecordFieldAbi::VariantTuple { .. } => false,
         // A payload-less `enum` flattens to a single `i32` disc — no memory.
         RecordFieldAbi::Enum(_) => false,
         // A `flags` field packs into i32 bitset word(s) inline — no memory.
@@ -365,12 +369,19 @@ pub enum RecordFieldAbi {
     Variant(Vec<(String, Option<AbiValType>)>),
     /// A general `variant { c0, c1(tuple<…>), … }` field whose ONE payload-bearing case carries a TUPLE of
     /// scalars (the rest nullary) — the compound-payload sibling of [`Variant`](RecordFieldAbi::Variant). Carries
-    /// the tuple case's element ABIs (all scalar this increment). As a LIST element or a mem PRODUCT field it is
-    /// written in place at its canonical variant layout (disc + the payload tuple at the payload offset) by
-    /// `select::emit_variant_to_mem`'s tuple arm — so it MARSHALS INTO MEMORY (needs mem). At a REGISTER-flattened
-    /// position (a bare-`tuple`/`record` ARG field) it is NOT yet emitted and DECLINES honestly. The element ABIs
-    /// let [`record_field_abi_reaches_bytes`] recurse (all-scalar → no `(list u8)`).
-    VariantTuple(Vec<RecordFieldAbi>),
+    /// the case NAMES (kebab, DECLARATION = discriminant order), the tuple case's DISCRIMINANT, and the tuple's
+    /// element ABIs (all scalar this increment). As a LIST element or a mem PRODUCT field it is written in place at
+    /// its canonical variant layout (disc + the payload tuple at the payload offset) by
+    /// `select::emit_variant_to_mem`'s tuple arm — so it MARSHALS INTO MEMORY (needs mem). As a REGISTER-flattened
+    /// RECORD field it flattens (canonical variant flatten) POSITIONALLY to `(disc:i32, e0, e1, …)` via
+    /// `select::emit_variant_tuple_arg_reg_flatten`; its component `variant` type (with the tuple case's `(tuple
+    /// <elem>…)` payload) is built by [`record_field_cref`]. The element ABIs let [`record_field_abi_reaches_bytes`]
+    /// recurse (all-scalar → no `(list u8)`).
+    VariantTuple {
+        case_names: Vec<String>,
+        tuple_disc: u32,
+        elem_abis: Vec<RecordFieldAbi>,
+    },
     /// A payload-less `enum` field (a `Sum` whose every variant is nullary) — crosses as a component `enum`
     /// DEFINED type, ONE `i32` core slot (the discriminant, in declaration = discriminant order). The guest
     /// reads the value-heap sum's `sum-disc` (a payloadless enum's in-guest rep is a bare disc) and writes it
@@ -1461,9 +1472,9 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
             }
             // A `variant { c0, c1(tuple<…>), … }` field whose ONE payload case carries a TUPLE of scalars — the
             // compound-payload sibling. As a LIST element / mem PRODUCT field it is written in place by
-            // `emit_variant_to_mem`'s tuple arm (so the classifier can build `HostParam::List`/`Tuple` and force
-            // `set_needs_memory`); at a REGISTER-flattened arg-field position the emit declines honestly. Carries
-            // the tuple case's element ABIs (all scalar this increment).
+            // `emit_variant_to_mem`'s tuple arm; as a REGISTER-flattened RECORD field it flattens to `(disc, e0,
+            // …)` via `emit_variant_tuple_arg_reg_flatten`. Carries the case names (declaration order), the tuple
+            // case's disc, and the tuple element ABIs (all scalar this increment).
             if let Some((tuple_disc, _)) = variant_tuple_payload_case(db, ty) {
                 let tuple_ty =
                     crate::backend::wasm::select::variant_payload_ty_at(db, ty, tuple_disc as u32)?;
@@ -1475,7 +1486,22 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                 for e in &elems {
                     elem_abis.push(field_boundary_abi(db, e)?);
                 }
-                return Some(RecordFieldAbi::VariantTuple(elem_abis));
+                use crate::backend::common::export_name::kebab_extern_name;
+                let Ty::Sum { decl, .. } = ty.strip_nominal() else {
+                    return None;
+                };
+                let case_names: Vec<String> = {
+                    let d = db.type_decl_by_occ(*decl)?;
+                    d.variants
+                        .iter()
+                        .map(|v| kebab_extern_name(&v.name))
+                        .collect()
+                };
+                return Some(RecordFieldAbi::VariantTuple {
+                    case_names,
+                    tuple_disc: tuple_disc as u32,
+                    elem_abis,
+                });
             }
             None
         }
