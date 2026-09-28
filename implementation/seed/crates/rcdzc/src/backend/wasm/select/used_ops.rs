@@ -110,6 +110,20 @@ pub(super) fn collect_record_field_ops(
                 out.insert(read);
             }
         }
+        // A `variant{nullary…, one tuple case}` field (`emit_variant_to_mem`'s tuple arm): the marshal `arr-get`s
+        // the variant, reads `sum-disc`, and on the tuple case `sum-payload` + the payload tuple's ops (`arr-get`
+        // per element + each element's unbox), collected via the shared `collect_list_elem_ops` on the tuple type.
+        _ if crate::backend::wasm::host::variant_tuple_payload_case(db, fty).is_some() => {
+            out.insert(OP_ARR_GET);
+            out.insert(OP_SUM_DISC);
+            out.insert(OP_SUM_PAYLOAD);
+            if let Some((tuple_disc, _)) =
+                crate::backend::wasm::host::variant_tuple_payload_case(db, fty)
+                && let Some(tuple_ty) = variant_payload_ty_at(db, fty, tuple_disc as u32)
+            {
+                collect_list_elem_ops(db, &tuple_ty, out);
+            }
+        }
         _ => {
             if let Ty::Record(sub) = fty {
                 out.insert(OP_ARR_GET);

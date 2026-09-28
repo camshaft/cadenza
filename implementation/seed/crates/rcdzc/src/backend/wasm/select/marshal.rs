@@ -565,11 +565,14 @@ pub(super) fn emit_product_to_mem(
                     out,
                 )?;
             }
-            // A general `variant<scalar>` field: write it at `dest_addr + foff` per the canonical variant
-            // layout (disc + uniform scalar payload) via `emit_variant_to_mem` — the N-case generalization of
-            // the option field arm. Its base address is computed into a temp (the writer's store offsets are
-            // relative to that base). Reuses the proven variant memory-writer wholesale.
-            None if crate::backend::wasm::host::variant_scalar_payload_cases(db, fty).is_some() => {
+            // A general `variant` field (uniform SCALAR payload, or a SINGLE tuple-of-scalars payload case +
+            // nullary rest): write it at `dest_addr + foff` per the canonical variant layout (disc + payload) via
+            // `emit_variant_to_mem`, which internally dispatches the scalar vs tuple payload shape — the N-case
+            // generalization of the option field arm. Its base address is computed into a temp (the writer's
+            // store offsets are relative to that base). Reuses the proven variant memory-writer wholesale.
+            None if crate::backend::wasm::host::variant_scalar_payload_cases(db, fty).is_some()
+                || crate::backend::wasm::host::variant_tuple_payload_case(db, fty).is_some() =>
+            {
                 let var_slot = work_base + 3;
                 let field_addr = work_base + 4;
                 scratch_ty.insert(var_slot, ValType::I32);

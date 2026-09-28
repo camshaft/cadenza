@@ -9452,3 +9452,30 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level list<tuple<variant{go, stop(tuple<s32,s64>)}, s64>> host-op arg crosses (tuple-payload variant as a product FIELD in mem)"
+  (doc
+    "SHAPE 255 (v-wit-boundary) — a top-level `list<tuple<variant{go, stop(tuple<s32,s64>)}, s64>>` bare host-op
+           ARGUMENT (probe.push): each list element is a TUPLE whose first FIELD is a tuple-payload variant. Extends
+           SHAPE 254 (the tuple-payload variant as a bare list ELEMENT) to the PRODUCT-FIELD position, reusing the
+           SAME `emit_variant_to_mem` tuple writer with NO new emit: `emit_product_to_mem`'s variant-field arm now
+           admits a `variant_tuple_payload_case` (its gate previously scalar-only), and `product_field_marshalable`
+           / `collect_record_field_ops` gained the tuple-variant admission + ops in lockstep. A tuple element is
+           purely POSITIONAL so no WIT field reorder is involved. run() builds [((Stop((3,7)), 5), (Go, 9))] and
+           performs probe.push, exercising the tuple case (payload) and the nullary case (Go) at a product field
+           beside a scalar field; a VALID running component (live-objects=0) pins the field-position round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (tuple (variant (go) (stop (tuple (s32) (s64)))) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop (Tuple Int32 Int64)))
+      (effect probe (op push (-> (List (Tuple Sig Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #list(#tuple((Sig.Stop #tuple(3 7)) 5) #tuple(Sig.Go 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

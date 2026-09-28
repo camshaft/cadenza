@@ -382,9 +382,16 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   region); the payload offset + region size come from `canonical_layout`'s Sum arm, so they agree byte-for-byte
   with the per-element stride the list marshal reserves. `list_elem_marshalable` admits it (after the uniform
   scalar-variant arm, which declines a tuple payload) and `collect_list_elem_ops` declares its ops via the shared
-  tuple arm. REMAINING at mem: a HETEROGENEOUS scalar+tuple mix (per-case dispatch), a Bytes/nested-compound tuple
-  element, and the RECORD-FIELD position (gated scalar-only by `product_field_marshalable` /
-  `RecordFieldAbi::Variant` — a separate slice needing the field-abi to carry a compound payload).
+  tuple arm.
+- **[emit] a TUPLE-payload `variant` at a product FIELD position (record field / tuple element, in `mem`) — ✅ DONE / TESTED (SHAPE 255).**
+  Extends SHAPE 254 to the PRODUCT-FIELD position with NO new emit: `emit_product_to_mem`'s variant-field arm gate
+  (previously `variant_scalar_payload_cases` only) now also admits `variant_tuple_payload_case`, reusing the same
+  `emit_variant_to_mem` tuple writer at `dest_addr + foff`; `product_field_marshalable` and `collect_record_field_ops`
+  gained the tuple-variant admission + ops in lockstep. A tuple element is purely POSITIONAL → no WIT field reorder.
+  Pinned by a `list<tuple<variant{go, stop(tuple<s32,s64>)}, s64>>` arg (a variant field beside a scalar field).
+  REMAINING at mem: a HETEROGENEOUS scalar+tuple mix (per-case dispatch), a Bytes/nested-compound tuple element, a
+  RECORD (named-field, WIT-ordered) payload case (needs WIT threading into `emit_variant_to_mem`), and the
+  top-level `RecordFieldAbi::Variant` bare-variant-field position (needs the field-abi to carry a compound payload).
   REMAINING variant gaps: a RECORD compound payload case in a MIXED variant (the TUPLE compound payload
   case in a mixed variant is now ✅ DONE — SHAPE 243, `VariantPayloadKind::Tuple`; the ≥3-payload-case mem join is
   ✅ DONE — SHAPE 242). (The mixed

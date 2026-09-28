@@ -2023,6 +2023,11 @@ fn product_field_marshalable(db: &mut Db, f: &Ty) -> bool {
         // `list<tuple<variant, …>>`): written in place by `select::emit_variant_to_mem`. Detected after
         // option (option takes its own arm); this is the residual general scalar-payload variant.
         || variant_scalar_payload_cases(db, f).is_some()
+        // A `variant{nullary…, one tuple case}` field of a product element (`list<record{v: variant{…,
+        // b(tuple<…>)}, …}>` / `list<tuple<variant{…, b(tuple<…>)}, …>>`): the SAME `emit_variant_to_mem`
+        // writer lays the disc + the payload tuple at the canonical payload offset (its tuple-payload arm).
+        // Detected after the scalar-variant arm (that arm declines a tuple payload).
+        || variant_tuple_payload_case(db, f).is_some()
         // A payload-less `enum` field of a product element (`list<record{e: enum, …}>`): written in place as
         // its disc at the enum's canonical width. Detected after variant (both are Sums; `enum_cases` requires
         // ALL-nullary variants). The product-element analogue of the top-level record enum FIELD (SHAPE 174).
