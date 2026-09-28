@@ -1635,6 +1635,21 @@ pub(super) fn collect_used_ops_into_seen(
                                         out.insert(OP_VEC_GET);
                                         collect_list_elem_ops(db, elem, out);
                                     }
+                                    VariantPayloadKind::Tuple(_) => {
+                                        // The tuple payload is flattened via `emit_tuple_reg_flatten`:
+                                        // `arr-get` to index the tuple handle + each element's unbox op.
+                                        out.insert(OP_ARR_GET);
+                                        if let Some(pty) =
+                                            variant_payload_ty_at(db, &at, *cd as u32)
+                                            && let crate::ty::Ty::Tuple(elems) = pty.strip_nominal()
+                                        {
+                                            for ety in elems.iter() {
+                                                if let Ok(Some(read)) = get_op_ty(db, ety) {
+                                                    out.insert(read);
+                                                }
+                                            }
+                                        }
+                                    }
                                     VariantPayloadKind::Bytes => {} // bytes-len/bytes-get declared above
                                 }
                             }

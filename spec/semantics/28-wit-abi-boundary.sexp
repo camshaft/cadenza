@@ -9005,3 +9005,45 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a MIXED variant{a, b(s64), c(s32,s64)} with a scalar case + a TUPLE(multi-payload) case as a host-op arg (imposed WIT)"
+  (doc
+    "SHAPE 243 (v-wit-boundary) — a `variant{a, b(s64), c(tuple<s32,s64>)}` passed BARE as the TOP-LEVEL host-op
+           ARGUMENT (probe.push), the FIRST MIXED variant whose payload cases mix a SCALAR case (b: s64) with a
+           TUPLE case (c, a MULTI-payload ctor `(C Int32 Int64)` whose payloads `variant_payload_ty_at` synthesizes
+           into a `tuple<s32,s64>`; its runtime rep is a tuple handle). A single tuple case is `HostParam::
+           VariantTuple` (SHAPE 236) and an all-scalar mix is `HostParam::Variant`/`VariantScalarsMixed`; the
+           heterogeneous scalar+tuple mix routes to `HostParam::VariantMixed` via the new `VariantPayloadKind::
+           Tuple(elem-abis)`. The tuple case flattens POSITIONALLY inline (one core slot per element), joined
+           slot-wise with the scalar case: b's `[i64]`, c's `[i32, i64]` join to slot0=`join(i64,i32)=i64`,
+           slot1=`join(-, i64)=i64` (`host::variant_mixed_join_slots`), so the core flatten is `(disc:i32, i64,
+           i64)`. `emit_variant_mixed_arg_reg_flatten`'s Tuple arm marshals the payload via the shared
+           `emit_tuple_reg_flatten` and COERCES each element into its joined slot width — element 0 is a NATURAL
+           i32 joined to i64, so it is widened `i64.extend_i32_u` (the coercion this shape exercises); element 1
+           (i64) stays. The scalar case b unboxes into slot0 (i64), zeroing slot1; a (nullary) zeroes both. run()
+           performs THREE pushes — `(B 42)`, `(C (: 1 Int32) 2)`, `A` — exercising all three arms; a VALID running
+           component that TYPE-CHECKS the flatten against the declared `variant` (a missed widen would leave an
+           i32 where the i64 slot is required → validation error) with live-objects=0 pins the tuple-payload mixed
+           variant + the per-element join coercion. This closes the compound (tuple)-variant-payload-at-ARG gap in
+           the MIXED position.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (s64)) (c (tuple (s32) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C Int32 Int64))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B 42)) (probe.push (V.C (: 1 Int32) 2)) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

@@ -1004,16 +1004,20 @@ pub fn variant_record_payload_case(db: &mut Db, ty: &Ty) -> Option<(i32, Ty)> {
 }
 
 /// One payload case's kind for a MIXED-payload variant ([`variant_mixed_payload_cases`]): a `Scalar` (unboxed
-/// into its join slot), a `Bytes`/`String` (rope-copied into `mem`, contributing a `(ptr, len)` pair), or a
-/// `List<scalar>` (marshaled into `mem` as an inline element array, contributing a `(ptr, count)` pair). The
-/// `Bytes` and `List` kinds share the two-i32-slot `(ptr, len|count)` mem flatten; a `List`'s element `Ty` is
-/// carried so the marshal can lay the element array and `used_ops` can declare the element's ops. A tuple/record
-/// payload case in a mixed variant is still a later increment.
+/// into its join slot), a `Bytes`/`String` (rope-copied into `mem`, contributing a `(ptr, len)` pair), a
+/// `List<scalar>` (marshaled into `mem` as an inline element array, contributing a `(ptr, count)` pair), or a
+/// `Tuple` (a multi-payload / `tuple`-typed case flattened POSITIONALLY inline — one core slot per scalar
+/// element, joined slot-wise with the other cases). The `Bytes` and `List` kinds share the two-i32-slot
+/// `(ptr, len|count)` mem flatten; a `List`'s element `Ty` is carried so the marshal can lay the element array
+/// and `used_ops` can declare the element's ops; a `Tuple` carries its elements' scalar ABI types (all integer
+/// this increment) so the join + marshal know each inline slot's width. A record payload case in a mixed
+/// variant is still a later increment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VariantPayloadKind {
     Scalar(AbiValType),
     Bytes,
     List(Ty),
+    Tuple(Vec<AbiValType>),
 }
 
 /// ARG-SIDE: whether `ty` is a variant whose payload cases MIX at least one `Scalar` case with at least one
@@ -1025,9 +1029,9 @@ pub enum VariantPayloadKind {
 /// `i64`). The guest `select::emit_variant_mixed_arg_reg_flatten` branches per case (scalar → unbox into slot 0
 /// coerced to the joined width; bytes → rope-copy at the cursor → `(ptr,len)`; nullary → zero the slots). The
 /// component boundary type is the declared `variant` DEFINED type (structural WIT). Excludes option/result sums.
-/// Scoped to Scalar + Bytes + List-of-scalar payload kinds (a tuple/record payload case, or a list of a
-/// non-scalar element, is a later increment); a payload that mixes int with float across cases is declined
-/// (the join reinterpret is a later increment).
+/// Scoped to Scalar + Bytes + List-of-scalar + Tuple-of-scalars payload kinds (a record payload case, a list
+/// of a non-scalar element, or a tuple with a non-scalar element, is a later increment); a payload that mixes
+/// int with float across cases is declined (the join reinterpret is a later increment).
 pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, VariantPayloadKind)>> {
     let Ty::Sum { decl, .. } = ty.strip_nominal() else {
         return None;
@@ -1043,47 +1047,74 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
     let mut cases: Vec<(i32, VariantPayloadKind)> = Vec::new();
     let mut any_scalar = false;
     let mut any_mem = false; // a Bytes OR List case — both take the two-i32-slot `(ptr, len|count)` mem flatten
+    let mut any_tuple = false; // a multi-payload / `tuple`-typed case — inline positional flatten (N slots)
     let mut float_seen: Option<bool> = None; // track int-vs-float to reject an int↔float cross-case join
     for (disc, n) in payload_counts.into_iter().enumerate() {
-        match n {
-            0 => {} // a nullary case → no payload slot
-            1 => {
-                let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
-                if matches!(pty.strip_nominal(), Ty::Bytes | Ty::String) {
-                    any_mem = true;
-                    cases.push((disc as i32, VariantPayloadKind::Bytes));
-                } else if let Ty::List(inner) = pty.strip_nominal() {
-                    // A `list<scalar>` payload case: it marshals into `mem` as an inline element array →
-                    // `(ptr, count)`, the SAME two-i32-slot mem flatten as a Bytes case. Scoped to a scalar
-                    // element this increment — an offset-agnostic element the marshal lays with `elem_wit = None`
-                    // (a record/tuple/nested-list element would need the element WIT threaded, a later increment).
-                    abi_val_type(inner)?;
-                    any_mem = true;
-                    cases.push((disc as i32, VariantPayloadKind::List((**inner).clone())));
-                } else if let Some(v) = abi_val_type(&pty) {
-                    let is_float = matches!(v, AbiValType::F32 | AbiValType::F64);
-                    // The Bytes cases contribute integer (ptr/len) slots; a float scalar joined with them needs
-                    // the reinterpret lattice — a later increment. Reject any float scalar in a mixed variant.
-                    if is_float {
-                        return None;
-                    }
-                    match float_seen {
-                        None => float_seen = Some(is_float),
-                        Some(prev) if prev == is_float => {}
-                        Some(_) => return None,
-                    }
-                    any_scalar = true;
-                    cases.push((disc as i32, VariantPayloadKind::Scalar(v)));
-                } else {
-                    return None; // a list/tuple/record payload case → a later increment
+        if n == 0 {
+            continue; // a nullary case → no payload slot
+        }
+        // `variant_payload_ty_at` yields the case's payload type: the actual type for a single payload (n==1),
+        // or a SYNTHESIZED `tuple` of the payload types for a multi-payload case (n>=2, whose runtime rep is a
+        // tuple handle). Classify it once — this unifies the n==1 and n>=2 arms.
+        let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
+        let stripped = pty.strip_nominal();
+        if matches!(stripped, Ty::Bytes | Ty::String) {
+            any_mem = true;
+            cases.push((disc as i32, VariantPayloadKind::Bytes));
+        } else if let Ty::List(inner) = stripped {
+            // A `list<scalar>` payload case: it marshals into `mem` as an inline element array →
+            // `(ptr, count)`, the SAME two-i32-slot mem flatten as a Bytes case. Scoped to a scalar
+            // element this increment — an offset-agnostic element the marshal lays with `elem_wit = None`
+            // (a record/tuple/nested-list element would need the element WIT threaded, a later increment).
+            abi_val_type(inner)?;
+            any_mem = true;
+            cases.push((disc as i32, VariantPayloadKind::List((**inner).clone())));
+        } else if let Ty::Tuple(elems) = stripped {
+            // A TUPLE payload case (a `tuple`-typed single payload OR a multi-payload case): it flattens
+            // POSITIONALLY inline to one core slot per element, joined slot-wise with the other cases. Scoped
+            // to all-INTEGER-scalar elements this increment (a float element would need the reinterpret join;
+            // a Bytes/list/nested-compound element the cursor + a richer flatten — later increments).
+            let mut abis = Vec::with_capacity(elems.len());
+            for ety in elems.iter() {
+                let v = abi_val_type(ety)?;
+                if matches!(v, AbiValType::F32 | AbiValType::F64) {
+                    return None;
                 }
+                abis.push(v);
             }
-            _ => return None, // a multi-payload case → a later increment
+            if abis.is_empty() {
+                return None;
+            }
+            match float_seen {
+                None => float_seen = Some(false),
+                Some(false) => {}
+                Some(true) => return None,
+            }
+            any_tuple = true;
+            cases.push((disc as i32, VariantPayloadKind::Tuple(abis)));
+        } else if let Some(v) = abi_val_type(&pty) {
+            let is_float = matches!(v, AbiValType::F32 | AbiValType::F64);
+            // The Bytes/List cases contribute integer (ptr/len) slots; a float scalar joined with them needs
+            // the reinterpret lattice — a later increment. Reject any float scalar in a mixed variant.
+            if is_float {
+                return None;
+            }
+            match float_seen {
+                None => float_seen = Some(is_float),
+                Some(prev) if prev == is_float => {}
+                Some(_) => return None,
+            }
+            any_scalar = true;
+            cases.push((disc as i32, VariantPayloadKind::Scalar(v)));
+        } else {
+            return None; // a record payload case → a later increment
         }
     }
-    // MIXED means a scalar payload case AND a mem payload case (Bytes or List) are both present (else the
-    // uniform detectors handle it).
-    (any_scalar && any_mem).then_some(cases)
+    // MIXED means a scalar payload case AND a multi-slot payload case — a mem case (Bytes/List, two `(ptr,
+    // len|count)` slots) OR a tuple case (N inline slots) — are both present. A variant whose payload cases are
+    // ALL single scalars is handled by the uniform `Variant`/`VariantScalarsMixed` detectors; a SINGLE
+    // tuple/mem case (+ nullary) by `variant_tuple_payload_case`/`variant_bytes_payload_cases`.
+    (any_scalar && (any_mem || any_tuple)).then_some(cases)
 }
 
 /// The canonical variant-flatten PAYLOAD slots (core valtype bytes, EXCLUDING the leading disc) for a mixed
@@ -1109,6 +1140,8 @@ pub fn variant_mixed_join_slots(cases: &[(i32, VariantPayloadKind)]) -> Vec<u8> 
             VariantPayloadKind::Scalar(v) => vec![v.core_byte()],
             // A Bytes case → `(ptr, len)`; a List case → `(ptr, count)` — both two i32 slots.
             VariantPayloadKind::Bytes | VariantPayloadKind::List(_) => vec![CORE_I32, CORE_I32],
+            // A Tuple case → one core slot per element, positionally.
+            VariantPayloadKind::Tuple(abis) => abis.iter().map(|a| a.core_byte()).collect(),
         };
         for (i, cb) in case_flat.into_iter().enumerate() {
             if i < flat.len() {
@@ -3131,10 +3164,12 @@ pub fn set_needs_memory(imports: &[HostImport]) -> bool {
             // A `variant{…, list<scalar>-case(s)}` marshals a list case's payload backing into `mem`
             // (`emit_variant_list_arg_reg_flatten` → `emit_list_arg_marshal`), so it needs `mem` too.
             HostParam::VariantList(_) => true,
-            // A MIXED `variant{…, scalar-case(s), bytes/list-case(s)}` writes a bytes case's rope OR a list
-            // case's element backing into `mem` (`emit_variant_mixed_arg_reg_flatten`), so it needs `mem` too
-            // (a mixed variant always has ≥1 mem case — Bytes or List — by construction).
-            HostParam::VariantMixed(_) => true,
+            // A MIXED `variant` needs `mem` IFF it has a mem payload case — a Bytes case (rope copy) or a List
+            // case (element backing) — that `emit_variant_mixed_arg_reg_flatten` writes into linear memory. A
+            // scalar + TUPLE mix is register-only (positional inline flatten), so it needs no `mem`.
+            HostParam::VariantMixed(cases) => cases
+                .iter()
+                .any(|(_, k)| matches!(k, VariantPayloadKind::Bytes | VariantPayloadKind::List(_))),
             // A `result<record, enum>` needs `mem` iff its Ok record has a field that marshals into memory (a
             // Bytes/list field — a record of only scalars flattens to registers, no mem). Mirrors the direct
             // `HostParam::Record` arm's per-field check.

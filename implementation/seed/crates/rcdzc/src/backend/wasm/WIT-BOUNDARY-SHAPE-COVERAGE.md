@@ -373,8 +373,9 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   sites in prior work; these pin the value round-trip): a `list<variant>` ELEMENT (171, `emit_variant_to_mem`),
   a `tuple<variant, …>` ELEMENT (172, `emit_variant_reg_flatten` positional), and an `option<record-with-a-
   variant-field>` ARG (173, `emit_option_reg_flatten`'s record branch → `emit_record_arg_marshal`'s variant-field
-  arm). REMAINING variant gaps: a tuple/record compound payload case in a MIXED variant (a ≥3-payload-case mem
-  join is now ✅ DONE — SHAPE 242). (The mixed
+  arm). REMAINING variant gaps: a RECORD compound payload case in a MIXED variant (the TUPLE compound payload
+  case in a mixed variant is now ✅ DONE — SHAPE 243, `VariantPayloadKind::Tuple`; the ≥3-payload-case mem join is
+  ✅ DONE — SHAPE 242). (The mixed
   int↔float / f32↔f64 single-payload variant reinterpret join is now ✅ DONE — SHAPE 233/234/235; and a MULTI-payload
   case `b(s64,s64)` — one case with ≥2 payloads — is ✅ DONE, SHAPE 236: `variant_tuple_payload_case` admits n>=2
   since `variant_payload_ty_at` synthesizes the payload tuple, reusing `HostParam::VariantTuple` unchanged.)
@@ -451,9 +452,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   i32)`, all three arms. A multi-payload-CASE mix (≥3 payload-bearing cases where two mem cases share a slot) is
   ✅ DONE / TESTED (SHAPE 242): `variant{a, b(s64), c(list<u8>), d(list<s64>)}` — a scalar + a Bytes + a List case,
   so slot 1 is contributed by BOTH mem cases; `variant_mixed_join_slots` joins position-wise over ALL cases
-  (`join(i64,i32,i32)=i64`, `join(i32,i32)=i32` → `(i32, i64, i32)`), all four arms exercised. REMAINING
-  variant-payload gaps: a mixed LIST case of a NON-scalar element (needs the element WIT threaded), a tuple/record
-  compound payload case in a mixed variant, and ALL of the compound-payload variants at the FIELD / list-element
+  (`join(i64,i32,i32)=i64`, `join(i32,i32)=i32` → `(i32, i64, i32)`), all four arms exercised. A TUPLE
+  (multi-payload) compound payload case in a mixed variant is now ✅ DONE / TESTED (SHAPE 243): `variant{a, b(s64),
+  c(tuple<s32,s64>)}` — the scalar+tuple mix routes to `VariantMixed` via `VariantPayloadKind::Tuple(elem-abis)`;
+  the tuple case flattens POSITIONALLY inline (one slot per element) joined slot-wise with the scalar case
+  (`(disc:i32, i64, i64)`), the emit's Tuple arm marshalling via the shared `emit_tuple_reg_flatten` and coercing
+  each element into its joined slot width (element 0 i32→i64 widened via `i64.extend_i32_u`). Gate =
+  `any_scalar && (any_mem || any_tuple)`. REMAINING variant-payload gaps: a mixed LIST case of a NON-scalar element
+  (needs the element WIT threaded), a RECORD compound payload case in a mixed variant, a mixed variant tuple case
+  with a NON-scalar or FLOAT element, and ALL of the compound-payload variants at the FIELD / list-element
   positions (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case `b(s64,s64)` is ✅ DONE — SHAPE
   236.)
 - **[emit, ARG-side] a scalar-payload variant MIXING int with float — the reinterpret join — ✅ DONE / TESTED
