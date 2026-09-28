@@ -8188,10 +8188,10 @@ cases
            core slots. run() builds {a: Ok(b\"hi\"), k: 5} and performs probe.push; a VALID component that runs
            (live-objects=0) is the pin — a wrong slot count/order (e.g. treating the Bytes handle as one slot) fails
            component validation. Complements the export-side result-field lift (SHAPE at the guest-param direction)
-           with the guest->host ARG marshal. NB: `--opt-sweep` SKIPS this case as `declines-at-default` — the
-           in-process native runner cannot lift a record-with-a-result-field ARG crossing, so it declines it; the
-           authoritative verdict is the nix VALUE gate (real wasmtime cranelift lift), which runs it green. A skip
-           here is NOT a real decline.")
+           with the guest->host ARG marshal. The cursor RESERVATION is load-bearing: the emit.rs `has_runtime_compound`
+           pre-scan must reserve the scratch cursor for a record ARG with a `result` field (`record_has_result_field`)
+           — the Ok-arm rope->mem copy consumes it, and a missing reservation PANICS the marshal's `cursor.expect(...)`
+           (the bug this case first exposed).")
   (wit-world
     (world w (import cadenza:platform/probe
       (member push (func (param m (record (= a (result (list (u8)) (enum timeout missing))) (= k (s64)))) (result (s64)))))))
