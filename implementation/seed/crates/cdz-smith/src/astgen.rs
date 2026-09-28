@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(47);
+    let shape = c.variant(48);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -922,8 +922,25 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      depth would infinite-loop on the NEGATIVE args the range includes). Value = 3 for EVERY arg (three
         //      `+1`s, Map dead at base) -> UAF-observable, arg-independent by design. Arg = a. Verified rust AGREE
         //      (5->3, 0->3, -4->3).
-        _ => (
+        46 => (
             "(do (def (go (: m (Map Int64 Int64)) (: n Int64)) (if (= n 0) 0 (+ 1 (go (Map.remove m n) (- n 1))))) (def (main (: k Int64)) (go #map((= k k) (= (+ k 1) (+ k 1)) (= (+ k 2) (+ k 2))) 3)) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 47 — trss1 STRING.SLICE-IN-A-TRY-Ok-ARM entry param (the #240b64090d node#6-nonlen STRING-VIEW arm value/UAF
+        //      fence). A `?`-bound scalar builds a runtime String (String.from-bytes of two x-bytes) under the Ok arm
+        //      of a `(Result String Int64)` boundary in `mk` (INLINED); `main`'s Ok arm READS it via
+        //      `(match (String.slice s 0 1) ((Some sub) (String.scalar-len sub)) ((None) -9))`. String.slice returns
+        //      a Some(sub) HEAP sub-string VIEW read by a scalar-len borrow, dead-after. The node#6-nonlen admit
+        //      reclaims the try shell + String payload on both paths. Distinct from shapes 39/40/41/46 (all CHAMP
+        //      Set/Map) — this is the STRING-VIEW `(b)` arm (a heap sub-string, not a CHAMP node); unlike Bytes.slice
+        //      (a KNOWN-LEAK buffer-share, deliberately deferred) String.slice does NOT buffer-share-collide with the
+        //      shell deep-drop, so it reclaims clean. The corpus (trss1, #d8e6bb89e8) pins the LEAK side; THIS pins
+        //      the VALUE/UAF side (an over-drop that frees the String before the slice reads it -> wrong len / trap).
+        //      k>0 -> x=5, String "\x05\x05", slice 0..1 -> 1-char, scalar-len 1; k<=0 -> Err 111. Arg = a. Verified
+        //      rust AGREE (1->1, 0->111, 9->1, -4->111).
+        _ => (
+            "(do (def (mk (: r (Result Int64 Int64))) (: (do (def x (try r)) (def s (match (String.from-bytes (Bytes.of #list((UInt8.of x) (UInt8.of x)))) ((Some ss) ss) ((None) \"\"))) (Ok s)) (Result String Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok 5) (Err 111))) ((Ok s) (match (String.slice s 0 1) ((Some sub) (String.scalar-len sub)) ((None) -9))) ((Err e) e))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6364,13 +6381,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main`.
-        let mut reached = [false; 47];
-        for seed in 0u64..2820 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main`.
+        let mut reached = [false; 48];
+        for seed in 0u64..2880 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(47) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-46 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(48) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-47 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6503,11 +6520,13 @@ mod tests {
                 reached[45] = true; // shape 45 = trnt1c compact nested-`?` entry-param `main` (inner-first-hoist desugar #9978)
             } else if ep.source.contains("(Map.remove m n)") {
                 reached[46] = true; // shape 46 = chdo2 Map.remove-threaded-dead-at-base entry-param `main` (CHAMP reclaim-on-edge #e2f72191e0, Map twin of 41)
+            } else if ep.source.contains("(String.slice s 0 1)") {
+                reached[47] = true; // shape 47 = trss1 String.slice-in-a-try-Ok-arm entry-param `main` (node#6-nonlen STRING-VIEW arm #240b64090d)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all forty-seven export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all forty-eight export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
