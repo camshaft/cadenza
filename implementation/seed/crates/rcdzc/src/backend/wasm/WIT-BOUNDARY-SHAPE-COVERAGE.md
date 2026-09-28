@@ -441,9 +441,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   joined width (wrap `i64→i32` iff slot 0 joined narrow), a Bytes case rope-copies at the cursor → `(ptr extended
   to the joined width, len)`, the innermost else (nullary) zeroes all slots; every arm zeroes the slots it does
   not own. Additive across the same ~11 sites. Verified `variant{a, b(s64), c(bytes)}` → `(i32, i64, i32)`, all
-  three arms. REMAINING variant-payload gaps: a mixed set that also includes a LIST/compound payload case, a
-  compound (`list<compound>`/bytes/nested) tuple/record ELEMENT-or-FIELD, a SECOND payload-bearing case (≥2 payload
-  CASES → a multi-case join), and ALL of the compound-payload variants at the FIELD / list-element positions
+  three arms. A mixed set that also includes a `list<scalar>` payload case is ✅ DONE / TESTED (SHAPE 241): the
+  detector `variant_mixed_payload_cases` admits `VariantPayloadKind::List(elem)` (a `list<scalar>` element,
+  offset-agnostic) alongside the scalar+Bytes kinds (MIXED = ≥1 scalar AND ≥1 mem case, Bytes OR List — both
+  flatten to the same `(ptr, len|count)` two-i32 slots via `variant_mixed_join_slots`); the emit's List arm
+  marshals the list into `mem` via `emit_list_arg_marshal` (which advances the cursor) → `(outer-ptr extended to
+  the joined width, count)`, mirroring the Bytes arm. Verified `variant{a, b(s64), c(list<s64>)}` → `(i32, i64,
+  i32)`, all three arms. REMAINING variant-payload gaps: a mixed LIST case of a NON-scalar element (needs the
+  element WIT threaded), a tuple/record compound payload case, a SECOND payload-bearing case (≥2 payload CASES → a
+  multi-case join), and ALL of the compound-payload variants at the FIELD / list-element positions
   (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case `b(s64,s64)` is ✅ DONE — SHAPE 236.)
 - **[emit, ARG-side] a scalar-payload variant MIXING int with float — the reinterpret join — ✅ DONE / TESTED
   (SHAPE 233/234/235).** A `variant{nullary…, scalar-case(s)}` whose payloads mix an integer with a float (or

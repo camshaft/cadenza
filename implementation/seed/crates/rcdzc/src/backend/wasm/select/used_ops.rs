@@ -1613,18 +1613,29 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_SUM_PAYLOAD);
                         out.insert(OP_BYTES_LEN);
                         out.insert(OP_BYTES_GET);
-                        // Each scalar case's unbox op (via its payload type).
+                        // Each scalar case's unbox op (via its payload type); each list case's `vec-len`/`vec-get`
+                        // plus the element's ops (via `collect_list_elem_ops`, the used_ops twin of
+                        // `emit_list_arg_marshal`).
                         if let Some(cases) =
                             crate::backend::wasm::host::variant_mixed_payload_cases(db, &at)
                         {
+                            use crate::backend::wasm::host::VariantPayloadKind;
                             for (cd, kind) in &cases {
-                                if matches!(
-                                    kind,
-                                    crate::backend::wasm::host::VariantPayloadKind::Scalar(_)
-                                ) && let Some(pty) = variant_payload_ty_at(db, &at, *cd as u32)
-                                    && let Ok(Some(read)) = get_op_ty(db, &pty)
-                                {
-                                    out.insert(read);
+                                match kind {
+                                    VariantPayloadKind::Scalar(_) => {
+                                        if let Some(pty) =
+                                            variant_payload_ty_at(db, &at, *cd as u32)
+                                            && let Ok(Some(read)) = get_op_ty(db, &pty)
+                                        {
+                                            out.insert(read);
+                                        }
+                                    }
+                                    VariantPayloadKind::List(elem) => {
+                                        out.insert(OP_VEC_LEN);
+                                        out.insert(OP_VEC_GET);
+                                        collect_list_elem_ops(db, elem, out);
+                                    }
+                                    VariantPayloadKind::Bytes => {} // bytes-len/bytes-get declared above
                                 }
                             }
                         }

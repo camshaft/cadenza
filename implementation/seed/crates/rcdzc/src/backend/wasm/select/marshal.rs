@@ -1953,16 +1953,18 @@ pub(super) fn emit_variant_record_arg_reg_flatten(
     Ok(())
 }
 
-/// Marshal a top-level value-heap MIXED `variant{nullary…, scalar-case(s), bytes-case(s)}` host argument whose
-/// handle is in `var_slot` into the canonical variant JOIN flatten `[disc:i32] ++ joined-payload-slots`, pushing
-/// `1 + n` values. The HETEROGENEOUS generalization of the uniform variant marshals: the payload slots are the
-/// position-wise join over all payload cases ([`host::variant_mixed_join_slots`], matching
+/// Marshal a top-level value-heap MIXED `variant{nullary…, scalar-case(s), bytes/list-case(s)}` host argument
+/// whose handle is in `var_slot` into the canonical variant JOIN flatten `[disc:i32] ++ joined-payload-slots`,
+/// pushing `1 + n` values. The HETEROGENEOUS generalization of the uniform variant marshals: the payload slots
+/// are the position-wise join over all payload cases ([`host::variant_mixed_join_slots`], matching
 /// `wit_ctype::flatten_variant`), and the guest DISPATCHES per case (a nested `if disc==d … else …` chain): a
 /// SCALAR case unboxes its payload into slot 0 (coerced to the joined width — wrap `i64→i32` when slot 0 joined
 /// narrow, else keep `i64`), zeroing the rest; a BYTES case rope-copies its payload into `mem` at the `cursor`
 /// and writes `(ptr → slot 0 extended to the joined width, len → slot 1)`, zeroing the rest, advancing the
-/// cursor; the innermost else (a nullary case) zeroes ALL slots. `variant_ty` resolves each scalar case's unbox
-/// op. `BlockType` is single-value so the arms side-effect into scratch and the values are pushed AFTER.
+/// cursor; a LIST case marshals its `list<scalar>` payload into `mem` (via [`emit_list_arg_marshal`], which
+/// advances the cursor) and writes `(ptr → slot 0 extended, count → slot 1)`, zeroing the rest; the innermost
+/// else (a nullary case) zeroes ALL slots. `variant_ty` resolves each scalar case's unbox op. `BlockType` is
+/// single-value so the arms side-effect into scratch and the values are pushed AFTER.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_variant_mixed_arg_reg_flatten(
     db: &mut Db,
@@ -2083,6 +2085,38 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                 out.push(Lir::LocalGet(blen));
                 out.push(Lir::I32Add);
                 out.push(Lir::LocalSet(cursor));
+                2
+            }
+            VariantPayloadKind::List(elem) => {
+                // Marshal the payload `list<scalar>` into `mem` as an inline element array via the shared
+                // `emit_list_arg_marshal` (which lays the array at `cursor`, advances the cursor, and leaves
+                // `(outer-ptr, count)` on the stack), then write `(ptr → slot 0 extended to the joined width iff
+                // slot 0 is i64, count → slot 1)`. A scalar element is offset-agnostic → `elem_wit = None`.
+                out.push(Lir::LocalGet(var_slot));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [List handle]
+                out.push(Lir::LocalSet(rope)); // reuse the `rope` i32 scratch as the list-handle slot
+                emit_list_arg_marshal(
+                    db,
+                    elem,
+                    None,
+                    rope,
+                    cursor,
+                    pay + 4, // past this emit's own scratch (disc_out..pos = work_base..pay+3)
+                    high,
+                    scratch_ty,
+                    out,
+                )?; // leaves [outer-ptr, count]
+                out.push(Lir::LocalSet(blen)); // count (top of stack)
+                // slot 0 = ptr, extended to i64 iff slot 0 joined wide.
+                if slot_vts.first() == Some(&ValType::I64) {
+                    out.push(Lir::I64ExtendI32U);
+                }
+                out.push(Lir::LocalSet(base_slot));
+                // slot 1 = count (slot 1's joined valtype is i32 — only mem cases contribute it).
+                if n >= 2 {
+                    out.push(Lir::LocalGet(blen));
+                    out.push(Lir::LocalSet(base_slot + 1));
+                }
                 2
             }
         };
