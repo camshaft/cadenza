@@ -8293,3 +8293,31 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level option<option<list<s64>>> host-op arg crosses on the outer+inner Some arm (nested-option list-mem payload)"
+  (doc
+    "SHAPE 219 (v-wit-boundary) — a top-level `option<option<list<s64>>>` bare host-op ARGUMENT (probe.push),
+           outer+inner Some. Widens the nested-option arg (SHAPE 218 did the Bytes inner) to a `list<T>` inner:
+           `option_arg_crosses` admits it (the nested-option arm now accepts a `list` inner whose ELEMENT crosses
+           via `field_boundary_abi`), the classifier builds `Option(Option(List(Scalar)))`, and
+           `emit_option_reg_flatten`'s nested-option branch computes the inner option's flatten width DYNAMICALLY —
+           `(inner-disc:i32, ptr:i32, count:i32)` for a list inner (the SAME 3-slot shape as a Bytes inner),
+           recursing into the inner option<list> branch which marshals the payload list into `mem` at the threaded
+           cursor via `emit_list_arg_marshal`. So the arg flattens to `(outer-disc, inner-disc, ptr, count)` = 4
+           core slots. `collect_used_ops` declares the inner list's `vec-len`/`vec-get` + element ops (a list inner
+           has no single get-op, so it is handled explicitly, else CDZ0910). run() builds Some(Some([1,2,3])) and
+           performs probe.push; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (option (list (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Option (List Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Some (Some #list(1 2 3))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
