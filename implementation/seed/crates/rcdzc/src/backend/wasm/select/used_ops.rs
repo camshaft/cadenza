@@ -1426,6 +1426,14 @@ pub(super) fn collect_used_ops_into_seen(
                                 // `sum-disc`/`sum-payload` + the payload tuple's `arr-get` + element unboxes —
                                 // declare them via the shared `collect_record_field_ops` (its variant-tuple arm).
                                 collect_record_field_ops(db, e, out);
+                            } else if crate::backend::wasm::host::variant_mixed_payload_cases(db, e)
+                                .is_some()
+                            {
+                                // A HETEROGENEOUS mixed `variant` element: `emit_variant_mixed_arg_reg_flatten`
+                                // reads `sum-disc`/`sum-payload` + per-case ops (scalar unbox / tuple/record
+                                // `arr-get` + inner ops) — declare them via the shared `collect_record_field_ops`
+                                // (its VariantMemMixed arm). Checked after the scalar-/single-tuple variant arms.
+                                collect_record_field_ops(db, e, out);
                             } else if let Ok(Some(read)) = get_op_ty(db, e) {
                                 out.insert(read);
                             }

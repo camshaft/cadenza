@@ -9766,3 +9766,36 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level tuple<variant{a, b(s64), c(tuple<s32,s64>)}, s64> host-op arg crosses (HETEROGENEOUS mixed variant ELEMENT, register flatten)"
+  (doc
+    "SHAPE 265 (v-wit-boundary) — a top-level `tuple<variant{a, b(s64), c(tuple<s32,s64>)}, s64>` bare host-op
+           ARGUMENT (probe.push) whose ELEMENT 0 is a HETEROGENEOUS MIXED variant (scalar case b + tuple case c +
+           nullary a) at the REGISTER tuple-ELEMENT position — the tuple-element twin of SHAPE 264's record-FIELD
+           mixed variant (as SHAPE 257 was the tuple-element twin of the SHAPE 256 record-field variant-tuple).
+           Previously DECLINED (`emit_tuple_reg_flatten`'s element dispatch had scalar-/single-tuple variant arms
+           but no MIX arm — a scalar+tuple mix fell to the final `get_op_ty` decline). Now `emit_tuple_reg_flatten`
+           gains a mixed-variant element arm reading the element's variant handle (`arr-get`) and flattening via
+           `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant / a mixed-variant
+           record FIELD use — to `(v-disc, joined-slots…)`. `tuple_arg_crosses` + the tuple-arg abi-builder (a
+           VariantMemMixed element branch before the record else, which would else panic on a Sum) + the used_ops
+           tuple-element collector gained the mixed-variant admission in lockstep; serialize's VariantMemMixed
+           flatten is the canonical position-wise join (aligned in SHAPE 264). SCOPED to NO-mem payload cases
+           (scalar/tuple/record); a Bytes/List case still declines cleanly. The outer tuple flattens to
+           `(v-disc:i32, e0:i32, e1:i64, n:i64)`. run() builds (C((3,7)), 5) and performs probe.push; a VALID
+           running component (live-objects=0) pins the register element round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (variant (a) (b (s64)) (c (tuple (s32) (s64)))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (Tuple Int32 Int64)))
+      (effect probe (op push (-> (Tuple Sig Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Sig.C #tuple(3 7)) 5))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
