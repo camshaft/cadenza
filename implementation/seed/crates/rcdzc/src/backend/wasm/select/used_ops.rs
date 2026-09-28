@@ -1367,6 +1367,13 @@ pub(super) fn collect_used_ops_into_seen(
                                 // op — declare them via the shared `collect_record_field_ops` (its variant arm),
                                 // the used_ops twin.
                                 collect_record_field_ops(db, e, out);
+                            } else if crate::backend::wasm::host::variant_tuple_payload_case(db, e)
+                                .is_some()
+                            {
+                                // A tuple-payload `variant` element: `emit_variant_tuple_arg_reg_flatten` reads
+                                // `sum-disc`/`sum-payload` + the payload tuple's `arr-get` + element unboxes —
+                                // declare them via the shared `collect_record_field_ops` (its variant-tuple arm).
+                                collect_record_field_ops(db, e, out);
                             } else if let Ok(Some(read)) = get_op_ty(db, e) {
                                 out.insert(read);
                             }
