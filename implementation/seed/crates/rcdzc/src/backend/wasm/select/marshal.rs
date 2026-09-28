@@ -63,31 +63,35 @@ pub(super) fn emit_list_arg_marshal(
         None
     };
     let is_tuple = tuple_elem.is_some();
-    // An `option<scalar|bytes|record|tuple>` element (`list<option<s64>>`, `list<option<bytes>>`,
-    // `list<option<record>>`): written in place at its canonical option layout (disc byte + payload) by
-    // `emit_option_to_mem`. Carries the payload `Ty` + the guest decl's some-disc. The admitted payload set
-    // matches `host::list_elem_marshalable`'s option arm (scalar, Bytes, or a record/tuple product) — the
-    // representability gate; an option<list>/option<option> is excluded (the gate declines it before emit, so a
-    // broader detector here would only ever see an admitted shape).
+    // An `option<scalar|bytes|list|record|tuple|option>` element (`list<option<s64>>`, `list<option<bytes>>`,
+    // `list<option<record>>`, `list<option<option<X>>>`): written in place at its canonical option layout (disc
+    // byte + payload) by `emit_option_to_mem`. Carries the payload `Ty` + the guest decl's some-disc. The admitted
+    // payload set matches `host::list_elem_marshalable`'s option arm (scalar, Bytes, list, a record/tuple product,
+    // or a further-nested option) — the representability gate, so a broader detector here only ever sees an
+    // admitted shape.
     let option_elem: Option<(Ty, i32)> = if is_bytes || is_nested_list || is_record || is_tuple {
         None
-    } else if let Some(payload) =
-        crate::backend::wasm::host::option_payload_ty(db, elem).filter(|p| {
-            crate::backend::wasm::host::abi_val_type(p).is_some()
-                || matches!(
-                    p.strip_nominal(),
-                    Ty::Bytes | Ty::String | Ty::List(_) | Ty::Record(_) | Ty::Tuple(_)
-                )
-        })
-    {
-        let crate::ty::Ty::Sum { decl, .. } = elem.strip_nominal() else {
-            unreachable!("option is a Sum")
-        };
-        let some_disc = db
-            .type_decl_by_occ(*decl)
-            .and_then(|d| d.variants.iter().position(|v| v.payloads.len() == 1))
-            .map(|i| i as i32);
-        some_disc.map(|sd| (payload, sd))
+    } else if let Some(payload) = crate::backend::wasm::host::option_payload_ty(db, elem) {
+        // A nested `option<option<X>>` payload is itself option-shaped (`option_payload_ty` on the payload) — the
+        // writer recurses `emit_option_to_mem`; the earlier arms cover scalar / Bytes / list / record / tuple.
+        let admit = crate::backend::wasm::host::abi_val_type(&payload).is_some()
+            || matches!(
+                payload.strip_nominal(),
+                Ty::Bytes | Ty::String | Ty::List(_) | Ty::Record(_) | Ty::Tuple(_)
+            )
+            || crate::backend::wasm::host::option_payload_ty(db, &payload).is_some();
+        if admit {
+            let crate::ty::Ty::Sum { decl, .. } = elem.strip_nominal() else {
+                unreachable!("option is a Sum")
+            };
+            let some_disc = db
+                .type_decl_by_occ(*decl)
+                .and_then(|d| d.variants.iter().position(|v| v.payloads.len() == 1))
+                .map(|i| i as i32);
+            some_disc.map(|sd| (payload, sd))
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -865,6 +869,55 @@ pub(super) fn emit_option_to_mem(
             offset: payload_off + 4,
         }); // count
         out.push(Lir::End); // if (no Else — a none option's payload area is left unwritten, never read on lift)
+        return Ok(());
+    }
+
+    // A nested `option<option<X>>` payload (`list<option<option<X>>>`): on Some, write the INNER option IN PLACE
+    // at `dest_addr + payload_off` by RECURSING `emit_option_to_mem` with the inner option's payload; on None the
+    // payload area is left unwritten (a none option's payload is never read on lift). The recursion writes the
+    // inner disc byte + the inner payload (scalar inline, Bytes/list header at the shared `cursor`,
+    // record/tuple/further-nested-option in place) at its own layout, exactly as the outer option is written here.
+    if let Some(inner_payload) = crate::backend::wasm::host::option_payload_ty(db, payload_ty) {
+        let crate::ty::Ty::Sum { decl, .. } = payload_ty.strip_nominal() else {
+            unreachable!("an option payload_ty is a Sum")
+        };
+        let inner_some_disc = db
+            .type_decl_by_occ(*decl)
+            .and_then(|d| d.variants.iter().position(|v| v.payloads.len() == 1))
+            .map(|i| i as i32)
+            .ok_or_else(|| Reject::decline("a nested option has no some-variant"))?;
+        let inner_wit = match payload_wit {
+            Some(crate::wit_world::WitType::Option(inner)) => Some(inner.as_ref()),
+            _ => None,
+        };
+        let inner_slot = work_base + 1;
+        let inner_addr = work_base + 2;
+        scratch_ty.insert(inner_slot, ValType::I32);
+        scratch_ty.insert(inner_addr, ValType::I32);
+        *high = (*high).max(work_base + 3);
+        out.push(Lir::LocalGet(is_some));
+        out.push(Lir::If(BlockType::Empty)); // outer Some: write the inner option at dest_addr + payload_off
+        out.push(Lir::LocalGet(dest_addr));
+        out.push(Lir::ConstI32(payload_off as i32));
+        out.push(Lir::I32Add);
+        out.push(Lir::LocalSet(inner_addr)); // inner_addr = dest_addr + payload_off
+        out.push(Lir::LocalGet(opt_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [inner option handle] (borrows the outer option)
+        out.push(Lir::LocalSet(inner_slot));
+        emit_option_to_mem(
+            db,
+            inner_slot,
+            inner_addr,
+            &inner_payload,
+            inner_some_disc,
+            cursor,
+            inner_wit,
+            work_base + 3,
+            high,
+            scratch_ty,
+            out,
+        )?;
+        out.push(Lir::End); // (no Else — a none outer option's payload area is left unwritten, never read on lift)
         return Ok(());
     }
 
