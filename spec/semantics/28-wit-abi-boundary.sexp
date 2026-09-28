@@ -9384,3 +9384,41 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a MIXED variant{a, b(s64), c(list<record{x,y}>)} with a LIST-of-RECORD element case as a host-op arg (imposed WIT)"
+  (doc
+    "SHAPE 253 (v-wit-boundary) — a `variant{a, b(s64), c(list<record{x:s64, y:s64}>)}` passed BARE as the
+           TOP-LEVEL host-op ARGUMENT (probe.push): a scalar case (b) mixed with a LIST case whose ELEMENT is a
+           COMPOUND record (c). Closes a gap: `variant_mixed_payload_cases`'s List arm previously admitted only a
+           SCALAR element (`abi_val_type(inner)`), so a `list<record>`/`list<tuple>`/`list<list>` element case in a
+           mixed variant declined. Now the List arm admits any element `emit_list_arg_marshal` handles
+           (`list_elem_marshalable`: a record/tuple product, a nested list, an option, a `result<list<u8>,enum>`, a
+           scalar variant), and the emit's List arm threads the ELEMENT WIT (from the variant's WIT at this case's
+           `WitType::List`) so a record/nested element orders/offsets correctly. The outer flatten is UNCHANGED — a
+           list case is always `(ptr, count)` two i32 slots regardless of element — so the join / serialize /
+           host_imports are untouched; only the in-`mem` element array layout differs (each record element written
+           in place at its canonical layout by `emit_list_arg_marshal`'s record arm). run() pushes `(B 42)`,
+           `(C [#record{x:1,y:2}, #record{x:3,y:4}])`, `A` — exercising the Scalar arm, the List arm with a RECORD
+           element, and the nullary arm; a VALID running component (live-objects=0) pins the list-of-record element
+           case in a mixed variant.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (s64)) (c (list (record (= x (s64)) (= y (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C (List (Record (: x Int64) (: y Int64)))))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B 42)) (probe.push (V.C #list(#record((= x 1) (= y 2)) #record((= x 3) (= y 4))))) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

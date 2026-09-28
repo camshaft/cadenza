@@ -501,10 +501,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   emit's Record arm marshals field VALUES in WIT order via `emit_record_arg_marshal` — so `serialize` (the param
   core type), the emit (pushed values), and `host_imports` (the WIT `variant` type) all agree (a wrong reorder
   fails canonical-ABI validation → CDZ0910). A record case with a NON-scalar field (Bytes/list/nested-compound)
-  still declines cleanly (the detector's `abi_val_type` gate). REMAINING variant-payload gaps: a mixed LIST case of
-  a NON-scalar element (needs the element WIT threaded), and ALL of the compound-payload variants at the FIELD /
-  list-element positions (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case `b(s64,s64)` is
-  ✅ DONE — SHAPE 236.)
+  still declines cleanly (the detector's `abi_val_type` gate). A mixed LIST case of a NON-scalar ELEMENT
+  (`list<record>` / `list<tuple>` / `list<list>` / `list<option>` / `list<result<list<u8>,enum>>`) is now
+  ✅ DONE / TESTED (SHAPE 253): the List arm admits any element `emit_list_arg_marshal` handles
+  (`list_elem_marshalable`), and the emit's List arm threads the ELEMENT WIT (from the variant's WIT at the case's
+  `WitType::List`) so a record/nested element orders + offsets correctly. The outer flatten is UNCHANGED — a list
+  case is always `(ptr, count)` two i32 slots regardless of element — so the join / serialize / host_imports are
+  untouched; only the in-`mem` element array layout differs (`emit_list_arg_marshal`'s record/tuple/… arms).
+  REMAINING variant-payload gaps: the compound-payload variants at the FIELD / list-element positions
+  (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case `b(s64,s64)` is ✅ DONE — SHAPE 236.)
 - **[emit, ARG-side] a scalar-payload variant MIXING int with float — the reinterpret join — ✅ DONE / TESTED
   (SHAPE 233/234/235).** A `variant{nullary…, scalar-case(s)}` whose payloads mix an integer with a float (or
   `f32` with `f64`) — the case the uniform `HostParam::Variant` declines (its join has no clean slot). Handled by

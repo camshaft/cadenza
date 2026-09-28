@@ -2110,10 +2110,24 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                 2
             }
             VariantPayloadKind::List(elem) => {
-                // Marshal the payload `list<scalar>` into `mem` as an inline element array via the shared
+                // Marshal the payload `list<T>` into `mem` as an inline element array via the shared
                 // `emit_list_arg_marshal` (which lays the array at `cursor`, advances the cursor, and leaves
                 // `(outer-ptr, count)` on the stack), then write `(ptr → slot 0 extended to the joined width iff
-                // slot 0 is i64, count → slot 1)`. A scalar element is offset-agnostic → `elem_wit = None`.
+                // slot 0 is i64, count → slot 1)`. A SCALAR element is offset-agnostic → `elem_wit = None`; a
+                // COMPOUND element (record/tuple/nested-list/option/result/scalar-variant) needs the element WIT
+                // (for field ordering / offsets), extracted from the variant's WIT at this case's `WitType::List`.
+                let elem_wit = match variant_wit {
+                    Some(crate::wit_world::WitType::Variant(wcases)) => {
+                        match wcases
+                            .get(*case_disc as usize)
+                            .and_then(|(_, p)| p.as_ref())
+                        {
+                            Some(crate::wit_world::WitType::List(ew)) => Some(ew.as_ref()),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
                 out.push(Lir::LocalGet(var_slot));
                 out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [List handle]
                 out.push(Lir::LocalSet(rope)); // reuse the `rope` i32 scratch as the list-handle slot
@@ -2127,7 +2141,7 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                 // no index carries two types; the coalesce pass compacts the now-non-interfering slots after.
                 let sub_base = *high;
                 emit_list_arg_marshal(
-                    db, elem, None, rope, cursor, sub_base, high, scratch_ty, out,
+                    db, elem, elem_wit, rope, cursor, sub_base, high, scratch_ty, out,
                 )?; // leaves [outer-ptr, count]
                 out.push(Lir::LocalSet(blen)); // count (top of stack)
                 // slot 0 = ptr, extended to i64 iff slot 0 joined wide.

@@ -1085,13 +1085,18 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
             any_mem = true;
             cases.push((disc as i32, VariantPayloadKind::Bytes));
         } else if let Ty::List(inner) = stripped {
-            // A `list<scalar>` payload case: it marshals into `mem` as an inline element array →
-            // `(ptr, count)`, the SAME two-i32-slot mem flatten as a Bytes case. Scoped to a scalar
-            // element this increment — an offset-agnostic element the marshal lays with `elem_wit = None`
-            // (a record/tuple/nested-list element would need the element WIT threaded, a later increment).
-            abi_val_type(inner)?;
+            // A `list<T>` payload case: it marshals into `mem` as an inline element array → `(ptr, count)`, the
+            // SAME two-i32-slot mem flatten as a Bytes case, REGARDLESS of the element type (the element WIDTH /
+            // layout does not change the outer header). The element may be a SCALAR (offset-agnostic, `elem_wit =
+            // None`) OR any COMPOUND `emit_list_arg_marshal` handles (`list_elem_marshalable`: a record/tuple
+            // product, a nested list, an option, a `result<list<u8>, enum>`, a scalar variant) — the emit's List
+            // arm threads the element WIT for those. A non-marshalable element declines the whole detector.
+            let inner = (**inner).clone();
+            if abi_val_type(&inner).is_none() && !list_elem_marshalable(db, &inner) {
+                return None;
+            }
             any_mem = true;
-            cases.push((disc as i32, VariantPayloadKind::List((**inner).clone())));
+            cases.push((disc as i32, VariantPayloadKind::List(inner)));
         } else if let Ty::Tuple(elems) = stripped {
             // A TUPLE payload case (a `tuple`-typed single payload OR a multi-payload case): it flattens
             // POSITIONALLY inline to one core slot per element, joined slot-wise with the other cases. Each
