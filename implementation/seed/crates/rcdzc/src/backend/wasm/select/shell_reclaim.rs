@@ -1748,6 +1748,136 @@ pub(crate) fn matchsum_rebuild_shell_reclaim_ok(
             .is_some()
 }
 
+/// Collect every `Leaf` body reachable in a `SumCont` (recursing through `Switch`/`Guarded`/`LitTest`), so a
+/// caller can scan each arm continuation. Mirrors the arm-recursion the sibling `..._cont` helpers use.
+fn collect_cont_leaf_bodies(cont: &crate::core::SumCont, out: &mut Vec<StructId>) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => out.push(*body),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            out.push(*body);
+            collect_cont_leaf_bodies(els, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            collect_cont_leaf_bodies(then_, out);
+            collect_cont_leaf_bodies(els, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for a in arms {
+                collect_cont_leaf_bodies(&a.cont, out);
+            }
+        }
+    }
+}
+
+/// Walk `id`'s subtree collecting the SCRUTINEE of every NESTED `MatchSum`/`MatchList`/`Match` whose scrutinee
+/// is a heap EXTRACTION (`SumPayload`/`Proj` chain) rooting at `outer_scrut` — a payload extracted from the
+/// outer match's scrutinee and RE-CONSUMED as a downstream match's scrutinee. This is the chained-`?` escape
+/// (v-try-operator trnt1 `(do (def a (try rr)) (Ok (try a)))`: `(try a)`'s `MatchSum` scrutinee is
+/// `SumPayload(rr,[Payload])`, the extracted inner Result). Such an extraction ESCAPES the outer arm into the
+/// nested consumer, so the outer shell deep-drop would free it — it must be dup'd. `!out.contains` dedups a
+/// shared extraction reached twice. (v1: NESTED-MATCH consumers only — the confirmed trnt1 shape; consuming-
+/// callee (node6xd) + consuming-builtin (Bytes.slice, (e)) escapees are the same family and extend this walk.)
+fn collect_nested_match_scrutinee_extractions(
+    db: &mut Db,
+    id: StructId,
+    outer_scrut: StructId,
+    binder: Option<StructId>,
+    out: &mut Vec<StructId>,
+) {
+    let mut seen = HashSet::new();
+    collect_nested_match_scrutinee_extractions_seen(db, id, outer_scrut, binder, &mut seen, out);
+}
+
+fn collect_nested_match_scrutinee_extractions_seen(
+    db: &mut Db,
+    id: StructId,
+    outer_scrut: StructId,
+    binder: Option<StructId>,
+    seen: &mut HashSet<StructId>,
+    out: &mut Vec<StructId>,
+) {
+    if !seen.insert(id) {
+        return;
+    }
+    let nested_scrut = match core_of(db, id) {
+        Core::MatchSum { scrutinee: s, .. }
+        | Core::MatchList { scrutinee: s, .. }
+        | Core::Match { scrutinee: s, .. } => Some(s),
+        _ => None,
+    };
+    if let Some(s) = nested_scrut
+        && is_heap_type(&type_of(db, s))
+        && extraction_roots_at_scrutinee(db, s, outer_scrut, binder)
+        && !out.contains(&s)
+    {
+        out.push(s);
+    }
+    for c in core_child_ids(db, id) {
+        collect_nested_match_scrutinee_extractions_seen(db, c, outer_scrut, binder, seen, out);
+    }
+}
+
+/// CLASSIFIER (v-core-opt-owned; the UNIFIED producing-side "payload escapes into a downstream consumer"
+/// recognizer — trnt1-inner). PURE decision, DUP-SIDE (ownership-UNGATED, leak-safe), the exact structural twin
+/// of [`matchsum_rebuild_moved_child_nodes`]: it returns the escaping payload-extraction node(s) to dup; the
+/// UAF-critical owned-consumed-dead-after-scrutinee proof lives on v-mem's DROP side (the emit's
+/// consuming-analysis-gated `reclaim_shell` — see the `matchsum_rebuild_shell_reclaim_ok` note), so an over-fire
+/// here only LEAKS (over-dup), never UAFs.
+///
+/// GENERALIZES [`matchsum_escaping_proj_node`] from "the arm RESULT IS a bare extraction off the scrutinee" to
+/// "the arm CONTAINS an extraction off the scrutinee that ESCAPES INTO A DOWNSTREAM CONSUMER" (v1: a nested
+/// `MatchSum` scrutinee — the chained-`?`). v-mem rctrace (trnt1 faithful runtime witness): the FIRST
+/// `(try rr)` MatchSum-on-rr extracts `a = SumPayload(rr,[Payload])` and does NOT reclaim rr's outer shell
+/// (node1) because `a` (node0) escapes into `(try a)`; BOTH leak. Fix = dup `a` (rc1->2) BEFORE rr's outer-shell
+/// deep-drop → cascade nets `a` 2->1 (survives for `(try a)`) + frees the outer shell; `(try a)` then frees `a`.
+///
+/// `Some(nodes)` = the heap escaping-extraction node(s) to dup, iff the shared shell-reclaim floor holds (heap
+/// non-enum scrutinee, dead-after-destructure, not re-matched) AND ≥1 such escaping extraction is found. `None`
+/// otherwise (leak-over-UAF). NO ownership gate (dup-side; v-mem's drop side ANDs the owned-consumed-dead-after
+/// proof — for the trnt param scrutinee rr, that is the consuming-analysis proof that rr is a consumed param
+/// dead after mk's body, the same guard `matchsum_rebuild_shell_reclaim_ok` documents).
+#[allow(dead_code)] // TEMP: inert until v-mem wires the dup(escaping extractions) + owned-dead-after-gated producing-shell deep-drop + censuses trnt1/node6xd/(e).
+pub(crate) fn payload_escapes_to_consumer_dupable(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    never_diverges: bool,
+    root: &crate::core::SumCont,
+) -> Option<Vec<StructId>> {
+    // Shared shell-reclaim floor (mirrors matchsum_rebuild_moved_child_nodes — MINUS the ownership gate, which
+    // is the drop side's UAF-critical guard, dup-side is leak-safe).
+    if never_diverges
+        || !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+        || !scrutinee_dead_after_destructure(db, scrutinee, root)
+    {
+        return None;
+    }
+    // Collect every `Leaf` arm body of the cont — the try-desugar root is a 2-arm disc `Switch` (SUCCESS/FAILURE
+    // both `Leaf`), so a single-`Leaf` bail would MISS it (the chained-`?` nested match lives in the SUCCESS arm
+    // body `(Ok (try a))`). We scan ALL leaves for a nested-match-scrutinee extraction off the outer scrutinee;
+    // the FAILURE `SumNew{Err,[SumPayload]}` husk carries no nested match, so it contributes nothing. (An
+    // over-fire is dup-side leak-safe regardless.)
+    let mut leaves = Vec::new();
+    collect_cont_leaf_bodies(root, &mut leaves);
+    if leaves.is_empty() {
+        return None;
+    }
+    let binder = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+        _ => None,
+    };
+    let mut escaping = Vec::new();
+    for body in leaves {
+        collect_nested_match_scrutinee_extractions(db, body, scrutinee, binder, &mut escaping);
+    }
+    if escaping.is_empty() {
+        return None;
+    }
+    Some(escaping)
+}
+
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed
 /// temp vs proven-owned param slot): heap + non-enum + non-diverging + payload-safety + not-re-matched.
 /// [`sum_shell_reclaim_ok`] ANDs the stashed-Owned requirement on top; the non-tail-spine param path ANDs
