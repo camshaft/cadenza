@@ -1456,7 +1456,7 @@ fn extraction_roots_at_scrutinee(
 /// borrow-consumed result only LEAKS the rc1 view — leak-over-UAF) and needs the `MatchSum`'s POSITION context
 /// that this scrutinee-local classifier lacks, so v-mem ANDs it caller-side at the emit site. No `dup_sites`/
 /// `fn_body` param — pure syntactic classification.
-#[allow(dead_code)] // TEMP: inert until v-mem wires the sum_cont_ownership Owned-flip + matchjoin_dup_arms populate + dispatch.rs:483 stack-dup.
+// WIRED + SHIPPED (the (a) alias-husk equalize; trnt1 #9978): v-mem's sum_cont_ownership Owned-flip + matchjoin_dup_arms + dispatch.rs:483 stack-dup all call this.
 pub(crate) fn divergent_alias_arm_dupable(
     db: &mut Db,
     scrutinee: StructId,
@@ -1867,7 +1867,7 @@ fn arm_extraction_escapes_consuming_callee(
 /// re-matched) AND an extraction off it escapes into a [`def_consumes_param`]-true callee arg. The OWNED gate is
 /// inherited from [`payload_escapes_to_consumer_dupable`] (a borrowed-source escape is excluded — the producing
 /// husk isn't reclaimed there, matching the drop side's stashed-I32). The DROP side ANDs stashed-I32.
-#[allow(dead_code)] // TEMP: inert until v-mem wires a DROP-ONLY producing-husk reclaim disjunct (no dup) + censuses node6xd -> 0.
+#[allow(dead_code)] // PARKED banked-partial (node6xd, UAF-safe known-leak; operator priority ruling pending). SUPERSEDED by the SumNew-husk framing then the arm-result-husk 3rd form — v-mem census: node6xd's producing match is a MatchSum whose Ok-arm result is the husk, escape one projection DOWNSTREAM (SumPayload of the match result). This MatchSum-handler form never sees that. Revival plan: SumPayload-scrutinee sibling walker. See v-core-opt-vertical-log.md.
 pub(crate) fn producing_husk_reclaim_consumed_callee_escape(
     db: &mut Db,
     scrutinee: StructId,
@@ -1966,7 +1966,7 @@ fn collect_husk_consumed_projections(
 ///
 /// v1: the CONSUMING-CALLEE consumer (node6xd). The VIEW-minting builtin consumer ((e)/Bytes.slice — the payload
 /// is view-aliased, gate the view-not-escaping) is the sibling arm, added next once node6xd censuses 0.
-#[allow(dead_code)] // TEMP: inert until v-mem wires the SumNew-dead-husk deep-drop (emit SumNew dead-point) + censuses node6xd/(e) -> 0.
+#[allow(dead_code)] // PARKED banked-partial (node6xd/(e), UAF-safe known-leak; operator priority ruling pending). v-mem post-collapse census: DECLINES on the real shape — the consumed projection is SumPayload{scrutinee: MatchSum 101, [Payload]} (husk = 101's Ok-ARM RESULT, one level inside the match), so extraction_roots_at_scrutinee(proj, husk) can't match (it doesn't traverse a MatchSum). Revival: recognizer keyed on the SumPayload SCRUTINEE (a MatchSum/If of owned SumNew husks) + v-mem stash-once relax of scrut_reemit_safe at emit.rs:3547. See v-core-opt-vertical-log.md.
 pub(crate) fn sumnew_collapsed_husk_reclaim(
     db: &mut Db,
     id: StructId,
@@ -2021,7 +2021,7 @@ pub(crate) fn sumnew_collapsed_husk_reclaim(
 /// otherwise (leak-over-UAF). NO ownership gate (dup-side; v-mem's drop side ANDs the owned-consumed-dead-after
 /// proof — for the trnt param scrutinee rr, that is the consuming-analysis proof that rr is a consumed param
 /// dead after mk's body, the same guard `matchsum_rebuild_shell_reclaim_ok` documents).
-#[allow(dead_code)] // TEMP: inert until v-mem wires the dup(escaping extractions) + owned-dead-after-gated producing-shell deep-drop + censuses trnt1/node6xd/(e).
+// WIRED + SHIPPED (trnt1 #9978): reclaim.rs dup-extend + emit.rs producing-shell reclaim disjunct call this.
 pub(crate) fn payload_escapes_to_consumer_dupable(
     db: &mut Db,
     scrutinee: StructId,
@@ -2107,7 +2107,7 @@ pub(crate) fn payload_escapes_to_consumer_dupable(
 /// DROP-side gate MUST additionally require `view ∈ dup_sites` (the producing side put it there) — use the
 /// dup-backed twin [`bare_alias_scrutinee_dupable_dupbacked`], which enforces the lockstep by construction. The
 /// pure form here is for classification/instrumentation only.
-#[allow(dead_code)] // TEMP: inert until v-mem wires the nested-match shell reclaim (dup-backed) + re-censuses trnt1 -> 0.
+// WIRED + SHIPPED (trnt1 #9978): the dup-backed twin below + the emit nested-match reclaim disjunct call this.
 pub(crate) fn bare_alias_scrutinee_dupable(
     db: &mut Db,
     scrutinee: StructId,
@@ -2147,7 +2147,7 @@ pub(crate) fn bare_alias_scrutinee_dupable(
 /// fired (view at rc2 before the outer-shell cascade → rc1 → THIS reclaim nets rc1->0, balanced). Absent from
 /// `dup_sites` ⇒ no producing-side dup ⇒ reclaiming here would double-free the source's live payload ⇒ DECLINE
 /// (leak-over-UAF). Mirrors the `arg_reclaims_binder_as_base_dupbacked` dup-backed pattern in body_analysis.rs.
-#[allow(dead_code)] // TEMP: inert until v-mem wires the nested-match shell reclaim + re-censuses trnt1 -> 0.
+// WIRED + SHIPPED (trnt1 #9978): the emit nested-match reclaim_shell disjunct calls this dup-backed twin.
 pub(crate) fn bare_alias_scrutinee_dupable_dupbacked(
     db: &mut Db,
     scrutinee: StructId,
