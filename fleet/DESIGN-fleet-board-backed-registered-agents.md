@@ -65,8 +65,15 @@ Server `rmcp` 3.5.0. **20 tools** (was 18 on 2026-09-27 — the board is activel
 - Bus/notify: `send_message(from_agent*, to_agent*, body*)` · `get_messages(agent_id*, limit, mark_read)`
   · `check_notifications(agent_id*, limit, mark_read)` · `get_events(limit, since_seq)` ·
   `subscribe`/`unsubscribe`.
-- **REST API also exists** at `/api` (per the v-task-board charter on the board; a fleet-side reader may
-  prefer it over the MCP SSE + session-id handshake — CONFIRM the `/api` agent-read surface next).
+- **Transport from a fleet host = the MCP endpoint ONLY (VERIFIED 2026-09-28).** From a fleet host the
+  board is reachable *only* through the nginx front door `http://127.0.0.1:8880/board/mcp` (MCP JSON-RPC
+  over SSE). The board's own REST `/api` (per its charter, served on the board binary at
+  `green-machine.lan:8079`) is NOT reachable — port 8079 refuses from a fleet host, and
+  `http://127.0.0.1:8880/api` is just the nginx front-door index banner (every `/api/*` path returns the
+  same 173B page, not a board route). So a fleet-side reader / charter-from-board fetch MUST speak MCP to
+  `127.0.0.1:8880/board/mcp`; the REST `/api` shortcut is not available. The MCP endpoint is available to
+  a fleet-host client with no extra setup — a plain `curl` handshake succeeds (matching the #10002
+  server-is-open finding).
 
 **Agent record shape** (`list_agents`): `{ id, charter, display_name, kind, status, status_message,
 webhook_url, created_at, last_seen }`. **KEY GAP for using the agent list AS the registry:** there is
@@ -126,6 +133,17 @@ every agent on the board is a shared prerequisite step.)
   inherits the board MCP from the global config. `registry.json` STILL holds its runtime metadata. Gate:
   `v-task-board` launches, fetches its charter from the board, runs a tick. This proves the mechanism on
   ONE agent with zero risk to the other ~30.
+  - **Fetch mechanism (VERIFIED sessionless, 2026-09-28).** Two viable fetch points, both proven this
+    tick: (A) the agent, once launched, reads its own charter via its **in-session board MCP** (the tools
+    are inherited from the global config) — simplest, but only available AFTER the session starts, so it
+    can't shape the KICKOFF prompt itself. (B) a **sessionless `curl` MCP read** from `window.sh`/`fleet
+    add` BEFORE launch: `POST /board/mcp` `initialize` (capture the `Mcp-Session-Id` response header) →
+    `notifications/initialized` → `tools/call list_agents`, then extract the target agent's `charter`
+    from the SSE `data:` frame (`jq`/`python`). Verified end-to-end this tick: read a 3139-char charter
+    for `v-task-board` with a plain sessionless `curl`. (B) is what lets the KICKOFF *inject* the
+    board charter at boot. NOTE: there is no single `get_agent(agent_id)` tool, so a one-agent read pulls
+    the whole `list_agents` array and filters — fine at ~30 agents; a board-side `get_agent` would make
+    it O(1) (v-task-board's lane — noted on task 82).
 - **P2 — metadata MIRROR (additive):** register every fleet agent on the board with its metadata
   (name/role/model/interval/…). `registry.json` stays AUTHORITATIVE; the board is a mirror the operator
   can read. (This is the taskboard-bridge P1 auto-register — build once, shared.)
