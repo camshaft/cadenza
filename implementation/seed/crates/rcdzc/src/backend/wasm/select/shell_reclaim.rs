@@ -1878,6 +1878,86 @@ pub(crate) fn payload_escapes_to_consumer_dupable(
     Some(escaping)
 }
 
+/// CLASSIFIER (v-core-opt-owned; the COMPLEMENTARY nested-match half of [`payload_escapes_to_consumer_dupable`]
+/// — the #221 bare-alias-SCRUTINEE sub-case, REVIVED). PURE syntactic decision; the MIRROR of
+/// [`divergent_alias_arm_dupable`] on the SCRUTINEE's PROVENANCE (that equalizes a bare-alias ARM-RESULT; this
+/// recognizes a bare-alias SCRUTINEE). Recognizes the NESTED `(try a)` match in the chained-`?`
+/// `(do (def a (try rr)) (Ok (try a)))`: the SECOND `?` consumes `a = SumPayload(rr,[Payload])` (a bare-alias
+/// VIEW of the OUTER scrutinee's owned payload) as its OWN `MatchSum` scrutinee. `a` is BORROWED-classified
+/// (`heap_operand_ownership` on a `SumPayload` view), so the nested match's shell reclaim (`sum_shell_reclaim_ok`
+/// Owned gate) declines and `a`'s inner Result box LEAKS.
+///
+/// v-memory-safety census (2026-09-28, WIP 73d6422676): the producing-side fix ([`payload_escapes_to_consumer_
+/// dupable`]) dups `a` (rc1->2) then frees the OUTER shell (cascade nets `a` 2->1) — trnt reaches 2->1, SAFE, no
+/// trap. The RESIDUAL `a` at rc1 leaks precisely because THIS nested-match reclaim is missing. The two
+/// preconditions that made #221 net-0 (outer shell still leaking; `a` not owned) are now BOTH removed by the
+/// producing-side fix, so reclaiming `a`'s shell here nets 1->0 → the complete trnt 2->0.
+///
+/// `Some(view)` iff S1 the scrutinee IS a bare-alias `SumPayload`/`Proj`/`SumExpect` view of a SOURCE P; S2 P is
+/// OWNED (`heap_operand_ownership(P) == Owned`) — the ownership-flow proof the view's payload transferred from an
+/// owned source (a borrowed/persistent source → DECLINE → leak-over-UAF); S3 the shared shell-reclaim floor.
+/// `None` otherwise (over-decline only keeps the leak).
+///
+/// ⚠ UAF-CRITICAL LOCKSTEP (my RED-review of v-mem's census; the reason this is a PAIR, not a lone reclaim): S1-S3
+/// alone are NOT sufficient for the DROP side. Reclaiming `a`'s shell is UAF-safe ONLY when the producing-side
+/// dup ALSO fired on this exact view (dup rc1->2, cascade 2->1, THIS reclaim 1->0 — balanced). If the nested
+/// reclaim fired WITHOUT the producing-side dup (e.g. the OUTER match's own reclaim/floor declined so `a` was
+/// never dup'd), `a` sits at rc1 as the source's LIVE payload and freeing it here DOUBLE-FREES / UAFs. So the
+/// DROP-side gate MUST additionally require `view ∈ dup_sites` (the producing side put it there) — use the
+/// dup-backed twin [`bare_alias_scrutinee_dupable_dupbacked`], which enforces the lockstep by construction. The
+/// pure form here is for classification/instrumentation only.
+#[allow(dead_code)] // TEMP: inert until v-mem wires the nested-match shell reclaim (dup-backed) + re-censuses trnt1 -> 0.
+pub(crate) fn bare_alias_scrutinee_dupable(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    root: &crate::core::SumCont,
+) -> Option<StructId> {
+    // S1: the scrutinee is a bare-alias VIEW — a SumPayload/Proj/SumExpect extraction of a SOURCE P.
+    let source = match core_of(db, scrutinee) {
+        Core::SumPayload { scrutinee: s, .. }
+        | Core::Proj { operand: s, .. }
+        | Core::SumExpect { scrutinee: s, .. } => s,
+        _ => return None,
+    };
+    // S2: the SOURCE is OWNED — the ownership-flow proof that the view's payload ownership transferred from an
+    // owned source (a `?`-materialized owned Result). A Borrowed/persistent source (a borrowed param, a
+    // caller-held value) → the view aliases a live value → reclaiming its shell would UAF → DECLINE.
+    if !matches!(
+        heap_operand_ownership(db, source),
+        Ok(HandleOwnership::Owned)
+    ) {
+        return None;
+    }
+    // S3: the shared shell-reclaim floor (mirrors matchsum_escaping_proj_node / divergent_alias_arm_dupable).
+    if !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+        || !scrutinee_dead_after_destructure(db, scrutinee, root)
+    {
+        return None;
+    }
+    Some(scrutinee)
+}
+
+/// LOCKSTEP DROP-SIDE twin of [`bare_alias_scrutinee_dupable`] — the UAF-safe form v-mem's emit gate consults.
+/// ANDs `dup_sites.contains(&scrutinee)`: the producing-side dup ([`payload_escapes_to_consumer_dupable`] →
+/// `collect_shell_reclaim_child_dups`) put this exact view into `dup_sites`, so its presence PROVES the dup
+/// fired (view at rc2 before the outer-shell cascade → rc1 → THIS reclaim nets rc1->0, balanced). Absent from
+/// `dup_sites` ⇒ no producing-side dup ⇒ reclaiming here would double-free the source's live payload ⇒ DECLINE
+/// (leak-over-UAF). Mirrors the `arg_reclaims_binder_as_base_dupbacked` dup-backed pattern in body_analysis.rs.
+#[allow(dead_code)] // TEMP: inert until v-mem wires the nested-match shell reclaim + re-censuses trnt1 -> 0.
+pub(crate) fn bare_alias_scrutinee_dupable_dupbacked(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    root: &crate::core::SumCont,
+    dup_sites: &HashSet<StructId>,
+) -> Option<StructId> {
+    let view = bare_alias_scrutinee_dupable(db, scrutinee, scrut_ty, root)?;
+    dup_sites.contains(&view).then_some(view)
+}
+
 /// The scrutinee-shell-reclaim gates that are INDEPENDENT of how the scrutinee's handle is held (stashed
 /// temp vs proven-owned param slot): heap + non-enum + non-diverging + payload-safety + not-re-matched.
 /// [`sum_shell_reclaim_ok`] ANDs the stashed-Owned requirement on top; the non-tail-spine param path ANDs
