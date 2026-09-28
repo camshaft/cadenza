@@ -11400,7 +11400,7 @@ todo	a symbol interned from a DECOMPOSED (NFD) String.from-bytes canonicalizes t
 todo	a zero-arg module member called the natural way (m.get) folds (consistency with top-level (get))
 todo	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 todo	an entrypoint delegating two distinct host effects performs both and returns its computed value
-todo	byp2 a Bytes entry param destructured by a runtime bin match declines
+pass	byp2 a Bytes entry param destructured by a runtime bin match reclaims
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims

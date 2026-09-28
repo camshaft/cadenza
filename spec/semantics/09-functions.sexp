@@ -13561,9 +13561,12 @@
 
 ; -- breaker batch 488 (2026-08-27): BYTES entry params — the list<u8> boundary shape. A
 ; borrow-only lift exists: Bytes.len over the param works and reclaims (byp1; the harness arg
-; spelling is the list-of-bytes literal). Deeper uses decline with the generic width message:
-; a runtime bin-match destructure of the param (byp2) and a slice extraction (byp3) — rungs for
-; whichever slice extends the Bytes lift past the length borrow. Both rust-pass.
+; spelling is the list-of-bytes literal). A runtime bin-match destructure of the param (byp2)
+; now ALSO crosses via the borrow lift: the escape walk alias-forwards the self-let `let s = b`
+; that `lower_match_bin` emits, so the scalar bin reads register as a BORROW (v-core-opt
+; reclaim.rs); the wrapper reclaims the borrowed cell after the call (live-objects 0). A slice
+; extraction (byp3) still declines — `Bytes.slice` CONSUMES its operand, so the sub-view escapes
+; past the length borrow (a distinct shape). Both rust-pass.
 (case
   "byp1 a Bytes entry param measured by Bytes.len reclaims"
   (input (do (def (main (: b Bytes)) (Bytes.len b)) (export main)))
@@ -13571,7 +13574,7 @@
   (output (: 2 Int64)))
 
 (case
-  "byp2 a Bytes entry param destructured by a runtime bin match declines"
+  "byp2 a Bytes entry param destructured by a runtime bin match reclaims"
   (input
     (do
       (def
@@ -13579,7 +13582,10 @@
         (match b ((bin (u8 x) (u8 y)) (+ (* 100 (Int64.of x)) (Int64.of y))) (_ -1)))
       (export main)))
   (call main (: #list(7 9) Bytes))
-  (output (: 709 Int64)))
+  (output (: 709 Int64))
+  ; The Bytes entry param crosses via the borrow lift (v-core-opt reclaim.rs alias-forwarding of
+  ; the `lower_match_bin` self-let); the wrapper reclaims the borrowed cell after the call.
+  (live-objects 0))
 
 (case
   "byp3 a Bytes entry param sliced declines (extraction past the length borrow)"

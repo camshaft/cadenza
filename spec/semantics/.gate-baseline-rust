@@ -7165,7 +7165,7 @@ pass	by3 op-arg values WRAPPED to bytes at runtime accumulate in the state — t
 pass	by4 nested SAME-effect handlers with independent BYTES states — the outer buffer self-doubles, the inner appends
 pass	by5 the slmin11 slot-clobber shape on a BYTES slot, phi-merged Bytes.concat growth in a tuple state, 2 puts + 2 reads
 pass	byp1 a Bytes entry param measured by Bytes.len reclaims
-pass	byp2 a Bytes entry param destructured by a runtime bin match declines
+pass	byp2 a Bytes entry param destructured by a runtime bin match reclaims
 pass	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling

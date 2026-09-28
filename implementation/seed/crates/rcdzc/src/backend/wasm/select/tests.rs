@@ -5042,3 +5042,46 @@ fn trnt1_payload_escapes_fires_with_sumnew_failure_husk() {
         "the recognized escape reports at least the nested-match scrutinee (the payload `m`) to dup"
     );
 }
+
+// ── byp2 entry-param borrow envelope: a Bytes ENTRY param destructured by a runtime bin match is a BORROW ──
+// `lower_match_bin` wraps a runtime bin-match in `Core::Let{(s, scrutinee), <BinIntRead(s) if-chain>}`. When the
+// scrutinee is a bare entry param `b`, that is a SELF-LET `let s = b in …` — `b` aliases into `s`, which is then
+// only borrowed (scalar `bytes-get` decodes via BinIntRead, retaining no heap ref). The escape walk's Let arm
+// (borrow_aware_calls mode) forwards the alias: `b` escapes iff `s` escapes → it does NOT, so
+// `param_borrow_aware_escapes` returns FALSE → the entry-param wrapper lifts `b` as a BORROW (drop_after=true,
+// reclaimed post-call) instead of declining CDZ0904. Pins that classification so a regression (dropping the
+// alias-forwarding) flips `cargo test`, independent of the corpus gate.
+
+#[test]
+fn byp2_bin_match_scalar_bytes_entry_param_is_borrow_not_escape() {
+    // The byp2 corpus shape (09-functions:byp2): a Bytes param destructured by `(bin (u8 x) (u8 y))` — two
+    // scalar reads, no sub-Bytes retained, `b` not moved to the result. Must classify as a BORROW (false).
+    let ast = crate::testkit::parse(
+        "(module m (def (main (: b Bytes)) \
+             (match b ((bin (u8 x) (u8 y)) (+ (* 100 (Int64.of x)) (Int64.of y))) (_ -1))) \
+           (export main))",
+    );
+    let mut db = Db::load(ast);
+    let (params, body) = function_of(&mut db, "main");
+    let binder = params[0].0;
+    assert!(
+        !param_borrow_aware_escapes(&mut db, body, binder),
+        "byp2: a Bytes entry param read only by a bin-match scalar decode is a BORROW (the self-let aliases it \
+         into the match scrutinee, which is borrowed) — the wrapper reclaims it, no CDZ0904 decline"
+    );
+}
+
+#[test]
+fn bytes_entry_param_moved_to_result_still_escapes() {
+    // BOUNDARY (the alias-forwarding must not over-fire): a Bytes entry param RETURNED verbatim genuinely
+    // escapes (the whole handle flows out), so the wrapper must NOT reclaim it — `param_borrow_aware_escapes`
+    // stays TRUE. Guards that the byp2 fix relaxes ONLY the borrow case, never a real move-out.
+    let ast = crate::testkit::parse("(module m (def (main (: b Bytes)) b) (export main))");
+    let mut db = Db::load(ast);
+    let (params, body) = function_of(&mut db, "main");
+    let binder = params[0].0;
+    assert!(
+        param_borrow_aware_escapes(&mut db, body, binder),
+        "a Bytes entry param returned verbatim ESCAPES — the wrapper must not reclaim it (leak-over-UAF)"
+    );
+}

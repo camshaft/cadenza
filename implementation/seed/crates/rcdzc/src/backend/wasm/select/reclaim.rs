@@ -2244,17 +2244,51 @@ fn binding_escapes_dup_aware_inner(
             })
         }
         Core::Let { bindings, body } => {
-            bindings.iter().any(|(_, v)| {
-                binding_escapes_dup_aware(
-                    db,
-                    *v,
-                    binder,
-                    false,
-                    dup_sites,
-                    borrow_aware_calls,
-                    arms_inherit_borrow,
-                )
-            }) || binding_escapes_dup_aware(
+            // ALIAS-FORWARDING (borrow_aware_calls / entry-param-wrapper query only): a binding `let s = <T>`
+            // whose VALUE is a DIRECT reference to the queried target `T` (a bare `Core::Param`/`LocalRef`)
+            // ALIASES `T` into `s` — the SAME heap value under a new name, no consume. So `T` escapes through
+            // this binding iff the Let BINDER `s` escapes in the body — recurse keyed on `s`, NOT the default
+            // unconditional consuming walk of the value. EXACT aliasing (not a heuristic), so it can only
+            // REMOVE false escapes → leak-over-UAF-safe. This fixes byp2: `lower_match_bin` wraps a runtime
+            // bin-match in `let s = b in <BinIntRead(s) if-chain>`; the self-let's value `b` (a bare Bytes
+            // ENTRY param) otherwise reads as a consuming move so `param_borrow_aware_escapes` mis-reports the
+            // borrow as escaping → the wrapper skips its post-call reclaim → CDZ0904 decline. GATED to
+            // `borrow_aware_calls` so every existing (dup-aware / droppable) caller is byte-identical.
+            for (bind_id, v) in bindings.iter() {
+                let aliases_target = borrow_aware_calls
+                    && matches!(binder, EscapeTarget::Binder(t) if matches!(
+                        core_of(db, *v),
+                        Core::Param { binder: b } | Core::LocalRef { binder: b } if b == t
+                    ));
+                let escapes_here = if aliases_target {
+                    // `T` flows into `bind_id` as an alias → escapes iff `bind_id` escapes in the body.
+                    binding_escapes_dup_aware(
+                        db,
+                        body,
+                        EscapeTarget::Binder(*bind_id),
+                        false,
+                        dup_sites,
+                        borrow_aware_calls,
+                        arms_inherit_borrow,
+                    )
+                } else {
+                    binding_escapes_dup_aware(
+                        db,
+                        *v,
+                        binder,
+                        false,
+                        dup_sites,
+                        borrow_aware_calls,
+                        arms_inherit_borrow,
+                    )
+                };
+                if escapes_here {
+                    return true;
+                }
+            }
+            // The body walk keyed on the ORIGINAL target — for any non-aliased occurrence of `T` in the body
+            // (an aliased `T` has no direct body occurrence, so this is false for the byp2 self-let shape).
+            binding_escapes_dup_aware(
                 db,
                 body,
                 binder,
