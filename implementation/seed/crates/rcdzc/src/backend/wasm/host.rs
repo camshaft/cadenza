@@ -1818,10 +1818,24 @@ pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
     };
     abi_val_type(&p).is_some()
         || matches!(p, Ty::Bytes)
+        // a `tuple<…>` payload crosses iff EVERY element is one of the shapes the `emit_option_reg_flatten` tuple
+        // branch marshals cleanly under an option: a SCALAR, a `Bytes`, a `list<T>` (element crossing), or a
+        // HETEROGENEOUS MIXED `variant` (scalar/tuple/record/Bytes/List cases). `emit_option_reg_flatten`'s tuple
+        // branch derives its capture widths from each element's `field_boundary_abi` and recurses
+        // `emit_tuple_reg_flatten`. This is NARROWER than the direct-tuple `tuple_arg_crosses` gate on purpose: a
+        // RECORD element with a sub-i64 (s32/s16/s8) field hits a PRE-EXISTING tuple<record> flatten mismatch
+        // (a component-functype CDZ0910, reproducible on the DIRECT tuple arg too — a found gap routed to be
+        // fixed), so an option<tuple<record>> DECLINES cleanly here rather than miscompile (decline-don't-
+        // miscompile). Once the tuple<record{sub-i64}> flatten is fixed this can widen to full `tuple_arg_crosses`.
         || matches!(p.strip_nominal(), Ty::Tuple(es)
         if !es.is_empty()
             && es.iter().all(|e| {
-                abi_val_type(e).is_some() || matches!(e.strip_nominal(), Ty::Bytes)
+                abi_val_type(e).is_some()
+                    || matches!(e.strip_nominal(), Ty::Bytes)
+                    || matches!(e.strip_nominal(), Ty::List(_))
+                    || variant_mixed_payload_cases(db, e).is_some_and(|cases| {
+                        cases.iter().all(|(_, k)| variant_mem_mixed_kind_supported(k))
+                    })
             }))
         // a `list<T>` payload crosses iff its ELEMENT crosses at the boundary (`field_boundary_abi`) — the same
         // admit set a `list<T>` ARG / a record list FIELD use. `emit_option_reg_flatten`'s list branch marshals
@@ -1852,7 +1866,7 @@ pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
         || (option_payload_ty(db, &p).is_some() && field_boundary_abi(db, &p).is_some())
 }
 
-fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
+pub(crate) fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
     let Ty::Tuple(elems) = ty.strip_nominal() else {
         return false;
     };
@@ -2980,15 +2994,22 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                 .expect("option<list> element crosses by the arm guard");
                             RecordFieldAbi::List(Box::new(einner))
                         } else if let Ty::Tuple(elems) = payload.strip_nominal() {
-                            // option<tuple-of-scalars-or-bytes> → the payload's `RecordFieldAbi::Tuple(…)`; each
-                            // element is a scalar OR `Bytes` by the guard, so this cannot panic.
-                            let abis = elems
-                                .iter()
-                                .map(|e| match abi_val_type(e) {
-                                    Some(pv) => RecordFieldAbi::Scalar(pv),
-                                    None => RecordFieldAbi::Bytes, // Bytes element by the guard
-                                })
-                                .collect();
+                            // option<tuple> → the payload's `RecordFieldAbi::Tuple(…)`, each element's abi from the
+                            // shared `field_boundary_abi` (scalar / Bytes / list / mixed variant / nested record /
+                            // tuple / …) — the SAME builder the direct `tuple<…>` ARG + `emit_option_reg_flatten`'s
+                            // tuple-branch `slot_vts` use, so the emitted `(option (tuple …))` component type + its
+                            // core flatten agree with the guest marshal for ANY element shape. A prior narrow
+                            // `Scalar`/`Bytes` map mis-typed a list element as `Bytes` (same 2×i32 flatten, wrong
+                            // WIT) and gave a mixed-variant/record element a bogus `Bytes` abi → a component
+                            // functype mismatch (CDZ0910). Each element crosses by the arm guard (`tuple_arg_crosses`).
+                            let elems = elems.to_vec();
+                            let mut abis = Vec::with_capacity(elems.len());
+                            for e in &elems {
+                                abis.push(
+                                    field_boundary_abi(db, e)
+                                        .expect("option<tuple> element crosses by the arm guard"),
+                                );
+                            }
                             RecordFieldAbi::Tuple(abis)
                         } else if variant_scalar_payload_cases(db, &payload).is_some() {
                             // option<variant> → `RecordFieldAbi::Variant(cases)` via the shared

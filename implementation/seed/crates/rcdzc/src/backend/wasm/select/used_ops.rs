@@ -1467,15 +1467,17 @@ pub(super) fn collect_used_ops_into_seen(
                             } else if let Ok(Some(read)) = get_op_ty(db, &payload) {
                                 out.insert(read);
                             } else if let Ty::Tuple(elems) = payload.strip_nominal() {
+                                // A `tuple` payload is decomposed POSITIONALLY by `emit_tuple_reg_flatten` —
+                                // `arr-get` per element + each element's own ops via the shared recursive
+                                // `collect_record_field_ops` (the used_ops twin of `field_boundary_abi`/the
+                                // marshal), which declares ANY element shape (a scalar's unbox, a `Bytes`/`list`
+                                // element's rope copy, a mixed variant's `sum-disc`/`sum-payload` + payload ops,
+                                // a nested record/tuple's fields). A scalar/Bytes-only manual list would drop a
+                                // mixed-variant/list/record element's ops → an out-of-range func index.
                                 out.insert(OP_ARR_GET);
                                 let elems = elems.to_vec();
                                 for e in &elems {
-                                    if matches!(e.strip_nominal(), Ty::Bytes) {
-                                        out.insert(OP_BYTES_LEN);
-                                        out.insert(OP_BYTES_GET);
-                                    } else if let Ok(Some(read)) = get_op_ty(db, e) {
-                                        out.insert(read);
-                                    }
+                                    collect_record_field_ops(db, e, out);
                                 }
                             } else if let Ty::List(inner) = payload.strip_nominal() {
                                 // A `list<T>` payload is marshalled into `mem` by `emit_list_arg_marshal` —

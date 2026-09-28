@@ -3433,38 +3433,45 @@ pub(super) fn emit_option_reg_flatten(
         out.push(Lir::LocalGet(count_out));
         return Ok(());
     }
-    // A top-level `option<tuple-of-scalars-or-bytes>` arg flattens (canonical variant flatten) to `(disc:i32,
-    // flatten(tuple))` = disc + one core slot per SCALAR element / TWO `(ptr,len)` slots per `Bytes` element
-    // (POSITIONAL, no name-lex/WIT-order ambiguity), the register twin of the `option<tuple>` record-FIELD
-    // flatten. `BlockType` is single-value, so the variable element count cannot be pushed from the `if`;
-    // instead marshal the payload tuple into N element scratch slots (Some → `emit_tuple_reg_flatten` on the
-    // SUM_PAYLOAD tuple handle, copying each Bytes element's rope into `mem` at the cursor + pushing its N
-    // positional slots, captured in REVERSE; None → each slot's width zero) and push `disc` + the N slots AFTER
-    // the `if`. The guard is `abi_val_type OR Bytes` (NOT `valtype_of`, which is `Some(I32)` for a nested tuple/
-    // record handle and would wrongly admit a nested-compound element). MUST precede the scalar branch below: a
-    // tuple's `valtype_of` is `Some(I32)`, so the scalar branch's guard would else match it and decline.
-    if matches!(payload_ty.strip_nominal(), Ty::Tuple(es)
-        if !es.is_empty()
-            && es.iter().all(|e| crate::backend::wasm::host::abi_val_type(e).is_some()
-                || matches!(e.strip_nominal(), Ty::Bytes)))
-    {
+    // A top-level `option<tuple>` arg flattens (canonical variant flatten) to `(disc:i32, flatten(tuple))` =
+    // disc + the POSITIONAL flatten of each element's boundary ABI (a SCALAR → 1 slot, a `Bytes` → 2 `(ptr,len)`,
+    // a mixed variant → `(v-disc, joined-slots…)`, a nested record/tuple/list → its flatten inline). It admits
+    // the SAME element algebra `tuple_arg_crosses` does (matching the direct-tuple ARG + `result<tuple, enum>`).
+    // `BlockType` is single-value, so the variable element count cannot be pushed from the `if`; instead marshal
+    // the payload tuple into N element scratch slots (Some → `emit_tuple_reg_flatten` on the SUM_PAYLOAD tuple
+    // handle, copying each rope-bearing leaf into `mem` at the cursor + pushing its N positional slots, captured
+    // in REVERSE; None → each slot's width zero) and push `disc` + the N slots AFTER the `if`. `slot_vts` is
+    // derived from each element's `field_boundary_abi` flatten (below), so the count matches
+    // `emit_tuple_reg_flatten`'s push for ANY element shape. MUST precede the scalar branch below: a tuple's
+    // `valtype_of` is `Some(I32)`, so the scalar branch's guard would else match it and decline.
+    if matches!(payload_ty.strip_nominal(), Ty::Tuple(es) if !es.is_empty()) {
         let Ty::Tuple(elems) = payload_ty.strip_nominal() else {
             unreachable!("tuple payload by the guard")
         };
         let elems = elems.to_vec(); // release the borrow of `payload_ty` before the recursive marshal
-        // Expand each element to its core slots: a `Bytes` element is `(ptr,len)` = 2 slots, a scalar is 1. This
-        // count MUST equal `emit_tuple_reg_flatten`'s per-element push count or the capture leaves a value on
-        // the stack — the same `valtype_of(Bytes)=Some(I32)` slot-count trap as the record byte-leaf field.
-        let slot_vts: Vec<ValType> = elems
-            .iter()
-            .flat_map(|e| {
-                if matches!(e.strip_nominal(), Ty::Bytes) {
-                    vec![ValType::I32, ValType::I32] // (ptr, len)
-                } else {
-                    vec![valtype_of(e).expect("scalar-or-bytes element by the guard")]
-                }
-            })
-            .collect();
+        // Expand each element to its core slots by FLATTENING its boundary ABI (`field_boundary_abi` →
+        // `flatten_record_field_abi`) — the SAME derivation the option<record> branch + the direct-tuple ARG use,
+        // so a mixed-variant / record / list / nested-tuple element counts its real slots (a `Bytes` element →
+        // 2 `(ptr,len)`, a mixed variant → `(disc, joined-slots…)`, …). This count MUST equal
+        // `emit_tuple_reg_flatten`'s per-element push count or the capture leaves a value on the stack — a
+        // `valtype_of`-based count treats a list/variant handle as one i32 and under-reserves (CDZ0910). An
+        // element with no boundary read declines cleanly (decline-don't-miscompile), the register twin of the
+        // classifier's `tuple_arg_crosses` gate.
+        let mut slot_vts: Vec<ValType> = Vec::new();
+        for e in &elems {
+            let abi = crate::backend::wasm::host::field_boundary_abi(db, e).ok_or_else(|| {
+                Reject::decline("an option<tuple> element does not cross at the boundary")
+            })?;
+            let mut bytes = Vec::new();
+            crate::backend::wasm::serialize::flatten_record_field_abi(&abi, &mut bytes);
+            for b in bytes {
+                slot_vts.push(ValType::from_byte(b).ok_or_else(|| {
+                    Reject::decline(
+                        "a flattened option<tuple> element slot is not a numeric core type",
+                    )
+                })?);
+            }
+        }
         let n = slot_vts.len() as u32;
         let disc_out = work_base;
         let base_slot = work_base + 1;

@@ -10083,3 +10083,132 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "an option<tuple<variant{a,b(s64),c(bytes)}, s64>> host-op arg crosses (BYTES mixed-variant element nested under option, Some arm)"
+  (doc
+    "SHAPE 276 (v-wit-boundary) — a top-level `option<tuple<variant{a, b(s64), c(bytes)}, s64>>` bare host-op
+           ARGUMENT (probe.push), the Some arm. The option<tuple> twin of SHAPE 270 (direct tuple mixed-variant
+           bytes element) / SHAPE 272 (option<record> mixed-variant field). Previously the `option<tuple>` classifier
+           (`option_arg_crosses`) admitted only scalar/Bytes ELEMENTS, so a mixed-variant element DECLINED the whole
+           option. Now the classifier admits a scalar/Bytes/list/mixed-variant element, `emit_option_reg_flatten`'s
+           tuple branch derives its capture `slot_vts` from each element's `field_boundary_abi` (like the
+           option<record> branch — a prior narrow `Scalar`/`Bytes` map mis-typed a compound element), the option arg
+           abi builder builds each tuple element via `field_boundary_abi`, `used_ops` declares each element's ops via
+           `collect_record_field_ops`, and the emit.rs cursor pre-scan uses `tuple_arg_needs_cursor` (recursing a
+           mixed-variant Bytes/List leaf) instead of the Bytes-only `tuple_has_bytes_element`. `emit_tuple_reg_flatten`'s
+           mixed-variant element arm (SHAPE 270) rope-copies the Bytes case into `mem` at the reserved cursor. The
+           option flattens to `(opt-disc:i32, v-disc:i32, ptr:i32, len:i32, n:i64)`. run() builds Some((C(b\"hi\"), 5))
+           and performs probe.push; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (tuple (variant (a) (b (s64)) (c (list (u8)))) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (Option (Tuple Sig Int64)) Int64)))
+      (def (run) (host (probe) (probe.push (Some #tuple((Sig.C b"hi") 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "an option<tuple<variant{a,b(s64),c(list<s64>)}, s64>> host-op arg crosses (LIST mixed-variant element nested under option, Some arm)"
+  (doc
+    "SHAPE 277 (v-wit-boundary) — the LIST twin of SHAPE 276: an `option<tuple<variant{a, b(s64), c(list<s64>)},
+           s64>>` bare host-op ARGUMENT (probe.push), the Some arm. Rides the SAME widened option<tuple> classifier +
+           `emit_variant_mixed_arg_reg_flatten`'s List arm (marshals the payload list's backing into `mem` at the
+           reserved cursor → `(ptr, count)`) as SHAPE 276. The option flattens to
+           `(opt-disc:i32, v-disc:i32, ptr:i32, count:i32, n:i64)`. run() builds Some((C([1,2,3]), 5)) and performs
+           probe.push; a VALID running component (live-objects=0) pins it.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (tuple (variant (a) (b (s64)) (c (list (s64)))) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (List Int64)))
+      (effect probe (op push (-> (Option (Tuple Sig Int64)) Int64)))
+      (def (run) (host (probe) (probe.push (Some #tuple((Sig.C #list(1 2 3)) 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a result<tuple<variant{a,b(s64),c(bytes)}, s64>, enum> host-op arg crosses (BYTES mixed-variant element nested under result, Ok arm)"
+  (doc
+    "SHAPE 278 (v-wit-boundary) — a top-level `result<tuple<variant{a, b(s64), c(bytes)}, s64>, enum>` bare host-op
+           ARGUMENT (probe.push), the Ok arm — the result<tuple> twin of SHAPE 276. This shape ALREADY crossed on the
+           pre-existing `result<tuple, enum>` arg path (`result_tuple_enum` → `tuple_arg_crosses` admits the mixed
+           variant element, and the result<tuple> cursor pre-scan already used `tuple_arg_needs_cursor` which recurses
+           a mixed-variant Bytes/List leaf as of SHAPE 270); this case PINS the value round-trip that was untested (per
+           the operator add-a-case-even-if-it-passes directive). run() builds (Ok (C(b\"hi\"), 5)) and performs
+           probe.push; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (variant (a) (b (s64)) (c (list (u8)))) (s64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Sig Int64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple((Sig.C b"hi") 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a result<tuple<variant{a,b(s64),c(list<s64>)}, s64>, enum> host-op arg crosses (LIST mixed-variant element nested under result, Ok arm)"
+  (doc
+    "SHAPE 279 (v-wit-boundary) — the LIST twin of SHAPE 278: a `result<tuple<variant{a, b(s64), c(list<s64>)},
+           s64>, enum>` bare host-op ARGUMENT (probe.push), the Ok arm. Rides the pre-existing result<tuple> path +
+           `emit_variant_mixed_arg_reg_flatten`'s List arm; pins the value round-trip. run() builds (Ok (C([1,2,3]),
+           5)) and performs probe.push; a VALID running component (live-objects=0) pins it.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (variant (a) (b (s64)) (c (list (s64)))) (s64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (List Int64)))
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Sig Int64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple((Sig.C #list(1 2 3)) 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "an option<tuple<list<s64>, s64>> host-op arg crosses (LIST element nested under option, Some arm)"
+  (doc
+    "SHAPE 280 (v-wit-boundary) — a top-level `option<tuple<list<s64>, s64>>` bare host-op ARGUMENT (probe.push),
+           the Some arm. Pins the LIST-element admission the widened option<tuple> classifier adds (the old narrow
+           `abi_val_type OR Bytes` gate declined a list element). It ALSO pins the abi-builder correctness fix: the
+           prior narrow `Scalar`/`Bytes` element map mis-typed a `list` element as `Bytes` (both flatten to 2×i32, so
+           it silently declared a WRONG WIT `list<u8>` where the guest sent a `list<s64>` backing); building each
+           element via `field_boundary_abi` now declares the correct `list<s64>`. run() builds Some(([1,2,3], 5)) and
+           performs probe.push; a VALID running component (live-objects=0) with `push: func(option<tuple<list<s64>,
+           s64>>)` is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (tuple (list (s64)) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Tuple (List Int64) Int64)) Int64)))
+      (def (run) (host (probe) (probe.push (Some #tuple(#list(1 2 3) 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
