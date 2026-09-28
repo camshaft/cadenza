@@ -187,7 +187,7 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   list result + boxed elements are not reclaimed (the SpillRecord-result reclaim class, SHAPE 60/62/63;
   value-correct, routed to v-memory-safety). The ARG-side (host→guest) `list<COMPOUND>` element is ALSO ✅ DONE:
   `list_elem_marshalable` + `emit_list_arg_marshal` write a `list<record>` (SHAPE 30/39), `list<tuple>` (SHAPE
-  33), `list<option<scalar>>` (SHAPE 38), `list<option<record>>` / `list<option<tuple>>` (SHAPE 152/153), `list<option<bytes>>` (SHAPE 154), `list<option<list>>` (SHAPE 162), `list<option<option<scalar>>>` (SHAPE 224), `list<option<option<bytes>>>` (SHAPE 225), and
+  33), `list<option<scalar>>` (SHAPE 38), `list<option<record>>` / `list<option<tuple>>` (SHAPE 152/153), `list<option<bytes>>` (SHAPE 154), `list<option<list>>` (SHAPE 162), `list<option<option<scalar>>>` (SHAPE 224), `list<option<option<bytes>>>` (SHAPE 225), `list<option<option<record>>>` (SHAPE 226), and
   `list<variant<scalar>>` (SHAPE 43/52) element IN PLACE at its canonical layout, recursing for a nested
   `list<list<…>>`. The `list<option<COMPOUND>>` element writes the payload at the option's payload offset via
   `emit_option_to_mem`'s branches: a RECORD/TUPLE payload (SHAPE 152/153) via `emit_record_to_mem`/`emit_tuple_
@@ -210,9 +210,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   (the payload is itself option-shaped → recurse). A BYTES inner (`list<option<option<bytes>>>`) is now ✅ DONE too
   — SHAPE 225: NO new code — the SHAPE 224 nested arm recurses into the inner option's Bytes arm (rope copied at
   the spill cursor, which the list-arg pre-scan reserves UNCONDITIONALLY for any `Ty::List` arg), and
-  `collect_list_elem_ops`' nested-option recursion reaches the inner `bytes-len`/`bytes-get`. REMAINING (ARG-side
-  only): a mixed int↔float variant element (rolls into the compound-variant-payload / mixed-join gaps above); a
-  list/product INNER (`list<option<option<list/record/tuple>>>`) — the same nested arm covers it, un-pinned.
+  `collect_list_elem_ops`' nested-option recursion reaches the inner `bytes-len`/`bytes-get`. A RECORD inner
+  (`list<option<option<record>>>`) is now ✅ DONE too — SHAPE 226: NO new code — the nested arm recurses into the
+  inner option's Record arm (`emit_record_to_mem` writes the product in place, WIT-ordered), and
+  `collect_list_elem_ops` reaches the inner `arr-get` + per-field ops. REMAINING (ARG-side only): a mixed int↔float
+  variant element (rolls into the compound-variant-payload / mixed-join gaps above); a list/tuple INNER
+  (`list<option<option<list/tuple>>>`) — the same nested arm covers it, un-pinned.
 - **[emit, register-path] a top-level `result<list<u8>, enum>` host-op ARG — ✅ DONE (SHAPE 164/165).** The
   register twin of the `result` record FIELD (SHAPE 17) and the list ELEMENT (SHAPE 163), now at the bare param
   position. A new `HostParam::Result(err-cases)` variant + a `result_bytes_enum` classifier arm; the guest flattens
@@ -472,8 +475,10 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `collect_list_elem_ops` all admitting a nested-option payload in lockstep. So the nested `option<option<X>>` now
   crosses at EVERY arg position INCLUDING the list element. A BYTES inner at the list-element position
   (`list<option<option<bytes>>>`) is now DONE too — SHAPE 225 (no new code: the nested arm recurses into the inner
-  option's Bytes arm, the rope copied at the list-arg's unconditionally-reserved spill cursor). REMAINING (nested
-  option): a list/product INNER at the list-element position — the same nested arm covers it, un-pinned.
+  option's Bytes arm, the rope copied at the list-arg's unconditionally-reserved spill cursor). A RECORD inner
+  (`list<option<option<record>>>`) is now DONE too — SHAPE 226 (no new code: the nested arm recurses into the inner
+  option's Record arm, `emit_record_to_mem` writing the product in place WIT-ordered). REMAINING (nested option): a
+  list/tuple INNER at the list-element position — the same nested arm covers it, un-pinned.
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
 - **[emit, export] typed enum RESULT under a DECLARED world — ✅ DONE (SHAPE 60).** A payloadless-enum
