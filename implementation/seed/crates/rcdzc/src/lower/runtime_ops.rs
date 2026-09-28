@@ -94,6 +94,31 @@ pub(super) fn lower_map_to_list(db: &mut Db, map: StructId) -> Core {
     if !orderable_leaf_or_compound(db, &key_ty, /*float_ok=*/ true, &mut Vec::new()) {
         return Core::Poison(to_list_unorderable_reject("key"));
     }
+    // DETERMINACY (shared front-end): mirror the backend `Core::MapToList` emit's descriptor check HERE so
+    // BOTH backends AND `cdz check` inherit ONE coded CDZ0203, instead of the CADENZA re-emit hitting the
+    // `Core::SumNew` under-determined-sum decline (codeless CDZ0900) BEFORE the backend's own
+    // `map_shape_descriptor` check runs — the was-pass→todo divergence on corpus-cadenza-19-sets 0291
+    // (a Float32-key `Map.to-list` over a `(Result Int64 _)` whose Err arm nothing constrains). A Float32
+    // key's canonical descriptor REQUIRES the value shape (unlike an Int64 key, which TOLERATES an
+    // undetermined value — `map_shape_descriptor` bakes for it), so a free `Var` in the value leaves no
+    // bakeable descriptor. Gate on `has_free_var` so a genuinely-unorderable DETERMINED shape keeps the
+    // codeless backstop (the not-yet / carve-out class). This is the EXACT predicate the wasm/rust
+    // `Core::MapToList` emits already use, moved earlier — so it CANNOT introduce a reject those backends
+    // do not already produce (v-cdz-smith seed 902902902; v-cadenza-backend/v-core-opt routed to the
+    // lower.rs decline-correctness owner).
+    if map_shape_descriptor(db, &key_ty, &val_ty).is_none()
+        && (key_ty.has_free_var() || val_ty.has_free_var())
+    {
+        return Core::Poison(Reject::coded(
+            crate::diag::Code::TypeMismatch,
+            format!(
+                "a Set/Map key's type `{}` is not fully determined — annotate it \
+                 (e.g. `(: (list) (List Int64))`) so its keys have a canonical form for comparison",
+                crate::ty::Ty::Map(Box::new(key_ty.clone()), Box::new(val_ty.clone()))
+                    .render_name(&db.name_ctx())
+            ),
+        ));
+    }
     Core::MapToList {
         map,
         key_ty,
