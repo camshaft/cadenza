@@ -4025,13 +4025,14 @@ pub(super) fn emit_tuple_reg_flatten(
             )?;
             continue;
         }
-        // A HETEROGENEOUS MIXED `variant` element (scalar + tuple payload cases, NO mem/record case): read its
-        // handle (`arr-get i`, borrows the tuple) → flatten to `(disc, joined-slots…)` via
+        // A HETEROGENEOUS MIXED `variant` element (scalar + tuple + WIT-ordered-record payload cases, NO mem
+        // case): read its handle (`arr-get i`, borrows the tuple) → flatten to `(disc, joined-slots…)` via
         // `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant / a mixed-variant
-        // record FIELD (SHAPE 264) use. Checked after the scalar-/single-tuple variant arms. EXCLUDED cases
+        // record FIELD (SHAPE 264/266) use. Checked after the scalar-/single-tuple variant arms. EXCLUDED cases
         // (decline at the final `get_op_ty`, decline-don't-miscompile): a Bytes/List case needs a `mem` spill +
-        // a reserved cursor; a Record case has the open register-Record one-join-slot defect (see the record-FIELD
-        // arm) — the bare-ARG + mem `list`-element (SHAPE 261) Record cases are unaffected.
+        // a reserved cursor; a Record case whose guest NAME-LEX field order DIVERGES from its element WIT order
+        // (the component `(record …)` is built name-lex, so a divergent order would mis-link — the tuple-element
+        // twin of SHAPE 266's record-FIELD guard). The bare-ARG + mem `list`-element (SHAPE 261) Record cases work.
         if crate::backend::wasm::host::variant_mixed_payload_cases(db, ety).is_some_and(|cases| {
             cases
                 .iter()
@@ -4041,9 +4042,13 @@ pub(super) fn emit_tuple_reg_flatten(
                         k,
                         crate::backend::wasm::host::VariantPayloadKind::Bytes
                             | crate::backend::wasm::host::VariantPayloadKind::List(_)
-                            | crate::backend::wasm::host::VariantPayloadKind::Record(..)
                     )
                 })
+                && crate::backend::wasm::host::mixed_variant_record_cases_wit_ordered(
+                    db,
+                    ety,
+                    elem_wits.as_ref().and_then(|ws| ws.get(i)),
+                )
         }) {
             let elem_wit = elem_wits.as_ref().and_then(|ws| ws.get(i));
             let cases =
