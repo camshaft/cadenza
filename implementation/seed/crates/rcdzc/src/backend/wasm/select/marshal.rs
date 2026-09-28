@@ -2237,22 +2237,24 @@ pub(super) fn emit_option_reg_flatten(
     if let Some(inner_payload) = crate::backend::wasm::host::option_payload_ty(db, &payload_ty)
         .filter(|pp| {
             crate::backend::wasm::host::abi_val_type(pp).is_some()
-                || matches!(pp.strip_nominal(), Ty::Bytes)
+                || matches!(pp.strip_nominal(), Ty::Bytes | Ty::List(_))
         })
     {
-        // The inner option flattens to `(inner-disc:i32, <inner payload slots>)`: a SCALAR payload is ONE
-        // slot; a `Bytes` payload is `(ptr:i32, len:i32)` — TWO slots — whose rope the inner recursion copies
-        // into `mem` at the threaded cursor (`option<option<bytes>>` → `(outer-disc, inner-disc, ptr, len)`).
-        // Check `Bytes` FIRST: a bytes handle's `valtype_of` is `Some(I32)`, so the scalar arm would else
-        // undercount the capture to 2 slots and leave a value on the operand stack.
-        let slot_vts: Vec<ValType> = if matches!(inner_payload.strip_nominal(), Ty::Bytes) {
-            vec![ValType::I32, ValType::I32, ValType::I32] // (inner-disc, ptr, len)
-        } else {
-            vec![
-                ValType::I32,
-                valtype_of(&inner_payload).expect("filter admitted a scalar payload"),
-            ]
-        };
+        // The inner option flattens to `(inner-disc:i32, <inner payload slots>)`: a SCALAR payload is ONE slot;
+        // a `Bytes` payload is `(ptr:i32, len:i32)` and a `list<T>` payload is `(ptr:i32, count:i32)` — TWO slots
+        // each — whose backing the inner recursion writes into `mem` at the threaded cursor (`option<option<bytes>>`
+        // → `(outer-disc, inner-disc, ptr, len)`; `option<option<list>>` → `(outer-disc, inner-disc, ptr, count)`).
+        // Check `Bytes`/`List` FIRST: a bytes/list handle's `valtype_of` is `Some(I32)`, so the scalar arm would
+        // else undercount the capture to 2 slots and leave a value on the operand stack.
+        let slot_vts: Vec<ValType> =
+            if matches!(inner_payload.strip_nominal(), Ty::Bytes | Ty::List(_)) {
+                vec![ValType::I32, ValType::I32, ValType::I32] // (inner-disc, ptr, len/count)
+            } else {
+                vec![
+                    ValType::I32,
+                    valtype_of(&inner_payload).expect("filter admitted a scalar payload"),
+                ]
+            };
         let n = slot_vts.len() as u32;
         let disc_out = work_base;
         let base_slot = work_base + 1;

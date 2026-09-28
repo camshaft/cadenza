@@ -1010,14 +1010,20 @@ pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
         // `Option(Enum)` (so the component type is `(option (enum …))`, matching the world). Checked after the
         // variant admit (both are Sums; `enum_cases` requires ALL-nullary variants).
         || enum_cases(db, &p).is_some()
-        // a nested `option<scalar>`/`option<bytes>` payload crosses — `option<option<scalar>>` flattens to
-        // `(outer-disc, inner-disc, scalar)` and `option<option<bytes>>` to `(outer-disc, inner-disc, ptr, len)`
-        // via `emit_option_reg_flatten`'s nested-option branch (which recurses on the inner option handle; a
-        // Bytes inner copies its rope into `mem` at the reserved cursor). The classifier builds the inner abi via
-        // `field_boundary_abi` (which admits `option<bytes>` as `Option(Bytes)`), so serialize's flatten recursion
-        // agrees; the emit.rs pre-scan reserves the cursor for `option<option<bytes>>`.
-        || option_payload_ty(db, &p)
-            .is_some_and(|pp| abi_val_type(&pp).is_some() || matches!(pp.strip_nominal(), Ty::Bytes))
+        // a nested `option<scalar>`/`option<bytes>`/`option<list>` payload crosses — `option<option<scalar>>`
+        // flattens to `(outer-disc, inner-disc, scalar)`, `option<option<bytes>>` to `(outer-disc, inner-disc,
+        // ptr, len)`, and `option<option<list<T>>>` to `(outer-disc, inner-disc, ptr, count)` via
+        // `emit_option_reg_flatten`'s nested-option branch (which recurses on the inner option handle; a Bytes/list
+        // inner writes its backing into `mem` at the reserved cursor). The classifier builds the inner abi via
+        // `field_boundary_abi` (`option<bytes>` → `Option(Bytes)`, `option<list<T>>` → `Option(List(elem))`), so
+        // serialize's flatten recursion agrees; the emit.rs pre-scan reserves the cursor. A list inner is admitted
+        // iff its ELEMENT crosses at the boundary (`field_boundary_abi`), the same admit set a bare `list<T>` arg uses.
+        || option_payload_ty(db, &p).is_some_and(|pp| {
+            abi_val_type(&pp).is_some()
+                || matches!(pp.strip_nominal(), Ty::Bytes)
+                || matches!(pp.strip_nominal(), Ty::List(inner)
+                    if field_boundary_abi(db, &(**inner).clone()).is_some())
+        })
 }
 
 fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
@@ -1960,18 +1966,22 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             // abi. Checked before the record `else` (an enum is a Sum, NOT a `Ty::Record`).
                             field_boundary_abi(db, &payload)
                                 .expect("option<enum> payload crosses by the arm guard")
-                        } else if option_payload_ty(db, &payload)
-                            .is_some_and(|pp| abi_val_type(&pp).is_some() || matches!(pp.strip_nominal(), Ty::Bytes))
-                        {
+                        } else if option_payload_ty(db, &payload).is_some_and(|pp| {
+                            abi_val_type(&pp).is_some()
+                                || matches!(pp.strip_nominal(), Ty::Bytes)
+                                || matches!(pp.strip_nominal(), Ty::List(inner)
+                                    if field_boundary_abi(db, &(**inner).clone()).is_some())
+                        }) {
                             // option<option<scalar>> → `RecordFieldAbi::Option(Option(Scalar))`, option<option<bytes>>
-                            // → `RecordFieldAbi::Option(Option(Bytes))`, both via the shared `field_boundary_abi`
-                            // nested-option arm. Flattens to `(outer-disc, inner-disc, scalar)` / `(outer-disc,
-                            // inner-disc, ptr, len)` via `emit_option_reg_flatten`'s nested-option branch (which
-                            // recurses on the inner option handle; a Bytes inner copies its rope into `mem` at the
-                            // reserved cursor). The `(option (option <T>))` component type builds from this abi.
-                            // Checked before the record `else` (an option is a Sum, NOT a record).
+                            // → `Option(Option(Bytes))`, option<option<list<T>>> → `Option(Option(List(elem)))`, all
+                            // via the shared `field_boundary_abi` nested-option arm. Flattens to `(outer-disc,
+                            // inner-disc, scalar)` / `(outer-disc, inner-disc, ptr, len)` / `(outer-disc, inner-disc,
+                            // ptr, count)` via `emit_option_reg_flatten`'s nested-option branch (which recurses on the
+                            // inner option handle; a Bytes/list inner writes its backing into `mem` at the reserved
+                            // cursor). The `(option (option <T>))` component type builds from this abi. Checked before
+                            // the record `else` (an option is a Sum, NOT a record).
                             field_boundary_abi(db, &payload)
-                                .expect("option<option<scalar|bytes>> payload crosses by the arm guard")
+                                .expect("option<option<scalar|bytes|list>> payload crosses by the arm guard")
                         } else {
                             // option<record> → the payload's `RecordFieldAbi::Record(…)`, each field's abi from
                             // the shared recursive `field_boundary_abi` (scalar / Bytes / nested record / list /
