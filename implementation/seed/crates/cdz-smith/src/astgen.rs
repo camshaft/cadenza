@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(46);
+    let shape = c.variant(47);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -904,8 +904,26 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      #9978 this form DECLINED CDZ0900 (S638 verified). Same values as 44: k>1->7, k==1->222 (inner-`?`
         //      short-circuit), k<=0->111 (outer-`?` short-circuit). Arg = a. Verified rust AGREE (2->7, 1->222,
         //      0->111, 9->7); corpus trnt1 idealistic 111/222/7.
-        _ => (
+        45 => (
             "(do (def (mk (: rr (Result (Result Int64 Int64) Int64))) (: (Ok (try (try rr))) (Result Int64 Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (if (> k 1) (Ok (Ok 7)) (Ok (Err 222))) (Err 111))) ((Ok v) v) ((Err e) e))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 46 — chdo2 MAP.REMOVE-THREADED-DEAD-AT-BASE entry param (the #e2f72191e0 CHAMP reclaim-on-edge value/UAF
+        //      fence — the Map TWIN of shape 41's Set.remove). A recursion `go` REMOVES key `n` from a
+        //      `(Map Int64 Int64)` accumulator each step and recurses (`(+ 1 (go (Map.remove m n) (- n 1)))`); the
+        //      base arm (n=0) returns a SCALAR 0, so the threaded Map is DEAD-AFTER at the base. e2f72191e0 admitted
+        //      BOTH Set.remove AND Map.remove to arg_reclaims_binder_as_base(_dupbacked) as reclaim-on-edge — shape
+        //      41 fences the Set.remove arm (op_set_remove); THIS fences the DISTINCT Map.remove arm (op_map_remove,
+        //      champ.rs — its OWN key-borrow + spine layout, a 1:1 mirror that can still miss the Map path). The
+        //      corpus (chdo2, #cda31ba280) pins the LEAK side (live-objects 0); THIS pins the VALUE/UAF side (an
+        //      over-aggressive reclaim-on-edge that double-frees / frees a shared spine -> trap / wrong value).
+        //      Runtime-seeded `#map((= k k) …)` (a const `#map` DCE's away -> hollow); DEPTH fixed at 3 (a k-derived
+        //      depth would infinite-loop on the NEGATIVE args the range includes). Value = 3 for EVERY arg (three
+        //      `+1`s, Map dead at base) -> UAF-observable, arg-independent by design. Arg = a. Verified rust AGREE
+        //      (5->3, 0->3, -4->3).
+        _ => (
+            "(do (def (go (: m (Map Int64 Int64)) (: n Int64)) (if (= n 0) 0 (+ 1 (go (Map.remove m n) (- n 1))))) (def (main (: k Int64)) (go #map((= k k) (= (+ k 1) (+ k 1)) (= (+ k 2) (+ k 2))) 3)) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6346,13 +6364,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main`.
-        let mut reached = [false; 46];
-        for seed in 0u64..2760 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main`.
+        let mut reached = [false; 47];
+        for seed in 0u64..2820 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(46) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-45 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(47) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-46 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6483,11 +6501,13 @@ mod tests {
                 reached[44] = true; // shape 44 = trnt1 chained double-`?` do-def entry-param `main` (unified chained-? shell reclaim #a1e26895c3)
             } else if ep.source.contains("(Ok (try (try rr)))") {
                 reached[45] = true; // shape 45 = trnt1c compact nested-`?` entry-param `main` (inner-first-hoist desugar #9978)
+            } else if ep.source.contains("(Map.remove m n)") {
+                reached[46] = true; // shape 46 = chdo2 Map.remove-threaded-dead-at-base entry-param `main` (CHAMP reclaim-on-edge #e2f72191e0, Map twin of 41)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all forty-six export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all forty-seven export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
