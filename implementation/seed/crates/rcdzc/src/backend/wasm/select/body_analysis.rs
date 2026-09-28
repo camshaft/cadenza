@@ -474,6 +474,23 @@ pub(super) fn arg_reclaims_binder_as_base(db: &mut Db, arg: StructId, binder: St
         Core::MapInsert { map, key, val, .. } => {
             is_ref_to(db, map, binder) && !occurs_in(db, key, binder) && !occurs_in(db, val, binder)
         }
+        // `Set.remove`/`Map.remove` are the CHAMP-collection reclaim-on-edge TWINS of `Set.insert`/`Map.insert`
+        // (v-core-opt, (d) CHAMP-orphan sweep): `op_set_remove`/`op_map_remove` CONSUME the collection base
+        // (champ.rs "CONSUMES `s`/`m`, moves through to the result", FBIP-reuse at rc1 else path-copy+drop-old)
+        // and BORROW the elem/key — identical ownership to the insert arms. So a varying accumulator threaded
+        // `worker (Set.remove acc n)` (a consume-and-rebuild fold over a shrinking CHAMP collection) reclaims
+        // `binder` ON THE EDGE, and the fn-exit epilogue reclaims only the FINAL un-consumed value (no
+        // double-free — the disjoint loop-EXIT path). Their OMISSION here left a fresh-owned Set/Map threaded
+        // via `Set.remove`/`Map.remove`, dead at the base arm, LEAKING its final value (v-mem-safety: champ-
+        // dead-param-at-arm-{SET,MAP}-*-LEAK; List.push/concat + Bytes/String analogs were already clean, so it
+        // was CHAMP-remove-specific). GATED to `binder` being the BASE collection only (`is_ref_to`), with
+        // `binder` NOT in the elem/key (a heap-child-MOVE stays denied), exactly like the insert arms.
+        Core::SetRemove { set, elem, .. } => {
+            is_ref_to(db, set, binder) && !occurs_in(db, elem, binder)
+        }
+        Core::MapRemove { map, key, .. } => {
+            is_ref_to(db, map, binder) && !occurs_in(db, key, binder)
+        }
         Core::ListConcat { lhs, rhs } | Core::BytesConcat { lhs, rhs } => {
             (is_ref_to(db, lhs, binder) && !occurs_in(db, rhs, binder))
                 || (is_ref_to(db, rhs, binder) && !occurs_in(db, lhs, binder))
@@ -520,6 +537,17 @@ pub(super) fn arg_reclaims_binder_as_base_dupbacked(
                 && !occurs_in(db, key, binder)
                 && !occurs_in(db, val, binder)
                 && dup_sites.contains(&map)
+        }
+        // The CHAMP-remove reclaim-on-edge twins (v-core-opt, (d) sweep) — the dup-backed mirror of the
+        // `SetRemove`/`MapRemove` arms in `arg_reclaims_binder_as_base`. Same base-consume-borrow-key ownership
+        // as `Set.insert`/`Map.insert`, plus the `dup_sites.contains(&set/&map)` path-copy witness that makes it
+        // safe for the caller to retain+drop the base (rc>1 path-copy leaves the caller's base live; a rc1 FBIP
+        // consume is NOT dup-backed → excluded here → the caller would double-free, so it must stay out).
+        Core::SetRemove { set, elem, .. } => {
+            is_ref_to(db, set, binder) && !occurs_in(db, elem, binder) && dup_sites.contains(&set)
+        }
+        Core::MapRemove { map, key, .. } => {
+            is_ref_to(db, map, binder) && !occurs_in(db, key, binder) && dup_sites.contains(&map)
         }
         Core::ListConcat { lhs, rhs } | Core::BytesConcat { lhs, rhs } => {
             (is_ref_to(db, lhs, binder) && !occurs_in(db, rhs, binder) && dup_sites.contains(&lhs))
