@@ -1,11 +1,13 @@
 # DESIGN: fleet ↔ task-board bridge (auto-register agents + track progress on tasks)
 
-Status: **⛔ BLOCKED (2026-09-28)** — operator-directed 2026-09-27 (Slack seq-1294). The operator chose the
-prompt-driven **option (D)** (agents self-register via their OWN in-session MCP after a fleet restart), and my
-side shipped: the charter task-board section (#9919) + the `fleet restart-all` verb (#9922/#9949/#9976). Then
-the board endpoint gained an **OAuth + host-allowlist gate** (verified 2026-09-28, v-fleet-tooling + concierge)
-that makes option (D) **infeasible for unattended agents** — see the STATUS UPDATE section. The rollout is HELD
-pending an operator fix to the board's auth/allowlist + a possible architecture pivot (D → A or B).
+Status: **✅ UNBLOCKED — ready for the canary + rollout (2026-09-28)** — operator-directed 2026-09-27 (Slack
+seq-1294). The operator chose the prompt-driven **option (D)** (agents self-register via their OWN in-session
+MCP after a fleet restart), and my side shipped: the charter task-board section (#9919) + the `fleet
+restart-all` verb (#9922/#9949/#9976). A brief OAuth + host-allowlist gate blocked it (2026-09-28) but the
+**operator fixed the board server** and I re-verified: `POST /board/mcp` = 200 AND the FULL toolset is exposed
+(`register_agent`/`create_project`/`comment_task`/… all present, not just `authenticate`) — so **option (D) is
+viable again, NO A/B pivot needed.** Remaining: concierge canaries ONE worker (restart-all is rolling +
+resumable) + verifies it registers on the board end-to-end, then runs the full `restart-all --apply`.
 Owner: `v-fleet-tooling` (owns `fleet.rs` + the registry + `fleet add`/`fleet up`).
 
 ## STATUS UPDATE 2026-09-28 — ⛔ board gained an OAuth + host-allowlist gate → option (D) infeasible
@@ -34,8 +36,18 @@ board endpoint was OPEN. It has since been GATED, which invalidates (D) for an U
   **Awaiting the operator's board fix + a steer on whether (D) survives or we pivot to (A)/(B).** The board is
   a NON-load-bearing tracking mirror (the inbox stays the transport), so fleet ticks are unaffected meanwhile.
 
-The Open Questions + phased plan below stand, re-scoped by this gate: P1 (get agents onto the board) is blocked
-on the auth fix; the coexist model (Q2) and granularity (Q3) are unchanged.
+- **✅ RESOLVED (later 2026-09-28):** the operator fixed the board server. Re-verified from the
+  v-fleet-tooling session (read-only): `POST /board/mcp` (with the SSE `Accept` header) = **200** (server now
+  `rmcp` 3.5.0), and `tools/list` from a bare UNauthenticated session exposes the **FULL toolset** —
+  `register_agent`, `create_project`, `create_task`, `comment_task`, `set_status`, `list_projects`,
+  `send_message`, `get_events`, … (18 tools), NOT just `authenticate`/`complete_authentication`. So both gates
+  (host-allowlist + OAuth) are lifted for an unauthenticated client → **option (D) is viable again; no A/B
+  pivot needed.** NEXT: concierge canaries one worker (Ctrl-C after the first — rolling+resumable) + confirms
+  it registers on the board end-to-end (via its in-session MCP, or `list_agents`), then runs the full
+  `fleet restart-all --apply`.
+
+The Open Questions + phased plan below stand. P1 (get agents onto the board) is UNBLOCKED (pending the canary);
+the coexist model (Q2) and granularity (Q3) are unchanged.
 
 ## Operator ask (verbatim, seq-1294)
 
