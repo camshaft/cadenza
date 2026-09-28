@@ -6600,6 +6600,12 @@ pub(super) fn emit(
                             &fields,
                             &wit,
                             scratch_cursor_slot,
+                            // The DIRECT record arg's component type is built from the guest abi
+                            // (`HostParam::Record`'s nominal type), NOT the WIT — so its scalar field widths are
+                            // self-consistent at the guest width and a guest/WIT width divergence is NOT a
+                            // miscompile here (it is latently wrong vs a real host, resolved by the infer::
+                            // perform-arg grounding fix). Do not decline on width in this context.
+                            false,
                             work_base,
                             high,
                             scratch_ty,
