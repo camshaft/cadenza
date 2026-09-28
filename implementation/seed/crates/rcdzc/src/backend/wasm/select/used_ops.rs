@@ -1417,19 +1417,32 @@ pub(super) fn collect_used_ops_into_seen(
                                     out.insert(read);
                                 }
                             } else if crate::backend::wasm::host::option_payload_ty(db, &payload)
-                                .is_some_and(|pp| valtype_of(&pp).is_some())
+                                .is_some_and(|pp| {
+                                    valtype_of(&pp).is_some()
+                                        || matches!(pp.strip_nominal(), Ty::Bytes | Ty::String)
+                                })
                             {
-                                // A nested `option<option<scalar>>` payload is flattened by the RECURSIVE
-                                // `emit_option_reg_flatten`: the inner option's `sum-disc`/`sum-payload` + the
-                                // inner scalar's unbox op (the OUTER option's `sum-disc`/`sum-payload` are already
-                                // declared above). Mirrors the top-level option<scalar> arm, one level in.
+                                // A nested `option<option<scalar>>`/`option<option<bytes>>` payload is flattened by
+                                // the RECURSIVE `emit_option_reg_flatten`: the inner option's `sum-disc`/`sum-payload`
+                                // + the inner payload's ops — a SCALAR's unbox op, or a `Bytes` inner's
+                                // `bytes-len`/`bytes-get` rope copy (the OUTER option's `sum-disc`/`sum-payload` are
+                                // already declared above). A Bytes inner has NO single get-op (`get_op_ty` is None),
+                                // so it MUST be handled explicitly, else the inner rope-copy `CallImport` resolves to
+                                // u32::MAX → an invalid module (CDZ0910).
                                 out.insert(OP_SUM_DISC);
                                 out.insert(OP_SUM_PAYLOAD);
-                                if let Some(inner_scalar) =
+                                if let Some(inner_payload) =
                                     crate::backend::wasm::host::option_payload_ty(db, &payload)
-                                    && let Ok(Some(read)) = get_op_ty(db, &inner_scalar)
                                 {
-                                    out.insert(read);
+                                    if matches!(
+                                        inner_payload.strip_nominal(),
+                                        Ty::Bytes | Ty::String
+                                    ) {
+                                        out.insert(OP_BYTES_LEN);
+                                        out.insert(OP_BYTES_GET);
+                                    } else if let Ok(Some(read)) = get_op_ty(db, &inner_payload) {
+                                        out.insert(read);
+                                    }
                                 }
                             }
                         }

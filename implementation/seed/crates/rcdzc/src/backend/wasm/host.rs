@@ -1010,11 +1010,14 @@ pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
         // `Option(Enum)` (so the component type is `(option (enum …))`, matching the world). Checked after the
         // variant admit (both are Sums; `enum_cases` requires ALL-nullary variants).
         || enum_cases(db, &p).is_some()
-        // a nested `option<scalar>` payload crosses — `option<option<scalar>>` flattens to `(outer-disc,
-        // inner-disc, scalar)` via `emit_option_reg_flatten`'s nested-option branch (which recurses on the
-        // inner option handle). Scoped to a SCALAR inner payload this increment (no `mem`). Kept in lockstep
-        // with `field_boundary_abi`'s nested-option arm so the shared tuple-element path stays consistent.
-        || option_payload_ty(db, &p).is_some_and(|pp| abi_val_type(&pp).is_some())
+        // a nested `option<scalar>`/`option<bytes>` payload crosses — `option<option<scalar>>` flattens to
+        // `(outer-disc, inner-disc, scalar)` and `option<option<bytes>>` to `(outer-disc, inner-disc, ptr, len)`
+        // via `emit_option_reg_flatten`'s nested-option branch (which recurses on the inner option handle; a
+        // Bytes inner copies its rope into `mem` at the reserved cursor). The classifier builds the inner abi via
+        // `field_boundary_abi` (which admits `option<bytes>` as `Option(Bytes)`), so serialize's flatten recursion
+        // agrees; the emit.rs pre-scan reserves the cursor for `option<option<bytes>>`.
+        || option_payload_ty(db, &p)
+            .is_some_and(|pp| abi_val_type(&pp).is_some() || matches!(pp.strip_nominal(), Ty::Bytes))
 }
 
 fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
@@ -1958,15 +1961,17 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             field_boundary_abi(db, &payload)
                                 .expect("option<enum> payload crosses by the arm guard")
                         } else if option_payload_ty(db, &payload)
-                            .is_some_and(|pp| abi_val_type(&pp).is_some())
+                            .is_some_and(|pp| abi_val_type(&pp).is_some() || matches!(pp.strip_nominal(), Ty::Bytes))
                         {
-                            // option<option<scalar>> → `RecordFieldAbi::Option(Option(Scalar))` via the shared
-                            // `field_boundary_abi` nested-option arm. Flattens to `(outer-disc, inner-disc,
-                            // scalar)` via `emit_option_reg_flatten`'s nested-option branch (which recurses on
-                            // the inner option handle). The `(option (option <scalar>))` component type builds
-                            // from this abi. Checked before the record `else` (an option is a Sum, NOT a record).
+                            // option<option<scalar>> → `RecordFieldAbi::Option(Option(Scalar))`, option<option<bytes>>
+                            // → `RecordFieldAbi::Option(Option(Bytes))`, both via the shared `field_boundary_abi`
+                            // nested-option arm. Flattens to `(outer-disc, inner-disc, scalar)` / `(outer-disc,
+                            // inner-disc, ptr, len)` via `emit_option_reg_flatten`'s nested-option branch (which
+                            // recurses on the inner option handle; a Bytes inner copies its rope into `mem` at the
+                            // reserved cursor). The `(option (option <T>))` component type builds from this abi.
+                            // Checked before the record `else` (an option is a Sum, NOT a record).
                             field_boundary_abi(db, &payload)
-                                .expect("option<option<scalar>> payload crosses by the arm guard")
+                                .expect("option<option<scalar|bytes>> payload crosses by the arm guard")
                         } else {
                             // option<record> → the payload's `RecordFieldAbi::Record(…)`, each field's abi from
                             // the shared recursive `field_boundary_abi` (scalar / Bytes / nested record / list /

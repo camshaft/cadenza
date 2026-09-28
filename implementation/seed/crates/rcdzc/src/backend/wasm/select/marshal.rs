@@ -2227,17 +2227,32 @@ pub(super) fn emit_option_reg_flatten(
         }
         return Ok(());
     }
-    // A nested `option<option<scalar>>` arg flattens to `(outer-disc:i32, inner-disc:i32, scalar)` = the outer
-    // disc + the inner option's own `(inner-disc, scalar)` flatten (RECURSED via `emit_option_reg_flatten`). On
-    // outer Some: read the inner option handle (SUM_PAYLOAD, a borrow of the outer option) and flatten it
-    // recursively, its 2 pushed slots captured in REVERSE; outer None: zero-fill both. Scoped to a SCALAR inner
-    // payload (no `mem`). MUST precede the scalar fallthrough (an option handle's `valtype_of` is `Some(I32)`,
-    // so that arm would else treat the inner option as a scalar and miscompile).
-    if let Some(inner_pv) = crate::backend::wasm::host::option_payload_ty(db, &payload_ty)
-        .filter(|pp| crate::backend::wasm::host::abi_val_type(pp).is_some())
-        .and_then(|pp| valtype_of(&pp))
+    // A nested `option<option<T>>` arg flattens to `(outer-disc:i32, <inner option flatten>)` = the outer disc
+    // + the inner option's own flatten (RECURSED via `emit_option_reg_flatten`). On outer Some: read the inner
+    // option handle (SUM_PAYLOAD, a borrow of the outer option) and flatten it recursively, its N pushed slots
+    // captured in REVERSE; outer None: zero-fill all N. The inner payload is a SCALAR (`(inner-disc, scalar)`,
+    // no `mem`) or `Bytes` (`(inner-disc, ptr, len)`, the inner recursion copies the rope into `mem` at the
+    // threaded cursor). MUST precede the scalar fallthrough (an option handle's `valtype_of` is `Some(I32)`, so
+    // that arm would else treat the inner option as a scalar and miscompile).
+    if let Some(inner_payload) = crate::backend::wasm::host::option_payload_ty(db, &payload_ty)
+        .filter(|pp| {
+            crate::backend::wasm::host::abi_val_type(pp).is_some()
+                || matches!(pp.strip_nominal(), Ty::Bytes)
+        })
     {
-        let slot_vts = [ValType::I32, inner_pv]; // (inner-disc, scalar)
+        // The inner option flattens to `(inner-disc:i32, <inner payload slots>)`: a SCALAR payload is ONE
+        // slot; a `Bytes` payload is `(ptr:i32, len:i32)` — TWO slots — whose rope the inner recursion copies
+        // into `mem` at the threaded cursor (`option<option<bytes>>` → `(outer-disc, inner-disc, ptr, len)`).
+        // Check `Bytes` FIRST: a bytes handle's `valtype_of` is `Some(I32)`, so the scalar arm would else
+        // undercount the capture to 2 slots and leave a value on the operand stack.
+        let slot_vts: Vec<ValType> = if matches!(inner_payload.strip_nominal(), Ty::Bytes) {
+            vec![ValType::I32, ValType::I32, ValType::I32] // (inner-disc, ptr, len)
+        } else {
+            vec![
+                ValType::I32,
+                valtype_of(&inner_payload).expect("filter admitted a scalar payload"),
+            ]
+        };
         let n = slot_vts.len() as u32;
         let disc_out = work_base;
         let base_slot = work_base + 1;
