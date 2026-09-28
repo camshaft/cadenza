@@ -1473,6 +1473,8 @@ pub(super) fn emit_flags_arg_pack(
     let acc = work_base;
     scratch_ty.insert(acc, ValType::I32);
     *high = (*high).max(work_base + 1);
+    // ONE i32 word: the Component Model caps a `flags` type at 32 labels, so every `bit` is in [0, 32) and
+    // `flags_field_bits` declines a >32-label flags (no component boundary form) — the arg never reaches here.
     out.push(Lir::ConstI32(0));
     out.push(Lir::LocalSet(acc));
     for (slot, bit) in field_bits {

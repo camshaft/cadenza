@@ -1143,14 +1143,18 @@ pub fn variant_mixed_join_slots(cases: &[(i32, VariantPayloadKind)]) -> Vec<u8> 
 
 /// The `(guest name-lex slot, flags bit)` mapping for a record-of-bools arg crossing as a WIT `flags{labels}`
 /// — each record field must be `Bool`, its kebab name must match a WIT label, and there must be exactly
-/// `labels.len()` fields (≤32 this increment, a single i32 word). The PACK inverse of `param_field`'s
-/// flags-UNPACK `field_bits` (same by-NAME matching). `None` if any condition fails (a non-bool field, a
-/// count/name mismatch, or >32 labels) — the classifier then pushes nothing and the boundary guard declines.
+/// `labels.len()` fields (≤32 — the Component Model caps a `flags` type at 32 labels / one i32; a >32-label
+/// flags has no component boundary form, so it declines here). The PACK inverse of `param_field`'s flags-UNPACK
+/// `field_bits` (same by-NAME matching). `None` if any condition fails (a non-bool field, a count/name
+/// mismatch, or >32 labels) — the classifier then pushes nothing and the boundary guard declines.
 pub(crate) fn flags_field_bits(
     fields: &std::collections::BTreeMap<crate::resolved::Symbol, Ty>,
     labels: &[String],
 ) -> Option<Vec<(u32, u32)>> {
     use crate::backend::common::export_name::kebab_extern_name;
+    // The WASM Component Model caps `flags` at 32 labels (a single i32 — the validator rejects a component
+    // with a >32-label flags type: "cannot have more than 32 flags"). So a >32-label flags has NO component
+    // boundary form at all; decline it here (decline-don't-miscompile) rather than emit an invalid component.
     if labels.len() > 32 || fields.len() != labels.len() {
         return None;
     }
