@@ -2069,8 +2069,14 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
         // A `variant<scalar>` element (`list<variant{a, b(s64), …}>`): written in place at its canonical
         // variant layout (disc + uniform scalar payload) by `select::emit_variant_to_mem`. Detected AFTER
         // option (option takes its own arm); this is the residual general scalar-payload variant. A mixed-
-        // width / Bytes / compound variant payload is a later slice (the flatten join widens).
+        // width / Bytes variant payload is a later slice (the flatten join widens).
         ref other if variant_scalar_payload_cases(db, other).is_some() => true,
+        // A `variant{nullary…, one tuple case}` element (`list<variant{a, b(tuple<s32,s64>)}>`): written at its
+        // canonical variant layout (disc + the tuple product at the payload offset) by `select::emit_variant_to_mem`
+        // — the tuple case writes its all-scalar elements via `emit_product_to_mem`, a nullary case zero-fills the
+        // payload region. Detected after the uniform scalar-variant arm (that arm declines a tuple payload). A
+        // heterogeneous scalar+tuple mix, or a bytes/nested-compound tuple element, is a later slice.
+        ref other if variant_tuple_payload_case(db, other).is_some() => true,
         // A payload-less `enum` element (`list<enum{a, b, …}>`): written in place as its discriminant at the
         // enum's canonical width (`disc_size(n_cases)`) by `select::emit_enum_to_mem`. Detected AFTER variant
         // (both are Sums; `enum_cases` requires ALL-nullary variants). The list-ELEMENT analogue of the record

@@ -1147,8 +1147,21 @@ pub(super) fn emit_variant_to_mem(
     scratch_ty: &mut HashMap<u32, ValType>,
     out: &mut Emit,
 ) -> Result<(), Reject> {
-    let cases = crate::backend::wasm::host::variant_scalar_payload_cases(db, variant_ty)
-        .ok_or_else(|| Reject::decline("a variant element is not a scalar-payload variant"))?;
+    // A `variant{nullary…, one tuple case}` writes the tuple PRODUCT at the payload offset (not a single scalar
+    // slot), so it takes its own writer; the uniform scalar-payload path is below. The scalar detector declines a
+    // tuple payload, so this branch only claims the residual tuple-payload shape.
+    let scalar = crate::backend::wasm::host::variant_scalar_payload_cases(db, variant_ty);
+    if scalar.is_none()
+        && let Some((tuple_disc, _)) =
+            crate::backend::wasm::host::variant_tuple_payload_case(db, variant_ty)
+    {
+        return emit_variant_tuple_to_mem(
+            db, var_slot, dest_addr, variant_ty, tuple_disc, work_base, high, scratch_ty, out,
+        );
+    }
+    let cases = scalar.ok_or_else(|| {
+        Reject::decline("a variant element is not a scalar- or tuple-payload variant")
+    })?;
     let ncases = cases.len();
     let payload_discs: Vec<i32> = cases
         .iter()
@@ -1247,6 +1260,121 @@ pub(super) fn emit_variant_to_mem(
     out.push(Lir::LocalGet(dest_addr));
     out.push(zero);
     out.push(width_store(payload_off)?);
+    out.push(Lir::End);
+    Ok(())
+}
+
+/// Write a `variant{nullary…, one tuple-of-scalars case}` value (handle in `var_slot`) into linear memory at
+/// `dest_addr` in the canonical variant layout: the discriminant at offset 0, then — on the tuple case — the
+/// payload TUPLE laid out (via [`emit_product_to_mem`]) at `align_up(disc_size, tuple_align)`; a nullary case
+/// zero-fills the payload region. The compound-payload sibling of [`emit_variant_to_mem`]'s scalar path (which
+/// stores a single uniform-width scalar), used for a `list<variant{…, b(tuple<…>)}>` element. The payload offset
+/// and region size come from [`canonical_layout`], so they agree byte-for-byte with the per-element stride the
+/// list marshal reserves. Scoped (by `variant_tuple_payload_case`) to a SINGLE tuple case + all-scalar elements.
+#[allow(clippy::too_many_arguments)]
+fn emit_variant_tuple_to_mem(
+    db: &mut Db,
+    var_slot: u32,
+    dest_addr: u32,
+    variant_ty: &Ty,
+    tuple_disc: i32,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    // Case count → discriminant width; the payload tuple sits at align_up(disc_size, tuple_align) — the SAME
+    // offset `canonical_layout`'s Sum arm computes, so the element stride the list marshal reserves agrees.
+    let ncases = {
+        let Ty::Sum { decl, .. } = variant_ty.strip_nominal() else {
+            return Err(Reject::decline("a variant tuple element is not a Sum"));
+        };
+        db.type_decl_by_occ(*decl)
+            .map(|d| d.variants.len())
+            .ok_or_else(|| Reject::decline("a variant tuple element has no decl"))?
+    };
+    let disc_size = disc_size_for(ncases);
+    let tuple_ty = variant_payload_ty_at(db, variant_ty, tuple_disc as u32)
+        .ok_or_else(|| Reject::decline("a variant tuple-payload type could not be resolved"))?;
+    let (psize, palign) = canonical_layout(db, &tuple_ty);
+    let payload_off = align_up_u32(disc_size, palign);
+    let Ty::Tuple(elems) = tuple_ty.strip_nominal() else {
+        return Err(Reject::decline(
+            "a variant tuple-payload case is not a tuple",
+        ));
+    };
+    // The product writer's layout is `(arr-get cell, element type)` in positional (= component) order.
+    let layout: Vec<(usize, Ty)> = elems.iter().cloned().enumerate().collect();
+
+    let disc = work_base;
+    let field_addr = work_base + 1;
+    let tup_slot = work_base + 2;
+    // All-scalar tuple → no `Bytes` spill, so the product writer never touches this cursor; it still needs a
+    // valid i32 local, so reserve one.
+    let cursor = work_base + 3;
+    for s in [disc, field_addr, tup_slot, cursor] {
+        scratch_ty.insert(s, ValType::I32);
+    }
+    *high = (*high).max(work_base + 4);
+
+    // disc = guest sum-disc (= the component discriminant, decl order); store it at offset 0.
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC));
+    out.push(Lir::LocalSet(disc));
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::LocalGet(disc));
+    out.push(match disc_size {
+        1 => Lir::I32Store8 { offset: 0 },
+        2 => Lir::I32Store16 { offset: 0 },
+        _ => Lir::I32Store { offset: 0 },
+    });
+    // field_addr = dest_addr + payload_off (the product writer's store offsets are relative to this base).
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::ConstI32(payload_off as i32));
+    out.push(Lir::I32Add);
+    out.push(Lir::LocalSet(field_addr));
+    out.push(Lir::LocalGet(disc));
+    out.push(Lir::ConstI32(tuple_disc));
+    out.push(Lir::I32Eq);
+    out.push(Lir::If(BlockType::Empty)); // the tuple case → write the payload tuple at field_addr
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [tuple handle]
+    out.push(Lir::LocalSet(tup_slot));
+    emit_product_to_mem(
+        db,
+        tup_slot,
+        field_addr,
+        &layout,
+        cursor,
+        work_base + 4,
+        high,
+        scratch_ty,
+        out,
+    )?;
+    out.push(Lir::Else); // a nullary case → zero-fill the payload region (padding the host never reads)
+    let mut off = 0u32;
+    while off < psize {
+        let rem = psize - off;
+        let (store, step) = if rem >= 8 {
+            out.push(Lir::LocalGet(field_addr));
+            out.push(Lir::ConstI64(0));
+            (Lir::I64Store { offset: off }, 8)
+        } else if rem >= 4 {
+            out.push(Lir::LocalGet(field_addr));
+            out.push(Lir::ConstI32(0));
+            (Lir::I32Store { offset: off }, 4)
+        } else if rem >= 2 {
+            out.push(Lir::LocalGet(field_addr));
+            out.push(Lir::ConstI32(0));
+            (Lir::I32Store16 { offset: off }, 2)
+        } else {
+            out.push(Lir::LocalGet(field_addr));
+            out.push(Lir::ConstI32(0));
+            (Lir::I32Store8 { offset: off }, 1)
+        };
+        out.push(store);
+        off += step;
+    }
     out.push(Lir::End);
     Ok(())
 }

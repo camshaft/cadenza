@@ -9422,3 +9422,33 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level list<variant{go, stop(tuple<s32,s64>)}> host-op arg crosses (each tuple-payload variant element written in place)"
+  (doc
+    "SHAPE 254 (v-wit-boundary) — a top-level `list<variant{go, stop(tuple<s32,s64>)}>` bare host-op ARGUMENT
+           (probe.push : func(list<variant{go, stop(tuple<s32,s64>)}>) -> s64). A variant with a nullary case
+           (go) and a SINGLE TUPLE-payload case (stop) as a list ELEMENT. Closes a gap: `emit_variant_to_mem`
+           wrote only a UNIFORM SCALAR payload (a single width store), so a tuple-payload variant element
+           declined. Now `emit_variant_to_mem` dispatches a `variant_tuple_payload_case` shape to a compound
+           writer (`emit_variant_tuple_to_mem`) that stores the disc then lays the payload TUPLE at the canonical
+           payload offset via `emit_product_to_mem` (a nullary case zero-fills the payload region); the payload
+           offset and region size come from `canonical_layout`, so they agree with the per-element stride the
+           list marshal reserves. `list_elem_marshalable` now admits it and `collect_list_elem_ops` declares its
+           ops (`sum-disc`/`sum-payload` + the tuple's `arr-get` + element unboxes). run() builds
+           [Stop((3,7)), Go] and performs probe.push; a VALID component that runs is the pin (a wrong tuple-payload
+           element layout traps at the host's list.lift).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (variant (go) (stop (tuple (s32) (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop (Tuple Int32 Int64)))
+      (effect probe (op push (-> (List Sig) Int64)))
+      (def (run) (host (probe) (probe.push #list((Sig.Stop #tuple(3 7)) (Sig.Go)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

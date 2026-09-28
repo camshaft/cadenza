@@ -198,6 +198,17 @@ pub(super) fn collect_list_elem_ops(
         {
             out.insert(read);
         }
+    } else if let Some((tuple_disc, _)) =
+        crate::backend::wasm::host::variant_tuple_payload_case(db, elem)
+    {
+        // A VARIANT<tuple> element (`emit_variant_tuple_to_mem`): reads `sum-disc`, and on the tuple case
+        // `sum-payload` + the tuple product's ops (`arr-get` per element + each element's unbox), collected via
+        // the shared `collect_list_elem_ops` on the payload tuple type.
+        out.insert(OP_SUM_DISC);
+        out.insert(OP_SUM_PAYLOAD);
+        if let Some(tuple_ty) = variant_payload_ty_at(db, elem, tuple_disc as u32) {
+            collect_list_elem_ops(db, &tuple_ty, out);
+        }
     } else if let Ok(Some(read)) = get_op_ty(db, elem) {
         out.insert(read);
     }
