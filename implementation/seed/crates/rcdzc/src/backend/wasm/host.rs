@@ -1276,6 +1276,54 @@ pub fn variant_mixed_payload_cases_wit(
     Some(cases)
 }
 
+/// Whether EVERY `Record` payload case of a mixed variant `ty` has its guest NAME-LEX field order EQUAL to its
+/// WIT declaration order (from `variant_wit`, a `WitType::Variant`). The register record-FIELD mixed marshal
+/// builds the case's component `(record …)` DEFINED type (`host_imports::record_field_cref`) + `serialize`'s
+/// `VariantMemMixed` flatten in guest NAME-LEX order, while the world declares the case's record in WIT order —
+/// so a record case whose orders DIVERGE would produce a component type that mis-links against the world (and a
+/// core flatten disagreeing with the WIT-ordered guest push). Such a case must decline. A case set with NO record
+/// case trivially matches (the marshal is order-agnostic); a missing/!record WIT declines (returns false). Kebab
+/// the guest field names to compare against the world's (already-kebab) WIT field names.
+pub fn mixed_variant_record_cases_wit_ordered(
+    db: &mut Db,
+    ty: &Ty,
+    variant_wit: Option<&crate::wit_world::WitType>,
+) -> bool {
+    let Some(cases) = variant_mixed_payload_cases(db, ty) else {
+        return true; // not a mixed variant → nothing to constrain
+    };
+    if !cases
+        .iter()
+        .any(|(_, k)| matches!(k, VariantPayloadKind::Record(..)))
+    {
+        return true; // no record case → order-agnostic
+    }
+    let Some(crate::wit_world::WitType::Variant(wcases)) = variant_wit else {
+        return false; // a record case needs the WIT to confirm its field order
+    };
+    for (pd, kind) in &cases {
+        let VariantPayloadKind::Record(_, rty) = kind else {
+            continue;
+        };
+        let crate::ty::Ty::Record(fields) = rty.strip_nominal() else {
+            return false;
+        };
+        let guest: Vec<String> = fields
+            .keys()
+            .map(|s| crate::backend::common::export_name::kebab_extern_name(s.name.as_ref()))
+            .collect();
+        let Some((_, Some(crate::wit_world::WitType::Record(wf)))) = wcases.get(*pd as usize)
+        else {
+            return false;
+        };
+        let witn: Vec<String> = wf.iter().map(|(n, _)| n.clone()).collect();
+        if guest != witn {
+            return false; // divergent field order → decline (component type would mis-link)
+        }
+    }
+    true
+}
+
 /// The canonical variant-flatten PAYLOAD slots (core valtype bytes, EXCLUDING the leading disc) for a mixed
 /// variant's payload cases — replicating [`wit_ctype::flatten_variant`]'s position-wise join so `serialize` +
 /// `select::emit_variant_mixed_arg_reg_flatten` agree with the declared `variant` DEFINED type's flatten. Each
