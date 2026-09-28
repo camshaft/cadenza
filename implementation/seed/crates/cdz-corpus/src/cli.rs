@@ -192,6 +192,25 @@ enum CorpusCmd {
         #[arg(long)]
         prune: bool,
     },
+    /// Assert the rust / rust-async `.gate-baseline*` title sets are a SUBSET of the wasm `.gate-baseline`
+    /// — FAST, no compile/run.
+    ///
+    /// The wasm baseline is the FULL-corpus harvest (the superset); rust/rust-async are curated INCREMENTAL
+    /// subsets (rust coverage < wasm). So a title present in a rust/rust-async baseline but ABSENT from wasm
+    /// is the DANGEROUS drift direction: either the wasm case was RETITLED/REMOVED while a concurrent branch
+    /// kept the old title (the #9825 stale-subset class), OR — the #9573/SHAPE-83 class — a case was harvested
+    /// into rust/rust-async but never into wasm (an author's split-harvest gap that `vanished-check` and the
+    /// union merge-driver structurally CANNOT catch: `vanished-check` guards baseline⊆corpus, the orthogonal
+    /// axis). This lint guards rust/rust-async⊆wasm. Exits NON-ZERO listing every subset-only title; a
+    /// faithful full-corpus wasm harvest keeps it 0 by construction.
+    BaselineSubsetCheck {
+        /// The wasm `.gate-baseline` — the full-corpus superset every other baseline must be a subset of.
+        #[arg(long, required = true)]
+        wasm: String,
+        /// The subset `.gate-baseline*` file(s) to check (e.g. `.gate-baseline-rust`, `.gate-baseline-rust-async`).
+        #[arg(required = true)]
+        subsets: Vec<String>,
+    },
 }
 
 /// Run a corpus command per `args`, returning the process exit code. `prog` names the tool in
@@ -237,6 +256,7 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
         CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
         CorpusCmd::CapabilityErrorCheck { files } => check_capability_error_pins(files),
         CorpusCmd::GcJustificationCheck { files } => check_gc_justification(files),
+        CorpusCmd::BaselineSubsetCheck { wasm, subsets } => check_baseline_subset(wasm, subsets),
         CorpusCmd::VanishedCheck { .. } => {
             unreachable!("vanished-check is handled above with distinct exit codes")
         }
@@ -807,6 +827,66 @@ fn baseline_drift(
         .cloned()
         .collect();
     (vanished, missing)
+}
+
+/// Titles present in `subset_descs` but ABSENT from `wasm_descs` — the dangerous subset-drift direction
+/// (rust/rust-async must be ⊆ the full-corpus wasm harvest). Sorted + de-duplicated (a `BTreeSet` collapses
+/// a subset dup). Pure so it is unit-testable.
+fn subset_only_titles(wasm_descs: &[String], subset_descs: &[String]) -> Vec<String> {
+    let wasm: std::collections::BTreeSet<&str> = wasm_descs.iter().map(|s| s.as_str()).collect();
+    subset_descs
+        .iter()
+        .filter(|d| !wasm.contains(d.as_str()))
+        .map(|s| s.to_string())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// `baseline-subset-check --wasm .gate-baseline <subset…>`: assert each subset baseline's titles are a
+/// SUBSET of the wasm baseline's titles. Reds listing every subset-only title (the #9825 stale-subset /
+/// #9573-SHAPE-83 split-harvest drift). FAST, text-only.
+fn check_baseline_subset(wasm: &str, subsets: &[String]) -> Result<(), String> {
+    let wasm_text = std::fs::read_to_string(wasm).map_err(|e| format!("reading {wasm}: {e}"))?;
+    let wasm_descs = baseline_descriptions(&wasm_text);
+    // FAIL-CLOSED guard: an empty wasm set would flag EVERY subset title (a useless storm), almost always a
+    // wrong --wasm path — a real `.gate-baseline` is never empty. Error out rather than emit noise.
+    if wasm_descs.is_empty() {
+        return Err(format!(
+            "the wasm baseline {wasm:?} has 0 title lines — wrong --wasm path? (a real .gate-baseline is never empty)"
+        ));
+    }
+    let mut total = 0usize;
+    for sub in subsets {
+        let sub_text = std::fs::read_to_string(sub).map_err(|e| format!("reading {sub}: {e}"))?;
+        let sub_descs = baseline_descriptions(&sub_text);
+        let only = subset_only_titles(&wasm_descs, &sub_descs);
+        if only.is_empty() {
+            println!(
+                "baseline-subset-check: OK — {sub}: all {} title(s) ⊆ wasm baseline ({} titles)",
+                sub_descs.len(),
+                wasm_descs.len()
+            );
+        } else {
+            for t in &only {
+                eprintln!(
+                    "baseline-subset-check: {sub}: title {t:?} is NOT in the wasm baseline {wasm:?} — the \
+                     dangerous drift direction (rust/rust-async must be a SUBSET of the full-corpus wasm \
+                     harvest). Either the wasm case was retitled/removed (stale subset entry, #9825) or the \
+                     case was harvested into {sub} but never into wasm (#9573/SHAPE-83 split-harvest gap): \
+                     add the wasm row (harvest its verdict) or drop the stale subset entry."
+                );
+            }
+            total += only.len();
+        }
+    }
+    if total == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{total} subset-only title(s) NOT in the wasm baseline — rust/rust-async must be ⊆ wasm (fix per each line above)"
+        ))
+    }
 }
 
 /// Pure baseline rewrite for `--prune`: return `(new_text, removed_titles)` where `new_text` is `text`
@@ -1694,6 +1774,30 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
         assert_eq!(
             baseline_drift(&corpus, &exact),
             (Vec::<String>::new(), Vec::<String>::new())
+        );
+    }
+
+    /// `subset_only_titles` flags a subset (rust/rust-async) title absent from the wasm superset — the
+    /// dangerous drift direction — and stays empty when the subset is genuinely ⊆ wasm. De-duped + sorted.
+    #[test]
+    fn subset_only_titles_flags_titles_absent_from_wasm() {
+        let wasm = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        // A genuine subset (b, c ⊆ wasm) → nothing flagged.
+        assert!(subset_only_titles(&wasm, &["b".to_string(), "c".to_string()]).is_empty());
+        // An empty subset is ⊆ anything.
+        assert!(subset_only_titles(&wasm, &[]).is_empty());
+        // "d" is subset-only (the #9825 / SHAPE-83 drift); a dup collapses; result is sorted.
+        assert_eq!(
+            subset_only_titles(
+                &wasm,
+                &[
+                    "c".to_string(),
+                    "d".to_string(),
+                    "d".to_string(),
+                    "e".to_string(),
+                ]
+            ),
+            vec!["d".to_string(), "e".to_string()]
         );
     }
 

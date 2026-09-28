@@ -6195,6 +6195,26 @@
           echo "ok: gc-justification — no corpus text justifies a leak as needing GC (Perceus is precise static RC)" > "$out"
         '';
 
+        # baseline-subset (v-corpus-harness, motivated by the #9573/SHAPE-83 split-harvest gap): the
+        # ORTHOGONAL baseline invariant corpusVanishedCheck does NOT cover. vanished-check guards
+        # baseline⊆corpus (stale titles); THIS guards rust/rust-async⊆wasm. The wasm `.gate-baseline` is the
+        # full-corpus harvest (superset); rust/rust-async are curated incremental subsets. A title in a
+        # rust/rust-async baseline but ABSENT from wasm is the dangerous drift: either a wasm case was
+        # retitled/removed while a concurrent branch kept the old title (#9825 stale-subset), or a case was
+        # harvested into rust/rust-async but never into wasm (#9573/SHAPE-83 — the exact class that landed
+        # undetected until a manual sweep caught it; the union merge-driver + vanished-check structurally
+        # cannot). `cdz-corpus baseline-subset-check` exits non-zero naming each subset-only title. FOLDED
+        # into the localGate fail-set below → a split-harvest HOLDs a self-merge. Pure text-only baseline
+        # diff (no compile/run), cheap — same shape + closure (cdzCorpus) as gcJustificationCheck. Starts
+        # GREEN: v-corpus-harness confirmed 0 subset-only after #9964 healed SHAPE-83, so it folds in now.
+        baselineSubsetCheck = pkgs.runCommand "baseline-subset-check"
+          { nativeBuildInputs = [ cdzCorpus ]; } ''
+          set -euo pipefail
+          cdz-corpus baseline-subset-check --wasm ${./spec/semantics/.gate-baseline} \
+            ${./spec/semantics/.gate-baseline-rust} ${./spec/semantics/.gate-baseline-rust-async}
+          echo "ok: baseline-subset — rust/rust-async baseline titles are a subset of the full-corpus wasm baseline" > "$out"
+        '';
+
         # Full-CI-in-nix increment 6b: the GHA `codegen` job (`cargo xtask codegen --check`). This is the
         # runtime-ABI STALENESS gate: xtask regenerates runtime_abi.rs (+ wasm_abi.rs) — reading the
         # runtime WIT + BUILDING the cdz-runtime (release + debug) and cdz-nfc components via
@@ -8994,6 +9014,14 @@
                   # on the 36-file corpus → folds immediately, no fix-then-fold wait); cheap cdzCorpus static
                   # text scan, same shape/closure as capabilityErrorCheck. Teeth under self-merge (admin-merge).
                   gcJustificationCheck
+                  # baseline-subset FOLDED IN (v-corpus-harness, #9573/SHAPE-83 motivation): rust/rust-async
+                  # baseline titles must be ⊆ the full-corpus wasm baseline — the orthogonal invariant
+                  # corpusVanishedCheck (baseline⊆corpus) does NOT cover. Catches the #9825 stale-subset +
+                  # #9573 split-harvest classes (a case harvested into rust/rust-async but never wasm) that the
+                  # union merge-driver + vanished-check structurally cannot. Starts GREEN (0 subset-only after
+                  # #9964 healed SHAPE-83 → folds immediately, no fix-then-fold wait); cheap cdzCorpus text-only
+                  # baseline diff, same shape/closure as gcJustificationCheck. Teeth under self-merge.
+                  baselineSubsetCheck
                   # reducer-path reclaim census gates FOLDED IN (v-nix 2026-09-19, v-reducer-pooling ask 080933 +
                   # v-core-opt endorsement): the two seq-916 reclaim gates now run PER-MR, not nightly-only, so
                   # v-core-opt's #9218 borrow/drop reclaim followups (Bytes.len #9266, ListLen/StrScalarLen/MapSize/
@@ -9124,6 +9152,11 @@
             # (Perceus is precise static RC); also folded into the localGate fail-set (teeth under self-merge).
             # Operator directive, concierge assign 84927; v-corpus-harness.
             gc-justification = gcJustificationCheck;
+            # `nix build .#checks.<sys>.baseline-subset` — rust/rust-async baseline titles ⊆ the full-corpus
+            # wasm baseline (the orthogonal invariant vanished-check does not cover); also folded into the
+            # localGate fail-set (teeth under self-merge). Catches the #9825 stale-subset + #9573/SHAPE-83
+            # split-harvest classes. v-corpus-harness.
+            baseline-subset = baselineSubsetCheck;
             # The wasm-opt OPTIMALITY-GAP sweep (advisory, never a gate constituent): the whole-corpus
             # `wasm-opt-gaps.sexp` aggregate; the per-file `wasm-opt-gaps-<file>` aggregates are spread in below
             # so a slice (e.g. 01-literals + 10-bytes) builds in isolation. See DESIGN-wasm-opt-gap-analysis-rcdzc.md.
