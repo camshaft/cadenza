@@ -9308,3 +9308,39 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a MIXED variant{a, b(list<f64>), c(s32,s64)} — a FLOAT-element list case beside a tuple, no scalar (imposed WIT)"
+  (doc
+    "SHAPE 251 (v-wit-boundary) — a `variant{a, b(list<f64>), c(tuple<s32,s64>)}` passed BARE as the TOP-LEVEL
+           host-op ARGUMENT (probe.push): a List case whose element is a FLOAT (`list<f64>`) beside a Tuple case,
+           no scalar. Pins the FLOAT list-element marshal path in a mixed variant — `emit_list_arg_marshal` stores
+           each element with the element's canonical width store (an `f64.store` here, vs the `i64.store`/`i32.store`
+           of the earlier int-element list cases SHAPE 241/247/250). The List case flattens to the two-i32-slot
+           `(ptr, count)` mem form (the element WIDTH does not change the outer header), joined position-wise with
+           the tuple case to `(disc:i32, i32, i64)`: slot0 = join(list-ptr:i32, s32:i32) = i32, slot1 =
+           join(list-count:i32, s64:i64) = i64 (the tuple's s64 element widens slot 1, so the count extends).
+           This is reachable via the SHAPE 249 no-scalar relaxation; SHAPE 245 pinned a float TUPLE element but no
+           float LIST element existed. run() pushes `(B #list(1.5 2.5))`, `(C (: 1 Int32) 2)`, `A` — exercising the
+           float-element List arm, the Tuple arm, and the nullary arm; a VALID running component (live-objects=0)
+           pins the float list element in a mixed variant.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (list (f64))) (c (tuple (s32) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B (List Float64)) (C Int32 Int64))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B #list(1.5 2.5))) (probe.push (V.C (: 1 Int32) 2)) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
