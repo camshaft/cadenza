@@ -8174,3 +8174,35 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 42)
   (live-objects 0))
+
+(case
+  "a RECORD host-op arg with a result<bytes,enum> FIELD marshals the Ok arm (guest -> host ARG direction)"
+  (doc
+    "SHAPE 215 (v-wit-boundary) — a RECORD host-op ARGUMENT (probe.push : func(record{a: result<list<u8>,
+           enum{timeout, missing}>, k: s64}) -> s64) whose FIELD is a `result<bytes, enum>`. Exercises
+           `emit_record_arg_marshal`'s `RecordFieldAbi::Result` field arm in the GUEST -> HOST arg direction — the
+           arm is fully implemented but was previously reached only in the HOST -> GUEST export/lift direction (the
+           `result<bytes,enum>` record-PARAM lift). The field flattens to `(disc, p0, p1)`: on Ok the Bytes payload
+           is rope->mem-copied at the reserved scratch cursor giving `(0, ptr, len)`; on Err the payloadless enum's
+           disc + a 0-pad give `(1, enum-disc, 0)`. So the whole record arg flattens to `(a-disc, p0, p1, k)` = 4
+           core slots. run() builds {a: Ok(b\"hi\"), k: 5} and performs probe.push; a VALID component that runs
+           (live-objects=0) is the pin — a wrong slot count/order (e.g. treating the Bytes handle as one slot) fails
+           component validation. Complements the export-side result-field lift (SHAPE at the guest-param direction)
+           with the guest->host ARG marshal. NB: `--opt-sweep` SKIPS this case as `declines-at-default` — the
+           in-process native runner cannot lift a record-with-a-result-field ARG crossing, so it declines it; the
+           authoritative verdict is the nix VALUE gate (real wasmtime cranelift lift), which runs it green. A skip
+           here is NOT a real decline.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= a (result (list (u8)) (enum timeout missing))) (= k (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Er2 (Timeout) (Missing))
+      (effect probe (op push (-> (Record (: a (Result Bytes Er2)) (: k Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= a (Ok b"hi")) (= k 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
