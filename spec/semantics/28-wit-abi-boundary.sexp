@@ -9634,3 +9634,39 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level list<variant{a, b(s64), c(record{p: s32, q: s64})}> host-op arg crosses (HETEROGENEOUS scalar+record variant element at mem)"
+  (doc
+    "SHAPE 261 (v-wit-boundary) — a top-level `list<variant{a, b(s64), c(record{p: s32, q: s64})}>` bare host-op
+           ARGUMENT (probe.push): each list element is a HETEROGENEOUS variant MIXING a scalar payload case (b)
+           and a RECORD-of-scalars payload case (c), plus a nullary case (a). Extends SHAPE 258/259/260
+           (scalar+tuple, +bytes, +list) with a RECORD payload case — the LAST payload kind for the mem mixed
+           variant: `emit_variant_mixed_to_mem` gained a Record arm that writes the record PRODUCT at the payload
+           offset via `emit_record_to_mem` (each field at its canonical offset, WIT-ordered) — the mem twin of the
+           register mixed Record arm. `variant_mem_mixed_kind_supported` (the single gate helper shared by
+           `field_boundary_abi`, `list_elem_marshalable`, and the list marshal's `is_variant`) now admits a
+           Record-of-SCALAR case; `emit_variant_to_mem`/`emit_variant_mixed_to_mem` thread the element's declared
+           WIT variant so the record case's fields order to WIT declaration order; `collect_list_elem_ops` (the
+           used_ops element collector) gained a Record arm (`arr-get` per field + each field's unbox). GUARD
+           (correct-or-declines): the per-element stride the list marshal reserves comes from
+           `canonical_layout(record)` in GUEST name-lex order, so the emit declines cleanly when the WIT field
+           order diverges from the guest order (record padding is field-order-dependent) — here p<q matches the
+           WIT `(p s32)(q s64)` declaration order. run() pushes `[C({p:3, q:7}), B(42), A]` in one list —
+           exercising the record case, the scalar case, and the nullary case; a VALID running component
+           (live-objects=0) pins the round-trip. (This closes the mem mixed-variant payload-kind algebra:
+           scalar/tuple/bytes/list/record are all expressible.)")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (variant (a) (b (s64)) (c (record (= p (s32)) (= q (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C (Record (: p Int32) (: q Int64))))
+      (effect probe (op push (-> (List V) Int64)))
+      (def (run) (host (probe) (probe.push #list((V.C #record((= p 3) (= q 7))) (V.B 42) V.A))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

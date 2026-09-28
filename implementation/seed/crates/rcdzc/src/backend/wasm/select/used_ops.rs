@@ -242,6 +242,11 @@ pub(super) fn collect_list_elem_ops(
                     // element's unbox) — `collect_list_elem_ops`'s List arm on the payload list type.
                     collect_list_elem_ops(db, &pty, out);
                 }
+                crate::backend::wasm::host::VariantPayloadKind::Record(..) => {
+                    // A Record<scalar> case writes the product at the payload offset (`arr-get` per field +
+                    // each field's unbox) — `collect_list_elem_ops`'s Record arm on the payload record type.
+                    collect_list_elem_ops(db, &pty, out);
+                }
                 crate::backend::wasm::host::VariantPayloadKind::Bytes => {
                     // A Bytes case copies its rope into `mem` at the cursor (`bytes-len`/`bytes-get`).
                     out.insert(OP_BYTES_LEN);

@@ -444,8 +444,22 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `collect_list_elem_ops` (→ `vec-len`/`vec-get`), `record_field_cref` (→ a `(list <elem>)` type), and serialize
   gained it. Scoped to a SCALAR list element — a `list<compound>` case (needs the element WIT) declines. The
   bare-ARG scalar+list mix already rode `HostParam::VariantMixed` (SHAPE 241); this is its mem twin.
-  REMAINING: a `list<compound>` payload case (element WIT) / a RECORD payload case (WIT-ordered) in a mixed
-  variant at mem; a Bytes/nested-compound tuple ELEMENT; a WIT-ordered RECORD payload case at mem; the
+- **[emit] a RECORD-of-scalars payload case in a heterogeneous mem `variant` — ✅ DONE / TESTED (SHAPE 261).**
+  Extends SHAPE 258/259/260 with a `Record` payload case (`list<variant{a, b(s64), c(record{p: s32, q: s64})}>`)
+  — the LAST payload kind, closing the mem mixed-variant payload-kind algebra (scalar/tuple/bytes/list/record all
+  expressible). `emit_variant_mixed_to_mem` gained a Record arm that writes the record PRODUCT at the payload
+  offset via `emit_record_to_mem` (each field at its canonical offset, WIT-ordered) — the mem twin of the register
+  mixed Record arm. `emit_variant_to_mem`/`emit_variant_mixed_to_mem` now THREAD the element's declared WIT variant
+  (from `emit_list_arg_marshal`'s `elem_wit`) so the record case's fields order to WIT declaration order;
+  `variant_mem_mixed_kind_supported` now admits `Record(..)`; `collect_list_elem_ops` (the used_ops element
+  collector) gained a Record arm (`arr-get` per field + each field's unbox). GUARD (correct-or-declines): the
+  per-element stride the list marshal reserves comes from `canonical_layout(record)` in GUEST name-lex order, so the
+  emit DECLINES CLEANLY when the WIT field order diverges from the guest name-lex order (record padding is
+  field-order-dependent — a divergent WIT order could write past the reserved slot). Faithfully verified: the shred
+  compiled status-0 (1871-byte component, `wasm-tools validate` clean) emitting `push: func(list<host-result-t1>)`
+  with `host-result-t1 = variant{a, b(s64), c(host-result-t0)}` / `host-result-t0 = record{p: s32, q: s64}`.
+  REMAINING: a `list<compound>` payload case (element WIT) in a mixed variant at mem; a Bytes/nested-compound tuple
+  ELEMENT; a WIT-ordered RECORD payload case whose WIT order diverges from guest order (needs a richer stride); the
   heterogeneous mix at a REGISTER record-field/tuple-element position (declines).
   REMAINING variant gaps: a RECORD compound payload case in a MIXED variant (the TUPLE compound payload
   case in a mixed variant is now ✅ DONE — SHAPE 243, `VariantPayloadKind::Tuple`; the ≥3-payload-case mem join is
