@@ -8399,3 +8399,30 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level tuple<option<option<bytes>>, s64> host-op arg crosses (nested-option TUPLE element)"
+  (doc
+    "SHAPE 223 (v-wit-boundary) — a top-level `tuple<option<option<list<u8>>>, s64>` bare host-op ARGUMENT
+           (probe.push). Extends the nested-option family (SHAPE 218–222) to the TUPLE-ELEMENT position — which
+           needs NO new code: `tuple_arg_crosses` admits the element via `option_arg_crosses` (generalized to any
+           inner in #9933), `emit_tuple_reg_flatten`'s option-element arm DELEGATES to the shared
+           `emit_option_reg_flatten` (which derives the inner flatten + copies the inner Bytes rope into `mem` at the
+           cursor), `tuple_arg_needs_cursor` recurses nested options to reserve the cursor for the Bytes leaf, and
+           `collect_used_ops`' tuple-element option arm recurses `collect_record_field_ops` (declaring the inner
+           `bytes-len`/`bytes-get`). This case PINS that the composition works. The element flattens to
+           `(outer-disc, inner-disc, ptr, len)` positionally, then `s64`. run() builds (Some(Some(b\"hi\")), 5) and
+           performs probe.push; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (option (option (list (u8)))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Option (Option Bytes)) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Some (Some b"hi")) 5))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
