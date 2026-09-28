@@ -1944,6 +1944,42 @@
   (output (: 7 Int64))
   (live-objects known-leak))
 
+(case
+  "node6xd a `?`-bound Set threaded through a CONSUMING recursive fold in the Ok arm — KNOWN-LEAK (queue node6xd fused-producer-husk)"
+  (doc
+    "The consuming-callee sibling of the node#6-nonlen family — DELIBERATELY a KNOWN-LEAK, not live-objects 0.
+     A `?`-bound scalar builds a `#set` under the Ok arm of a `(Result (Set Int64) Int64)` boundary; the arm
+     threads that Set into a RECURSIVE fold `drain` that CONSUMES it (`Set.remove` per step, `Set.len` at the
+     base). `mk` inlines into `main`, so the producing `(Ok #set …)` match-of-known-ctor FUSES: the arm binder
+     `s` becomes a `SumPayload` projection off the still-built Ok husk, and that husk is the Ok-ARM RESULT of the
+     surviving inner try-desugar MatchSum — one level INSIDE the match, NOT the projection's direct scrutinee.
+     Every shell-reclaim recognizer therefore declines (the projection roots at the MATCH, and
+     `extraction_roots_at_scrutinee` does not traverse a MatchSum operand — v-memory-safety/v-core-opt confirmed
+     tick #239), so the fused producing husk + its Set payload safe-LEAK (2 cells on the Ok path) rather than
+     risk a UAF (a mis-placed husk deep-drop would double-free the payload the consumer already released).
+     Leak-over-UAF. Pinned known-leak to LOCK the fence — it must never silently start reclaiming NOR trapping.
+     Flips to live-objects 0 when v-core-opt reframes the recognizer onto the SumPayload SCRUTINEE (a MatchSum/If
+     whose Leaf arm results are owned SumNew husks, projection dup-backed + consumed by a def_consumes_param
+     callee) and the emit stashes+drops the match result at the owned-producer-scrutinee reclaim seam. Verified
+     value-correct + no-trap: k=0 → 111 (Err short-circuit, clean, live-objects 0); k>0 → 3 (drain of
+     `#set(k k+1 k+2)`), leaking node#3 (Set) + node#4 (Ok husk) on the Ok path.")
+  (input
+    (do
+      (def (drain (: s (Set Int64)) (: n Int64))
+        (if (= n 0) (Set.len s) (drain (Set.remove s n) (- n 1))))
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok #set(x (+ x 1) (+ x 2)))) (Result (Set Int64) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok s) (drain s 3))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 3 Int64))
+  (live-objects known-leak))
+
 ; trnt1: the NESTED try `(try (try rr))` — a `?` whose OPERAND is itself a `?`. Lowered by inner-first
 ; hoisting in `find_hoistable_try`'s `(try e)` arm: the operand is descended FIRST, so `(try (try rr))`
 ; lifts to `(let ((a (try rr))) (let ((b (try a))) …))` — each `?` level its own binding-tail `let` riding

@@ -10959,6 +10959,7 @@ pass	trbs1 a `?`-bound Bytes sliced by Bytes.slice in the Ok arm — KNOWN-LEAK 
 pass	trct1 a `?`-bound COMPOUND (tuple carrying a Set) Ok-arm payload reclaims the try shell + nested heap on both paths
 pass	trae1 a `?`-bound heap Result returned BARE as the try-boundary result equalizes the alias-husk (no leak on the failure short-circuit)
 pass	trae2 a `?`-bound bare-alias Result with a HEAP Err payload — KNOWN-LEAK (the S2 fence declines the equalize; must never TRAP)
+pass	node6xd a `?`-bound Set threaded through a CONSUMING recursive fold in the Ok arm — KNOWN-LEAK (queue node6xd fused-producer-husk)
 pass	trm1 a NESTED tuple-rest re-match peels two layers, through an if-selected scrutinee, with a RUNTIME element
 pass	trm1 an export returns a two-element Set (one reachable cell, constructor-application render)
 pass	trm2 an EXACT-arity tuple leaves the rest binder EMPTY, and a rest-only pattern gathers the whole tuple
