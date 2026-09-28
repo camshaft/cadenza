@@ -1437,9 +1437,11 @@ pub enum Resolved {
     /// set's residual is the SAME set TYPE `(Set E)` — removing elements does not change the element type,
     /// exactly like a `MapField` rest keeps the map type. `scrutinee` is the match scrutinee; `named` are
     /// the element VALUE-expression occurrences the pattern names (removed to form the residual). The
-    /// residual VALUE is built by the set-matcher desugar (`desugar_runtime_set_match`, a `Set.remove`
-    /// chain — v-ast-compound's slice); this variant carries the TYPE (v-inference's slice), so a body
-    /// reference to `rest` type-checks as `(Set E)`.
+    /// residual VALUE is a `Set.remove(scrutinee, e₁ … eₙ)` chain: on the emit path the set-matcher desugar
+    /// (`lower_match_set`) binds `rest` to it through a `let`, and `compute`'s `SetRest` arm materializes the
+    /// same chain directly for any occurrence the desugar's rebound copy does not cover (a residual used as a
+    /// nested-match scrutinee, a `let` RHS, or a `match_pattern_fault` probe of the original arm). This
+    /// variant carries the TYPE, so a body reference to `rest` type-checks as `(Set E)`.
     SetRest {
         scrutinee: StructId,
         /// The element VALUE-expression occurrences the pattern NAMES — removed (via `Set.remove`) to form

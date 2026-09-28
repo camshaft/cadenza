@@ -37584,13 +37584,15 @@
 (case
   "srm2 a NESTED set-rest re-match peels two residual layers (should-work: the residual is a first-class set)"
   (doc
-    "Idealistic TODO fence (corpus policy 2026-08-31; gap = the coded CDZ0900 'a set rest binder's
-     residual set is built by the set-matcher desugar; a bare set-rest here is unsupported', routed
-     v-inference/set-rest slice 3): srm1 proves the residual IS a first-class (Set E) value, so
-     re-matching it with another set-rest pattern must work like the record/tuple nested gathers
-     (rrm1/trm1). Derivation: n=5 -> {5,10,20}, outer #set(10 .. r) -> r={5,20}, inner
-     #set(20 .. r2) -> r2={5}: 10*len + contains(r2,5) = 10+1 = 11. n=20 -> construction dedups to
-     {10,20}, r={20}, r2={}: 0+0 = 0. Auto-flips to PASS when the nested set-rest desugar lands.")
+    "A set-rest residual IS a first-class (Set E) value (srm1), so re-matching it with another set-rest
+     pattern works like the record/tuple nested gathers (rrm1/trm1). The residual `r` reaches the inner
+     match as a bare `Resolved::SetRest`; `compute`'s SetRest arm materializes its VALUE — a
+     `Set.remove(scrutinee, named…)` chain — so the inner match lowers over a genuine set (rather than
+     declining CDZ0900 on the bare set-rest). Derivation: n=5 -> {5,10,20}, outer #set(10 .. r) -> r={5,20},
+     inner #set(20 .. r2) -> r2={5}: 10*len + contains(r2,5) = 10+1 = 11. n=20 -> construction dedups to
+     {10,20}, r={20}, r2={}: 0+0 = 0. PASS on wasm; rust / rust-async stay a clean todo pending
+     confirmation the rust backend runs the materialized residual (srm1 + Set.remove pass on rust, so this
+     is a likely later flip, not a regression).")
   (input
     (do
       (def
