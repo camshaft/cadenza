@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(41);
+    let shape = c.variant(42);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -813,8 +813,27 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      corpus (trml1, #d8e6bb89e8) pins the LEAK side; THIS pins the VALUE/UAF side. k>0 -> Ok #map(5=5),
         //      Map.lookup 5 -> Some 5, v=5; k<=0 -> Err 111 (the `?` short-circuits). Arg = a. Verified rust/wasm
         //      AGREE (1->5, 0->111, 9->5).
-        _ => (
+        40 => (
             "(do (def (mk (: r (Result Int64 Int64))) (: (do (def x (try r)) (Ok #map((= x x)))) (Result (Map Int64 Int64) Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok 5) (Err 111))) ((Ok m) (match (Map.lookup m 5) ((Some v) v) ((None) -9))) ((Err e) e))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 41 — chdo1 SET.REMOVE-THREADED-DEAD-AT-BASE entry param (the #e2f72191e0 CHAMP reclaim-on-edge value/UAF
+        //      fence). A recursion `go` REMOVES `n` from a `(Set Int64)` accumulator each step and recurses
+        //      (`(+ 1 (go (Set.remove s n) (- n 1)))`); the base arm (n=0) returns a SCALAR 0, so the threaded Set
+        //      is DEAD-AFTER at the base. e2f72191e0 admitted Set.remove/Map.remove to arg_reclaims_binder_as_base
+        //      (+ dup-backed twin) — the CHAMP consume-and-rebuild fold reclaims the varying accumulator ON THE
+        //      EDGE, so `varying_param_epilogue_droppable` reclaims the final dead-at-base Set (it had OMITTED the
+        //      remove twins — only insert/push/concat were reclaim-on-edge — so the shrinking-fold's final handle
+        //      ORPHANED one cell). The corpus (chdo1/chdo2, #cda31ba280) pins the LEAK side (live-objects 0); THIS
+        //      pins the VALUE/UAF side: an over-aggressive reclaim-on-edge that double-frees / frees a shared spine
+        //      -> trap / wrong value. FIRST CONSUMING CHAMP op in the export-param grammar (shapes 39/40 are Set/Map
+        //      READS: Set.contains / Map.lookup). Runtime-seeded `#set(k (+ k 1) (+ k 2))` (a const `#set` DCE's away
+        //      -> hollow); DEPTH fixed at 3 (a k-derived depth would infinite-loop on the NEGATIVE args the range
+        //      includes). Value = 3 for EVERY arg (three `+1`s, Set dead at base) -> UAF-observable (a bad reclaim
+        //      traps one backend), arg-independent by design. Arg = a. Verified rust AGREE (5->3, 0->3, -4->3).
+        _ => (
+            "(do (def (go (: s (Set Int64)) (: n Int64)) (if (= n 0) 0 (+ 1 (go (Set.remove s n) (- n 1))))) (def (main (: k Int64)) (go #set(k (+ k 1) (+ k 2)) 3)) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6255,13 +6274,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main`.
-        let mut reached = [false; 41];
-        for seed in 0u64..2460 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main`.
+        let mut reached = [false; 42];
+        for seed in 0u64..2520 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(41) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-40 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(42) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-41 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6382,11 +6401,13 @@ mod tests {
                 reached[39] = true; // shape 39 = trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` (GAP-4)
             } else if ep.source.contains("(Ok #map((= x x)))") {
                 reached[40] = true; // shape 40 = trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` (node#6-nonlen #240b64090d)
+            } else if ep.source.contains("(Set.remove s n)") {
+                reached[41] = true; // shape 41 = chdo1 Set.remove-threaded-dead-at-base entry-param `main` (CHAMP reclaim-on-edge #e2f72191e0)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all forty-one export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all forty-two export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
