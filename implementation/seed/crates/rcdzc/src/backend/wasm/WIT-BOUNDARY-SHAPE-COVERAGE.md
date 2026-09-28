@@ -380,18 +380,31 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   shape (a SINGLE tuple case + nullary rest) to `emit_variant_tuple_to_mem`, which stores the disc then lays the
   payload TUPLE at the canonical payload offset via `emit_product_to_mem` (a nullary case zero-fills the payload
   region); the payload offset + region size come from `canonical_layout`'s Sum arm, so they agree byte-for-byte
-  with the per-element stride the list marshal reserves. `list_elem_marshalable` admits it (after the uniform
-  scalar-variant arm, which declines a tuple payload) and `collect_list_elem_ops` declares its ops via the shared
-  tuple arm.
+  with the per-element stride the list marshal reserves. `list_elem_marshalable` + the list marshal's `is_variant`
+  gate admit it (after the uniform scalar-variant arm, which declines a tuple payload) and `collect_list_elem_ops`
+  declares its ops via the shared tuple arm.
 - **[emit] a TUPLE-payload `variant` at a product FIELD position (record field / tuple element, in `mem`) — ✅ DONE / TESTED (SHAPE 255).**
   Extends SHAPE 254 to the PRODUCT-FIELD position with NO new emit: `emit_product_to_mem`'s variant-field arm gate
   (previously `variant_scalar_payload_cases` only) now also admits `variant_tuple_payload_case`, reusing the same
   `emit_variant_to_mem` tuple writer at `dest_addr + foff`; `product_field_marshalable` and `collect_record_field_ops`
   gained the tuple-variant admission + ops in lockstep. A tuple element is purely POSITIONAL → no WIT field reorder.
   Pinned by a `list<tuple<variant{go, stop(tuple<s32,s64>)}, s64>>` arg (a variant field beside a scalar field).
+- **[classifier] `field_boundary_abi` for a tuple-payload variant → `RecordFieldAbi::VariantTuple` (SHAPE 254/255 correction).**
+  The CRITICAL lockstep site the initial 254/255 landings MISSED: `field_boundary_abi` returned `None` for a
+  tuple-payload variant, so the classifier never built `HostParam::List`/`Tuple` → `set_needs_memory` stayed false →
+  the guest emitted memory stores into a memoryless module (CDZ0910 "unknown memory 0"). `field_boundary_abi` now
+  returns `RecordFieldAbi::VariantTuple(elem_abis)`; `record_field_abi_needs_memory` = true (it writes disc+tuple to
+  mem), `record_field_abi_reaches_bytes` recurses the elements. At a REGISTER-flattened bare record/tuple ARG field
+  the register marshal (`emit_record_arg_marshal`) DECLINES the `VariantTuple` field cleanly (a coded feature-limit
+  decline, verified — NOT a miscompile); the mem/list positions emit it. `record_field_cref`/`flatten_record_field_abi`
+  carry best-effort arms (reached only on the register-decline path; a list-element CRef is WIT-driven).
+  ⚠️ **False-green lesson:** a NEW `(output …)` corpus case that DECLINES (capability code) grades `Todo`, and an
+  absent-baseline `Todo` does NOT red the aggregate — so "ok: N cases" is HOLLOW for a case that declines. VERIFY a
+  new output-case with a faithful `cdz-compile ast:main=… wit-world:w=…` (status 0 + emit.wasm written) before trusting
+  the gate; a status-0 compile makes the gate's run+grade a true signal.
   REMAINING at mem: a HETEROGENEOUS scalar+tuple mix (per-case dispatch), a Bytes/nested-compound tuple element, a
   RECORD (named-field, WIT-ordered) payload case (needs WIT threading into `emit_variant_to_mem`), and the
-  top-level `RecordFieldAbi::Variant` bare-variant-field position (needs the field-abi to carry a compound payload).
+  top-level bare `variant`-tuple ARG field at a REGISTER position (needs `emit_record_arg_marshal` to emit, not decline).
   REMAINING variant gaps: a RECORD compound payload case in a MIXED variant (the TUPLE compound payload
   case in a mixed variant is now ✅ DONE — SHAPE 243, `VariantPayloadKind::Tuple`; the ≥3-payload-case mem join is
   ✅ DONE — SHAPE 242). (The mixed

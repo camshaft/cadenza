@@ -465,6 +465,26 @@ pub(super) fn record_field_cref(
             table.push(emit_cdef(&CDef::Variant(vcases)));
             CRef::Idx(var_def + 1)
         }
+        // A tuple-payload `variant` field: only reaches here at a REGISTER-flattened record/tuple ARG position,
+        // which this increment declines at emit (a LIST element / mem product-field crosses via a WIT-driven
+        // CRef, not this builder). Lay a best-effort well-formed `variant` DEFINED type with one payload case
+        // carrying the payload `(tuple <elem>…)` — discarded when the op declines, but keeps the type table
+        // children-first and structurally valid.
+        host::RecordFieldAbi::VariantTuple(elems) => {
+            let elem_crefs: Vec<CRef> = elems
+                .iter()
+                .map(|e| record_field_cref(e, list_idx, base, table))
+                .collect();
+            let tup_def = base + 2 * table.len() as u32;
+            table.push(emit_cdef(&CDef::Tuple(elem_crefs)));
+            let tup_export = tup_def + 1;
+            let var_def = base + 2 * table.len() as u32;
+            table.push(emit_cdef(&CDef::Variant(vec![(
+                "c".to_string(),
+                Some(CRef::Idx(tup_export)),
+            )])));
+            CRef::Idx(var_def + 1)
+        }
         // A payload-less `enum` field: lay an `enum` DEFINED type (NOMINAL → the export-aware remap gives it
         // define+export, like a record/variant) over its case names, and reference its EXPORT index. The
         // nested analogue of the top-level enum arg's `enum` DEFINED+EXPORTED type.

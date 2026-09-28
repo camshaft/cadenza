@@ -108,15 +108,16 @@ pub(super) fn emit_list_arg_marshal(
             crate::backend::wasm::host::result_bytes_enum(db, elem)
         };
     let is_result = result_err_cases.is_some();
-    // A general `variant<scalar>` element (`list<variant{a, b(s64), …}>`): written in place at its canonical
-    // variant layout (disc + uniform scalar payload) by `emit_variant_to_mem` — the N-case generalization of
-    // the option element. Detected AFTER option/result (they take their own arms), so this is the residual
-    // general variant. Scoped to a uniform single scalar payload (the #3368 record-field variant shape).
+    // A general `variant` element (`list<variant{a, b(s64), …}>`, or `list<variant{…, b(tuple<…>)}>`): written
+    // in place at its canonical variant layout (disc + payload) by `emit_variant_to_mem`, which dispatches a
+    // uniform SCALAR payload vs a SINGLE tuple-of-scalars payload case. Detected AFTER option/result (they take
+    // their own arms), so this is the residual general variant.
     let is_variant: bool =
         if is_bytes || is_nested_list || is_record || is_tuple || is_option || is_result {
             false
         } else {
             crate::backend::wasm::host::variant_scalar_payload_cases(db, elem).is_some()
+                || crate::backend::wasm::host::variant_tuple_payload_case(db, elem).is_some()
         };
     // The store for a scalar element, by its slot valtype + canonical size: i64→i64.store, f64→f64.store,
     // f32→f32.store, i32 → 4-byte i32.store / 2-byte store16 / 1-byte store8.
