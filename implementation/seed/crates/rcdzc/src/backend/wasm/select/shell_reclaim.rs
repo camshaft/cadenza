@@ -2065,6 +2065,21 @@ pub(crate) fn payload_escapes_to_consumer_dupable(
     if leaves.is_empty() {
         return None;
     }
+    // TRY-DESUGAR gate (added after v-cadenza-ci gate RED, 2026-09-28): the producing-side dup + outer-shell
+    // reclaim this drives is only NET-ZERO in lockstep with the COMPLEMENTARY nested-match reclaim
+    // (`bare_alias_scrutinee_dupable_dupbacked`), which the trnt1 try-desugar co-designs + censused. On a
+    // MANUAL nested match — `(match (Value.decode ..) ((Some m) (match m ..)) ((None u) -2))`, 22-property — the
+    // nested reclaim does NOT fire (the inner bare-alias scrutinee is not stashed), so the dup ORPHANS → +1 leak
+    // (corpus-gate-coarse-22 pass→fail, cdzCompileCi). Require the try-desugar SIGNATURE: a payload-carrying
+    // `SumNew` failure-husk leaf (the `runtime_try_failure_value` re-wrap `SumNew{Err/None, [..]}`). trnt's
+    // FAILURE arm IS such a husk; 22-property's `None`-arm is a scalar `-2` (no `SumNew`) → excluded. Tightening
+    // = fires LESS → reclaims LESS → at worst reverts to the pre-fix baseline (a leak, never a UAF).
+    let has_sumnew_husk_leaf = leaves
+        .iter()
+        .any(|&b| matches!(core_of(db, b), Core::SumNew { .. }));
+    if !has_sumnew_husk_leaf {
+        return None;
+    }
     let binder = match core_of(db, scrutinee) {
         Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
         _ => None,
