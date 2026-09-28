@@ -1544,6 +1544,70 @@ pub(crate) fn divergent_alias_arm_dupable(
     }
 }
 
+/// CLASSIFIER (v-core-opt-owned; sub-case: bare-alias SCRUTINEE — the chained-`?` trnt1 leak). PURE decision,
+/// no state mutation — the MIRROR of [`divergent_alias_arm_dupable`] on the SCRUTINEE's PROVENANCE (that one
+/// equalizes a bare-alias ARM-RESULT; this recognizes a bare-alias SCRUTINEE). v-mem's emit/ownership lane
+/// CALLS it and owns the dup + reclaim wiring + census (same split as (a)).
+///
+/// THE SHAPE (v-try-operator trnt1, scalar errors): a DOUBLE-nest `(do (def a (try rr)) (Ok (try a)))` — the
+/// FIRST `?` binds `a = SumPayload(rr, [Payload])`, a bare-alias VIEW of rr's owned Ok payload (the inner
+/// Result); the SECOND `(try a)` then CONSUMES that view as ITS OWN `MatchSum` SCRUTINEE. The view is
+/// classified BORROWED (`heap_operand_ownership` on a `SumPayload` view), so the second `MatchSum`'s shell
+/// reclaim (`sum_shell_reclaim_ok`'s Owned gate) is SUPPRESSED and the inner Result box LEAKS 1 (censused:
+/// k=1 Ok(Err222)→leak 1, k=2 Ok(Ok7)→leak 1; the outer-`?` short-circuit k=0 is clean via the (a) fix).
+/// Instrumented locus: `scrut kind=SumPayload own=Borrowed slot_ok=true dead=true SRC src_own=Owned` — every
+/// gate passes EXCEPT Owned, and the SOURCE is Owned.
+///
+/// `Some(view)` = the bare-alias `SumPayload`/`Proj`/`SumExpect` scrutinee VIEW node to dup (promoting its
+/// shell to reclaimable), iff: S1 the scrutinee IS such a view of a SOURCE P; S2 P is OWNED
+/// (`heap_operand_ownership(P) == Owned`) — the ownership-flow proof that the view's payload is owned
+/// (transferred from the owned source), NOT a borrowed/persistent alias (a borrowed param / caller-held
+/// source → decline → leak-over-UAF); S3 the shared shell-reclaim floor (heap non-enum, dead-after-destructure,
+/// not re-matched). `None` otherwise (an over-decline only keeps the leak).
+///
+/// ⚠ DUP-ACCOUNTING CAVEAT — UAF-CRITICAL, for v-mem's wiring + census: the OWNED source P may ITSELF be
+/// shell-reclaimed (P Owned + dead-after), and the view IS P's payload — so P's deep-drop could cascade-free
+/// the view BEFORE/WHILE the second `MatchSum` reclaims the view's own shell → DOUBLE-FREE. The view dup must
+/// be placed so BOTH P's reclaim AND the view's own reclaim net (dup the view rc1→2 before P's shell drop; each
+/// reclaim decrements; the view survives rc1 as the second-`MatchSum` scrutinee). This classifier only
+/// RECOGNIZES the shape (S2 = source-owned); the UAF-critical DUP PLACEMENT + the census that the accounting
+/// balances (no double-free on the reachable trnt-scrut witness) are v-mem's — if it cannot balance, DECLINE
+/// (keep the leak, leak-over-UAF). I RED-review the dup accounting before v-mem lands.
+#[allow(dead_code)] // TEMP: inert until v-mem wires the scrutinee-view dup + shell reclaim + censuses trnt1.
+pub(crate) fn bare_alias_scrutinee_dupable(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    root: &crate::core::SumCont,
+) -> Option<StructId> {
+    // S1: the scrutinee is a bare-alias VIEW — a SumPayload/Proj/SumExpect extraction of a SOURCE P.
+    let source = match core_of(db, scrutinee) {
+        Core::SumPayload { scrutinee: s, .. }
+        | Core::Proj { operand: s, .. }
+        | Core::SumExpect { scrutinee: s, .. } => s,
+        _ => return None,
+    };
+    // S2: the SOURCE is OWNED — the ownership-flow proof that the view's payload ownership transferred from an
+    // owned source (a `?`-materialized owned Result), so the view's shell is reclaimable. A Borrowed/persistent
+    // source (a borrowed param, a caller-held value) → the view aliases a live value → reclaiming its shell
+    // would UAF → DECLINE (leak-over-UAF).
+    if !matches!(
+        heap_operand_ownership(db, source),
+        Ok(HandleOwnership::Owned)
+    ) {
+        return None;
+    }
+    // S3: the shared shell-reclaim floor (mirrors matchsum_escaping_proj_node / divergent_alias_arm_dupable).
+    if !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+        || !scrutinee_dead_after_destructure(db, scrutinee, root)
+    {
+        return None;
+    }
+    Some(scrutinee)
+}
+
 /// RECOGNIZER (v-memory-safety recognition lane) for the escaping-heap-child `MatchSum` shell reclaim — the
 /// co-fix half v-core-opt's emit consumes at emit.rs:4166 (02-binding-and-control:6042, the mutual-recursion
 /// tuple-match; the recursive-descent-parser sibling of the landed 02:6085 Proj-of-LET fix). The sibling
