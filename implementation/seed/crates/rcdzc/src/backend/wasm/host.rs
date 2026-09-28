@@ -883,16 +883,19 @@ pub fn variant_list_payload_cases(db: &mut Db, ty: &Ty) -> Option<(Vec<i32>, Ty)
     }
 }
 
-/// ARG-SIDE: whether `ty` is a variant with EXACTLY ONE case carrying a `tuple` of scalars, the rest nullary.
-/// Returns the tuple case's DISCRIMINANT (declaration = component order) paired with the element ABIs (one
-/// `RecordFieldAbi` per tuple element, all scalar). The PRODUCT-payload sibling of [`variant_bytes_payload_cases`]
-/// / [`variant_list_payload_cases`], but with a VARIABLE positional flatten `(disc:i32, e0, e1, …)` (the tuple's
-/// elements inline, in element = component order) rather than a fixed 3 slots — the register twin of
-/// [`result_tuple_enum`]'s Ok arm, minus the err-disc-in-slot-0 (a nullary variant case zero-fills ALL payload
-/// slots). All-scalar so it flattens to registers with NO `mem`. The component boundary type is the declared
-/// `variant` DEFINED type laid STRUCTURALLY from the WIT (`add_wit_type_deduped` → `CDef::Variant` with a
-/// `(tuple <e>…)` payload case). Scoped to a SINGLE tuple case + all-scalar elements (a compound/bytes element, a
-/// second product case, or a nested tuple is a later increment). Excludes option/result-shaped sums.
+/// ARG-SIDE: whether `ty` is a variant with EXACTLY ONE PAYLOAD-BEARING case whose payload TYPE is a `tuple` of
+/// scalars, the rest nullary — EITHER a single `tuple`-typed payload (`b(tuple<s64,s64>)`) OR a MULTI-payload case
+/// (`b(s64, s64)`), which `variant_payload_ty_at` synthesizes into the SAME tuple type (its value-heap rep is a
+/// tuple handle either way). Returns the case's DISCRIMINANT (declaration = component order) paired with the
+/// element ABIs (one `RecordFieldAbi` per tuple element, all scalar). The PRODUCT-payload sibling of
+/// [`variant_bytes_payload_cases`] / [`variant_list_payload_cases`], but with a VARIABLE positional flatten
+/// `(disc:i32, e0, e1, …)` (the tuple's elements inline, in element = component order) rather than a fixed 3 slots
+/// — the register twin of [`result_tuple_enum`]'s Ok arm, minus the err-disc-in-slot-0 (a nullary variant case
+/// zero-fills ALL payload slots). All-scalar so it flattens to registers with NO `mem`. The component boundary
+/// type is the declared `variant` DEFINED type laid STRUCTURALLY from the WIT (`add_wit_type_deduped` →
+/// `CDef::Variant` with a `(tuple <e>…)` payload case). Scoped to ONE tuple/multi-payload case + all-scalar
+/// elements (a compound/bytes element, a second product case, or a nested tuple is a later increment). Excludes
+/// option/result-shaped sums.
 pub fn variant_tuple_payload_case(db: &mut Db, ty: &Ty) -> Option<(i32, Vec<RecordFieldAbi>)> {
     let Ty::Sum { decl, .. } = ty.strip_nominal() else {
         return None;
@@ -907,31 +910,34 @@ pub fn variant_tuple_payload_case(db: &mut Db, ty: &Ty) -> Option<(i32, Vec<Reco
     };
     let mut tuple_case: Option<(i32, Vec<RecordFieldAbi>)> = None;
     for (disc, n) in payload_counts.into_iter().enumerate() {
-        match n {
-            0 => {} // a nullary case → no payload slot
-            1 => {
-                if tuple_case.is_some() {
-                    return None; // a SECOND payload case → a later increment (multi-payload-case join)
-                }
-                let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
-                let Ty::Tuple(elems) = pty.strip_nominal() else {
-                    return None; // a non-tuple payload → not this detector (bytes/list/scalar took their arms)
-                };
-                let elems: Vec<Ty> = elems.iter().cloned().collect();
-                if elems.is_empty() {
-                    return None;
-                }
-                let mut abis = Vec::with_capacity(elems.len());
-                for ety in &elems {
-                    // Every element MUST be a NO-mem scalar (`abi_val_type`) this increment — a bytes/list/nested
-                    // compound element would need the cursor + a richer flatten (a later increment).
-                    abi_val_type(ety)?;
-                    abis.push(field_boundary_abi(db, ety)?);
-                }
-                tuple_case = Some((disc as i32, abis));
-            }
-            _ => return None, // a multi-payload case → a later increment
+        if n == 0 {
+            continue; // a nullary case → no payload slot
         }
+        if tuple_case.is_some() {
+            return None; // a SECOND payload case → a later increment (multi-payload-case join)
+        }
+        // A payload-bearing case is a tuple-payload variant case iff its payload TYPE is a `tuple`: EITHER a
+        // single `tuple`-typed payload (`b(tuple<…>)`, n==1), OR a MULTI-payload case (`b(s64, s64)`, n>=2) whose
+        // payloads `variant_payload_ty_at` synthesizes into a tuple (its runtime rep IS a tuple handle —
+        // `sum-payload` yields the payload array, `arr-get i` indexes it; core.rs). Both flatten IDENTICALLY via
+        // `emit_variant_tuple_arg_reg_flatten` (sum-payload → tuple handle → `emit_tuple_reg_flatten`). A single
+        // NON-tuple payload (scalar/bytes/list) yields a non-`Tuple` here → falls to its own detector arm.
+        let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
+        let Ty::Tuple(elems) = pty.strip_nominal() else {
+            return None;
+        };
+        let elems: Vec<Ty> = elems.iter().cloned().collect();
+        if elems.is_empty() {
+            return None;
+        }
+        let mut abis = Vec::with_capacity(elems.len());
+        for ety in &elems {
+            // Every element MUST be a NO-mem scalar (`abi_val_type`) this increment — a bytes/list/nested
+            // compound element would need the cursor + a richer flatten (a later increment).
+            abi_val_type(ety)?;
+            abis.push(field_boundary_abi(db, ety)?);
+        }
+        tuple_case = Some((disc as i32, abis));
     }
     tuple_case
 }

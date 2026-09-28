@@ -8809,3 +8809,33 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a BARE variant{a, b(s64, s64)} with a MULTI-PAYLOAD case crosses as a host-op arg (tuple payload, imposed WIT)"
+  (doc
+    "SHAPE 236 (v-wit-boundary) — a `variant{a, b(s64, s64)}` whose payload-bearing case `b` carries TWO payloads
+           (a MULTI-payload ctor `(B x y)`, NOT a single tuple-typed payload `(B (Tuple x y))`), passed BARE as the
+           TOP-LEVEL host-op ARGUMENT. At the value-heap level a multi-payload variant case stores its payloads as a
+           TUPLE handle (core.rs: `sum-payload` yields the payload array, `arr-get i` indexes it) and
+           `variant_payload_ty_at` SYNTHESIZES the tuple of the ctor's payload types — so it is REPRESENTATIONALLY
+           IDENTICAL to the single-tuple-payload variant (SHAPE 230) and crosses via the SAME `HostParam::VariantTuple`
+           machinery: the WIT declares the case with a `(tuple (s64) (s64))` payload, and the guest flattens
+           POSITIONALLY to `(disc:i32, e0:i64, e1:i64)` via `emit_variant_tuple_arg_reg_flatten`. The ONLY code change
+           is relaxing `variant_tuple_payload_case` to admit a multi-payload case (n>=2) — the marshal / serialize /
+           used_ops / host_imports all derive from the synthesized tuple type unchanged. run() pushes `(B 2 3)` (the
+           multi-payload case) then `A` (nullary) — both arms; a VALID running component (live-objects=0) is the pin.
+           A multi-payload case with a compound (bytes/list/nested) element still declines (all-scalar this increment).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (tuple (s64) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64 Int64))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B 2 3)) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)) (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push) (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
