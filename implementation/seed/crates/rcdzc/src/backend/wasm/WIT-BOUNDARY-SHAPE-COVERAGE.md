@@ -372,8 +372,10 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   sites in prior work; these pin the value round-trip): a `list<variant>` ELEMENT (171, `emit_variant_to_mem`),
   a `tuple<variant, …>` ELEMENT (172, `emit_variant_reg_flatten` positional), and an `option<record-with-a-
   variant-field>` ARG (173, `emit_option_reg_flatten`'s record branch → `emit_record_arg_marshal`'s variant-field
-  arm). REMAINING variant gaps: a multi-payload variant case at the ARG register-flatten position (the mixed
-  int↔float / f32↔f64 single-payload variant reinterpret join is now ✅ DONE — SHAPE 233/234/235).
+  arm). REMAINING variant gaps: a SECOND payload-bearing case (≥2 payload cases → a multi-case join). (The mixed
+  int↔float / f32↔f64 single-payload variant reinterpret join is now ✅ DONE — SHAPE 233/234/235; and a MULTI-payload
+  case `b(s64,s64)` — one case with ≥2 payloads — is ✅ DONE, SHAPE 236: `variant_tuple_payload_case` admits n>=2
+  since `variant_payload_ty_at` synthesizes the payload tuple, reusing `HostParam::VariantTuple` unchanged.)
 - **[emit, ARG-side] a COMPOUND (Bytes) single-payload variant host-op ARG — ✅ DONE / TESTED (SHAPE 227, 228).**
   (SHAPE 228 hardens the MULTI-Bytes-case path: `variant{a, b(bytes), c(bytes)}`, `bytes_discs = [1,2]`, exercises
   the marshal's multi-disc OR fold — SHAPE 227's single Bytes case left it untested.)
@@ -426,9 +428,9 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   to the joined width, len)`, the innermost else (nullary) zeroes all slots; every arm zeroes the slots it does
   not own. Additive across the same ~11 sites. Verified `variant{a, b(s64), c(bytes)}` → `(i32, i64, i32)`, all
   three arms. REMAINING variant-payload gaps: a mixed set that also includes a LIST/compound payload case, a
-  compound (`list<compound>`/bytes/nested) tuple/record ELEMENT-or-FIELD, a SECOND product case / MULTI-payload
-  case (≥2 payloads/case), and ALL of the compound-payload variants at the FIELD / list-element positions
-  (`RecordFieldAbi::Variant` is scalar-only).
+  compound (`list<compound>`/bytes/nested) tuple/record ELEMENT-or-FIELD, a SECOND payload-bearing case (≥2 payload
+  CASES → a multi-case join), and ALL of the compound-payload variants at the FIELD / list-element positions
+  (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case `b(s64,s64)` is ✅ DONE — SHAPE 236.)
 - **[emit, ARG-side] a scalar-payload variant MIXING int with float — the reinterpret join — ✅ DONE / TESTED
   (SHAPE 233/234/235).** A `variant{nullary…, scalar-case(s)}` whose payloads mix an integer with a float (or
   `f32` with `f64`) — the case the uniform `HostParam::Variant` declines (its join has no clean slot). Handled by
