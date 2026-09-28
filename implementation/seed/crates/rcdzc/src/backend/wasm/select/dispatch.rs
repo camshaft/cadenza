@@ -480,12 +480,29 @@ pub(super) fn emit_arm_body(
     // double-free — `contains` dups BOTH (each path net-zero); a stray dup on a hypothetical re-emit is a LEAK
     // not a UAF (leak-over-UAF; v-core-opt RED-review). Net-zero on B (dup +1 balances the single post-borrow
     // drop -1), so B's own reclaim is untouched. Mirror of the FIX-A `Core::If` arm-dup (emit.rs).
-    if out.matchjoin_dup_arms.contains(&body)
-        && let Core::LocalRef { binder } | Core::Param { binder } = core_of(db, body)
-        && let Some(&bslot) = slots.get(&binder)
-    {
-        out.push(Lir::LocalGet(bslot));
-        out.push(Lir::CallImport(OP_DUP));
+    if out.matchjoin_dup_arms.contains(&body) {
+        if let Core::LocalRef { binder } | Core::Param { binder } = core_of(db, body)
+            && let Some(&bslot) = slots.get(&binder)
+        {
+            out.push(Lir::LocalGet(bslot));
+            out.push(Lir::CallImport(OP_DUP));
+        } else if matches!(
+            core_of(db, body),
+            Core::SumPayload { .. } | Core::Proj { .. }
+        ) {
+            // node#6 sub-case (a) alias-husk equalize (v-core-opt classifier `divergent_alias_arm_dupable`,
+            // v-mem emit): a bare `SumPayload`/`Proj` success-view arm has NO binder slot — its handle is
+            // already on the stack from the arm-body emit above. Stack-dup it (rc++) so the outer MatchSum
+            // shell deep-drop nets the view 2→1 (result-safe) instead of freeing the returned view (UAF).
+            // Tee the top-of-stack handle to a fresh scratch, get it back, `OP_DUP` (pops the copy + rc++,
+            // returns nothing) — stack-neutral, rc+1, the result view stays on the stack.
+            let scratch = *high;
+            *high += 1;
+            scratch_ty.insert(scratch, ValType::I32);
+            out.push(Lir::LocalTee(scratch));
+            out.push(Lir::LocalGet(scratch));
+            out.push(Lir::CallImport(OP_DUP));
+        }
     }
     Ok(())
 }

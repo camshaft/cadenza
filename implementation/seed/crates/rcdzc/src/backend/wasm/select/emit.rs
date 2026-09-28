@@ -4669,6 +4669,17 @@ pub(super) fn emit(
             // shell + imports no value-heap runtime; its i32 slot width alone doesn't exclude it), and a
             // non-diverging match.
             let scrut_ty = type_of(db, scrutinee);
+            // node#6 sub-case (a) alias-husk equalize (see the commit + `divergent_alias_arm_dupable` doc):
+            // on `Some(view)` populate the PAIRED success-view dup (dispatch.rs:483) + admit the shell
+            // reclaim below. Gate on `stashed_slot`: the reclaim `.expect`s it and the dup must pair with it.
+            let alias_husk_view = if stashed_slot.is_some() {
+                divergent_alias_arm_dupable(db, scrutinee, &scrut_ty, &root)
+            } else {
+                None
+            };
+            if let Some(view) = alias_husk_view {
+                out.matchjoin_dup_arms.insert(view);
+            }
             // Deep-`drop` the owned freshly-stashed boxed-sum shell after the match (it is a dead temporary).
             // SAFETY vs the v-patterns UAF (an arm MOVES a payload child out that the deep drop would double-
             // free): every consuming compound-child extraction rooted at the scrutinee was `dup`'d in the
@@ -4752,7 +4763,9 @@ pub(super) fn emit(
                 never_diverges,
                 &root,
             )
-            .is_some();
+            .is_some()
+            // node#6 (a): divergent alias-husk equalize — reclaim the shell (success view dup'd above).
+            || alias_husk_view.is_some();
             emit_sum_cont(
                 db,
                 scrutinee,

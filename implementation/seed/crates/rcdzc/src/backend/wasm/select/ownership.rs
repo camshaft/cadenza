@@ -623,7 +623,20 @@ pub(crate) fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<Handle
         Core::MatchList { arms, .. } => {
             Ok(join_arm_ownership(db, arms.iter().map(|a| a.body)))
         }
-        Core::MatchSum { root, .. } => Ok(sum_cont_ownership(db, &root)),
+        Core::MatchSum { scrutinee, root } => {
+            // node#6 sub-case (a) alias-husk equalize: when the divergent try-desugar MatchSum is
+            // equalize-able (`divergent_alias_arm_dupable` — the emit dups the success view so BOTH arms are
+            // effectively Owned), classify the whole MatchSum Owned so an outer BORROW-op consumer reclaims
+            // the equalized result (else it would read the arm-blind join Borrowed and leave the result
+            // un-dropped → leak). The SAME pure classifier the emit populate calls → the two sites agree
+            // exactly (dup ⟺ Owned). Otherwise the ordinary arm-join ownership.
+            let st = type_of(db, scrutinee);
+            if divergent_alias_arm_dupable(db, scrutinee, &st, &root).is_some() {
+                Ok(HandleOwnership::Owned)
+            } else {
+                Ok(sum_cont_ownership(db, &root))
+            }
+        }
         // When the operand's ownership (its aliasing status — whether the enclosing op may reclaim it or must
         // leave it to another owner) cannot be established by any arm above, DECLINE rather than emit a
         // component whose dup/drop placement would be a guess: the aliasing discipline could not be proven

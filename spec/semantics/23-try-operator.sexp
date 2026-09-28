@@ -1886,6 +1886,35 @@
   (output (: 6 Int64))
   (live-objects 0))
 
+(case
+  "trae1 a `?`-bound heap Result returned BARE as the try-boundary result equalizes the alias-husk (no leak on the failure short-circuit)"
+  (doc
+    "The node#6-nonlen sub-case (a) alias-husk equalize (the LAST holdout, unblocking v-try-operator's
+     trnt1). `mk` returns the `?`-bound value BARE: `(do (def ir (try rr)) ir)` lowers to a divergent
+     try-desugar MatchSum over `rr` — the SUCCESS (Ok) arm is a bare `SumPayload` VIEW of rr's payload
+     (Borrowed), the FAILURE (Err) arm a fresh payload-carrying `SumNew` (Owned). The arm-blind
+     ownership join reads the MatchSum Borrowed, so the scrutinee-shell reclaim is SUPPRESSED and the
+     owned Err husk on the failure short-circuit LEAKED one cell (k=0 outer-Err). v-core-opt's
+     `divergent_alias_arm_dupable` classifier + v-mem's 3-point emit equalize (stack-dup the success
+     view so the join reads Owned, then the shell deep-drop nets the view 2→1) reclaims the husk on the
+     failure path (leak→0) without freeing the returned view. SCALAR error only: a HEAP failure payload
+     is a scrutinee view too, so the classifier S2 fence declines it (stays a safe leak, leak-over-UAF).
+     Verified live-objects 0 both paths.")
+  (input
+    (do
+      (def (mk (: rr (Result (Result Int64 Int64) Int64)))
+        (: (do (def ir (try rr)) ir) (Result Int64 Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok (Ok 7)) (Err 111)))
+          ((Ok v) v)
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 7 Int64))
+  (live-objects 0))
+
 ; trnt1 (TODO): the NESTED try `(try (try rr))` — a `?` whose OPERAND is itself a `?`. The desugar for
 ; this is known and small (inner-first hoisting in `find_hoistable_try`'s `(try e)` arm: descend the
 ; operand FIRST so `(try (try rr))` lifts to `(let ((a (try rr))) (let ((b (try a))) …))`, each level a
