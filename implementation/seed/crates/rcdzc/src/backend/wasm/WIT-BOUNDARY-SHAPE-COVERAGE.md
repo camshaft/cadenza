@@ -389,9 +389,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   field `arr-get`+`get-bool`, shift into its bit, OR into the word), `serialize` flattens to `ceil(n/32)` i32
   words, and `host_imports` lays a nominal `flags` DEFINED type via the NEW `flags_params` branch (the enum-like
   single-leaf path — `is_nominal_cdef`/`export_remap` already handled `CDef::Flags`). Register-only (no `mem`).
-  `used_ops` is already covered (the record-arg arm declares `arr-get`+`get-bool`+`drop`). REMAINING: >32 labels
-  (multi-word), and flags at a record-FIELD / list-element ARG position (the field/element paths lack a flags-arg
-  arm; the RESULT/param-lift side already unpacks flags — `param_field.rs`, `list_elem.rs`).
+  `used_ops` is already covered (the record-arg arm declares `arr-get`+`get-bool`+`drop`). NOT-A-GAP: >32 labels
+  is a Component Model SPEC LIMIT — a `flags` type is capped at 32 labels (one i32; the validator rejects a
+  >32-label flags: "cannot have more than 32 flags"), so a >32-label flags has no component boundary form and
+  `flags_field_bits` correctly DECLINES it (decline-don't-miscompile), NOT a later increment. REMAINING: flags at
+  a record-FIELD / list-element ARG position (the field/element paths lack a flags-arg arm; the RESULT/param-lift
+  side already unpacks flags — `param_field.rs`, `list_elem.rs`).
 - **[emit, ARG-side] a COMPOUND (Bytes) single-payload variant host-op ARG — ✅ DONE / TESTED (SHAPE 227, 228).**
   (SHAPE 228 hardens the MULTI-Bytes-case path: `variant{a, b(bytes), c(bytes)}`, `bytes_discs = [1,2]`, exercises
   the marshal's multi-disc OR fold — SHAPE 227's single Bytes case left it untested.)
