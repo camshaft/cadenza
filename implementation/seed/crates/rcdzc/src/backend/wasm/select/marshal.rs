@@ -5106,11 +5106,60 @@ pub(super) fn emit_record_arg_marshal(
                     out,
                 )?;
             }
+            // A HETEROGENEOUS MIXED `variant` field (scalar/tuple/record payload cases, NO mem case this
+            // increment) flattens (canonical variant flatten) to `(disc:i32, joined-slots…)` via
+            // `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant uses, so the field
+            // and bare-arg marshals stay in lockstep. serialize's `VariantMemMixed` flatten + `host_imports`'s
+            // variant DEFINED type already agree on this join. A `Bytes`/`List` payload case (needing a `mem` spill
+            // + a reserved cursor via the emit.rs pre-scan) is a later slice — it declines at the None catch-all.
+            // Detected AFTER the scalar-/tuple-payload variant arms (they claim their clean single-kind shapes).
+            None if crate::backend::wasm::host::variant_mixed_payload_cases(db, fty)
+                .is_some_and(|cases| {
+                    cases.iter().all(|(_, k)| {
+                        crate::backend::wasm::host::variant_mem_mixed_kind_supported(k)
+                    }) && !cases.iter().any(|(_, k)| {
+                        matches!(
+                            k,
+                            crate::backend::wasm::host::VariantPayloadKind::Bytes
+                                | crate::backend::wasm::host::VariantPayloadKind::List(_)
+                        )
+                    })
+                }) =>
+            {
+                let cases = crate::backend::wasm::host::variant_mixed_payload_cases_wit(
+                    db,
+                    fty,
+                    Some(fwit),
+                )
+                .ok_or_else(|| {
+                    Reject::decline("a mixed variant field's cases could not be WIT-ordered")
+                })?;
+                let ans = work_base + 4;
+                scratch_ty.insert(ans, ValType::I32);
+                *high = (*high).max(work_base + 5);
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [variant handle] (borrows rec)
+                out.push(Lir::LocalSet(ans));
+                emit_variant_mixed_arg_reg_flatten(
+                    db,
+                    ans,
+                    fty,
+                    &cases,
+                    Some(fwit),
+                    cursor.unwrap_or(rope_slot), // unused: the no-mem case set never spills
+                    work_base + 5,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+            }
             None => {
                 return Err(Reject::decline(
                     "a record host-arg field has no boundary read (only scalar, list<u8>, list<T>, \
                      option<scalar>, option<tuple-of-scalars>, variant<scalar>, variant<tuple-of-scalars>, \
-                     nested-record, and result<list<u8>, enum> fields cross this increment)",
+                     mixed variant<scalar+tuple+record>, nested-record, and result<list<u8>, enum> fields \
+                     cross this increment)",
                 ));
             }
         }

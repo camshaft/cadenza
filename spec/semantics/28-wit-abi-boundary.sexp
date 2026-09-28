@@ -9731,3 +9731,38 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a RECORD host-op arg with a HETEROGENEOUS mixed variant{a, b(s64), c(tuple<s32,s64>)} field crosses (register flatten)"
+  (doc
+    "SHAPE 264 (v-wit-boundary) — a RECORD host-op ARGUMENT `record{ v: variant{a, b(s64), c(tuple<s32,s64>)},
+           n: s64 }` (probe.push) whose `v` FIELD is a HETEROGENEOUS MIXED variant (a scalar payload case b + a
+           tuple payload case c + a nullary case a) at the REGISTER record-FIELD position. Previously DECLINED
+           (`emit_record_arg_marshal`'s field dispatch had no mixed-variant arm — the scalar-payload
+           (`variant_scalar_payload_cases`) and single-tuple (`variant_tuple_payload_case`) arms do not claim a
+           scalar+tuple MIX, so it fell to the None catch-all). Now `emit_record_arg_marshal` gains a
+           VariantMemMixed field arm that reads the field's variant handle (`arr-get`) and flattens it via
+           `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant uses (SHAPE 241/243) —
+           to `(v-disc:i32, joined-slots…)`. The abi (`field_boundary_abi`'s VariantMemMixed) + `host_imports`'s
+           declared `variant` DEFINED type were already produced; serialize's VariantMemMixed flatten is now the
+           canonical position-wise join (`variant_mixed_join_slots`, matching the bare-ARG `HostParam::VariantMixed`
+           + the guest push + `wit_ctype::flatten_variant`) rather than the former discarded widest-case placeholder,
+           so the record's core param flatten agrees with the guest marshal. `collect_record_field_ops` gained the
+           matching arm. SCOPED to NO-mem payload cases (scalar/tuple/record) this increment — a Bytes/List case
+           (needing a `mem` spill + a reserved cursor) still declines cleanly. The whole record flattens to
+           `(v-disc:i32, e0:i32, e1:i64, n:i64)`. run() builds { v: C((3,7)), n: 5 } and performs probe.push; a
+           VALID running component (live-objects=0) pins the register field round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= v (variant (a) (b (s64)) (c (tuple (s32) (s64))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (Tuple Int32 Int64)))
+      (effect probe (op push (-> (Record (: v Sig) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Sig.C #tuple(3 7))) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

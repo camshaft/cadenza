@@ -164,35 +164,21 @@ pub(crate) fn flatten_record_field_abi(
             }
         }
         // A heterogeneous `variant` FIELD flattens (canonical variant flatten) to `(disc:i32, join(case
-        // payloads))`. Its register-flattened form is the bare-ARG `HostParam::VariantMixed` join; as a mem `list`
-        // element it crosses as `(ptr,count)` (this flatten unused). This arm is reached only when a
-        // `VariantMemMixed` sits at a REGISTER record FIELD position, which `emit_record_arg_marshal` declines —
-        // so the computed flatten is discarded. Emit the disc + the WIDEST payload case's slots (a well-formed
-        // best-effort; never consumed by a finalized component).
+        // payloads))` — the SAME position-wise join as the bare-ARG `HostParam::VariantMixed`
+        // (`variant_mixed_join_slots`, matching `wit_ctype::flatten_variant`) and the guest
+        // `emit_variant_mixed_arg_reg_flatten` push, so a mixed-variant record FIELD's core flatten agrees with
+        // the declared `variant` DEFINED type and the guest marshal. (As a mem `list` element the variant crosses
+        // as `(ptr,count)` and this flatten is unused; at a REGISTER record FIELD it IS consumed — the field emit
+        // pushes exactly this join.) Nullary cases carry no payload slots.
         RecordFieldAbi::VariantMemMixed(cases) => {
             out.push(wasm_abi::CORE_I32); // the discriminant
-            let mut widest: Vec<u8> = Vec::new();
-            for (_, kind) in cases {
-                let mut slots: Vec<u8> = Vec::new();
-                match kind {
-                    Some(crate::backend::wasm::host::VariantPayloadKind::Scalar(v)) => {
-                        slots.push(v.core_byte())
-                    }
-                    Some(crate::backend::wasm::host::VariantPayloadKind::Tuple(abis)) => {
-                        slots.extend(abis.iter().map(|a| a.core_byte()))
-                    }
-                    // A `Bytes`/`List` case flattens to `(ptr, len|count)` — two i32 slots.
-                    Some(
-                        crate::backend::wasm::host::VariantPayloadKind::Bytes
-                        | crate::backend::wasm::host::VariantPayloadKind::List(_),
-                    ) => slots.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32]),
-                    _ => {}
-                }
-                if slots.len() > widest.len() {
-                    widest = slots;
-                }
-            }
-            out.extend_from_slice(&widest);
+            let payload_cases: Vec<(i32, crate::backend::wasm::host::VariantPayloadKind)> = cases
+                .iter()
+                .filter_map(|(_, k)| k.clone().map(|k| (0, k)))
+                .collect();
+            out.extend(crate::backend::wasm::host::variant_mixed_join_slots(
+                &payload_cases,
+            ));
         }
     }
 }

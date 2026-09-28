@@ -124,6 +124,22 @@ pub(super) fn collect_record_field_ops(
                 collect_list_elem_ops(db, &tuple_ty, out);
             }
         }
+        // A HETEROGENEOUS MIXED `variant` field (`emit_variant_mixed_arg_reg_flatten` at a record FIELD): the
+        // marshal `arr-get`s the variant, reads `sum-disc`/`sum-payload`, and per payload case a Scalar's unbox op
+        // OR a Tuple/Record's `arr-get` + element/field ops — collected via the shared `collect_list_elem_ops` on
+        // each payload type (its Scalar/Tuple/Record arms). Detected AFTER the scalar-/tuple-payload variant arms.
+        _ if crate::backend::wasm::host::variant_mixed_payload_cases(db, fty).is_some() => {
+            out.insert(OP_ARR_GET);
+            out.insert(OP_SUM_DISC);
+            out.insert(OP_SUM_PAYLOAD);
+            if let Some(cases) = crate::backend::wasm::host::variant_mixed_payload_cases(db, fty) {
+                for (pd, _) in &cases {
+                    if let Some(pty) = variant_payload_ty_at(db, fty, *pd as u32) {
+                        collect_list_elem_ops(db, &pty, out);
+                    }
+                }
+            }
+        }
         _ => {
             if let Ty::Record(sub) = fty {
                 out.insert(OP_ARR_GET);
