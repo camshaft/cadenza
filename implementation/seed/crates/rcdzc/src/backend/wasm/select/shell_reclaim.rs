@@ -1898,7 +1898,7 @@ pub(crate) fn payload_escapes_to_consumer_dupable(
 /// owned source (a borrowed/persistent source → DECLINE → leak-over-UAF); S3 the shared shell-reclaim floor.
 /// `None` otherwise (over-decline only keeps the leak).
 ///
-/// ⚠ UAF-CRITICAL LOCKSTEP (my RED-review of v-mem's census; the reason this is a PAIR, not a lone reclaim): S1-S3
+/// WARNING: UAF-CRITICAL LOCKSTEP (my RED-review of v-mem's census; the reason this is a PAIR, not a lone reclaim): S1-S3
 /// alone are NOT sufficient for the DROP side. Reclaiming `a`'s shell is UAF-safe ONLY when the producing-side
 /// dup ALSO fired on this exact view (dup rc1->2, cascade 2->1, THIS reclaim 1->0 — balanced). If the nested
 /// reclaim fired WITHOUT the producing-side dup (e.g. the OUTER match's own reclaim/floor declined so `a` was
