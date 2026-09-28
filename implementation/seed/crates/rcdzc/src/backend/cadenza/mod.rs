@@ -3020,22 +3020,9 @@ fn emit_expr_viewed(
             let variant = b.list(variant_children);
             let ncx = db.name_ctx();
             let ty_node = crate::lower::type_ast(b, &ty, &ncx).ok_or_else(|| {
-                // A sum type inference left under-determined (a free type-arg — after the
-                // `expected`-recovery above still `ty_has_free_arg`) has no canonical surface form to
-                // ascribe. This is a DETERMINACY fault, NOT a not-yet-built construct: the direct-wasm
-                // path codes it CDZ0203 (its `has_free_var` guard / the Set-Map-key check), so the
-                // cadenza re-emit hop MUST code it identically for re-emit-vs-direct parity — else the
-                // corpus-cadenza gate reds (e.g. 19-sets float32-key `Map.to-list` over an undetermined
-                // value: direct CDZ0203, cadenza formerly the codeless CDZ0900 umbrella). Coded, not
-                // `unsupported`, because the program IS ill-formed (an unannotated ambiguous type), not a
-                // construct the backend has yet to build.
-                Reject::coded(
-                    crate::diag::Code::TypeMismatch,
-                    format!(
-                        "a variant's sum type `{}` is not fully determined — annotate it \
-                         (e.g. `(: (None) (Option Int64))`) so the variant has a canonical form",
-                        ty.render_name(&ncx)
-                    ),
+                Reject::unsupported(
+                    "the Cadenza backend does not support lowering a variant of an under-determined sum type"
+                        .to_string(),
                 )
             })?;
             Ok(b.list(vec![colon, variant, ty_node]))
