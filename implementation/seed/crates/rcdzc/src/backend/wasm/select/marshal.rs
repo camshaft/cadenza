@@ -4652,11 +4652,42 @@ pub(super) fn emit_record_arg_marshal(
                 out.push(Lir::LocalSet(ans));
                 emit_variant_reg_flatten(db, ans, fty, work_base + 5, high, scratch_ty, out)?;
             }
+            // A tuple-payload `variant` field flattens (canonical variant flatten) POSITIONALLY to `(disc:i32, e0,
+            // e1, …)` via `emit_variant_tuple_arg_reg_flatten` — the SAME helper the top-level bare variant-tuple
+            // ARG uses, so the field and top-level marshals stay in lockstep. Read the field's variant handle
+            // (arr-get, borrows the record) into a slot, then flatten it.
+            None if crate::backend::wasm::host::variant_tuple_payload_case(db, fty).is_some() => {
+                let (tuple_disc, _) =
+                    crate::backend::wasm::host::variant_tuple_payload_case(db, fty).unwrap();
+                let tuple_ty =
+                    variant_payload_ty_at(db, fty, tuple_disc as u32).ok_or_else(|| {
+                        Reject::decline(
+                            "a record variant-tuple field payload type could not be resolved",
+                        )
+                    })?;
+                let ans = work_base + 4;
+                scratch_ty.insert(ans, ValType::I32);
+                *high = (*high).max(work_base + 5);
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [variant handle] (borrows rec)
+                out.push(Lir::LocalSet(ans));
+                emit_variant_tuple_arg_reg_flatten(
+                    db,
+                    ans,
+                    tuple_disc,
+                    &tuple_ty,
+                    work_base + 5,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+            }
             None => {
                 return Err(Reject::decline(
                     "a record host-arg field has no boundary read (only scalar, list<u8>, list<T>, \
-                     option<scalar>, option<tuple-of-scalars>, variant<scalar>, nested-record, and \
-                     result<list<u8>, enum> fields cross this increment)",
+                     option<scalar>, option<tuple-of-scalars>, variant<scalar>, variant<tuple-of-scalars>, \
+                     nested-record, and result<list<u8>, enum> fields cross this increment)",
                 ));
             }
         }

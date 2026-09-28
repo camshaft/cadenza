@@ -156,11 +156,10 @@ pub(crate) fn flatten_record_field_abi(
         // A tuple-payload `variant` flattens (canonical variant flatten) POSITIONALLY to `(disc:i32, e0, e1, …)`
         // — the disc slot then each tuple element's own flattened slots — matching the register-path
         // `select::emit_variant_tuple_arg_reg_flatten`. (At a LIST element / mem product-field position this
-        // flatten is unused — the list crosses as `(ptr,count)` and the element is written in place; it is
-        // computed for a REGISTER-flattened record/tuple FIELD position, which this increment declines at emit.)
-        RecordFieldAbi::VariantTuple(elems) => {
+        // flatten is unused — the list crosses as `(ptr,count)` and the element is written in place.)
+        RecordFieldAbi::VariantTuple { elem_abis, .. } => {
             out.push(wasm_abi::CORE_I32); // the discriminant
-            for e in elems {
+            for e in elem_abis {
                 flatten_record_field_abi(e, out);
             }
         }
