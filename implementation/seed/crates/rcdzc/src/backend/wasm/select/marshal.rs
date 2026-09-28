@@ -1657,12 +1657,26 @@ fn emit_variant_mixed_to_mem(
                 out.push(Lir::LocalSet(cursor));
                 out.push(Lir::End);
             }
-            // A `List<scalar>` payload case: marshal the list into `mem` as an inline element array via the
-            // shared `emit_list_arg_marshal` (lays the backing array at the cursor, advances it, and leaves
+            // A `List` payload case: marshal the list into `mem` as an inline element array via the shared
+            // `emit_list_arg_marshal` (lays the backing array at the cursor, advances it, and leaves
             // `[outer-ptr, count]` on the stack), then write `(ptr @ payload_off, count @ payload_off+4)` — the
-            // canonical `list` case layout. Scoped to a SCALAR element (`elem_wit = None`, offset-agnostic).
+            // canonical `list` case layout. The element may be a SCALAR (offset-agnostic, no WIT needed) OR any
+            // COMPOUND `emit_list_arg_marshal` handles (record/tuple/nested list/option); the element's declared
+            // WIT (extracted from this case's payload WIT `list<elem>`) orders a record element's fields. A `None`
+            // element WIT (or a non-list payload WIT) leaves it offset-agnostic — a compound element then declines
+            // inside `emit_list_arg_marshal` (decline-don't-miscompile).
             VariantPayloadKind::List(elem) => {
                 let elem = elem.clone();
+                let list_elem_wit: Option<&crate::wit_world::WitType> = match variant_wit {
+                    Some(crate::wit_world::WitType::Variant(c)) => c
+                        .get(*pd as usize)
+                        .and_then(|(_, p)| p.as_ref())
+                        .and_then(|w| match w {
+                            crate::wit_world::WitType::List(e) => Some(&**e),
+                            _ => None,
+                        }),
+                    _ => None,
+                };
                 out.push(Lir::LocalGet(disc));
                 out.push(Lir::ConstI32(*pd));
                 out.push(Lir::I32Eq);
@@ -1674,7 +1688,15 @@ fn emit_variant_mixed_to_mem(
                 // arms), mirroring the register mixed List arm's `sub_base = *high` discipline.
                 let sub_base = *high;
                 emit_list_arg_marshal(
-                    db, &elem, None, rope, cursor, sub_base, high, scratch_ty, out,
+                    db,
+                    &elem,
+                    list_elem_wit,
+                    rope,
+                    cursor,
+                    sub_base,
+                    high,
+                    scratch_ty,
+                    out,
                 )?; // [ptr, count]
                 out.push(Lir::LocalSet(blen)); // count (top of stack)
                 out.push(Lir::LocalSet(pos)); // ptr

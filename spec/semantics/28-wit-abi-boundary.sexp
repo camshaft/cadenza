@@ -9670,3 +9670,36 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level list<variant{a, b(s64), c(list<record{x: s32, y: s64}>)}> host-op arg crosses (HETEROGENEOUS scalar + list-of-COMPOUND variant element at mem)"
+  (doc
+    "SHAPE 262 (v-wit-boundary) — a top-level `list<variant{a, b(s64), c(list<record{x: s32, y: s64}>)}>` bare
+           host-op ARGUMENT (probe.push): each list element is a HETEROGENEOUS variant MIXING a scalar payload
+           case (b) and a LIST-of-COMPOUND (list<record>) payload case (c), plus a nullary case (a). Extends
+           SHAPE 260 (list-of-SCALAR payload case) to a COMPOUND list element: `emit_variant_mixed_to_mem`'s List
+           arm now EXTRACTS this case's element WIT from the variant WIT (`list<elem>` → elem) and THREADS it into
+           the shared `emit_list_arg_marshal`, so a record element's fields order to WIT declaration order (the
+           scalar element still passes `None`, offset-agnostic). `variant_mem_mixed_kind_supported`'s List arm is
+           now unconditional `true` — the detector `variant_mixed_payload_cases` ALREADY validates the element is
+           marshalable (`abi_val_type OR list_elem_marshalable`), so a List case reaching the gate is
+           known-marshalable and the emit handles the full marshalable element set (record/tuple/nested list/
+           option). `collect_list_elem_ops` (the used_ops element collector) already recurses the payload list's
+           element ops. The record element's WIT field order matches the guest name-lex order (x<y ↔ WIT
+           `(x s32)(y s64)`), so `emit_record_to_mem`'s in-place write agrees with the reserved element stride.
+           run() pushes `[C([{x:1,y:2}, {x:3,y:4}]), B(42), A]` in one list — exercising the list-of-record case,
+           the scalar case, and the nullary case; a VALID running component (live-objects=0) pins the round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (variant (a) (b (s64)) (c (list (record (= x (s32)) (= y (s64)))))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C (List (Record (: x Int32) (: y Int64)))))
+      (effect probe (op push (-> (List V) Int64)))
+      (def (run) (host (probe) (probe.push #list((V.C #list(#record((= x 1) (= y 2)) #record((= x 3) (= y 4)))) (V.B 42) V.A))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

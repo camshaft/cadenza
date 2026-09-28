@@ -458,8 +458,20 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   field-order-dependent — a divergent WIT order could write past the reserved slot). Faithfully verified: the shred
   compiled status-0 (1871-byte component, `wasm-tools validate` clean) emitting `push: func(list<host-result-t1>)`
   with `host-result-t1 = variant{a, b(s64), c(host-result-t0)}` / `host-result-t0 = record{p: s32, q: s64}`.
-  REMAINING: a `list<compound>` payload case (element WIT) in a mixed variant at mem; a Bytes/nested-compound tuple
-  ELEMENT; a WIT-ordered RECORD payload case whose WIT order diverges from guest order (needs a richer stride); the
+- **[emit] a LIST-of-COMPOUND payload case in a heterogeneous mem `variant` — ✅ DONE / TESTED (SHAPE 262).**
+  Extends SHAPE 260 (list-of-SCALAR) to a COMPOUND list element (`list<variant{a, b(s64), c(list<record{x: s32,
+  y: s64}>)}>`): `emit_variant_mixed_to_mem`'s List arm now EXTRACTS this case's element WIT from the variant WIT
+  (`list<elem>` → elem) and THREADS it into the shared `emit_list_arg_marshal` (a record element's fields order to
+  WIT declaration order; a scalar element still passes `None`). `variant_mem_mixed_kind_supported`'s List arm is
+  now unconditional `true` — the detector `variant_mixed_payload_cases` ALREADY validates the element is
+  marshalable (`abi_val_type OR list_elem_marshalable`), so a List case reaching the gate (its three callers all
+  pass that detector's output) is known-marshalable and the widened emit handles the full marshalable element set
+  (record/tuple/nested list/option). `collect_list_elem_ops` already recurses the payload list's element ops.
+  Faithfully verified: status-0 shred-compile (2002-byte component, `wasm-tools validate` clean) emitting
+  `push: func(list<host-result-t2>)` with `host-result-t2 = variant{a, b(s64), c(list<host-result-t0>)}` /
+  `host-result-t0 = record{x: s32, y: s64}`.
+  REMAINING: a Bytes/nested-compound tuple ELEMENT (in a tuple-payload variant); a WIT-ordered RECORD payload case
+  whose WIT order diverges from guest name-lex order (needs a WIT-ordered stride, not just the guard-decline); the
   heterogeneous mix at a REGISTER record-field/tuple-element position (declines).
   REMAINING variant gaps: a RECORD compound payload case in a MIXED variant (the TUPLE compound payload
   case in a mixed variant is now ✅ DONE — SHAPE 243, `VariantPayloadKind::Tuple`; the ≥3-payload-case mem join is
