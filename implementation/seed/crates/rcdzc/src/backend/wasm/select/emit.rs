@@ -6305,11 +6305,15 @@ pub(super) fn emit(
                                 |abi| crate::backend::wasm::host::record_field_abi_needs_memory(&abi),
                             )
                     })
-                    // A top-level `option<tuple-with-a-bytes-element>` arg copies the payload tuple's Bytes
-                    // ropes into `mem` on Some (`emit_option_reg_flatten`'s tuple branch → `emit_tuple_reg_
-                    // flatten`) → needs the cursor, like the `tuple<…,bytes,…>` arg one line down.
+                    // A top-level `option<tuple>` arg copies a rope-bearing element (a `Bytes` element, or a
+                    // record/list/mixed-variant-Bytes/List element ANYWHERE in the tuple tree) into `mem` on Some
+                    // (`emit_option_reg_flatten`'s tuple branch → `emit_tuple_reg_flatten`) → needs the cursor.
+                    // Uses `tuple_arg_needs_cursor` (the SAME broad recursion the direct `tuple<…>` arg + a
+                    // `result<tuple, enum>` arg use, one line down), NOT the `Bytes`-only `tuple_has_bytes_element`
+                    // — else an `option<tuple<mixed-variant-Bytes, …>>` would not reserve and the element arm's
+                    // `cursor.is_some()` guard would decline the whole option.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
-                        .is_some_and(|p| crate::backend::wasm::host::tuple_has_bytes_element(&p))
+                        .is_some_and(|p| crate::backend::wasm::host::tuple_arg_needs_cursor(db, &p))
                     // A top-level `option<record>` arg whose payload record has a runtime-compound FIELD copies
                     // that field's bytes into `mem` on Some (`emit_option_reg_flatten`'s record branch →
                     // `emit_record_arg_marshal`) → needs the cursor, exactly like the direct `record` arg above.
