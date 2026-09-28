@@ -96,10 +96,15 @@ Runtime state (heartbeats/leases/windows) stays hub-central; the board is not a 
   shipped + deployed) + the verified sessionless charter fetch. Non-disruptive.
 - **P-mirror (STARTED 2026-09-28):** `fleet/board-mirror-metadata.py` mirrors every ACTIVE agent's
   registry metadata bag onto the board (idempotent upsert; `registry.json` stays authoritative). First
-  run mirrored all 35 active agents. `repos` deliberately not yet set (see `metadata_bag`). STILL TODO:
-  stand up `~/.fleet/mirrors/` + the per-agent-directory materializer ALONGSIDE the current
-  cadenza-worktree model; migrate one non-owner pilot agent to the new workspace shape; decide
-  mirror-wiring (cron/`fleet up`) vs prompt-driven per-agent self-register.
+  run mirrored all 35 active agents. `repos` deliberately not yet set (see `metadata_bag`).
+  - The per-agent-workspace MATERIALIZER PRIMITIVE shipped: `fleet/agent-workspace.sh ensure <repo>
+    <agent> <branch>` ensures a shared bare mirror under `$FLEET_ROOT/mirrors/<repo>.git` (upstream under
+    `refs/remotes/origin/*`) and a worktree at `$FLEET_ROOT/agents/<agent>/<repo>` (agent branch under
+    `refs/heads/*`), so `fetch --prune` never touches a peer agent's branch and N agents share one object
+    store per repo. Standalone/additive — NOT wired into `fleet add`/`fleet up` yet.
+  - STILL TODO: wire the materializer into `fleet add`/`fleet up` (reconcile board-declared `repos` →
+    worktrees) ALONGSIDE the current cadenza-worktree model; migrate one non-owner pilot agent to the new
+    workspace shape; decide mirror-wiring (cron/`fleet up`) vs prompt-driven per-agent self-register.
 - **P-lift:** the extraction lift (`~/.fleet` + `fleet` binary), per-repo adapters, slack-bridge move.
 - **P-flip (high-risk, gated):** tooling reads the board as the registry; `registry.json` becomes a
   derived cache or is retired. Only after the pilot + mirror are proven AND explicit operator confirm.
