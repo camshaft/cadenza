@@ -1009,9 +1009,9 @@ pub fn variant_record_payload_case(db: &mut Db, ty: &Ty) -> Option<(i32, Ty)> {
 /// `Tuple` (a multi-payload / `tuple`-typed case flattened POSITIONALLY inline — one core slot per scalar
 /// element, joined slot-wise with the other cases). The `Bytes` and `List` kinds share the two-i32-slot
 /// `(ptr, len|count)` mem flatten; a `List`'s element `Ty` is carried so the marshal can lay the element array
-/// and `used_ops` can declare the element's ops; a `Tuple` carries its elements' scalar ABI types (all integer
-/// this increment) so the join + marshal know each inline slot's width. A record payload case in a mixed
-/// variant is still a later increment.
+/// and `used_ops` can declare the element's ops; a `Tuple` carries its elements' scalar ABI types (int OR
+/// float) so the join + marshal know each inline slot's width and reinterpret a float element into its joined
+/// slot. A record payload case in a mixed variant is still a later increment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VariantPayloadKind {
     Scalar(AbiValType),
@@ -1029,10 +1029,10 @@ pub enum VariantPayloadKind {
 /// `i64`). The guest `select::emit_variant_mixed_arg_reg_flatten` branches per case (scalar → unbox into slot 0
 /// coerced to the joined width; bytes → rope-copy at the cursor → `(ptr,len)`; nullary → zero the slots). The
 /// component boundary type is the declared `variant` DEFINED type (structural WIT). Excludes option/result sums.
-/// Scoped to Scalar (int OR float) + Bytes + List-of-scalar + Tuple-of-INT-scalars payload kinds (a record
-/// payload case, a list of a non-scalar element, or a tuple with a non-scalar/float element, is a later
-/// increment); a float scalar case is joined with the other cases' integer slots via the canonical reinterpret
-/// lattice (`variant_mixed_join_slots` + `emit_scalar_coerce_into_slot`).
+/// Scoped to Scalar (int OR float) + Bytes + List-of-scalar + Tuple-of-scalars (int OR float elements) payload
+/// kinds (a record payload case, a list of a non-scalar element, or a tuple with a non-scalar element, is a
+/// later increment); a float scalar/tuple-element case is joined with the other cases' integer slots via the
+/// canonical reinterpret lattice (`variant_mixed_join_slots` + `emit_scalar_coerce_into_slot`).
 pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, VariantPayloadKind)>> {
     let Ty::Sum { decl, .. } = ty.strip_nominal() else {
         return None;
@@ -1071,16 +1071,13 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
             cases.push((disc as i32, VariantPayloadKind::List((**inner).clone())));
         } else if let Ty::Tuple(elems) = stripped {
             // A TUPLE payload case (a `tuple`-typed single payload OR a multi-payload case): it flattens
-            // POSITIONALLY inline to one core slot per element, joined slot-wise with the other cases. Scoped
-            // to all-INTEGER-scalar elements this increment (a float element would need per-element reinterpret
-            // in the Tuple arm; a Bytes/list/nested-compound element the cursor + a richer flatten — later).
+            // POSITIONALLY inline to one core slot per element, joined slot-wise with the other cases. Each
+            // element is a SCALAR (int OR float — the emit's Tuple arm reinterprets a float element into its
+            // joined slot via `emit_scalar_coerce_into_slot`, exactly as the scalar case does); a Bytes/list/
+            // nested-compound element would need the cursor + a richer flatten — a later increment.
             let mut abis = Vec::with_capacity(elems.len());
             for ety in elems.iter() {
-                let v = abi_val_type(ety)?;
-                if matches!(v, AbiValType::F32 | AbiValType::F64) {
-                    return None;
-                }
-                abis.push(v);
+                abis.push(abi_val_type(ety)?);
             }
             if abis.is_empty() {
                 return None;
