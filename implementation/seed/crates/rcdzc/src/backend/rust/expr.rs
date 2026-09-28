@@ -2832,8 +2832,25 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `List.concat` → the two lists joined in order (`lhs` then `rhs`). Consume `lhs` into a `mut`
         // local and `extend` it with `rhs`, returning it — one new `Vec`, order-preserving.
         Core::ListConcat { lhs, rhs } => {
-            let a = emit(db, lhs, env, ctx)?;
-            let b = emit(db, rhs, env, ctx)?;
+            // Thread the concat's RESULT list type as `expected_ty` for both operands. An empty `(list)`
+            // operand's own `type_of` often leaves its element unsolved (`List Any`), so without a hint the
+            // `Core::ListNew` emit spells a bare `vec![]` — and `Vec<T>: Extend<_>` has multiple impls
+            // (`Extend<T>` / `Extend<&T>`), so `__v.extend(vec![])` is ambiguous → rustc E0283 (a rust-only
+            // won't-compile; wasm's untyped list handle needs no element type). Both operands ARE the concat's
+            // `(List elem)` result type, so the empty-list grounds to `Vec::<elem>::new()` via the ListNew
+            // expected-type path; a non-empty / non-list operand ignores the hint (byte-identical emit). Only
+            // when the result is concrete (a bare Var/Any gives no element to spell → plain emit as before).
+            let list_ty = type_of(db, id);
+            let arg_ctx = if matches!(list_ty, Ty::Var(_) | Ty::Any) {
+                None
+            } else {
+                let mut c = ctx.clone();
+                c.expected_ty = Some(list_ty);
+                Some(c)
+            };
+            let ec = arg_ctx.as_ref().unwrap_or(ctx);
+            let a = emit(db, lhs, env, ec)?;
+            let b = emit(db, rhs, env, ec)?;
             Ok(format!("{{ let mut __v = {a}; __v.extend({b}); __v }}"))
         }
         // `Map.merge(a, b)` → `BTreeMap::extend`, which overwrites with the RIGHT operand's values on an
