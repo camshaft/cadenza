@@ -2089,9 +2089,13 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                     out.push(Lir::I64ExtendI32U);
                 }
                 out.push(Lir::LocalSet(base_slot));
-                // slot 1 = len (slot 1's joined valtype is i32 — only bytes cases contribute it).
+                // slot 1 = len, extended to i64 iff slot 1 joined wide (a TUPLE case's i64 element at slot 1
+                // widens the join — the len is an i32, so extend it to match, else `i32 into i64 local`).
                 if n >= 2 {
                     out.push(Lir::LocalGet(blen));
+                    if slot_vts.get(1) == Some(&ValType::I64) {
+                        out.push(Lir::I64ExtendI32U);
+                    }
                     out.push(Lir::LocalSet(base_slot + 1));
                 }
                 // advance the cursor past the copied bytes.
@@ -2126,9 +2130,13 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                     out.push(Lir::I64ExtendI32U);
                 }
                 out.push(Lir::LocalSet(base_slot));
-                // slot 1 = count (slot 1's joined valtype is i32 — only mem cases contribute it).
+                // slot 1 = count, extended to i64 iff slot 1 joined wide (a TUPLE case's i64 element at slot 1
+                // widens the join — the count is an i32, so extend it to match, else `i32 into i64 local`).
                 if n >= 2 {
                     out.push(Lir::LocalGet(blen));
+                    if slot_vts.get(1) == Some(&ValType::I64) {
+                        out.push(Lir::I64ExtendI32U);
+                    }
                     out.push(Lir::LocalSet(base_slot + 1));
                 }
                 2

@@ -9153,3 +9153,42 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a MIXED variant{a, b(s64), c(bytes), d(s32,s64)} with scalar + bytes + tuple cases as a host-op arg (imposed WIT)"
+  (doc
+    "SHAPE 247 (v-wit-boundary) — a `variant{a, b(s64), c(list<u8>), d(tuple<s32,s64>)}` passed BARE as the
+           TOP-LEVEL host-op ARGUMENT (probe.push), mixing ALL THREE inline/mem case kinds at once: a SCALAR case
+           (b: s64), a mem (Bytes) case (c: list<u8>), and a TUPLE case (d: tuple<s32,s64>). This exposed + now
+           pins a slot-WIDTH-JOIN bug: the tuple case's element 1 (s64) is an i64 at slot 1, so the position-wise
+           join widens slot 1 to i64 (`join(len:i32, s64:i64)=i64`); the core flatten is `(disc:i32, i64, i64)`
+           (slot0=join(i64, ptr:i32, s32:i32)=i64). Before the fix, `emit_variant_mixed_arg_reg_flatten`'s Bytes
+           (and List) arm wrote the LEN/COUNT (an i32) into slot 1 WITHOUT coercing — so when a tuple case widened
+           slot 1 to i64, the i32 len was stored into an i64 local → the component failed validation (`expected
+           i64, found i32`, CDZ0910). The fix extends the len/count `i64.extend_i32_u` when slot 1 joined wide
+           (mirroring the slot-0 ptr extend). run() performs FOUR pushes — `(B 42)`, `(C b\"hi\")`, `(D (: 1
+           Int32) 2)`, `A` — exercising all four arms; a VALID running component (live-objects=0) pins the
+           multi-kind join. Earlier mixed variants (SHAPE 241/242 scalar+bytes/list) never hit this because slot 1
+           stayed i32 with no tuple case to widen it.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (s64)) (c (list (u8))) (d (tuple (s32) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C Bytes) (D Int32 Int64))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B 42)) (probe.push (V.C b"hi")) (probe.push (V.D (: 1 Int32) 2)) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
