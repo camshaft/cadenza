@@ -1417,39 +1417,22 @@ pub(super) fn collect_used_ops_into_seen(
                                     out.insert(read);
                                 }
                             } else if crate::backend::wasm::host::option_payload_ty(db, &payload)
-                                .is_some_and(|pp| {
-                                    valtype_of(&pp).is_some()
-                                        || matches!(pp.strip_nominal(), Ty::Bytes | Ty::String)
-                                })
+                                .is_some()
+                                && crate::backend::wasm::host::field_boundary_abi(db, &payload)
+                                    .is_some()
                             {
-                                // A nested `option<option<scalar>>`/`option<option<bytes>>`/`option<option<list>>`
-                                // payload is flattened by the RECURSIVE `emit_option_reg_flatten`: the inner option's
-                                // `sum-disc`/`sum-payload` + the inner payload's ops — a SCALAR's unbox op, a `Bytes`
-                                // inner's `bytes-len`/`bytes-get` rope copy, or a `list<T>` inner's `vec-len`/`vec-get`
-                                // + element ops (`emit_list_arg_marshal`) (the OUTER option's `sum-disc`/`sum-payload`
-                                // are already declared above). A Bytes/list inner has NO single get-op (`get_op_ty` is
-                                // None), so it MUST be handled explicitly, else the inner backing-write `CallImport`
-                                // resolves to u32::MAX → an invalid module (CDZ0910).
+                                // A nested `option<option<T>>` payload is flattened by the RECURSIVE
+                                // `emit_option_reg_flatten`: the inner option's `sum-disc`/`sum-payload` + the inner
+                                // payload's ops, for ANY inner `T` (scalar / bytes / list / tuple / record). Declare
+                                // exactly those by RECURSING `collect_record_field_ops` on the inner option `payload`
+                                // (its own option arm recurses into `T` — a scalar's unbox op, a Bytes leaf's
+                                // `bytes-len`/`bytes-get`, a list's `vec-len`/`vec-get` + element ops, a record/tuple's
+                                // `arr-get` + field ops). A Bytes/list inner has NO single get-op, so an under-declared
+                                // op would resolve to u32::MAX → an invalid module (CDZ0910). The OUTER option's
+                                // `sum-disc`/`sum-payload` are declared above.
                                 out.insert(OP_SUM_DISC);
                                 out.insert(OP_SUM_PAYLOAD);
-                                if let Some(inner_payload) =
-                                    crate::backend::wasm::host::option_payload_ty(db, &payload)
-                                {
-                                    if matches!(
-                                        inner_payload.strip_nominal(),
-                                        Ty::Bytes | Ty::String
-                                    ) {
-                                        out.insert(OP_BYTES_LEN);
-                                        out.insert(OP_BYTES_GET);
-                                    } else if let Ty::List(elem) = inner_payload.strip_nominal() {
-                                        out.insert(OP_VEC_LEN);
-                                        out.insert(OP_VEC_GET);
-                                        let elem = (**elem).clone();
-                                        collect_list_elem_ops(db, &elem, out);
-                                    } else if let Ok(Some(read)) = get_op_ty(db, &inner_payload) {
-                                        out.insert(read);
-                                    }
-                                }
+                                collect_record_field_ops(db, &payload, out);
                             }
                         }
                         collect_used_ops_into_seen(db, arg, out, visited);
