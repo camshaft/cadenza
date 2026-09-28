@@ -1585,6 +1585,100 @@ pub(super) fn emit_variant_list_arg_reg_flatten(
     Ok(())
 }
 
+/// Marshal a top-level value-heap `variant{nullary…, one tuple-of-scalars case}` host argument whose handle is in
+/// `var_slot` into the canonical `(disc:i32, e0, e1, …)` core-slot flatten (the discriminant then the tuple's
+/// elements POSITIONALLY inline), pushing `1 + n` values. The PRODUCT twin of [`emit_variant_bytes_arg_reg_flatten`]
+/// / [`emit_variant_list_arg_reg_flatten`], and the register twin of [`emit_result_tuple_arg_reg_flatten`]'s Ok arm
+/// MINUS the err-disc/float-join (a variant has a separate leading disc slot and a nullary case zero-fills ALL
+/// payload slots). `tuple_ty` is the tuple case's payload type (all-scalar this increment → NO `mem`/cursor);
+/// `tuple_disc` its discriminant. `BlockType` is SINGLE-value, so the `if` arms SIDE-EFFECT into scratch and the
+/// values are pushed AFTER the `if`. `work_base` is the first free scratch slot.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_variant_tuple_arg_reg_flatten(
+    db: &mut Db,
+    var_slot: u32,
+    tuple_disc: i32,
+    tuple_ty: &Ty,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let Ty::Tuple(elems) = tuple_ty.strip_nominal() else {
+        return Err(Reject::decline(
+            "a variant tuple-payload case is not a tuple",
+        ));
+    };
+    let elems = elems.to_vec();
+    // Slot valtypes in element (= positional = component) order — the SAME order + count `emit_tuple_reg_flatten`
+    // pushes. Each all-scalar element flattens to ONE slot of its own width (derived via `field_boundary_abi` →
+    // `flatten_record_field_abi` to stay in lockstep with the element marshal). NO err-disc/float-join (unlike the
+    // result tuple) — the variant disc is a separate leading slot and a nullary case zero-fills.
+    let mut slot_vts: Vec<ValType> = Vec::new();
+    for ety in elems.iter() {
+        let abi = crate::backend::wasm::host::field_boundary_abi(db, ety)
+            .ok_or_else(|| Reject::decline("a variant Ok tuple element does not cross"))?;
+        let mut bytes = Vec::new();
+        crate::backend::wasm::serialize::flatten_record_field_abi(&abi, &mut bytes);
+        for b in bytes {
+            slot_vts.push(ValType::from_byte(b).ok_or_else(|| {
+                Reject::decline("a flattened variant tuple element slot is not a numeric core type")
+            })?);
+        }
+    }
+    let n = slot_vts.len() as u32;
+    let disc_out = work_base;
+    let base_slot = work_base + 1;
+    let tup_slot = base_slot + n;
+    scratch_ty.insert(disc_out, ValType::I32);
+    for (k, vt) in slot_vts.iter().enumerate() {
+        scratch_ty.insert(base_slot + k as u32, *vt);
+    }
+    scratch_ty.insert(tup_slot, ValType::I32);
+    *high = (*high).max(tup_slot + 1);
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component variant disc, decl order)
+    out.push(Lir::LocalSet(disc_out));
+    out.push(Lir::LocalGet(disc_out));
+    out.push(Lir::ConstI32(tuple_disc));
+    out.push(Lir::I32Eq);
+    out.push(Lir::If(BlockType::Empty)); // the tuple case → marshal the payload tuple into the slots
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [tuple handle]
+    out.push(Lir::LocalSet(tup_slot));
+    emit_tuple_reg_flatten(
+        db,
+        tup_slot,
+        tuple_ty,
+        None, // all-scalar elements are offset-agnostic → no tuple WIT needed, and no `mem`/cursor
+        None,
+        tup_slot + 1,
+        high,
+        scratch_ty,
+        out,
+    )?;
+    // Capture the N pushed element values into the slots in REVERSE (stack top = last element).
+    for k in (0..n).rev() {
+        out.push(Lir::LocalSet(base_slot + k));
+    }
+    out.push(Lir::Else); // a nullary case → zero-fill ALL payload slots
+    for (k, vt) in slot_vts.iter().enumerate() {
+        out.push(match vt {
+            ValType::I64 => Lir::ConstI64(0),
+            ValType::F64 => Lir::F64ConstBits(0),
+            ValType::F32 => Lir::F32ConstBits(0),
+            _ => Lir::ConstI32(0),
+        });
+        out.push(Lir::LocalSet(base_slot + k as u32));
+    }
+    out.push(Lir::End); // if
+    out.push(Lir::LocalGet(disc_out)); // push (disc, elem0, elem1, …)
+    for k in 0..n {
+        out.push(Lir::LocalGet(base_slot + k));
+    }
+    Ok(())
+}
+
 /// Marshal a top-level value-heap `result<scalar, enum>` host argument whose handle is in `result_slot` into the
 /// canonical `(disc:i32, join)` core-slot flatten the built-in `result<ok-scalar, err-enum>` param lowers to,
 /// pushing the two values onto the operand stack. The 2-slot scalar-Ok twin of `emit_result_arg_reg_flatten`

@@ -8609,3 +8609,34 @@ cases
   (host-calls (call cadenza:platform/probe.push) (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a BARE variant{a, b(tuple<s64,s64>)} as the direct host-op arg emits, loads, and runs (via an imposed WIT world)"
+  (doc
+    "SHAPE 230 (v-wit-boundary) — a `variant{a, b(tuple<s64, s64>)}` passed BARE as the TOP-LEVEL host-op ARGUMENT
+           (probe.push), the FIRST PRODUCT-payload variant ARG. Crosses via the NEW additive `HostParam::VariantTuple`:
+           the component `variant` DEFINED type is laid STRUCTURALLY from the declared WIT (`add_wit_type_deduped` →
+           `CDef::Variant` with a `(tuple s64 s64)` payload case, export-remapped), and the guest flattens
+           POSITIONALLY to `(disc:i32, e0:i64, e1:i64)` — the discriminant then the tuple's elements INLINE — via
+           `emit_variant_tuple_arg_reg_flatten` (the register twin of the `result<tuple,enum>` Ok flatten MINUS the
+           err-disc/float-join): on the tuple case it recurses `emit_tuple_reg_flatten` to fill the element slots; on
+           the nullary case it zero-fills ALL payload slots. All-scalar tuple → NO `mem`/cursor (register-only).
+           Mirrors the VariantBytes/List family additively but with a VARIABLE slot count derived from the element
+           ABIs (detector `variant_tuple_payload_case`, HostParam carrying the tuple disc + element ABIs, classifier,
+           first_unrepresentable, marshal, emit dispatch + reclaim, serialize positional flatten, host_imports
+           structural CRef, used_ops). run() performs TWO pushes — `(B (2,3))` the tuple case then `A` the nullary
+           case — exercising BOTH arms; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (tuple (s64) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B (Tuple Int64 Int64)))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B #tuple(2 3))) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)) (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push) (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
