@@ -9047,3 +9047,41 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a MIXED variant{a, b(f64), c(bytes)} with a FLOAT scalar case + a Bytes case as a host-op arg (imposed WIT)"
+  (doc
+    "SHAPE 244 (v-wit-boundary) — a `variant{a, b(f64), c(list<u8>)}` passed BARE as the TOP-LEVEL host-op
+           ARGUMENT (probe.push), the FIRST MIXED variant with a FLOAT scalar payload case. Earlier mixed variants
+           were INT-only (a float scalar declined); this exercises the canonical variant reinterpret JOIN across a
+           float case and a mem case. b's payload flattens to `[f64]`, c's (Bytes) to `[i32 ptr, i32 len]`; the
+           position-wise join (`host::variant_mixed_join_slots`, matching `wit_ctype::flatten_variant`) gives
+           slot0=`join(f64, i32)=i64` (a float mixed with an integer slot → the integer width), slot1=`i32`, so the
+           core flatten is `(disc:i32, i64, i32)`. `emit_variant_mixed_arg_reg_flatten` DISPATCHES per case: b →
+           `get-float` (f64) then `emit_scalar_coerce_into_slot` REINTERPRETS f64→i64 (`i64.reinterpret_f64`) into
+           slot0, slot1=0; c → rope-copy the Bytes into `mem`, slot0 = ptr EXTENDED to i64, slot1 = len; a
+           (nullary) → zero both slots. run() performs THREE pushes — `(B 3.5)`, `(C b\"hi\")`, `A` — exercising
+           all three arms; the component TYPE-CHECKS the flatten against the declared `variant` (a missing
+           reinterpret would leave an f64 where the i64 slot is required → a validation error), so a VALID running
+           component (live-objects=0) pins the float-scalar-in-mixed-variant reinterpret join. Closes the int-only
+           restriction on a mixed variant's scalar case.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (f64)) (c (list (u8))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Float64) (C Bytes))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B 3.5)) (probe.push (V.C b"hi")) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
