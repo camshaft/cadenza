@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(48);
+    let shape = c.variant(49);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -239,6 +239,13 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let e1 = c.int_bounded(0, 40);
     let e2 = c.int_bounded(0, 40);
     let list_arg = format!("#list({e0} {e1} {e2})");
+    // A two-byte `b"…"` bytes-literal arg for the byp2 Bytes-entry-param bin-match shape (48): two lowercase
+    // letters derived from e0/e1 (`a`..`z`, avoiding `"`/`\` so the literal never needs escaping), so the
+    // `(bin (u8 x) (u8 y))` destructure reads two known u8s and the value = 100*x + y varies with the arg.
+    // Exactly TWO bytes so the bin-match hits its first arm (a differently-sized Bytes would take the `_ -> -1`).
+    let bin_c0 = 97 + (e0 % 26);
+    let bin_c1 = 97 + (e1 % 26);
+    let bin_bytes_arg = format!("b\"{}{}\"", bin_c0 as u8 as char, bin_c1 as u8 as char);
     // Two NON-EMPTY String args (lengths reuse e0/e1, clamped ≥1) for the #9694 String-consume shape (13):
     // `"xxx…"` / `"yyy…"` value-form literals; the returned byte-len (= their length sum) varies with them.
     let s0 = "x".repeat((e0 as usize).max(1));
@@ -939,10 +946,28 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      the VALUE/UAF side (an over-drop that frees the String before the slice reads it -> wrong len / trap).
         //      k>0 -> x=5, String "\x05\x05", slice 0..1 -> 1-char, scalar-len 1; k<=0 -> Err 111. Arg = a. Verified
         //      rust AGREE (1->1, 0->111, 9->1, -4->111).
-        _ => (
+        47 => (
             "(do (def (mk (: r (Result Int64 Int64))) (: (do (def x (try r)) (def s (match (String.from-bytes (Bytes.of #list((UInt8.of x) (UInt8.of x)))) ((Some ss) ss) ((None) \"\"))) (Ok s)) (Result String Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok 5) (Err 111))) ((Ok s) (match (String.slice s 0 1) ((Some sub) (String.scalar-len sub)) ((None) -9))) ((Err e) e))) (export main))"
                 .to_string(),
             vec![a.to_string()],
+        ),
+        // 48 — byp2 BYTES ENTRY PARAM DESTRUCTURED BY A BIN MATCH (the #17bccbd01a borrow-lift value/UAF fence). A
+        //      bare `Bytes` ENTRY param destructured by a runtime bin match `(match b ((bin (u8 x) (u8 y)) …))` —
+        //      the FIRST bin-match-on-a-Bytes-param shape (shapes 21/eob1 pass option<Bytes>; this DESTRUCTURES the
+        //      raw Bytes). #17bccbd01a: `lower_match_bin` wraps the match in a self-let `let s = b in <BinIntRead>`,
+        //      and the escape walk's Core::Let arm recursed into the binding VALUE `b` as a CONSUMING move, so
+        //      param_borrow_aware_escapes mis-reported the Bytes param as escaping -> the entry-param wrapper
+        //      SKIPPED its post-call reclaim -> CDZ0904 decline on wasm (rust already crossed). Fix ALIAS-FORWARDS
+        //      `let s = <target>` so the target escapes iff `s` escapes in the body (byp1's borrow lift: drop_after,
+        //      wrapper reclaims the borrowed cell after the call). This pins the VALUE/UAF side: a mis-lift that
+        //      frees the Bytes param before the bin reads it -> wrong bytes / trap. Arg = a two-byte `b"cc"`
+        //      lowercase literal (exactly 2 bytes so the first arm hits); value = 100*x + y with x,y the two byte
+        //      codes. byp3 (slice) stays a distinct decline (Bytes.slice CONSUMES). Verified rust AGREE
+        //      (b"ab"->9798, b"AZ"->6590); byp2 corpus value 709 for b"\x07\x09".
+        _ => (
+            "(do (def (main (: b Bytes)) (match b ((bin (u8 x) (u8 y)) (+ (* 100 (Int64.of x)) (Int64.of y))) (_ -1))) (export main))"
+                .to_string(),
+            vec![bin_bytes_arg.clone()],
         ),
     };
     ExportParam { source, args }
@@ -6381,13 +6406,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main`.
-        let mut reached = [false; 48];
-        for seed in 0u64..2880 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main`.
+        let mut reached = [false; 49];
+        for seed in 0u64..2940 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(48) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-47 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(49) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-48 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6522,11 +6547,13 @@ mod tests {
                 reached[46] = true; // shape 46 = chdo2 Map.remove-threaded-dead-at-base entry-param `main` (CHAMP reclaim-on-edge #e2f72191e0, Map twin of 41)
             } else if ep.source.contains("(String.slice s 0 1)") {
                 reached[47] = true; // shape 47 = trss1 String.slice-in-a-try-Ok-arm entry-param `main` (node#6-nonlen STRING-VIEW arm #240b64090d)
+            } else if ep.source.contains("(bin (u8 x) (u8 y))") {
+                reached[48] = true; // shape 48 = byp2 Bytes-entry-param bin-match destructure `main` (borrow-lift #17bccbd01a)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all forty-eight export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all forty-nine export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
