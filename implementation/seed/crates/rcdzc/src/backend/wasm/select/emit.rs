@@ -2197,16 +2197,31 @@ pub(super) fn emit(
             // `SetContains`/`SetLen`). Slots: desc at `base`, the owned source at `base+1`; operands float
             // above both. The op leaves `[list]` on the stack; the two drops pop only the stashed handles.
             let set_owned = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned));
+            // CHILD-DUP'd BORROWED source reclaim (GAP-3 RESIDUAL fix; the SetToList twin of the MapToList
+            // recognizers below — see that arm for the full rationale). `set-to-list` BORROWS the set, yet
+            // the shell-reclaim CHILD-DUP'd a BORROWED operand (`set ∈ dup_sites`): a non-RestFrom
+            // `Core::SumPayload` view (the try-materialized `(Ok s) (… (Set.to-list s))` scrutinee) or a
+            // B2/CSE-dup'd `Param`/`LocalRef`. Drop it as the Owned source is dropped — DISJOINT from
+            // `set_owned` (Borrowed → one drop, no double-drop) and LOCKSTEP (drop ⟺ dup).
+            let child_dup_borrowed_view = matches!(
+                core_of(db, set),
+                Core::SumPayload { ref path, .. }
+                    if !matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
+            ) && out.dup_sites.contains(&set);
+            let b2_dup_borrowed_binder =
+                matches!(core_of(db, set), Core::Param { .. } | Core::LocalRef { .. })
+                    && out.dup_sites.contains(&set);
+            let reclaim_source = set_owned || child_dup_borrowed_view || b2_dup_borrowed_binder;
             let desc_slot = base;
             let set_slot = base + 1;
             *high = (*high).max(set_slot + 1);
             scratch_ty.insert(desc_slot, ValType::I32);
-            if set_owned {
+            if reclaim_source {
                 scratch_ty.insert(set_slot, ValType::I32);
             }
             emit(db, set, slots, base + 2, high, scratch_ty, layout, out)?; // [set]
-            if set_owned {
-                out.push(Lir::LocalTee(set_slot)); // [set], set_slot = the owned source (for the later drop)
+            if reclaim_source {
+                out.push(Lir::LocalTee(set_slot)); // [set], set_slot = the source to reclaim (for the later drop)
             }
             out.push(Lir::ConstI32(desc.len() as i32)); // [set, len]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [set, desc-buf]
@@ -2219,9 +2234,9 @@ pub(super) fn emit(
             out.push(Lir::CallImport(OP_SET_TO_LIST)); // [set, desc] → [list] (borrows both)
             out.push(Lir::LocalGet(desc_slot)); // [list, desc]
             out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the borrowed-only descriptor Bytes)
-            if set_owned {
+            if reclaim_source {
                 out.push(Lir::LocalGet(set_slot)); // [list, set]
-                out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the borrowed owned-temporary source set)
+                out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the owned-temporary / child-dup'd borrowed source set)
             }
             Ok(()) // leaves [list]
         }
@@ -2267,16 +2282,37 @@ pub(super) fn emit(
             // (a Param/kept-local map is `Borrowed` → left to its owner). Slots: desc at `base`, owned source
             // at `base+1`; operands float above both.
             let map_owned = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned));
+            // CHILD-DUP'd BORROWED source reclaim (GAP-3 RESIDUAL fix; the import==emit TWIN of v-core-opt's
+            // GAP-3 arm_borrows MapToList relax, missing on the emit side — mirrors the BytesLen/length-op
+            // family recognizers (4) child_dup_borrowed_view + (5) b2_dup_borrowed_binder). `map-to-list`
+            // BORROWS the map, yet the shell-reclaim pass CHILD-DUP'd a BORROWED operand at its
+            // materialization (`map ∈ dup_sites`): a `Core::SumPayload` payload-VIEW (the try-materialized
+            // MatchSum scrutinee — `(Ok m) (… (Map.to-list m))`, non-RestFrom) OR a B2/CSE-dup'd
+            // `Param`/`LocalRef`. to-list never consumes that dup → it is unbalanced → the +1 Ok-path
+            // residual. Drop it exactly as the Owned source is dropped: DISJOINT from `map_owned` (a
+            // view/param is `heap_operand_ownership==Borrowed`, so `map_owned` is false → the single `if`
+            // fires ONE drop, no double-drop), and LOCKSTEP (drop ⟺ dup — fires iff the emit's per-occurrence
+            // child-dup fired). This is the first brick of the family-wide dup-site-borrow-drop seam the
+            // node#6-nonlen keep_scope + nested-Sum lane needs.
+            let child_dup_borrowed_view = matches!(
+                core_of(db, map),
+                Core::SumPayload { ref path, .. }
+                    if !matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
+            ) && out.dup_sites.contains(&map);
+            let b2_dup_borrowed_binder =
+                matches!(core_of(db, map), Core::Param { .. } | Core::LocalRef { .. })
+                    && out.dup_sites.contains(&map);
+            let reclaim_source = map_owned || child_dup_borrowed_view || b2_dup_borrowed_binder;
             let desc_slot = base;
             let map_slot = base + 1;
             *high = (*high).max(map_slot + 1);
             scratch_ty.insert(desc_slot, ValType::I32);
-            if map_owned {
+            if reclaim_source {
                 scratch_ty.insert(map_slot, ValType::I32);
             }
             emit(db, map, slots, base + 2, high, scratch_ty, layout, out)?; // [map]
-            if map_owned {
-                out.push(Lir::LocalTee(map_slot)); // [map], map_slot = the owned source (for the later drop)
+            if reclaim_source {
+                out.push(Lir::LocalTee(map_slot)); // [map], map_slot = the source to reclaim (for the later drop)
             }
             out.push(Lir::ConstI32(desc.len() as i32)); // [map, len]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [map, desc-buf]
@@ -2289,9 +2325,9 @@ pub(super) fn emit(
             out.push(Lir::CallImport(OP_MAP_TO_LIST)); // [map, desc] → [list] (borrows both)
             out.push(Lir::LocalGet(desc_slot)); // [list, desc]
             out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the borrowed-only descriptor Bytes)
-            if map_owned {
+            if reclaim_source {
                 out.push(Lir::LocalGet(map_slot)); // [list, map]
-                out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the borrowed owned-temporary source map)
+                out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the owned-temporary / child-dup'd borrowed source map)
             }
             Ok(()) // leaves [list]
         }
