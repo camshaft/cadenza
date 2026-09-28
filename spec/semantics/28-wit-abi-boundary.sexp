@@ -8898,3 +8898,31 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a WIT flags host-op ARG crosses as a packed bitset from a guest record-of-bools (imposed WIT)"
+  (doc
+    "SHAPE 240 (v-wit-boundary) — a WIT `flags{read,write,execute}` HOST-OP ARGUMENT (import side, imposed
+           wit-world), the IMPORT twin of the export-side flags PARAM (SHAPE 113). The guest models flags as a
+           PRODUCT record-of-bools (operator ruling), so the arg is a `Record{read:Bool, write:Bool,
+           execute:Bool}` whose imposed WIT param is `flags`. Before this it DECLINED (`a record host-arg has no
+           matching WIT record type` — the classifier made HostParam::Record, found no WIT record because the
+           world says flags). Now the NEW additive `HostParam::Flags` PACKS the bools into a `ceil(n/32)`-word
+           bitset: the classifier consults `wit_params[arg_i]` (`flags`) + `host::flags_field_bits` (each bool
+           field's kebab name → its WIT-label bit index, the PACK inverse of `param_field`'s flags-UNPACK), the
+           guest marshals via `select::emit_flags_arg_pack` (per field `arr-get`+`get-bool`, shift into its bit,
+           OR into the word), the component declares a nominal `flags` DEFINED type (build_host_group's
+           flags_params, the enum-like single-leaf path), and serialize flattens to ONE i32 (≤32 labels). run()
+           passes `#record((= read true) (= write false) (= execute true))`; a VALID running component that links
+           against the imposed `flags` world (live-objects=0) is the pin. >32 labels / a non-bool field declines.")
+  (wit-world (world w (import cadenza:platform/probe
+    (member push (func (param m (flags read write execute)) (result (s64)))))))
+  (input (do
+    (effect probe (op push (-> (Record (: read Bool) (: write Bool) (: execute Bool)) Int64)))
+    (def (run) (host (probe) (probe.push #record((= read true) (= write false) (= execute true)))))
+    (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

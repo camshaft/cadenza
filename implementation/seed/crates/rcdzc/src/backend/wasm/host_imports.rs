@@ -515,7 +515,9 @@ pub(super) fn host_op_comp_functype(
             // must be exported, like a record) by the SAME `nominal_type_idx` — an op carries at most one
             // nominal param type this slice (single record OR single enum). Its discriminant crosses as one
             // i32 core slot (serialize.rs).
-            HostParam::Enum(_) => encode::uleb128(nominal_type_idx as u64, &mut param_items),
+            HostParam::Enum(_) | HostParam::Flags { .. } => {
+                encode::uleb128(nominal_type_idx as u64, &mut param_items)
+            }
             // A `list<T>` param references its `(list <elem>)` DEFINED type by the per-param `CRef` the caller
             // computed (`build_host_result_types`), like a spilled result references its type.
             HostParam::List(_) => {
@@ -865,6 +867,15 @@ pub(super) fn build_host_group(
             _ => None,
         })
         .collect();
+    // A WIT `flags` param's labels — a NOMINAL defined type (like enum, a single leaf with no children).
+    let flags_params: Vec<&Vec<String>> = group
+        .iter()
+        .flat_map(|h| &h.params)
+        .filter_map(|p| match p {
+            host::HostParam::Flags { labels, .. } => Some(labels),
+            _ => None,
+        })
+        .collect();
     let variant_params: Vec<
         &Vec<(
             String,
@@ -906,14 +917,15 @@ pub(super) fn build_host_group(
         !record_params.is_empty(),
         !enum_params.is_empty(),
         !variant_params.is_empty(),
+        !flags_params.is_empty(),
     ]
     .iter()
     .filter(|x| **x)
     .count();
     if nominal_kinds > 1 {
         return Err(Reject::unsupported(
-            "a host interface mixing more than one nominal parameter kind (record / enum / bare-variant) is \
-             not supported (one kind per interface)",
+            "a host interface mixing more than one nominal parameter kind (record / enum / bare-variant / \
+             flags) is not supported (one kind per interface)",
         ));
     } else if !record_params.is_empty() {
         let has_str_param = group
@@ -962,6 +974,29 @@ pub(super) fn build_host_group(
                 .any(|p| matches!(p, host::HostParam::Enum(_)))
             {
                 op_nominal[i] = enum_export;
+            }
+        }
+    } else if !flags_params.is_empty() {
+        // A WIT `flags` param: a SINGLE shared `flags` DEFINE (at `base`) + EXPORT (at `base+1`), like enum — a
+        // nominal leaf with no children. Every flags op references it. One distinct flags type per interface.
+        let distinct = flags_params.iter().all(|c| *c == flags_params[0]);
+        if !distinct {
+            return Err(Reject::unsupported(
+                "a host interface with more than one distinct flags parameter type is not supported (one \
+                 flags type per interface)",
+            ));
+        }
+        record_defs.push(crate::backend::wasm::wit_ctype::emit_cdef(
+            &crate::backend::wasm::wit_ctype::CDef::Flags(flags_params[0].clone()),
+        ));
+        let flags_export = base + 1;
+        for (i, hi) in group.iter().enumerate() {
+            if hi
+                .params
+                .iter()
+                .any(|p| matches!(p, host::HostParam::Flags { .. }))
+            {
+                op_nominal[i] = flags_export;
             }
         }
     } else if !variant_params.is_empty() {
@@ -1143,6 +1178,7 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::Bytes
         | host::HostParam::Record(_)
         | host::HostParam::Enum(_)
+        | host::HostParam::Flags { .. }
         | host::HostParam::List(_)
         | host::HostParam::Variant(_)
         | host::HostParam::VariantScalarsMixed(_)

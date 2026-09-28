@@ -64,6 +64,18 @@ pub enum HostParam {
     /// guest's raw disc IS the component enum's canonical discriminant). The edge-direction shape a
     /// `graph.neighbors(node, kind, dir)` op takes (`dir: enum`).
     Enum(Vec<String>),
+    /// A WIT `flags{…}` parameter — a bitset the guest models as a RECORD-of-bools (operator ruling: flags is a
+    /// PRODUCT). Its component valtype is a `flags` DEFINED type (nominal, like [`Enum`](HostParam::Enum), laid
+    /// and exported by `build_host_group`'s flags_params branch), flattening to `ceil(n/32)` `i32` bitset words
+    /// (`wit_ctype::flatten` of `WitType::Flags`). The guest PACKS its bool fields into the word(s):
+    /// `select::emit_flags_arg_pack` reads each bool field (`arr-get` then `get-bool`) and shifts it into the bit
+    /// its label maps to. Carries `field_bits`, the `(guest name-lex slot, flags bit index)` per field, matched by
+    /// NAME to the WIT label order (the inverse of `param_field`'s flags-UNPACK arm), and the kebab `labels`
+    /// (for the `CDef::Flags` component type). Scoped to ≤32 labels (a single `i32` word) this increment.
+    Flags {
+        field_bits: Vec<(u32, u32)>,
+        labels: Vec<String>,
+    },
     /// A `list<T>` (non-`Bytes`) parameter — e.g. `graph.set-edges`'s `targets: list<reducer-id>` =
     /// `list<list<u8>>`. Its component valtype is a `(list <elem>)` DEFINED type (referenced by index, like
     /// [`Bytes`](HostParam::Bytes)'s `(list u8)`); its core form is `(ptr: i32, count: i32)` — the guest
@@ -1092,6 +1104,32 @@ pub fn variant_mixed_join_slots(cases: &[(i32, VariantPayloadKind)]) -> Vec<u8> 
         }
     }
     flat
+}
+
+/// The `(guest name-lex slot, flags bit)` mapping for a record-of-bools arg crossing as a WIT `flags{labels}`
+/// — each record field must be `Bool`, its kebab name must match a WIT label, and there must be exactly
+/// `labels.len()` fields (≤32 this increment, a single i32 word). The PACK inverse of `param_field`'s
+/// flags-UNPACK `field_bits` (same by-NAME matching). `None` if any condition fails (a non-bool field, a
+/// count/name mismatch, or >32 labels) — the classifier then pushes nothing and the boundary guard declines.
+pub(crate) fn flags_field_bits(
+    fields: &std::collections::BTreeMap<crate::resolved::Symbol, Ty>,
+    labels: &[String],
+) -> Option<Vec<(u32, u32)>> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    if labels.len() > 32 || fields.len() != labels.len() {
+        return None;
+    }
+    let label_kebab: Vec<String> = labels.iter().map(|l| kebab_extern_name(l)).collect();
+    let mut field_bits: Vec<(u32, u32)> = Vec::with_capacity(labels.len());
+    for (slot, (fname, fty)) in fields.iter().enumerate() {
+        if !matches!(fty.strip_nominal(), Ty::Bool) {
+            return None;
+        }
+        let fk = kebab_extern_name(fname.name.as_ref());
+        let bit = label_kebab.iter().position(|l| *l == fk)?;
+        field_bits.push((slot as u32, bit as u32));
+    }
+    Some(field_bits)
 }
 
 /// The boundary ABI of a shape-d record FIELD, or `None` if the field has no boundary form yet. Supports a
@@ -2167,6 +2205,34 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     // push nothing, leaving `params` short so the boundary guard (`first_unrepresentable_
                     // host_op`) declines the op (a Bytes/nested field is the d2/d3 slice). A PEER-bound record
                     // still crosses as a `u32` handle (the `_` arm below), not this native record.
+                    // A record-of-bools arg whose imposed WIT param is `flags{…}` crosses as the WIT `flags`
+                    // bitset (the guest models flags as a PRODUCT record-of-bools). Checked BEFORE the generic
+                    // record arm below (whose `WitType::Record` reorder would find no matching record + the emit
+                    // would decline). The guest PACKS its bools into `ceil(n/32)` i32 word(s) by label→bit.
+                    Ty::Record(fields)
+                        if !peer_bound
+                            && matches!(
+                                wit_params.as_ref().and_then(|ps| ps.get(arg_i)),
+                                Some(crate::wit_world::WitType::Flags(_))
+                            ) =>
+                    {
+                        let Some(crate::wit_world::WitType::Flags(labels)) =
+                            wit_params.as_ref().and_then(|ps| ps.get(arg_i))
+                        else {
+                            unreachable!("guarded by the arm")
+                        };
+                        if let Some(field_bits) = flags_field_bits(fields, labels) {
+                            let labels_kebab: Vec<String> = {
+                                use crate::backend::common::export_name::kebab_extern_name;
+                                labels.iter().map(|l| kebab_extern_name(l)).collect()
+                            };
+                            params.push(HostParam::Flags {
+                                field_bits,
+                                labels: labels_kebab,
+                            });
+                        }
+                        // else: not a matching record-of-bools → push nothing → the boundary guard declines.
+                    }
                     Ty::Record(fields) if !peer_bound => {
                         let mut field_abis = Vec::with_capacity(fields.len());
                         let mut all_ok = !fields.is_empty();
