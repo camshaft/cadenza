@@ -374,7 +374,9 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   variant-field>` ARG (173, `emit_option_reg_flatten`'s record branch → `emit_record_arg_marshal`'s variant-field
   arm). REMAINING variant gaps: a multi-payload variant case at the ARG register-flatten position, and a mixed
   int↔float / f32↔f64 single-payload variant (the canonical reinterpret join).
-- **[emit, ARG-side] a COMPOUND (Bytes) single-payload variant host-op ARG — ✅ DONE / TESTED (SHAPE 227).**
+- **[emit, ARG-side] a COMPOUND (Bytes) single-payload variant host-op ARG — ✅ DONE / TESTED (SHAPE 227, 228).**
+  (SHAPE 228 hardens the MULTI-Bytes-case path: `variant{a, b(bytes), c(bytes)}`, `bytes_discs = [1,2]`, exercises
+  the marshal's multi-disc OR fold — SHAPE 227's single Bytes case left it untested.)
   A `variant{nullary…, bytes-case(s)}` bare top-level ARG now crosses via the NEW additive `HostParam::VariantBytes`
   (the scalar `HostParam::Variant` declines a Bytes payload — `AbiValType` can't express `list<u8>`). It mirrors
   the `result<list<u8>, enum>` family: the component `variant` DEFINED type is laid STRUCTURALLY from the declared

@@ -8544,3 +8544,37 @@ cases
   (host-calls (call cadenza:platform/probe.push) (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a BARE variant{a, b(bytes), c(bytes)} with TWO bytes cases as the direct host-op arg emits, loads, and runs"
+  (doc
+    "SHAPE 228 (v-wit-boundary) — a `variant{a, b(list<u8>), c(list<u8>)}` bare TOP-LEVEL host-op ARGUMENT
+           (probe.push) with TWO Bytes-payload cases. Hardens the `HostParam::VariantBytes` path SHAPE 227 landed:
+           SHAPE 227 had a single Bytes case (`bytes_discs = [1]`), so the marshal's multi-disc OR (`is_bytes =
+           OR over bytes_discs of disc == bd`, the `k > 0 → i32.or` fold in `emit_variant_bytes_arg_reg_flatten`)
+           was UNEXERCISED. Here `bytes_discs = [1, 2]`, so the guest must recognize BOTH case discs as Bytes
+           cases and copy the rope for each (a wrong OR — e.g. matching only the first disc — would push `(2, 0, 0)`
+           for the C case and drop its payload). run() performs THREE pushes — `(B b\"hi\")` (disc 1),
+           `(C b\"yo\")` (disc 2), and `A` (nullary, disc 0) — exercising both Bytes discs and the nullary arm; a
+           VALID running component (live-objects=0) is the pin. The declared `variant` DEFINED type carries two
+           `(list u8)` payload cases, laid structurally via `add_wit_type_deduped`.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (list (u8))) (c (list (u8))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Bytes) (C Bytes))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B b"hi")) (probe.push (V.C b"yo")) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
