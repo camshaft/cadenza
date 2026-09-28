@@ -1752,6 +1752,10 @@ fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
             // ARG / a variant record FIELD uses) — pushes `(disc, payload-join)` inline. Checked AFTER option
             // (an option is a Sum but `variant_scalar_payload_cases` excludes the 2-case option shape).
             || variant_scalar_payload_cases(db, e.strip_nominal()).is_some()
+            // a tuple-payload `variant` element crosses via `emit_variant_tuple_arg_reg_flatten` (the twin the
+            // top-level bare variant-tuple ARG / a variant-tuple record FIELD, SHAPE 256, use) — pushes
+            // `(disc, e0, e1, …)` inline. Checked after the scalar-variant arm (it declines a tuple payload).
+            || variant_tuple_payload_case(db, &e.strip_nominal().clone()).is_some()
             // a payload-less `enum` element crosses as one i32 disc (the guest reads the value-heap sum's disc
             // inline via the scalar-unbox path, the SAME as a record enum FIELD). Checked AFTER variant (both
             // are Sums; `enum_cases` requires ALL-nullary, `variant_scalar_payload_cases` requires ≥1 payload).
@@ -2945,6 +2949,15 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                 // is a Sum but `variant_scalar_payload_cases` excludes the 2-case option shape).
                                 field_boundary_abi(db, e)
                                     .expect("variant element crosses by `tuple_arg_crosses`")
+                            } else if variant_tuple_payload_case(db, e).is_some() {
+                                // a tuple-payload `variant` element flattens to `(disc, e0, e1, …)` via
+                                // `emit_variant_tuple_arg_reg_flatten` (the twin the top-level bare variant-tuple
+                                // ARG / a variant-tuple record FIELD, SHAPE 256, use). Its abi is the shared
+                                // `field_boundary_abi` (`RecordFieldAbi::VariantTuple{…}`). Checked after the
+                                // scalar-variant branch (it declines a tuple payload) and before the record else
+                                // (a variant is a Sum, NOT a `Ty::Record`, so the else would panic).
+                                field_boundary_abi(db, e)
+                                    .expect("variant-tuple element crosses by `tuple_arg_crosses`")
                             } else if enum_cases(db, &e.strip_nominal().clone()).is_some() {
                                 // a payload-less `enum` element flattens to one i32 disc (the guest reads the
                                 // value-heap sum's disc inline via the scalar-unbox path). Its abi is the shared

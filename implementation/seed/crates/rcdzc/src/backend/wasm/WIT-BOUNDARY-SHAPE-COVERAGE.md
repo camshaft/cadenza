@@ -408,9 +408,16 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   declaration order, the `tuple_disc` case carrying `(tuple <elem>…)`); serialize flattens `(disc, e0, …)` — the two
   agree. Field reorder to WIT order composes (`reorder_record_fields_to_wit` moves the abi by name). Pinned by a
   `record{v: variant{go, stop(tuple<s32,s64>)}, n: s64}` arg (guest name-lex `n,v` reordered to WIT `v,n`).
+- **[emit] a TUPLE-payload `variant` at a REGISTER tuple ELEMENT position — ✅ DONE / TESTED (SHAPE 257).**
+  `emit_tuple_reg_flatten` now flattens a variant-tuple ELEMENT positionally to `(disc, e0, e1, …)` via
+  `emit_variant_tuple_arg_reg_flatten` (where before it DECLINED, CDZ0903 — the classifier gate rejected it).
+  `tuple_arg_crosses`, the tuple-arg abi-builder (its `else` asserts `Ty::Record` and would PANIC on a variant
+  element — so a variant-tuple branch was required), and the used_ops tuple-element collector all gained the
+  `variant_tuple_payload_case` admission in lockstep. Pinned by a `tuple<variant{go, stop(tuple<s32,s64>)}, s64>` arg.
+  With SHAPE 254–257 the tuple-payload variant now crosses at EVERY reachable ARG position (bare list element, mem
+  product field, register record field, register tuple element).
   REMAINING: a HETEROGENEOUS scalar+tuple mix (per-case dispatch, mem); a Bytes/nested-compound tuple element; a
-  WIT-ordered RECORD payload case (needs WIT threading into `emit_variant_to_mem`); the bare `tuple<variant-tuple, …>`
-  ARG element at a REGISTER position (`emit_tuple_reg_flatten` declines it cleanly — a later slice).
+  WIT-ordered RECORD payload case (needs WIT threading into `emit_variant_to_mem`).
   REMAINING variant gaps: a RECORD compound payload case in a MIXED variant (the TUPLE compound payload
   case in a mixed variant is now ✅ DONE — SHAPE 243, `VariantPayloadKind::Tuple`; the ≥3-payload-case mem join is
   ✅ DONE — SHAPE 242). (The mixed

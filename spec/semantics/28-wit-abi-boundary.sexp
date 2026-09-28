@@ -9510,3 +9510,31 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level tuple<variant{go, stop(tuple<s32,s64>)}, s64> host-op arg crosses (register-flattened variant-tuple ELEMENT)"
+  (doc
+    "SHAPE 257 (v-wit-boundary) — a top-level `tuple<variant{go, stop(tuple<s32,s64>)}, s64>` bare host-op
+           ARGUMENT (probe.push), register-flattened. A tuple-payload `variant` as a TUPLE ELEMENT at a REGISTER
+           position — the last register-position variant-tuple gap (SHAPE 256 closed the RECORD-field position).
+           `emit_tuple_reg_flatten` now flattens the element POSITIONALLY to `(disc:i32, e0, e1)` via
+           `emit_variant_tuple_arg_reg_flatten` (the SAME helper the bare variant-tuple ARG / a variant-tuple
+           record FIELD use) — where before this ELEMENT position DECLINED (CDZ0903). `tuple_arg_crosses` +
+           the tuple-arg abi-builder + the used_ops tuple-element collector gained the `variant_tuple_payload_case`
+           admission in lockstep. A tuple element is purely POSITIONAL → no reorder. The outer tuple flattens to
+           `(v-disc:i32, e0:i32, e1:i64, n:i64)`. run() builds ((Stop((3,7))), 5) and performs probe.push; a VALID
+           running component (live-objects=0) pins the register element round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (variant (go) (stop (tuple (s32) (s64)))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop (Tuple Int32 Int64)))
+      (effect probe (op push (-> (Tuple Sig Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Sig.Stop #tuple(3 7)) 5))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

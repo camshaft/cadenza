@@ -3602,6 +3602,35 @@ pub(super) fn emit_tuple_reg_flatten(
             emit_variant_reg_flatten(db, var_slot, ety, work_base + 1, high, scratch_ty, out)?;
             continue;
         }
+        // A TUPLE-payload `variant` element: read its handle (`arr-get i`, borrows the tuple) → flatten
+        // POSITIONALLY to `(disc, e0, e1, …)` via `emit_variant_tuple_arg_reg_flatten` — the SAME helper the
+        // top-level bare variant-tuple ARG / a record variant-tuple FIELD (SHAPE 256) use. Checked after the
+        // scalar-variant arm (that arm declines a tuple payload); no cursor (all-scalar tuple elements).
+        if let Some((tuple_disc, _)) =
+            crate::backend::wasm::host::variant_tuple_payload_case(db, ety)
+        {
+            let tuple_ty = variant_payload_ty_at(db, ety, tuple_disc as u32).ok_or_else(|| {
+                Reject::decline("a tuple variant-tuple element payload type could not be resolved")
+            })?;
+            let var_slot = work_base;
+            scratch_ty.insert(var_slot, ValType::I32);
+            *high = (*high).max(work_base + 1);
+            out.push(Lir::LocalGet(tup_slot));
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::CallImport(OP_ARR_GET)); // [element variant handle] (borrows the tuple)
+            out.push(Lir::LocalSet(var_slot));
+            emit_variant_tuple_arg_reg_flatten(
+                db,
+                var_slot,
+                tuple_disc,
+                &tuple_ty,
+                work_base + 1,
+                high,
+                scratch_ty,
+                out,
+            )?;
+            continue;
+        }
         // A NESTED tuple element (`tuple<…, tuple<…>, …>`): read its handle (`arr-get i`, borrows the outer
         // tuple) and RECURSE — its elements flatten POSITIONALLY inline onto the operand stack, matching
         // serialize's `RecordFieldAbi::Tuple` recursion + the component `tuple<tuple<…>>` type. No capture/disc:
