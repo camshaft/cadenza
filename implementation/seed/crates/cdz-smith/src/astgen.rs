@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(42);
+    let shape = c.variant(43);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -832,8 +832,27 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      -> hollow); DEPTH fixed at 3 (a k-derived depth would infinite-loop on the NEGATIVE args the range
         //      includes). Value = 3 for EVERY arg (three `+1`s, Set dead at base) -> UAF-observable (a bad reclaim
         //      traps one backend), arg-independent by design. Arg = a. Verified rust AGREE (5->3, 0->3, -4->3).
-        _ => (
+        41 => (
             "(do (def (go (: s (Set Int64)) (: n Int64)) (if (= n 0) 0 (+ 1 (go (Set.remove s n) (- n 1))))) (def (main (: k Int64)) (go #set(k (+ k 1) (+ k 2)) 3)) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 42 — trae1 BARE-RETURNED `?`-BOUND HEAP-RESULT entry param (the #297538a0df (a) alias-husk equalize
+        //      value/UAF fence — the LAST node#6-nonlen holdout). `mk` returns the `?`-bound value BARE:
+        //      `(do (def ir (try rr)) ir)` where `rr : (Result (Result Int64 Int64) Int64)` — the `?`-payload is
+        //      ITSELF a Result (a compound/heap payload). This lowers to a DIVERGENT try-desugar MatchSum over
+        //      `rr`: the SUCCESS (Ok) arm is a bare `SumPayload` VIEW of rr's payload (Borrowed), the FAILURE
+        //      (Err) arm a fresh payload-carrying `SumNew` (Owned). The arm-blind ownership join read Borrowed so
+        //      the scrutinee-shell reclaim was SUPPRESSED and the owned Err husk LEAKED on the failure
+        //      short-circuit. divergent_alias_arm_dupable + the 3-point emit equalize stack-dup the success view
+        //      (join reads Owned) so the shell deep-drop nets the view 2->1 — reclaims the husk WITHOUT freeing the
+        //      returned view. The PAIRING INVARIANT (dup <=> reclaim-admit <=> stashed_slot) is the UAF guard: a
+        //      mis-paired dup/drop frees the returned view -> trap / wrong value. Distinct from shapes 34-38 (`?`
+        //      POSITIONS with scalar payloads) + 39-41 (CHAMP-in-try): here the `?`-payload is a nested Result
+        //      RETURNED BARE. k>0 -> mk returns the inner `(Ok 7)` -> v=7; k<=0 -> Err 111 short-circuits. Arg = a.
+        //      Verified rust AGREE (1->7, 0->111, 9->7).
+        _ => (
+            "(do (def (mk (: rr (Result (Result Int64 Int64) Int64))) (: (do (def ir (try rr)) ir) (Result Int64 Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok (Ok 7)) (Err 111))) ((Ok v) v) ((Err e) e))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6274,13 +6293,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main`.
-        let mut reached = [false; 42];
-        for seed in 0u64..2520 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main`.
+        let mut reached = [false; 43];
+        for seed in 0u64..2580 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(42) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-41 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(43) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-42 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6403,11 +6422,13 @@ mod tests {
                 reached[40] = true; // shape 40 = trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` (node#6-nonlen #240b64090d)
             } else if ep.source.contains("(Set.remove s n)") {
                 reached[41] = true; // shape 41 = chdo1 Set.remove-threaded-dead-at-base entry-param `main` (CHAMP reclaim-on-edge #e2f72191e0)
+            } else if ep.source.contains("(def ir (try rr))") {
+                reached[42] = true; // shape 42 = trae1 bare-returned `?`-bound heap-Result entry-param `main` ((a) alias-husk equalize #297538a0df)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all forty-two export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all forty-three export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
