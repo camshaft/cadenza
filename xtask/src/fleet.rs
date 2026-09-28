@@ -14540,32 +14540,58 @@ fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64) {
         return;
     }
     let n = targets.len();
+    let (mut restarted, mut relaunch_failed, mut kill_failed) = (0usize, 0usize, 0usize);
+    let mut dark: Vec<&str> = Vec::new();
     for (i, name) in targets.iter().enumerate() {
         if !apply {
             println!("  [{}/{n}] DRY-RUN would restart '{name}'", i + 1);
             continue;
         }
         match restart_window(fleet, &session, name, None) {
-            RestartOutcome::Restarted => println!("  [{}/{n}] ⟳ restarted '{name}'", i + 1),
-            RestartOutcome::RelaunchFailed => eprintln!(
-                "  [{}/{n}] ‼ '{name}' RELAUNCH FAILED after kill — window may be dark; `fleet up` re-creates it",
-                i + 1
-            ),
-            RestartOutcome::KillFailed => eprintln!(
-                "  [{}/{n}] ! '{name}' kill failed — left as-is; re-run to retry",
-                i + 1
-            ),
+            RestartOutcome::Restarted => {
+                restarted += 1;
+                println!("  [{}/{n}] ⟳ restarted '{name}'", i + 1);
+            }
+            RestartOutcome::RelaunchFailed => {
+                relaunch_failed += 1;
+                dark.push(name);
+                eprintln!(
+                    "  [{}/{n}] ‼ '{name}' RELAUNCH FAILED after kill — window may be dark; `fleet up` re-creates it",
+                    i + 1
+                );
+            }
+            RestartOutcome::KillFailed => {
+                kill_failed += 1;
+                eprintln!(
+                    "  [{}/{n}] ! '{name}' kill failed — left as-is; re-run to retry",
+                    i + 1
+                );
+            }
         }
         // Pause BETWEEN restarts (never after the last) so N Claude relaunches don't thundering-herd the API.
         if i + 1 < n {
             std::thread::sleep(std::time::Duration::from_secs(pause_secs));
         }
     }
-    if apply {
-        println!("fleet restart-all: done — {n} window(s) restarted.");
-    } else {
+    if !apply {
         println!(
             "fleet restart-all: preview only — {n} window(s) WOULD restart; re-run with --apply."
+        );
+        return;
+    }
+    // At-a-glance outcome tally so a 30-window run's failures aren't buried in the per-window stderr.
+    println!(
+        "fleet restart-all: done — {restarted}/{n} restarted, {relaunch_failed} relaunch-failed, {kill_failed} kill-failed."
+    );
+    if !dark.is_empty() {
+        eprintln!(
+            "  ⚠ {relaunch_failed} window(s) are DARK (relaunch failed after kill): {} — run `cargo xtask fleet up` to re-create them.",
+            dark.join(", ")
+        );
+    }
+    if kill_failed > 0 {
+        eprintln!(
+            "  ⚠ {kill_failed} window(s) had a kill error and were left as-is — re-run `cargo xtask fleet restart-all --apply` to retry them."
         );
     }
 }
