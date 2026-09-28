@@ -444,12 +444,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   the classifier nested-option arm + `emit_option_reg_flatten` + `collect_used_ops` (the bytes inner needs
   `bytes-len`/`bytes-get` declared — its condition already admitted bytes via the I32 handle but the body only did
   `get_op_ty`, so the rope-copy `CallImport` was u32::MAX / CDZ0910) + the emit.rs cursor pre-scan. A `list<T>`
-  inner (`option<option<list<T>>>`, TOP-LEVEL arg) is now DONE too — SHAPE 219: bytes and list inners are
-  structurally identical (both flatten the inner option to the 3-slot `(inner-disc, ptr, len/count)`), so the same
-  four sites generalize (`Bytes | List(_)` takes the 3-slot capture; a list inner declares `vec-len`/`vec-get` +
-  element ops via `collect_list_elem_ops`). REMAINING: a `record`/`tuple` inner payload
-  (`option<option<record/tuple>>`); the nested-option at a record-FIELD / tuple-ELEMENT with a Bytes/list inner
-  (only the TOP-LEVEL arg is exercised); and `list<option<option>>` (the `emit_option_to_mem` in-mem writer has no
+  inner (`option<option<list<T>>>`, TOP-LEVEL arg) is now DONE too — SHAPE 219. The ENTIRE top-level nested-option
+  family — a `tuple` (SHAPE 220) and `record` (SHAPE 221) inner too — is now DONE via a GENERIC flatten (#9933): the
+  nested-option branch derives `slot_vts = flatten_record_field_abi(field_boundary_abi(inner-option))` (reproducing
+  scalar 2-slot / bytes+list 3-slot and handling tuple/record variable-width uniformly), `option_arg_crosses` + the
+  classifier + `collect_used_ops` key off the single `field_boundary_abi(inner-option).is_some()` gate, and the
+  emit.rs cursor pre-scan reserves iff the inner abi `record_field_abi_needs_memory` (so an all-scalar tuple/record
+  inner needs none). REMAINING: the nested-option at a record-FIELD / tuple-ELEMENT with a non-scalar inner (only
+  the TOP-LEVEL arg is exercised; `emit_record_arg_marshal`/`emit_tuple_reg_flatten` have their OWN inline
+  option-field arms, NOT delegating to `emit_option_reg_flatten`); and `list<option<option>>` (the `emit_option_to_mem` in-mem writer has no
   nested-option arm).
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
