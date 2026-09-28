@@ -1874,10 +1874,10 @@
   (input
     (do
       (def (mk (: r (Result Int64 Int64)))
-        (: (do (def x (try r)) (Ok (tuple x #set(x)))) (Result (Tuple Int64 (Set Int64)) Int64)))
+        (: (do (def x (try r)) (Ok #tuple(x #set(x)))) (Result (Tuple Int64 (Set Int64)) Int64)))
       (def (main (: k Int64))
         (match (mk (if (> k 0) (Ok 5) (Err 111)))
-          ((Ok t) (match t ((tuple a s) (+ a (Set.len s)))))
+          ((Ok t) (match t (#tuple(a s) (+ a (Set.len s)))))
           ((Err e) e)))
       (export main)))
   (call main (: 0 Int64))
