@@ -2113,16 +2113,17 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                 out.push(Lir::LocalGet(var_slot));
                 out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [List handle]
                 out.push(Lir::LocalSet(rope)); // reuse the `rope` i32 scratch as the list-handle slot
+                // Allocate this arm's sub-marshal scratch from the RUNNING high-water (`*high`), NOT a fixed
+                // `pay + 4`: the Tuple arm's element temps ALSO start at `pay + 4`, so a fixed base makes an
+                // arm's local index collide with the other arm's — and the two arms assign DIFFERENT ValTypes
+                // to that shared index (this arm's i32 loop counter vs a tuple case's i64 s64-element temp).
+                // Because `scratch_ty` is ONE type map for the whole function, the shared index gets a SINGLE
+                // declared type and the other arm's use of it becomes an i32-into-i64 (or vice-versa) store —
+                // invalid wasm (CDZ0910). Bumping each arm off `*high` keeps every arm's scratch DISJOINT, so
+                // no index carries two types; the coalesce pass compacts the now-non-interfering slots after.
+                let sub_base = *high;
                 emit_list_arg_marshal(
-                    db,
-                    elem,
-                    None,
-                    rope,
-                    cursor,
-                    pay + 4, // past this emit's own scratch (disc_out..pos = work_base..pay+3)
-                    high,
-                    scratch_ty,
-                    out,
+                    db, elem, None, rope, cursor, sub_base, high, scratch_ty, out,
                 )?; // leaves [outer-ptr, count]
                 out.push(Lir::LocalSet(blen)); // count (top of stack)
                 // slot 0 = ptr, extended to i64 iff slot 0 joined wide.
@@ -2162,8 +2163,13 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                     })
                     .collect::<Result<_, _>>()?;
                 let cnt = nat_vts.len() as u32;
-                let tup_slot = pay + 4;
-                let temp_base = pay + 5;
+                // Bump this arm's scratch off the RUNNING high-water (`*high`), NOT a fixed `pay + 4`, so it is
+                // DISJOINT from the List arm's sub-marshal scratch (which also started at `pay + 4`). A shared
+                // index would carry two ValTypes across the two arms (a tuple i64 element temp vs the list's
+                // i32 loop counter) — one declared type → an invalid store in the other arm (CDZ0910). See the
+                // List arm's note; the coalesce pass compacts the disjoint ranges afterward.
+                let tup_slot = *high;
+                let temp_base = *high + 1;
                 scratch_ty.insert(tup_slot, ValType::I32);
                 for (k, vt) in nat_vts.iter().enumerate() {
                     scratch_ty.insert(temp_base + k as u32, *vt);
