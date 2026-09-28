@@ -1,9 +1,41 @@
 # DESIGN: fleet ↔ task-board bridge (auto-register agents + track progress on tasks)
 
-Status: **scoping (P0)** — operator-directed 2026-09-27 (Slack seq-1294, routed by concierge as an `assign`).
-Owner: `v-fleet-tooling` (owns `fleet.rs` + the registry + `fleet add`/`fleet up`). Nothing is built until the
-Open Questions below get an operator steer (the assignment says "SCOPE it first, then build incrementally,
-coordinate design questions through the concierge").
+Status: **⛔ BLOCKED (2026-09-28)** — operator-directed 2026-09-27 (Slack seq-1294). The operator chose the
+prompt-driven **option (D)** (agents self-register via their OWN in-session MCP after a fleet restart), and my
+side shipped: the charter task-board section (#9919) + the `fleet restart-all` verb (#9922/#9949/#9976). Then
+the board endpoint gained an **OAuth + host-allowlist gate** (verified 2026-09-28, v-fleet-tooling + concierge)
+that makes option (D) **infeasible for unattended agents** — see the STATUS UPDATE section. The rollout is HELD
+pending an operator fix to the board's auth/allowlist + a possible architecture pivot (D → A or B).
+Owner: `v-fleet-tooling` (owns `fleet.rs` + the registry + `fleet add`/`fleet up`).
+
+## STATUS UPDATE 2026-09-28 — ⛔ board gained an OAuth + host-allowlist gate → option (D) infeasible
+
+The operator's option-(D) decision (agents self-register via their own in-session board MCP) was made while the
+board endpoint was OPEN. It has since been GATED, which invalidates (D) for an UNATTENDED fleet:
+
+- **Verified (v-fleet-tooling read-only re-probe + concierge in-session + host access):** `GET /health` = 200,
+  but `POST /board/mcp` = **403 "Forbidden: Host header is not allowed"** for every Host value
+  (127.0.0.1/localhost/green-machine.camshaft.dev). AND concierge's own CONNECTED in-session board client now
+  exposes only `authenticate` / `complete_authentication` — `register_agent`/`list_projects`/`create_project`
+  report "installed but requires authentication" and want an OAuth flow. So it is NOT a curl-only artifact: the
+  full toolset is gated behind OAuth for a connected client too.
+- **Implication:** a fresh agent after `fleet restart-all` would hit the same gate and could NOT self-register
+  without completing an interactive OAuth flow **per session** — which is **unattended-impossible** for ~30
+  headless agents. So option (D) is dead UNLESS the board fix removes the per-session interactive auth (e.g. a
+  service token or a shared/long-lived Access session the agents' MCP clients inherit).
+- **Architecture consequence (the pivot if OAuth stays interactive):** revert toward the earlier options —
+  **(A)** a small `fleet.rs`-direct MCP-JSON-RPC client authenticating with a STORED service/Access token
+  (agents self-serve via `fleet task …`, one token provisioned once, no per-session OAuth), or **(B)** the
+  concierge as a single board writer using the operator's authenticated session. (A) is still the cleanest IF a
+  non-interactive token can be minted for the board; (B) needs no token plumbing but centralizes on concierge.
+- **HELD:** neither concierge nor I will run `fleet restart-all --apply` — a full restart would bounce 30
+  agents into a broken/auth-gated connect for zero gain. Concierge surfaced the board-auth fix to the operator
+  (add 127.0.0.1 to allowed-hosts, and/or provision a non-interactive token, and/or change the config url).
+  **Awaiting the operator's board fix + a steer on whether (D) survives or we pivot to (A)/(B).** The board is
+  a NON-load-bearing tracking mirror (the inbox stays the transport), so fleet ticks are unaffected meanwhile.
+
+The Open Questions + phased plan below stand, re-scoped by this gate: P1 (get agents onto the board) is blocked
+on the auth fix; the coexist model (Q2) and granularity (Q3) are unchanged.
 
 ## Operator ask (verbatim, seq-1294)
 
