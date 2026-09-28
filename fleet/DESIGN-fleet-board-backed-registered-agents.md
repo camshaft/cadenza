@@ -7,6 +7,12 @@ Sibling designs this INTERSECTS: `DESIGN-fleet-taskboard-bridge.md` (auto-regist
 and `DESIGN-fleet-extraction-standalone-multirepo.md` (decentralized per-repo rosters) — see
 "Intersection + the competing source-of-truth models" below; this doc must be reconciled with both.
 
+> **UNIFIED IN `DESIGN-fleet-per-agent-workspaces.md` (2026-09-28).** The operator confirmed the
+> end-state: the board is the registry (this doc's direction wins over the extraction doc's per-repo
+> rosters), and agents live in per-agent workspace directories holding a worktree per repo off a shared
+> bare-mirror store. The open "competing source-of-truth models" decision below is RESOLVED there. This
+> doc still owns the board registry surface (metadata bag / `update_agent` / task #82, charter fetch).
+
 ## Operator directive (verbatim, via concierge)
 
 > "can you spin up a new agent v-task-board? and it should have access to the task-board mcp server and

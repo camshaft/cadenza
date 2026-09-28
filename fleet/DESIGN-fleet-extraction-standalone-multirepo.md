@@ -4,6 +4,13 @@ Status: **greenlit to design-doc stage** (operator, 2026-09-05); actual repo-cre
 **gated on operator approval of THIS doc + a repo name**. Owner: `v-fleet-tooling`. Nothing is created or
 moved until approval.
 
+> **REFINED BY `DESIGN-fleet-per-agent-workspaces.md` (2026-09-28).** The unifying doc adopts this doc's
+> `~/.fleet` + standalone-binary + core-vs-adapter rulings, but SUPERSEDES the "Decentralized per-repo
+> rosters" model below: the operator picked the **task board** as the declared registry (identity/
+> charter/metadata incl. a `repos` list), not per-repo checked-in `fleet.toml` files. The worktree model
+> here also generalizes to a per-agent directory holding a worktree per repo off a shared bare-mirror
+> store. Read the umbrella doc for the reconciled end-state.
+
 ## Motivation
 
 The fleet is embedded in cadenza but has organically become general-purpose orchestration (messaging,
