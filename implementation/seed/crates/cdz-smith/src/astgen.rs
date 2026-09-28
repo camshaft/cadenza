@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(44);
+    let shape = c.variant(45);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -868,8 +868,28 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      set-rest PATTERN `(.. r)`, nested). n=5 -> {5,10,20}, r={5,20}, r2={5}: 10*len + contains = 11;
         //      n=20 -> dedup {10,20}, r={20}, r2={}: 0; n=10 -> {10,20}, r={20}, r2={}: 0; else -> 11. Arg = a.
         //      Verified rust AGREE (5->11, 20->0, 7->11, 0->11); wasm PASS (corpus srm2).
-        _ => (
+        43 => (
             "(do (def (main (: n Int64)) (match #set(n 10 20) (#set(10 (.. r)) (match r (#set(20 (.. r2)) (+ (* (Set.len r2) 10) (if (Set.contains r2 n) 1 0))) (_ -2))) (_ -1))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 44 — trnt1 CHAINED DOUBLE-`?` (do-def) entry param (the #a1e26895c3 unified chained-`?` shell reclaim
+        //      value/UAF fence — the LAST try-operator form, S631's `not-fuzzable` holdout, now wired trnt 2->0).
+        //      `mk` chains TWO `?`s via a do-def: `(do (def a (try rr)) (Ok (try a)))` where
+        //      `rr : (Result (Result Int64 Int64) Int64)`. The FIRST `(try rr)` extracts `a` (the inner Result),
+        //      which ESCAPES into the SECOND `(try a)` and is re-wrapped `(Ok …)`. Pre-fix NEITHER rr's outer shell
+        //      NOR `a` was reclaimed (trnt leaked 2). #a1e26895c3 wired TWO lockstep dup-backed reclaims:
+        //      payload_escapes_to_consumer_dupable reclaims rr's outer shell (node1); bare_alias_scrutinee_dupable
+        //      reclaims the nested `(try a)` scrutinee shell (node0, `a` = a bare-alias SumPayload view dup-owned by
+        //      the producing side). The PAIRING INVARIANT (dup rc1->2 -> cascade 2->1 -> reclaim 1->0, balanced;
+        //      dup_sites membership PROVES the dup fired) is the UAF guard — a mis-paired dup/drop double-frees `a`
+        //      or rr's payload. Distinct from shape 42 (trae1 = SINGLE `?` bare-returned, alias-husk only): here the
+        //      extracted `a` is itself `?`-unwrapped (CHAINED), exercising BOTH reclaim nodes. NB the COMPACT
+        //      `(Ok (try (try rr)))` still DECLINES (inner-first desugar not enabled) — the do-def form is the
+        //      compilable one. k>1 -> (Ok (Ok 7)) -> 7; k==1 -> (Ok (Err 222)) -> 222 (inner-`?` short-circuits);
+        //      k<=0 -> (Err 111) -> 111 (outer-`?` short-circuits). Arg = a. Verified rust AGREE (2->7, 1->222, 0->111).
+        _ => (
+            "(do (def (mk (: rr (Result (Result Int64 Int64) Int64))) (: (do (def a (try rr)) (Ok (try a))) (Result Int64 Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (if (> k 1) (Ok (Ok 7)) (Ok (Err 222))) (Err 111))) ((Ok v) v) ((Err e) e))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6310,13 +6330,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main`.
-        let mut reached = [false; 44];
-        for seed in 0u64..2640 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main`.
+        let mut reached = [false; 45];
+        for seed in 0u64..2700 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(44) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-43 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(45) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-44 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6443,11 +6463,13 @@ mod tests {
                 reached[42] = true; // shape 42 = trae1 bare-returned `?`-bound heap-Result entry-param `main` ((a) alias-husk equalize #297538a0df)
             } else if ep.source.contains("(#set(10 (.. r))") {
                 reached[43] = true; // shape 43 = srm2 nested set-rest re-match entry-param `main` (materialized set-rest residual #9962)
+            } else if ep.source.contains("(Ok (try a))") {
+                reached[44] = true; // shape 44 = trnt1 chained double-`?` do-def entry-param `main` (unified chained-? shell reclaim #a1e26895c3)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all forty-four export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all forty-five export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
