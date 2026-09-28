@@ -9703,3 +9703,31 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level option<record{v: variant{go, stop(tuple<s32,s64>)}, n: s64}> host-op arg crosses on the Some arm"
+  (doc
+    "SHAPE 263 (v-wit-boundary) — a top-level `option<record{ v: variant{go, stop(tuple<s32,s64>)}, n: s64 }>`
+           bare host-op ARGUMENT (probe.push), the Some arm. COMPOSES the option<record> arg (SHAPE 173's shape)
+           with a TUPLE-payload variant FIELD (SHAPE 256's register variant-tuple record-field arm) — a deeper
+           nesting than SHAPE 173's scalar-payload variant field. `is_boundary_record` admits the payload record
+           (its variant-tuple field crosses via `field_boundary_abi`'s VariantTuple arm); `emit_option_reg_flatten`'s
+           record branch recurses `emit_record_arg_marshal`, whose VariantTuple field arm flattens the variant to
+           `(v-disc, e0, e1)` — so the option flattens POSITIONALLY to `(opt-disc, v-disc, e0:i32, e1:i64, n:i64)`.
+           Reachable by composition (no new code — pins the deeper-nesting round-trip per the operator add-a-case-
+           even-if-it-passes directive). run() builds Some({ v: Stop((3,7)), n: 5 }) and performs probe.push; a
+           VALID component that runs (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= v (variant (go) (stop (tuple (s32) (s64))))) (= n (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop (Tuple Int32 Int64)))
+      (effect probe (op push (-> (Option (Record (: v Sig) (: n Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= v (Sig.Stop #tuple(3 7))) (= n 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
