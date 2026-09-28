@@ -8926,3 +8926,41 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a BARE MIXED variant{a, b(s64), c(list<s64>)} mixing a scalar and a LIST case as a host-op arg (imposed WIT)"
+  (doc
+    "SHAPE 241 (v-wit-boundary) — a `variant{a, b(s64), c(list<s64>)}` passed BARE as the TOP-LEVEL host-op
+           ARGUMENT (probe.push), the MIXED (heterogeneous) tagged-union that mixes a SCALAR payload case (b: s64)
+           with a LIST payload case (c: list<s64>) — the list-of-scalar twin of SHAPE 232's bytes case. Both a
+           Bytes case and a list case marshal into `mem` and flatten to the SAME two i32 slots `(ptr, len|count)`,
+           so this rides the SAME `HostParam::VariantMixed` join as SHAPE 232: b's `[i64]` joined with c's `[i32
+           ptr, i32 count]` gives slot0=`join(i64,i32)=i64`, slot1=`i32` (`host::variant_mixed_join_slots`,
+           matching `wit_ctype::flatten_variant`), so the core flatten is `(disc:i32, i64, i32)`.
+           `emit_variant_mixed_arg_reg_flatten` DISPATCHES per case (a nested `if disc==d … else …` chain): b →
+           unbox s64 into slot0 (i64), slot1=0; c → marshal the `list<s64>` into `mem` as an inline element array
+           via `emit_list_arg_marshal` (which advances the cursor), slot0 = outer-ptr EXTENDED to i64, slot1 =
+           count; a (nullary) → zero both slots. run() performs THREE pushes — `(B 42)` the scalar case,
+           `(C #list(1 2 3))` the list case, `A` the nullary case — exercising ALL THREE arms; a VALID running
+           component that links against the imposed WIT world (live-objects=0) is the pin. This closes the mixed
+           variant's list-payload gap (previously the mixed detector required a Bytes case; a list case declined).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (s64)) (c (list (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C (List Int64)))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B 42)) (probe.push (V.C #list(1 2 3))) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
