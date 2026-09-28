@@ -576,7 +576,8 @@ pub(super) fn host_op_comp_functype(
             // (like the ARG-side records); the `CRef` resolves to its EXPORTED index.
             HostParam::VariantBytes(_)
             | HostParam::VariantList(_)
-            | HostParam::VariantTuple(..) => {
+            | HostParam::VariantTuple(..)
+            | HostParam::VariantRecord(..) => {
                 let cref = list_param_crefs
                     .get(i)
                     .cloned()
@@ -714,6 +715,7 @@ pub(super) fn build_host_result_types(
                     | host::HostParam::VariantBytes(_)
                     | host::HostParam::VariantList(_)
                     | host::HostParam::VariantTuple(..)
+                    | host::HostParam::VariantRecord(..)
             ) && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
             {
                 per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
@@ -1137,6 +1139,7 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::VariantBytes(_)
         | host::HostParam::VariantList(_)
         | host::HostParam::VariantTuple(..)
+        | host::HostParam::VariantRecord(..)
         | host::HostParam::Option(_)
         | host::HostParam::Tuple(_)
         | host::HostParam::Result(_)

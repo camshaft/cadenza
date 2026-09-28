@@ -1542,6 +1542,36 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_DROP);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
+                    // A top-level `variant{nullary…, one record-of-scalars case}` arg is decomposed by
+                    // `emit_variant_record_arg_reg_flatten`: `sum-disc` (the variant disc), and on the record case
+                    // `sum-payload` + `arr-get` per field + each scalar field's unbox op (via
+                    // `emit_record_arg_marshal`). Declare them (else the marshal's `CallImport` resolves to
+                    // u32::MAX → an invalid module), then descend. Checked BEFORE the `_` fallthrough and disjoint
+                    // from the scalar/bytes/list/tuple variant arms above.
+                    at if !peer_bound
+                        && crate::backend::wasm::host::variant_record_payload_case(db, &at)
+                            .is_some() =>
+                    {
+                        out.insert(OP_SUM_DISC);
+                        out.insert(OP_SUM_PAYLOAD);
+                        out.insert(OP_ARR_GET);
+                        // Each all-scalar record field's unbox op.
+                        if let Some((record_disc, _)) =
+                            crate::backend::wasm::host::variant_record_payload_case(db, &at)
+                            && let Some(record_ty) =
+                                variant_payload_ty_at(db, &at, record_disc as u32)
+                            && let Ty::Record(fields) = record_ty.strip_nominal()
+                        {
+                            let ftys: Vec<Ty> = fields.values().cloned().collect();
+                            for fty in &ftys {
+                                if let Ok(Some(read)) = get_op_ty(db, fty) {
+                                    out.insert(read);
+                                }
+                            }
+                        }
+                        out.insert(OP_DROP);
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     // A top-level `result<list<u8>, enum>` arg is decomposed by `emit_result_arg_reg_flatten`:
                     // `sum-disc` (the result disc), and on the Ok arm `sum-payload` + `bytes-len`/`bytes-get`
                     // (the payload rope copy into `mem`) / on the Err arm `sum-payload` + `sum-disc` (the err
