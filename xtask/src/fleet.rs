@@ -539,6 +539,22 @@ pub enum FleetCmd {
         #[arg(long)]
         crons_only: bool,
     },
+    /// ROLLING-restart every LIVE worker/vertical window so each session picks up a new SESSION-START config
+    /// (an added MCP server like the task-board, or a refreshed charter) — MCP servers load at session start
+    /// and don't hot-reload, so a running session predating a config change needs a relaunch. Restarts one
+    /// window at a time via the same kill+`window.sh` relaunch the watchdog uses (durable state persists),
+    /// pausing between so N relaunches don't thundering-herd. SKIPS the human-attended `design` windows, the
+    /// `concierge`, `pr-sync`, and any non-active/windowless agent (they pick the config up when next
+    /// launched). DEFAULT is a DRY-RUN preview (prints the exact plan, touches nothing); pass `--apply` to
+    /// actually restart. Run the preview first.
+    RestartAll {
+        /// Actually restart. Default (omitted) = DRY-RUN preview only.
+        #[arg(long)]
+        apply: bool,
+        /// Seconds to pause between window restarts (so N Claude relaunches don't hit the API at once).
+        #[arg(long, default_value_t = 15)]
+        pause_secs: u64,
+    },
     /// Stop every agent (mark `stopped`, drop each a stop-file the loop checks) but LEAVE the tmux
     /// windows open, so their scrollback survives for inspection.
     Down,
@@ -1525,6 +1541,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
     let fleet = Fleet::new(paths);
     match cmd {
         FleetCmd::Up { crons_only } => up(&fleet, crons_only),
+        FleetCmd::RestartAll { apply, pause_secs } => restart_all(&fleet, apply, pause_secs),
         FleetCmd::Down => down(&fleet),
         FleetCmd::Status => status(&fleet),
         FleetCmd::Hub => hub(&fleet),
@@ -14450,6 +14467,100 @@ fn restart_window(
     }
 }
 
+/// Which agents `fleet restart-all` should ROLLING-restart to pick up a new session-start config (the
+/// task-board MCP + the refreshed charter): ACTIVE agents WITH a live tmux window, EXCLUDING (a) the
+/// terminal-interactive `design` windows (a human may be typing — never bounce those, see
+/// [`role_is_terminal_interactive`]), (b) the `concierge` (already restarted post-config, and bouncing the
+/// orchestrator mid-run is needless risk), and (c) `pr-sync` (stopped). A not-active / windowless / excluded
+/// agent needs no restart — it picks the new session-start config up the next time it is launched.
+/// Deterministic sorted+deduped order so a `--dry-run` preview matches the real run and a partial run is
+/// resumable. Pure so the selection is unit-tested off tmux.
+fn restart_all_targets(agents: &[Agent], live_windows: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = agents
+        .iter()
+        .filter(|a| a.status == "active")
+        .filter(|a| !role_is_terminal_interactive(&a.role))
+        .filter(|a| a.role != "concierge" && a.name != "concierge")
+        .filter(|a| a.name != "pr-sync")
+        .filter(|a| live_windows.iter().any(|w| w == &a.name))
+        .map(|a| a.name.clone())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Rolling-restart every live worker/vertical window (see the `RestartAll` CLI doc + [`restart_all_targets`]).
+/// DEFAULT is a dry-run preview; `apply` actually restarts. Server-direct: resolves the session from
+/// `$CDZ_FLEET_SESSION`, else the current tmux session, else `main`.
+fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64) {
+    let session = std::env::var("CDZ_FLEET_SESSION")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| in_tmux().then(tmux_current_session))
+        .unwrap_or_else(|| "main".to_string());
+    let live_windows = tmux_windows(&session);
+    let reg = fleet.load();
+    let targets = restart_all_targets(&reg.agents, &live_windows);
+    // Surface what is SKIPPED-though-live (interactive/concierge/pr-sync) so the preview is self-explaining.
+    let skipped: Vec<String> = reg
+        .agents
+        .iter()
+        .filter(|a| a.status == "active" && live_windows.iter().any(|w| w == &a.name))
+        .filter(|a| !targets.contains(&a.name))
+        .map(|a| format!("{} ({})", a.name, a.role))
+        .collect();
+    println!(
+        "fleet restart-all: session '{session}' — {} live target(s), {} skipped, pause {pause_secs}s{}",
+        targets.len(),
+        skipped.len(),
+        if apply {
+            ""
+        } else {
+            "  [DRY-RUN — pass --apply to restart]"
+        }
+    );
+    if !skipped.is_empty() {
+        println!(
+            "  skipped (human-attended / already has the config / stopped): {}",
+            skipped.join(", ")
+        );
+    }
+    if targets.is_empty() {
+        println!("  nothing to restart.");
+        return;
+    }
+    let n = targets.len();
+    for (i, name) in targets.iter().enumerate() {
+        if !apply {
+            println!("  [{}/{n}] DRY-RUN would restart '{name}'", i + 1);
+            continue;
+        }
+        match restart_window(fleet, &session, name, None) {
+            RestartOutcome::Restarted => println!("  [{}/{n}] ⟳ restarted '{name}'", i + 1),
+            RestartOutcome::RelaunchFailed => eprintln!(
+                "  [{}/{n}] ‼ '{name}' RELAUNCH FAILED after kill — window may be dark; `fleet up` re-creates it",
+                i + 1
+            ),
+            RestartOutcome::KillFailed => eprintln!(
+                "  [{}/{n}] ! '{name}' kill failed — left as-is; re-run to retry",
+                i + 1
+            ),
+        }
+        // Pause BETWEEN restarts (never after the last) so N Claude relaunches don't thundering-herd the API.
+        if i + 1 < n {
+            std::thread::sleep(std::time::Duration::from_secs(pause_secs));
+        }
+    }
+    if apply {
+        println!("fleet restart-all: done — {n} window(s) restarted.");
+    } else {
+        println!(
+            "fleet restart-all: preview only — {n} window(s) WOULD restart; re-run with --apply."
+        );
+    }
+}
+
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -22962,6 +23073,51 @@ mod tests {
         );
         assert_eq!(r, Err(9));
         assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn restart_all_targets_selects_live_active_workers_and_skips_interactive_concierge_prsync() {
+        let mk = |name: &str, role: &str, status: &str| Agent {
+            name: name.into(),
+            role: role.into(),
+            vertical: String::new(),
+            area: String::new(),
+            worktree: format!("/wt/{name}"),
+            branch: format!("fleet/{name}"),
+            interval: "10m".into(),
+            model: "opus".into(),
+            effort: "high".into(),
+            status: status.into(),
+            disallow_ask: true,
+        };
+        let agents = vec![
+            mk("v-alpha", "vertical", "active"), // live + active worker → RESTART
+            mk("breaker", "breaker", "active"),  // live + active worker → RESTART
+            mk("v-beta", "vertical", "active"),  // active but NO live window → skip
+            mk("v-gamma", "vertical", "stopped"), // stopped → skip (picks up config on next launch)
+            mk("concierge", "concierge", "active"), // concierge → skip (already has the MCP)
+            mk("design-x", "design", "active"), // terminal-interactive → skip (human may be typing)
+            mk("pr-sync", "pr-sync", "active"), // pr-sync → skip by name (even if it looked active)
+        ];
+        // v-beta is NOT in the live set; everyone else live.
+        let live: Vec<String> = [
+            "v-alpha",
+            "breaker",
+            "v-gamma",
+            "concierge",
+            "design-x",
+            "pr-sync",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // Only the live + active + non-interactive workers, sorted+deduped.
+        assert_eq!(
+            restart_all_targets(&agents, &live),
+            vec!["breaker".to_string(), "v-alpha".to_string()]
+        );
+        // Empty live set → nothing to restart.
+        assert!(restart_all_targets(&agents, &[]).is_empty());
     }
 
     #[test]
