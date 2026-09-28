@@ -14471,17 +14471,25 @@ fn restart_window(
 /// task-board MCP + the refreshed charter): ACTIVE agents WITH a live tmux window, EXCLUDING (a) the
 /// terminal-interactive `design` windows (a human may be typing — never bounce those, see
 /// [`role_is_terminal_interactive`]), (b) the `concierge` (already restarted post-config, and bouncing the
-/// orchestrator mid-run is needless risk), and (c) `pr-sync` (stopped). A not-active / windowless / excluded
-/// agent needs no restart — it picks the new session-start config up the next time it is launched.
-/// Deterministic sorted+deduped order so a `--dry-run` preview matches the real run and a partial run is
-/// resumable. Pure so the selection is unit-tested off tmux.
-fn restart_all_targets(agents: &[Agent], live_windows: &[String]) -> Vec<String> {
+/// orchestrator mid-run is needless risk), (c) `pr-sync` (stopped), and (d) `self_window` — the window the
+/// restart loop is RUNNING IN: killing it would abort the loop mid-run and orphan the runner, so whoever
+/// invokes `restart-all` never restarts their own window (defense-in-depth beyond the role skips, so the
+/// verb is safe for ANY caller, not just the concierge). A not-active / windowless / excluded agent needs no
+/// restart — it picks the new session-start config up the next time it is launched. Deterministic
+/// sorted+deduped order so a `--dry-run` preview matches the real run and a partial run is resumable. Pure so
+/// the selection is unit-tested off tmux.
+fn restart_all_targets(
+    agents: &[Agent],
+    live_windows: &[String],
+    self_window: Option<&str>,
+) -> Vec<String> {
     let mut v: Vec<String> = agents
         .iter()
         .filter(|a| a.status == "active")
         .filter(|a| !role_is_terminal_interactive(&a.role))
         .filter(|a| a.role != "concierge" && a.name != "concierge")
         .filter(|a| a.name != "pr-sync")
+        .filter(|a| self_window != Some(a.name.as_str()))
         .filter(|a| live_windows.iter().any(|w| w == &a.name))
         .map(|a| a.name.clone())
         .collect();
@@ -14500,8 +14508,9 @@ fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64) {
         .or_else(|| in_tmux().then(tmux_current_session))
         .unwrap_or_else(|| "main".to_string());
     let live_windows = tmux_windows(&session);
+    let self_window = current_window_agent(); // never restart the window the loop runs in
     let reg = fleet.load();
-    let targets = restart_all_targets(&reg.agents, &live_windows);
+    let targets = restart_all_targets(&reg.agents, &live_windows, self_window.as_deref());
     // Surface what is SKIPPED-though-live (interactive/concierge/pr-sync) so the preview is self-explaining.
     let skipped: Vec<String> = reg
         .agents
@@ -14522,7 +14531,7 @@ fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64) {
     );
     if !skipped.is_empty() {
         println!(
-            "  skipped (human-attended / already has the config / stopped): {}",
+            "  skipped (design/concierge/pr-sync/self, or windowless/stopped): {}",
             skipped.join(", ")
         );
     }
@@ -23113,11 +23122,21 @@ mod tests {
         .collect();
         // Only the live + active + non-interactive workers, sorted+deduped.
         assert_eq!(
-            restart_all_targets(&agents, &live),
+            restart_all_targets(&agents, &live, None),
+            vec!["breaker".to_string(), "v-alpha".to_string()]
+        );
+        // SELF-window exclusion: the runner never restarts its own window (would abort the loop mid-run).
+        assert_eq!(
+            restart_all_targets(&agents, &live, Some("v-alpha")),
+            vec!["breaker".to_string()]
+        );
+        // A self_window that isn't a target anyway (e.g. the concierge runner) changes nothing.
+        assert_eq!(
+            restart_all_targets(&agents, &live, Some("concierge")),
             vec!["breaker".to_string(), "v-alpha".to_string()]
         );
         // Empty live set → nothing to restart.
-        assert!(restart_all_targets(&agents, &[]).is_empty());
+        assert!(restart_all_targets(&agents, &[], None).is_empty());
     }
 
     #[test]
