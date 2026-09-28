@@ -102,9 +102,19 @@ Runtime state (heartbeats/leases/windows) stays hub-central; the board is not a 
     `refs/remotes/origin/*`) and a worktree at `$FLEET_ROOT/agents/<agent>/<repo>` (agent branch under
     `refs/heads/*`), so `fetch --prune` never touches a peer agent's branch and N agents share one object
     store per repo. Standalone/additive — NOT wired into `fleet add`/`fleet up` yet.
-  - STILL TODO: wire the materializer into `fleet add`/`fleet up` (reconcile board-declared `repos` →
-    worktrees) ALONGSIDE the current cadenza-worktree model; migrate one non-owner pilot agent to the new
-    workspace shape; decide mirror-wiring (cron/`fleet up`) vs prompt-driven per-agent self-register.
+  - The board→worktree RECONCILE shipped as a dry-run-first planner: `fleet/board-reconcile-workspaces.py`
+    reads each board agent's declared `repos` and materializes a worktree per entry via
+    `agent-workspace.sh` (dry-run default, `--apply`, `--agent` scopes). Standalone — not wired into
+    `fleet up` yet.
+  - **PILOT DONE (2026-09-28): `v-task-board` materialized end-to-end.** Declared its `repos`
+    (`[{camshaft/task-board, main}]`) on the board, then reconcile `--apply` created a real worktree at
+    `~/.fleet/agents/v-task-board/task-board` (on `main`, at task-board's real HEAD, clean) off the shared
+    `~/.fleet/mirrors/task-board.git`. First proof of the generic, cadenza-NONSPECIFIC model on a real
+    off-tree agent. (NB: this is the WORKSPACE pilot — its code worktree comes from its own repo, so it has
+    NO board-charter circularity; the charter-source bootstrap exception above still applies separately.)
+  - STILL TODO: wire the reconcile into `fleet add`/`fleet up` ALONGSIDE the current cadenza-worktree model
+    (so a `fleet up` reconciles board `repos` → worktrees); populate `repos` for the rest of the fleet
+    (per-agent/owner); decide mirror-wiring (cron/`fleet up`) vs prompt-driven per-agent self-register.
 - **P-lift:** the extraction lift (`~/.fleet` + `fleet` binary), per-repo adapters, slack-bridge move.
 - **P-flip (high-risk, gated):** tooling reads the board as the registry; `registry.json` becomes a
   derived cache or is retired. Only after the pilot + mirror are proven AND explicit operator confirm.
