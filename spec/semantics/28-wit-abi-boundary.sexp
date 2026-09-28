@@ -9975,3 +9975,111 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "an option<record{v: variant{a,b(s64),c(bytes)}, n:s64}> host-op arg crosses (BYTES mixed-variant field nested under option, Some arm)"
+  (doc
+    "SHAPE 272 (v-wit-boundary) — a top-level `option<record{ v: variant{a, b(s64), c(bytes)}, n: s64 }>` bare
+           host-op ARGUMENT (probe.push), the Some arm. Composes the option<record> arg (SHAPE 173's shape) with a
+           BYTES-payload mixed variant FIELD (SHAPE 268's register record-field arm) — the option<record> twin of
+           SHAPE 268. Previously the whole option DECLINED cleanly: `emit_option_reg_flatten`'s record branch recurses
+           `emit_record_arg_marshal`, whose VariantMemMixed field arm needs the scratch cursor for a Bytes/List case,
+           but the emit.rs cursor pre-scan did not reserve it for an option<record-with-a-mixed-variant-Bytes-field>
+           (only for direct Bytes/list/option<bytes>/tuple/result fields), so `cursor` was None and the field arm's
+           `cursor.is_some()` guard declined. Now the option<record> pre-scan clause also tests
+           `record_has_mem_mixed_variant_field` — the same helper the direct record arg (SHAPE 268) uses — so the
+           cursor is reserved and the Bytes case rope-copies into `mem`. needs-memory already rode
+           `record_field_abi_needs_memory`'s VariantMemMixed arm propagated by `HostParam::Option`. The option
+           flattens to `(opt-disc:i32, v-disc:i32, ptr:i32, len:i32, n:i64)`. run() builds Some({ v: C(b\"hi\"),
+           n: 5 }) and performs probe.push; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= v (variant (a) (b (s64)) (c (list (u8))))) (= n (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (Option (Record (: v Sig) (: n Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= v (Sig.C b"hi")) (= n 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "an option<record{v: variant{a,b(s64),c(list<s64>)}, n:s64}> host-op arg crosses (LIST mixed-variant field nested under option, Some arm)"
+  (doc
+    "SHAPE 273 (v-wit-boundary) — the LIST twin of SHAPE 272: an `option<record{ v: variant{a, b(s64),
+           c(list<s64>)}, n: s64 }>` bare host-op ARGUMENT (probe.push), the Some arm. Rides the SAME option<record>
+           cursor pre-scan clause (`record_has_mem_mixed_variant_field`) + `emit_variant_mixed_arg_reg_flatten`'s List
+           arm (marshals the payload list's backing into `mem` at the reserved cursor → `(ptr, count)`) as SHAPE 272.
+           The option flattens to `(opt-disc:i32, v-disc:i32, ptr:i32, count:i32, n:i64)`. run() builds
+           Some({ v: C([1,2,3]), n: 5 }) and performs probe.push; a VALID running component (live-objects=0) pins it.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= v (variant (a) (b (s64)) (c (list (s64))))) (= n (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (List Int64)))
+      (effect probe (op push (-> (Option (Record (: v Sig) (: n Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= v (Sig.C #list(1 2 3))) (= n 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a result<record{v: variant{a,b(s64),c(bytes)}, n:s64}, enum> host-op arg crosses (BYTES mixed-variant field nested under result, Ok arm)"
+  (doc
+    "SHAPE 274 (v-wit-boundary) — a top-level `result<record{ v: variant{a, b(s64), c(bytes)}, n: s64 }, enum>`
+           bare host-op ARGUMENT (probe.push), the Ok arm — the result<record> twin of SHAPE 268/272. Composes the
+           `result<record, enum>` arg (SHAPE 189/202) with a BYTES-payload mixed variant FIELD (SHAPE 268). Same fix
+           as SHAPE 272 on the result<record> pre-scan clause: it now tests `record_has_mem_mixed_variant_field` on
+           the Ok record so the cursor is reserved for `emit_result_record_arg_reg_flatten`'s Ok arm →
+           `emit_record_arg_marshal`'s VariantMemMixed field arm (which rope-copies the Bytes case into `mem`);
+           needs-memory rides `record_field_abi_needs_memory` propagated by `HostParam::ResultRecord`. run() builds
+           (Ok { v: C(b\"hi\"), n: 5 }) and performs probe.push; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= v (variant (a) (b (s64)) (c (list (u8))))) (= n (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: v Sig) (: n Int64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= v (Sig.C b"hi")) (= n 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a result<record{v: variant{a,b(s64),c(list<s64>)}, n:s64}, enum> host-op arg crosses (LIST mixed-variant field nested under result, Ok arm)"
+  (doc
+    "SHAPE 275 (v-wit-boundary) — the LIST twin of SHAPE 274: a `result<record{ v: variant{a, b(s64),
+           c(list<s64>)}, n: s64 }, enum>` bare host-op ARGUMENT (probe.push), the Ok arm. Rides the SAME
+           result<record> cursor pre-scan clause (`record_has_mem_mixed_variant_field`) +
+           `emit_variant_mixed_arg_reg_flatten`'s List arm as SHAPE 274. run() builds (Ok { v: C([1,2,3]), n: 5 })
+           and performs probe.push; a VALID running component (live-objects=0) pins it. Completes the option<record>
+           / result<record> nesting of a Bytes/List mixed-variant field (SHAPE 272-275), the wrappers' twins of the
+           direct record-field SHAPE 268/269.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= v (variant (a) (b (s64)) (c (list (s64))))) (= n (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (List Int64)))
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: v Sig) (: n Int64)) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= v (Sig.C #list(1 2 3))) (= n 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

@@ -6323,6 +6323,12 @@ pub(super) fn emit(
                             || crate::backend::wasm::host::record_has_option_field_needing_mem(db, &p)
                             || crate::backend::wasm::host::record_has_tuple_field(&p)
                             || crate::backend::wasm::host::record_has_result_field(db, &p)
+                            // …or a HETEROGENEOUS MIXED `variant` FIELD with a `Bytes`/`List` payload case,
+                            // which rope-copies / marshals into `mem` at the cursor when
+                            // `emit_option_reg_flatten`'s record branch recurses `emit_record_arg_marshal`'s
+                            // VariantMemMixed field arm (whose `cursor.is_some()` guard would else decline the
+                            // whole option payload record) — the option<record> twin of the direct-record clause.
+                            || crate::backend::wasm::host::record_has_mem_mixed_variant_field(db, &p)
                     })
                     // A top-level `option<list<T>>` arg marshals the payload list into `mem` on Some → cursor.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
@@ -6351,6 +6357,11 @@ pub(super) fn emit(
                             || crate::backend::wasm::host::record_has_option_field_needing_mem(db, &ok)
                             || crate::backend::wasm::host::record_has_tuple_field(&ok)
                             || crate::backend::wasm::host::record_has_result_field(db, &ok)
+                            // …or a mixed `variant` FIELD with a `Bytes`/`List` payload case (the result<record>
+                            // twin of the option<record> clause above): `emit_result_record_arg_reg_flatten`'s
+                            // Ok arm recurses `emit_record_arg_marshal`, whose VariantMemMixed field arm spills
+                            // that case into `mem` at the cursor and else declines on `cursor.is_none()`.
+                            || crate::backend::wasm::host::record_has_mem_mixed_variant_field(db, &ok)
                     })
                     // A top-level `result<tuple, enum>` arg whose Ok tuple has a runtime-compound ELEMENT
                     // (bytes/list/nested-compound) copies that element's bytes into `mem` on the Ok arm
