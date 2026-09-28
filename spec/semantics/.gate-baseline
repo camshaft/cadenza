@@ -10941,6 +10941,7 @@ pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and s
 pass	trn1 two `?`s NESTED across compound constructors (record + list inside a tuple) each short-circuit
 pass	trmp1 a `?`-bound value in a `(Ok #map)` Ok arm reclaims on the Err short-circuit and the Ok path
 pass	trst1 a `?`-bound value in a `(Ok #set)` Ok arm reclaims on the Err short-circuit and the Ok path
+pass	trsc1 a `?`-bound Set probed by Set.contains in the Ok arm reclaims the try shell on both paths
 pass	trm1 a NESTED tuple-rest re-match peels two layers, through an if-selected scrutinee, with a RUNTIME element
 pass	trm1 an export returns a two-element Set (one reachable cell, constructor-application render)
 pass	trm2 an EXACT-arity tuple leaves the rest binder EMPTY, and a rest-only pattern gathers the whole tuple

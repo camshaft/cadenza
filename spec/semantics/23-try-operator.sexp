@@ -1558,6 +1558,34 @@
   (output (: 1 Int64))
   (live-objects 0))
 
+(case
+  "trsc1 a `?`-bound Set probed by Set.contains in the Ok arm reclaims the try shell on both paths"
+  (doc
+    "The Set.contains (scalar-bool borrow) reclaim companion of trst1: a `?`-bound scalar builds a `#set`
+     under the Ok arm of a `(Result (Set Int64) Int64)` boundary, then the arm PROBES the matched Set
+     payload with `(if (Set.contains s 5) 1 0)`. `Set.contains` BORROWS both operands and returns a scalar
+     bool — `op_set_contains` is the only bool-returning CHAMP op and retains NO handle — so the set operand
+     is genuinely borrowed exactly like `Set.len`. Before the `arm_borrows_heap_subvalue` fix relaxed the
+     SetContains SET operand to borrowed (it had been left CONSUMING — a copy of the Map.lookup/remove
+     pattern, which legitimately keep the collection consuming because their Option/removed result can alias
+     it), the probe was mis-read as consuming the set, blocking the enclosing `MatchSum` shell-reclaim so the
+     re-wrapped Err husk (Err path) and the built set (Ok path) leaked. Verified leak-clean (live-objects 0
+     every path). The `Set.contains` reclaim sibling of the trmp1/trst1 (Map.len/Set.len) locks.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok #set(x))) (Result (Set Int64) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok s) (if (Set.contains s 5) 1 0))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
 ; trnt1 (TODO): the NESTED try `(try (try rr))` — a `?` whose OPERAND is itself a `?`. The desugar for
 ; this is known and small (inner-first hoisting in `find_hoistable_try`'s `(try e)` arm: descend the
 ; operand FIRST so `(try (try rr))` lifts to `(let ((a (try rr))) (let ((b (try a))) …))`, each level a
