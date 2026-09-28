@@ -1423,6 +1423,111 @@ fn extraction_roots_at_scrutinee(
     }
 }
 
+/// CLASSIFIER (v-core-opt-owned; sub-case (a) — the divergent-ownership ALIAS-HUSK equalize on a try-desugar
+/// `MatchSum`). PURE decision, no state mutation: v-mem's emit/ownership lane CALLS this and owns the three
+/// state-mutation points it drives — the `sum_cont_ownership` Owned-flip (ownership.rs), the
+/// `matchjoin_dup_arms` populate (emit.rs), and the slotless bare-`SumPayload` stack-dup (dispatch.rs:483).
+/// (Split LOCKED with v-mem 2026-09-28: correctness-critical DECISION here, STATE MUTATION theirs — no
+/// cross-lane commits.)
+///
+/// THE SHAPE (BRICK-3b runtime-`?` desugar, INLINED): `(do (def x (try r)) <alias x>)` lowers to a 2-arm
+/// `MatchSum` over the materialized operand — the SUCCESS (Ok/Some) arm is `Leaf(SumPayload{scrutinee,
+/// [Payload]})` (a BARE alias VIEW into the scrutinee's payload, no fresh box), the FAILURE (Err/None) arm is
+/// `Leaf(SumNew{Err r})` (a fresh, PAYLOAD-CARRYING re-wrap). The arms DIVERGE in ownership:
+/// `sum_cont_ownership` reads the success bare-`SumPayload` BORROWED (ownership.rs:603-604) but the failure
+/// `SumNew` OWNED — so the arm-blind join sees the whole `MatchSum` Borrowed, the outer scrutinee-shell reclaim
+/// (`sum_shell_reclaim_ok`) is SUPPRESSED, and the owned Err husk on the failure short-circuit LEAKS
+/// (v-try-operator ctrl_singlenest: nested-`?` outer-Err leaks live-objects 1 — the last node#6-nonlen holdout
+/// gating trnt1). THE EQUALIZE (v-mem's emit half, on `Some(view)`): stack-dup the success view (rc1->2) at its
+/// `Leaf` emit so the join reads BOTH arms Owned; the outer shell deep-drop nets the view 2->1 (result-safe)
+/// and the consumer drops the owned Err husk on the failure path (leak->0), never double-freeing the view.
+///
+/// `Some(view)` = the bare `Core::SumPayload` success-view node to stack-dup, iff S1-S3 hold; `None` = BAIL
+/// (an over-decline only keeps today's leak — never a UAF). S1: the SUCCESS arm's `Leaf` body is a bare
+/// `SumPayload`/`Proj` chain rooting at the scrutinee ([`extraction_roots_at_scrutinee`]), heap-typed. S2: the
+/// FAILURE arm's `Leaf` body is a PAYLOAD-CARRYING `Core::SumNew` (non-empty payloads) — NOT a payloadless
+/// nullary variant (a payloadless None failure is already live-objects-0 under the (b)/(c) admit, so
+/// equalizing it is a no-op-at-best / double-drop-at-worst; v-mem-confirmed bound). S3: the shared
+/// shell-reclaim floor — heap non-enum scrutinee, DEAD-after-destructure (only the payload is extracted; the
+/// shell is a dead temporary), not re-matched by a nested match (Class-B). S4 ("view escapes ONLY as the
+/// arm result") is SUBSUMED: S1 makes the `Leaf` body EXACTLY the bare view (the arm does nothing but return
+/// it) and S3 proves the scrutinee is not otherwise referenced in the arms. The residual escapes-as-RESULT
+/// vs consumed-in-place-by-an-outer-borrow distinction is only an OPTIMALITY gate (an over-fire on a
+/// borrow-consumed result only LEAKS the rc1 view — leak-over-UAF) and needs the `MatchSum`'s POSITION context
+/// that this scrutinee-local classifier lacks, so v-mem ANDs it caller-side at the emit site. No `dup_sites`/
+/// `fn_body` param — pure syntactic classification.
+#[allow(dead_code)] // TEMP: inert until v-mem wires the sum_cont_ownership Owned-flip + matchjoin_dup_arms populate + dispatch.rs:483 stack-dup.
+pub(crate) fn divergent_alias_arm_dupable(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    root: &crate::core::SumCont,
+) -> Option<StructId> {
+    // S3 — the shared shell-reclaim floor (mirrors `matchsum_escaping_proj_node`, minus `never_diverges` which
+    // the caller's node fn already bailed on): heap non-enum sum, not re-matched (Class-B), whole scrutinee
+    // DEAD after the destructure (no non-extracting reference keeps it live past the shell drop).
+    if !is_heap_type(scrut_ty)
+        || ty_is_enum_disc(db, scrut_ty)
+        || cont_rematches_scrutinee(db, scrutinee, root)
+        || !scrutinee_dead_after_destructure(db, scrutinee, root)
+    {
+        return None;
+    }
+    // The try-desugar root is a 2-arm disc SWITCH (path empty) whose arms are BOTH `Leaf` bodies (Ok/Some vs
+    // Err/None). A `Guarded`/`LitTest` root, a nested `Switch`, or arm-count != 2 is not this shape → bail.
+    let crate::core::SumCont::Switch { arms, .. } = root else {
+        return None;
+    };
+    if arms.len() != 2 {
+        return None;
+    }
+    let mut leaves: Vec<StructId> = Vec::with_capacity(2);
+    for a in arms {
+        match &a.cont {
+            crate::core::SumCont::Leaf(body) => leaves.push(*body),
+            _ => return None,
+        }
+    }
+    let binder = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+        _ => None,
+    };
+    // Identify SUCCESS (bare-alias view) vs FAILURE (payload-carrying SumNew) by BODY SHAPE — not by disc value
+    // (robust across Result/Option variant ordering). EXACTLY one of each must be present.
+    let mut success_view: Option<StructId> = None;
+    let mut failure_payload_sumnew = false;
+    for body in leaves {
+        // S1: a heap bare-alias VIEW — a `SumPayload`/`Proj` chain off the (dead-after) scrutinee.
+        if is_heap_type(&type_of(db, body))
+            && extraction_roots_at_scrutinee(db, body, scrutinee, binder)
+        {
+            if success_view.is_some() {
+                return None; // two view arms — not the divergent Ok/Err split
+            }
+            success_view = Some(body);
+            continue;
+        }
+        // S2: a PAYLOAD-CARRYING `SumNew` re-wrap (the fresh Err/Some husk). A payloadless nullary variant
+        // (`None`/empty) is EXCLUDED (already live-0; equalizing it is a no-op / double-drop).
+        if let Core::SumNew { payloads, .. } = core_of(db, body)
+            && !payloads.is_empty()
+        {
+            if failure_payload_sumnew {
+                return None; // two husk arms — not the shape
+            }
+            failure_payload_sumnew = true;
+            continue;
+        }
+        // Any other arm shape (payloadless SumNew, a computed body, a nested match) → not the clean
+        // alias-husk divergence → bail (leak-over-UAF).
+        return None;
+    }
+    match (success_view, failure_payload_sumnew) {
+        (Some(view), true) => Some(view),
+        _ => None,
+    }
+}
+
 /// RECOGNIZER (v-memory-safety recognition lane) for the escaping-heap-child `MatchSum` shell reclaim — the
 /// co-fix half v-core-opt's emit consumes at emit.rs:4166 (02-binding-and-control:6042, the mutual-recursion
 /// tuple-match; the recursive-descent-parser sibling of the landed 02:6085 Proj-of-LET fix). The sibling
