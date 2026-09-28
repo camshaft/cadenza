@@ -4457,7 +4457,46 @@ pub(super) fn emit(
             )
             .is_some()
             // node#6 (a): divergent alias-husk equalize — reclaim the shell (success view dup'd above).
-            || alias_husk_view.is_some();
+            || alias_husk_view.is_some()
+            // trnt1-inner UNIFIED (v-core-opt recognizer 8166581b68): producing-shell reclaim for a payload
+            // extraction that ESCAPES INTO A DOWNSTREAM CONSUMER (chained-`?`: `(do (def a (try rr)) (Ok
+            // (try a)))` — the first `(try rr)` MatchSum extracts `a` which escapes into `(try a)`; today
+            // NEITHER rr's outer shell NOR `a` is reclaimed, both leak). DROP-SIDE owned-dead-after proof =
+            // a freshly-STASHED I32 slot: `stashed_slot` is `Some` ONLY when `reusable_handle_src` is FALSE
+            // (a non-reusable fresh/owned temp — for trnt the materialized `if`-operand rr became), NEVER a
+            // reusable borrowed param left to its owner, so there is no live-caller-borrow UAF and the
+            // borrow-vs-owned param subtlety is excluded (a param-scrutinee chained-`?` gets stashed_slot
+            // None here ⇒ declines ⇒ leak, not UAF — leak-over-UAF). ANDed with the recognizer firing. The
+            // reclaim.rs dup-pass dup'd each escaping extraction rc1→2 before it escapes; this shell
+            // deep-drop's cascade nets each 2→1 (survives for its nested-match consumer), frees the
+            // producing shell; the consumer then frees it. LOCKSTEP subset of the dup node set ⇒ no UAF.
+            // Mirrors matchsum_rebuild_shell_reclaim_ok's slot gate.
+            || (matches!(stashed_slot, Some((_, ValType::I32)))
+                && payload_escapes_to_consumer_dupable(
+                    db,
+                    scrutinee,
+                    &scrut_ty,
+                    never_diverges,
+                    &root,
+                )
+                .is_some())
+            // trnt1-inner UNIFIED (nested-match half; v-core-opt bare_alias_scrutinee_dupable c3c44999bc):
+            // reclaim the NESTED `(try a)` match's OWN scrutinee shell — `a` is a bare-alias SumPayload view
+            // of the OUTER scrutinee, dup-owned by the producing-side fix above. DUP-BACKED (UAF-critical):
+            // `_dupbacked` ANDs `a ∈ out.dup_sites`, PROVING the producing-side dup fired on this exact view
+            // (dup rc1→2, outer-shell cascade 2→1, THIS reclaim 1→0 — balanced). Absent from dup_sites ⇒ no
+            // producing dup ⇒ `a` is the source's LIVE payload ⇒ freeing it double-frees ⇒ DECLINE (leak-over-
+            // UAF). Same stashed-I32 owned-temp gate. Fires ONLY for the nested match (the outer materialized-
+            // operand scrutinee is not a bare-alias view ⇒ S1 declines).
+            || (matches!(stashed_slot, Some((_, ValType::I32)))
+                && bare_alias_scrutinee_dupable_dupbacked(
+                    db,
+                    scrutinee,
+                    &scrut_ty,
+                    &root,
+                    &out.dup_sites,
+                )
+                .is_some());
             emit_sum_cont(
                 db,
                 scrutinee,

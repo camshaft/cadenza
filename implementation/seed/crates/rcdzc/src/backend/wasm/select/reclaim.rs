@@ -3827,6 +3827,19 @@ pub(super) fn collect_shell_reclaim_child_dups_seen(
         {
             dup_sites.insert(n);
         }
+        // trnt1-inner UNIFIED recognizer dup-side (v-core-opt 8166581b68; emit wiring v-memory-safety): a
+        // payload extraction that ESCAPES INTO A DOWNSTREAM CONSUMER (v1: a chained-`?` nested-MatchSum
+        // scrutinee `a = SumPayload(rr,[Payload])` re-consumed by `(try a)`). Generalizes the arm-RESULT
+        // extraction above to the escapes-INTO-consumer shape; returns a Vec (≥1 escaping extraction), so
+        // EXTEND. Same slot-independent dup-side floor (`never_diverges = false`; over-fire = orphaned-dup
+        // LEAK, never a UAF). LOCKSTEP: the emit `reclaim_shell` drop-gate = this node set ∩ {stashed I32
+        // slot} (a fresh-owned temp), so drop ⊆ dup ⇒ every producing-shell deep-drop has its escapee dup'd
+        // (rc≥2 before it escapes into the nested match) ⇒ no UAF; a dup-without-drop is a safe leak.
+        if let Some(nodes) =
+            super::payload_escapes_to_consumer_dupable(db, scrutinee, &scrut_ty, false, &root)
+        {
+            dup_sites.extend(nodes);
+        }
     }
     for child in core_child_ids(db, id) {
         collect_shell_reclaim_child_dups_seen(db, child, top_body, dup_sites, seen);
