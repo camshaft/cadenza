@@ -377,6 +377,19 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   int↔float / f32↔f64 single-payload variant reinterpret join is now ✅ DONE — SHAPE 233/234/235; and a MULTI-payload
   case `b(s64,s64)` — one case with ≥2 payloads — is ✅ DONE, SHAPE 236: `variant_tuple_payload_case` admits n>=2
   since `variant_payload_ty_at` synthesizes the payload tuple, reusing `HostParam::VariantTuple` unchanged.)
+- **[emit, ARG-side] a WIT `flags{…}` host-op ARG — ✅ DONE / TESTED (SHAPE 240).** The IMPORT twin of the
+  export-side flags PARAM (SHAPE 113). The guest models flags as a PRODUCT record-of-bools (operator ruling), so
+  the arg is a `Record{label: bool, …}` whose imposed WIT param is `flags`. Before, it declined ("a record
+  host-arg has no matching WIT record type" — the classifier made `HostParam::Record`, found no WIT record).
+  New additive `HostParam::Flags { field_bits, labels }`: the classifier consults `wit_params[arg_i]` (`Flags`) +
+  `host::flags_field_bits` (each bool field's kebab name → its WIT-label bit, the PACK inverse of `param_field`'s
+  flags-UNPACK arm; ≤32 labels, all-bool, count-match), the guest PACKS via `select::emit_flags_arg_pack` (per
+  field `arr-get`+`get-bool`, shift into its bit, OR into the word), `serialize` flattens to `ceil(n/32)` i32
+  words, and `host_imports` lays a nominal `flags` DEFINED type via the NEW `flags_params` branch (the enum-like
+  single-leaf path — `is_nominal_cdef`/`export_remap` already handled `CDef::Flags`). Register-only (no `mem`).
+  `used_ops` is already covered (the record-arg arm declares `arr-get`+`get-bool`+`drop`). REMAINING: >32 labels
+  (multi-word), and flags at a record-FIELD / list-element ARG position (the field/element paths lack a flags-arg
+  arm; the RESULT/param-lift side already unpacks flags — `param_field.rs`, `list_elem.rs`).
 - **[emit, ARG-side] a COMPOUND (Bytes) single-payload variant host-op ARG — ✅ DONE / TESTED (SHAPE 227, 228).**
   (SHAPE 228 hardens the MULTI-Bytes-case path: `variant{a, b(bytes), c(bytes)}`, `bytes_discs = [1,2]`, exercises
   the marshal's multi-disc OR fold — SHAPE 227's single Bytes case left it untested.)

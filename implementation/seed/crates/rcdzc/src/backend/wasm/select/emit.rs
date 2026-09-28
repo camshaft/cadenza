@@ -6780,6 +6780,49 @@ pub(super) fn emit(
                     //  • a SCALAR field reads back with `arr-get` + the field's wrap-free scalar get-op.
                     //  • a BYTES field is copied rope→`mem` at the running cursor and pushed as `(ptr,len)`.
                     // The reads BORROW the record (no consume), so the handle is not dropped here.
+                    // A record-of-bools arg whose imposed WIT param is `flags{…}` PACKS into the bitset word:
+                    // read each bool field (`arr-get`+`get-bool`, a borrow) and shift it into its label's bit
+                    // (`emit_flags_arg_pack`). A SEPARATE arm BEFORE the generic record arm (a flags arg has no
+                    // WIT record). The record is BORROWED (pure reads) — reclaim the OWNED handle after.
+                    Ty::Record(fields)
+                        if matches!(
+                            wit_params.as_ref().and_then(|p| p.get(arg_i)),
+                            Some(crate::wit_world::WitType::Flags(_))
+                        ) =>
+                    {
+                        let Some(crate::wit_world::WitType::Flags(labels)) =
+                            wit_params.as_ref().and_then(|p| p.get(arg_i))
+                        else {
+                            unreachable!("guarded by the arm")
+                        };
+                        let field_bits = crate::backend::wasm::host::flags_field_bits(&fields, labels)
+                            .ok_or_else(|| {
+                                Reject::decline(
+                                    "a flags host-arg is not a matching record-of-bools (label/field mismatch \
+                                     or >32 labels)",
+                                )
+                            })?;
+                        let rec_slot = arg_base.max(*high);
+                        scratch_ty.insert(rec_slot, ValType::I32);
+                        *high = (*high).max(rec_slot + 1);
+                        emit(db, arg, slots, rec_slot + 1, high, scratch_ty, layout, out)?; // [rec]
+                        out.push(Lir::LocalSet(rec_slot));
+                        let work_base = *high;
+                        emit_flags_arg_pack(
+                            rec_slot,
+                            &field_bits,
+                            work_base,
+                            high,
+                            scratch_ty,
+                            out,
+                        );
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(rec_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
                     Ty::Record(fields) => {
                         // The host WIT record type for THIS arg — required to order the fields (declaration
                         // order); without it (world absent / arg not a WIT record) the marshal can't match the

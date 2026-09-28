@@ -1457,6 +1457,40 @@ pub(super) fn emit_variant_mixed_scalar_arg_reg_flatten(
     Ok(())
 }
 
+/// Marshal a value-heap record-of-bools host argument (handle in `rec_slot`) crossing as a WIT `flags` bitset:
+/// PACK each bool field into the bit its label maps to, pushing the single `i32` bitset word (≤32 labels this
+/// increment). `field_bits` is `(guest name-lex slot, flags bit)` per field (from `host::flags_field_bits`). Reads
+/// each field with `arr-get` + `get-bool` (a borrow — the record is not consumed), shifts it left to its bit, and
+/// ORs it into the accumulator. The PACK inverse of `param_field`'s flags-UNPACK. `work_base` is one scratch i32.
+pub(super) fn emit_flags_arg_pack(
+    rec_slot: u32,
+    field_bits: &[(u32, u32)],
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) {
+    let acc = work_base;
+    scratch_ty.insert(acc, ValType::I32);
+    *high = (*high).max(work_base + 1);
+    out.push(Lir::ConstI32(0));
+    out.push(Lir::LocalSet(acc));
+    for (slot, bit) in field_bits {
+        out.push(Lir::LocalGet(rec_slot));
+        out.push(Lir::ConstI32(*slot as i32));
+        out.push(Lir::CallImport(OP_ARR_GET)); // [bool cell handle] (borrows the record)
+        out.push(Lir::CallImport(OP_GET_BOOL)); // [i32 0/1]
+        if *bit > 0 {
+            out.push(Lir::ConstI32(*bit as i32));
+            out.push(Lir::I32Shl);
+        }
+        out.push(Lir::LocalGet(acc));
+        out.push(Lir::I32Or);
+        out.push(Lir::LocalSet(acc));
+    }
+    out.push(Lir::LocalGet(acc)); // push the packed bitset word
+}
+
 /// Marshal a top-level value-heap `result<list<u8>, enum>` host argument whose handle is in `result_slot` into
 /// the canonical `(disc:i32, i32, i32)` core-slot flatten the built-in `result<list<u8>, <enum>>` param lowers
 /// to, pushing the three values onto the operand stack. The register twin of the `result<list<u8>, enum>` FIELD

@@ -173,6 +173,13 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
             // An ENUM param crosses as ONE `i32` core slot — the discriminant (a payloadless enum's in-guest
             // rep). The component boundary type is an `enum` DEFINED type (see mod.rs `host_op_comp_functype`).
             HostParam::Enum(_) => params.push(wasm_abi::CORE_I32),
+            // A WIT `flags` param crosses as `ceil(n/32)` `i32` bitset words (the canonical `flags` flatten,
+            // `wit_ctype::flatten` of `WitType::Flags`). ≤32 labels → ONE word this increment. The component
+            // boundary type is a `flags` DEFINED type (see host_imports.rs flags_params).
+            HostParam::Flags { labels, .. } => {
+                let words = labels.len().div_ceil(32).max(1);
+                params.resize(params.len() + words, wasm_abi::CORE_I32);
+            }
             // A `list<T>` param crosses as `(ptr: i32, count: i32)` — 2 core slots (like `Bytes`'s `(ptr,len)`,
             // count in place of len). The component boundary type is a `(list <elem>)` DEFINED type.
             HostParam::List(_) => {
