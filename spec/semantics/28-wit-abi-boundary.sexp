@@ -8455,3 +8455,31 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a typed reducer performing a list<option<option<bytes>>> host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc
+    "SHAPE 225 (v-wit-boundary) — a top-level `list<option<option<list<u8>>>>` bare host-op ARGUMENT (probe.push).
+           Widens the nested-option list element (SHAPE 224 did the SCALAR inner) to a BYTES inner. It needs NO new
+           code: `emit_option_to_mem`'s nested-option arm (SHAPE 224) recurses on the inner option, whose Bytes arm
+           copies the payload rope into `mem` at the running spill cursor and writes `(ptr, len)` at the inner
+           payload offset; the list-arg pre-scan reserves that cursor UNCONDITIONALLY for any `Ty::List` arg
+           (emit.rs `has_runtime_compound`), so the Bytes spill has a cursor; `list_elem_marshalable`'s option arm +
+           the `option_elem` detector admit the nested-option-bytes element (the inner option is itself a
+           marshalable element); and `collect_list_elem_ops`' nested-option recursion reaches the inner Bytes arm,
+           declaring `bytes-len`/`bytes-get` (else CDZ0910). This case PINS that the Bytes-inner composition works.
+           run() builds [Some(Some(b\"hi\")), Some(None), None] — all three states — and performs probe.push; a VALID
+           running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (option (list (u8)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Option (Option Bytes))) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some (Some b"hi")) (Some None) None))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
