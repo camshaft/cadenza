@@ -8235,3 +8235,34 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a bare result<record-with-a-result<bytes,enum>-field, enum> host-op arg crosses on the Ok arm (doubly-nested result)"
+  (doc
+    "SHAPE 217 (v-wit-boundary) — a top-level `result<record{a: result<list<u8>, enum>, k: s64}, enum>` bare
+           host-op ARGUMENT (probe.push), the Ok arm. Composes the `result<record, enum>` arg (SHAPE 189/202) with
+           the record `result<bytes,enum>` FIELD marshal (SHAPE 215): the OUTER result's Ok arm carries a record
+           whose `a` field is ITSELF a `result<bytes,enum>` (doubly-nested). `result_record_enum` admits the Ok
+           record via `is_boundary_record` (its result field crosses through `field_boundary_abi`'s Result arm), and
+           `emit_result_record_arg_reg_flatten` recurses `emit_record_arg_marshal`, whose Result-field arm
+           rope->mem-copies the INNER Ok payload at the reserved scratch cursor. The cursor RESERVATION rides
+           `record_has_result_field` on the `result<record>` Ok payload (added in #9923 — a missing reservation
+           panics the marshal's `cursor.expect(...)`). run() builds `(Ok #record((= a (Ok b\"hi\")) (= k 5)))` and
+           performs probe.push; a VALID running component (live-objects=0) is the pin. Completes the trio of
+           `record_has_result_field` cursor sites: direct record (SHAPE 215), option<record> (SHAPE 216), and this
+           result<record> Ok.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= a (result (list (u8)) (enum timeout missing))) (= k (s64))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type Inner (Timeout) (Missing))
+      (type Outer (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: a (Result Bytes Inner)) (: k Int64)) Outer) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= a (Ok b"hi")) (= k 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
