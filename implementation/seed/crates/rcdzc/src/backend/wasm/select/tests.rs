@@ -4929,3 +4929,116 @@ fn wit310_escaped_field_projections_none_when_shell_already_droppable() {
         "already blanket-droppable → None (no per-field dup needed)"
     );
 }
+
+// ── trnt1 #9978 try-desugar GATE on `payload_escapes_to_consumer_dupable` (095726e912) ──────────
+// The producing-side recognizer fires on an OWNED heap `MatchSum` whose payload extraction escapes into a
+// nested-match scrutinee (the chained-`?` `(do (def a (try rr)) (Ok (try a)))`), driving a child-dup + outer
+// shell reclaim. That is NET-ZERO only in lockstep with the COMPLEMENTARY nested reclaim, which the try-desugar
+// co-designs. On a MANUAL nested match (22-property `(match (Value.decode ..) ((Some m) (match m ..))
+// ((None u) -2))`) the complementary reclaim does NOT fire → the dup ORPHANS → +1 leak (cdzCompileCi-only, the
+// slow whole-corpus gate). The fix requires the try-desugar SIGNATURE — a payload-carrying `SumNew` failure-husk
+// leaf. These two guards pin the gate at the Core level so a future change can't quietly widen it back: the
+// leak is ci-only, so a `(live-objects 0)` corpus case would NOT catch a regression under the fast release gate,
+// but this compiler-agnostic recognizer classification flips `cargo test` the moment the gate moves.
+
+/// Navigate to the OUTER `MatchSum` (its scrutinee is the `(mk n)` Call — the inner match's scrutinee is a
+/// `SumPayload` view, so the Call discriminates the outer one) and return `(scrutinee, scrut_ty, root)`.
+fn outer_matchsum_over_call(
+    db: &mut Db,
+    body: StructId,
+) -> (StructId, crate::ty::Ty, std::rc::Rc<crate::core::SumCont>) {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![body];
+    let mut found = None;
+    while let Some(nd) = stack.pop() {
+        if !seen.insert(nd) {
+            continue;
+        }
+        if let crate::core::Core::MatchSum { scrutinee, root } = core_of(db, nd)
+            && matches!(core_of(db, scrutinee), crate::core::Core::Call { .. })
+        {
+            found = Some((scrutinee, root));
+        }
+        stack.extend(crate::core_analysis::licm_children(db, nd));
+    }
+    let (scrut, root) = found.expect("outer MatchSum over the (mk n) Call");
+    let scrut_ty = type_of(db, scrut);
+    (scrut, scrut_ty, root)
+}
+
+#[test]
+fn trnt1_payload_escapes_declines_manual_nested_match_no_sumnew_husk() {
+    // The 22-property shape: an OWNED heap `Option (Option Int64)` (from the `mk` Call) matched, its Some-arm
+    // payload `m` RE-CONSUMED as a nested match scrutinee — but the arms are MANUAL (the failure leaf is the
+    // scalar `-2`, NO `SumNew` husk). Floor + owned-scrutinee + nested-extraction all hold (proven by the
+    // FIRES twin below), so the ONLY thing forcing the decline is the try-desugar-signature gate. Must be
+    // `None` — else the orphan-dup +1 leak (corpus-gate-coarse-22, cdzCompileCi) returns.
+    let ast = crate::testkit::parse(
+        "(module m \
+           (def (mk (: n Int64)) (if (< n 0) (mk (+ n 1)) \
+                                    (if (= n 0) (: (None) (Option (Option Int64))) \
+                                                (: (Some (Some n)) (Option (Option Int64)))))) \
+           (def (f (: n Int64)) \
+             (match (mk n) \
+               ((Some m) (match m ((Some k) k) ((None u) -1))) \
+               ((None u) -2))) \
+           (def (main) (f 3)) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "f");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select f");
+    let (scrut, scrut_ty, root) = outer_matchsum_over_call(&mut db, body);
+    // The scrutinee is the owned heap producer — the floor/ownership preconditions the gate sits on top of.
+    assert!(
+        is_heap_type(&scrut_ty),
+        "the (mk n) Option(Option Int64) scrutinee is heap"
+    );
+    assert!(
+        matches!(
+            heap_operand_ownership(&mut db, scrut),
+            Ok(HandleOwnership::Owned)
+        ),
+        "the (mk n) Call result is an OWNED producer (owned-scrutinee gate passes)"
+    );
+    assert_eq!(
+        super::payload_escapes_to_consumer_dupable(&mut db, scrut, &scrut_ty, false, &root),
+        None,
+        "MANUAL nested match (scalar -2 failure leaf, no SumNew husk) → DECLINE: the complementary nested \
+         reclaim never fires here, so a dup would orphan → +1 leak (the 22-property over-fire, 095726e912)"
+    );
+}
+
+#[test]
+fn trnt1_payload_escapes_fires_with_sumnew_failure_husk() {
+    // POSITIVE CONTROL: the SAME owned heap `Option (Option Int64)` producer + the SAME nested-match escape of
+    // the Some-arm payload `m` — but the outer FAILURE arm now returns a payload-carrying `SumNew` husk
+    // (`(Some 0)`, the try-desugar `runtime_try_failure_value` re-wrap signature). floor + owned-scrutinee +
+    // nested-extraction are identical to the DECLINE twin, so a `Some` here proves those all pass and isolates
+    // the decline above to the try-desugar gate ALONE. Must return the escaping extraction (`m`) to dup.
+    let ast = crate::testkit::parse(
+        "(module m \
+           (def (mk (: n Int64)) (if (< n 0) (mk (+ n 1)) \
+                                    (if (= n 0) (: (None) (Option (Option Int64))) \
+                                                (: (Some (Some n)) (Option (Option Int64)))))) \
+           (def (g (: n Int64)) \
+             (match (mk n) \
+               ((Some m) (match m ((Some k) (: (Some k) (Option Int64))) \
+                                  ((None u) (: (Some 0) (Option Int64))))) \
+               ((None u) (: (Some 0) (Option Int64))))) \
+           (def (main) (match (g 3) ((Some k) k) ((None u) 0))) (export main))",
+    );
+    let mut db = Db::load(ast);
+    let layout = layout_of(&mut db);
+    let (params, body) = function_of(&mut db, "g");
+    let _ = select_function(&mut db, body, &params, &layout).expect("select g");
+    let (scrut, scrut_ty, root) = outer_matchsum_over_call(&mut db, body);
+    let escaping =
+        super::payload_escapes_to_consumer_dupable(&mut db, scrut, &scrut_ty, false, &root).expect(
+            "SumNew failure husk present (try-desugar signature) → the escape is recognized to dup",
+        );
+    assert!(
+        !escaping.is_empty(),
+        "the recognized escape reports at least the nested-match scrutinee (the payload `m`) to dup"
+    );
+}
