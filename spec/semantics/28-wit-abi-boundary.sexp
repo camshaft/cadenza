@@ -8839,3 +8839,62 @@ cases
   (host-calls (call cadenza:platform/probe.push) (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a Qty-over-Int64 host-op ARG crosses as its ERASED inner scalar (imposed WIT)"
+  (doc
+    "SHAPE 237 (v-wit-boundary) — a `(Qty Int64 (Unit.base \"meter\"))` unit-of-measure quantity passed as a
+           host-op ARGUMENT. A `Qty` type ERASES to its inner numeric at codegen (`(Qty.of 5 meter)` is
+           byte-identical to bare `5`), so `abi_val_type` peels `Qty{inner}` to the inner scalar and the arg
+           crosses as `HostParam::Scalar(S64)` — the WIT declares the erased `s64`. This pins the WIRED-but-
+           UNTESTED `Qty`-over-scalar boundary behavior (no code — the peel was already wired); a future change
+           mishandling `Qty` at the boundary now reds. run() passes `(Qty.of 5 meter)`; the host returns 55.")
+  (wit-world (world w (import cadenza:platform/probe
+    (member push (func (param m (s64)) (result (s64)))))))
+  (input (do
+    (effect probe (op push (-> (Qty Int64 (Unit.base #"meter")) Int64)))
+    (def (run) (host (probe) (probe.push (Qty.of 5 (Unit.base #"meter")))))
+    (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a Qty-over-Int64 host-op RESULT crosses as its erased inner scalar and lifts back to a Qty (imposed WIT)"
+  (doc
+    "SHAPE 238 (v-wit-boundary) — a host op whose RESULT is `(Qty Int64 (Unit.base \"meter\"))`. The result
+           crosses as the erased inner `s64` (the host returns a plain scalar) and lifts back into a `Qty`-typed
+           value on the guest (erased = the i64, no wrapper). `Qty.value` reads the magnitude. Pins the flagged
+           WIRED-but-UNTESTED `Qty`-over-scalar RESULT path (the result-side twin of SHAPE 237, no code).")
+  (wit-world (world w (import cadenza:platform/probe
+    (member measure (func (param m (s64)) (result (s64)))))))
+  (input (do
+    (effect probe (op measure (-> Int64 (Qty Int64 (Unit.base #"meter")))))
+    (def (run) (host (probe) (Qty.value (probe.measure 0))))
+    (export run)))
+  (call run)
+  (host-responses (respond probe.measure (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.measure))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a Qty-over-Float64 host-op ARG crosses as its erased inner f64 scalar (imposed WIT)"
+  (doc
+    "SHAPE 239 (v-wit-boundary) — the FLOAT-inner twin of SHAPE 237: a `(Qty Float64 (Unit.base \"meter\"))`
+           quantity host-op ARG erases to its inner `Float64` and crosses as `HostParam::Scalar(F64)` (WIT `f64`).
+           Confirms the `Qty` peel is width-faithful across the numeric tower (int + float inner). run() passes
+           `(Qty.of 2.5 meter)`; the host returns 55.")
+  (wit-world (world w (import cadenza:platform/probe
+    (member push (func (param m (f64)) (result (s64)))))))
+  (input (do
+    (effect probe (op push (-> (Qty Float64 (Unit.base #"meter")) Int64)))
+    (def (run) (host (probe) (probe.push (Qty.of (: 2.5 Float64) (Unit.base #"meter")))))
+    (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
