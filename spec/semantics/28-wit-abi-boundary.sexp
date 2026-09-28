@@ -8483,3 +8483,32 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a typed reducer performing a list<option<option<record{a,b}>>> host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc
+    "SHAPE 226 (v-wit-boundary) — a top-level `list<option<option<record{a: s64, b: s64}>>>` bare host-op ARGUMENT
+           (probe.push). Widens the nested-option list element (SHAPE 224 scalar / SHAPE 225 bytes inner) to a
+           PRODUCT (record) inner, closing the nested-option-in-list family. It needs NO new code: the SHAPE 224
+           nested-option arm in `emit_option_to_mem` recurses on the inner `option<record>`, which falls through to
+           the existing RECORD arm (`emit_record_to_mem`) writing the product IN PLACE at the inner payload offset
+           (each field WIT-ordered from the element's `option<option<record>>` WIT); an all-scalar record writes
+           nothing extra to `mem` (the list-arg pre-scan still reserves the cursor). `list_elem_marshalable`'s option
+           arm + the `option_elem` detector admit the nested-option-record element (the inner option is itself a
+           marshalable element whose record fields are `product_field_marshalable`), and `collect_list_elem_ops`'
+           nested-option recursion reaches the inner Record arm (`arr-get` per field + each field's ops). This case
+           PINS the compound-inner composition. run() builds [Some(Some({a:1,b:2})), Some(None), None] — all three
+           states — and performs probe.push; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (option (record (= a (s64)) (= b (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Option (Option (Record (: a Int64) (: b Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some (Some #record((= a 1) (= b 2)))) (Some None) None))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
