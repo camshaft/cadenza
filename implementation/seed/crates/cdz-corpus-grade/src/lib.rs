@@ -129,8 +129,13 @@ pub fn check_regression(actual: Verdict, description: &str, baseline: &str) -> O
 ///       making the fleet bar strictly weaker than plain `gate`. Reds it, matching `check_baseline`'s
 ///       `failing` set.
 /// A `fail`-baseline + `fail` verdict is the EXCEPTION — a TRACKED, git-committed known-fail (#4547): the
-/// EXPECTED state, NOT a gate failure (noted so it stays visible; a later PASS surfaces as a regression to
-/// re-baseline). The whole-run "vanished" case (a baseline title with no run) is a separate global aggregate.
+/// EXPECTED state, NOT a gate failure (noted so it stays visible). A `fail`-baseline + PASS verdict (the
+/// known-fail got FIXED) does NOT red either — a `not-pass → pass` GAIN is never a regression (only
+/// `pass → not-pass` reds); it merely leaves the baseline stale at `fail` until a `gate --save` re-harvest
+/// flips it to `pass` (which then restores this case's pass→not-pass regression protection). So a fix can
+/// land BEFORE its baseline flip without redding the gate; the flip is what re-arms the guard, not a
+/// precondition for the fix. The whole-run "vanished" case (a baseline title with no run) is a separate
+/// global aggregate.
 ///
 /// `membership_only` = the baseline is a CURATED SUBSET of the corpus (the RUST backend: `.gate-baseline-rust`
 /// covers ~8962 of ~10819 cases — rust stays INCREMENTAL, no-value-heap; the ABSENT cases are intentionally
@@ -180,7 +185,8 @@ pub fn exec_exit(
                 //     but noted so the log stays honest + the pin stays visible.
                 eprintln!(
                     "grade: {description}: FAIL, TRACKED known-fail (explicit `fail` baseline) — not a \
-                     gate failure (a later pass surfaces as a regression to re-baseline)"
+                     gate failure (when fixed, the pass is a GAIN that never reds; re-baseline fail→pass to \
+                     re-arm regression protection)"
                 );
             }
             ExitCode::SUCCESS
@@ -3582,6 +3588,31 @@ mod tests {
                 "a known-fail case",
                 Some(baseline),
                 false
+            )),
+            success
+        );
+        // WITH baseline: a `fail` baseline whose case now PASSES (the known-fail got FIXED) is a GAIN, not a
+        // regression — SUCCESS. Pins that a fix may land BEFORE its baseline flip without redding the gate
+        // (the mrs1-consume/#9958 workflow); only `pass → not-pass` reds, never `not-pass → pass`. Guards
+        // against "correcting" this to red, which would break every fix that lands ahead of its re-baseline.
+        assert_eq!(
+            fmt(exec_exit(
+                &res(Grade::Pass),
+                "a known-fail case",
+                Some(baseline),
+                false
+            )),
+            success
+        );
+        // WITH baseline: a `fail` baseline + `fail` verdict is the tracked known-fail (#4547) under
+        // MEMBERSHIP-ONLY too (the rust curated-subset bar) — SUCCESS, same as strict mode (the #4547 note
+        // is reached regardless of membership_only; membership only exempts the ABSENT case).
+        assert_eq!(
+            fmt(exec_exit(
+                &res(Grade::Fail("x".into())),
+                "a known-fail case",
+                Some(baseline),
+                true
             )),
             success
         );
