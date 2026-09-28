@@ -163,6 +163,32 @@ pub(crate) fn flatten_record_field_abi(
                 flatten_record_field_abi(e, out);
             }
         }
+        // A heterogeneous `variant` FIELD flattens (canonical variant flatten) to `(disc:i32, join(case
+        // payloads))`. Its register-flattened form is the bare-ARG `HostParam::VariantMixed` join; as a mem `list`
+        // element it crosses as `(ptr,count)` (this flatten unused). This arm is reached only when a
+        // `VariantMemMixed` sits at a REGISTER record FIELD position, which `emit_record_arg_marshal` declines —
+        // so the computed flatten is discarded. Emit the disc + the WIDEST payload case's slots (a well-formed
+        // best-effort; never consumed by a finalized component).
+        RecordFieldAbi::VariantMemMixed(cases) => {
+            out.push(wasm_abi::CORE_I32); // the discriminant
+            let mut widest: Vec<u8> = Vec::new();
+            for (_, kind) in cases {
+                let mut slots: Vec<u8> = Vec::new();
+                match kind {
+                    Some(crate::backend::wasm::host::VariantPayloadKind::Scalar(v)) => {
+                        slots.push(v.core_byte())
+                    }
+                    Some(crate::backend::wasm::host::VariantPayloadKind::Tuple(abis)) => {
+                        slots.extend(abis.iter().map(|a| a.core_byte()))
+                    }
+                    _ => {}
+                }
+                if slots.len() > widest.len() {
+                    widest = slots;
+                }
+            }
+            out.extend_from_slice(&widest);
+        }
     }
 }
 

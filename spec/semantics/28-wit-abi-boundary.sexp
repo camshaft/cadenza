@@ -9538,3 +9538,35 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level list<variant{a, b(s64), c(tuple<s32,s64>)}> host-op arg crosses (HETEROGENEOUS scalar+tuple variant element at mem)"
+  (doc
+    "SHAPE 258 (v-wit-boundary) — a top-level `list<variant{a, b(s64), c(tuple<s32,s64>)}>` bare host-op ARGUMENT
+           (probe.push): each list element is a HETEROGENEOUS variant MIXING a scalar payload case (b) and a
+           tuple-of-scalars payload case (c), plus a nullary case (a). Closes the last arg-side mem gap: the mem
+           writer `emit_variant_to_mem` handled only a UNIFORM scalar payload (SHAPE 171) or a SINGLE tuple case
+           (SHAPE 254); a scalar+tuple MIX declined. Now it dispatches a `variant_mixed_payload_cases` shape (all
+           Scalar/Tuple kinds) to `emit_variant_mixed_to_mem`, a general PER-CASE dispatcher: it stores the disc,
+           zero-fills the payload region, then on the SELECTED case writes a scalar at its width OR the tuple
+           product (via `emit_product_to_mem`) at the canonical payload offset. `field_boundary_abi` returns the
+           new `RecordFieldAbi::VariantMemMixed` (so the classifier builds `HostParam::List` → memory declared),
+           `list_elem_marshalable` + the list marshal's `is_variant` gate + `collect_list_elem_ops` gained the
+           scalar+tuple-mixed admission in lockstep. The bare-ARG mix already rode `HostParam::VariantMixed` (SHAPE
+           243); this is its mem twin. run() pushes `(C (3,7))`, `(B 42)`, `A` — exercising the tuple case, the
+           scalar case, and the nullary case; a VALID running component (live-objects=0) pins the round-trip.
+           (A Bytes/List/record payload case in such a mixed variant at mem remains a clean decline — a later slice.)")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (variant (a) (b (s64)) (c (tuple (s32) (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C (Tuple Int32 Int64)))
+      (effect probe (op push (-> (List V) Int64)))
+      (def (run) (host (probe) (probe.push #list((V.C #tuple(3 7)) (V.B 42) V.A))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

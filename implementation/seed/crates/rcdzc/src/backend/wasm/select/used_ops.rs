@@ -223,6 +223,27 @@ pub(super) fn collect_list_elem_ops(
         if let Some(tuple_ty) = variant_payload_ty_at(db, elem, tuple_disc as u32) {
             collect_list_elem_ops(db, &tuple_ty, out);
         }
+    } else if let Some(mixed) = crate::backend::wasm::host::variant_mixed_payload_cases(db, elem) {
+        // A HETEROGENEOUS `variant` element (`emit_variant_mixed_to_mem`): reads `sum-disc`/`sum-payload`, and
+        // per payload case a Scalar's unbox op OR a Tuple's `arr-get` + element unboxes (via the shared
+        // `collect_list_elem_ops` Tuple arm). Scoped to Scalar/Tuple cases (matching the marshal).
+        out.insert(OP_SUM_DISC);
+        out.insert(OP_SUM_PAYLOAD);
+        for (pd, kind) in &mixed {
+            let Some(pty) = variant_payload_ty_at(db, elem, *pd as u32) else {
+                continue;
+            };
+            match kind {
+                crate::backend::wasm::host::VariantPayloadKind::Tuple(_) => {
+                    collect_list_elem_ops(db, &pty, out); // Tuple arm: arr-get + per-element ops
+                }
+                _ => {
+                    if let Ok(Some(read)) = get_op_ty(db, &pty) {
+                        out.insert(read);
+                    }
+                }
+            }
+        }
     } else if let Ok(Some(read)) = get_op_ty(db, elem) {
         out.insert(read);
     }
