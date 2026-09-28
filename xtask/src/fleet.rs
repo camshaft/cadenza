@@ -546,7 +546,10 @@ pub enum FleetCmd {
     /// pausing between so N relaunches don't thundering-herd. SKIPS the human-attended `design` windows, the
     /// `concierge`, `pr-sync`, and any non-active/windowless agent (they pick the config up when next
     /// launched). DEFAULT is a DRY-RUN preview (prints the exact plan, touches nothing); pass `--apply` to
-    /// actually restart. Run the preview first.
+    /// actually restart. Run the preview first. `--limit N` restarts only the FIRST N targets (the target
+    /// list is sorted, so it's the SAME N every run) — a deterministic CANARY: `--apply --limit 1` bounces
+    /// exactly one worker so you can verify it picks the config up (e.g. registers on the task board) before
+    /// the full fleet-wide bounce, without racing a Ctrl-C.
     RestartAll {
         /// Actually restart. Default (omitted) = DRY-RUN preview only.
         #[arg(long)]
@@ -554,6 +557,9 @@ pub enum FleetCmd {
         /// Seconds to pause between window restarts (so N Claude relaunches don't hit the API at once).
         #[arg(long, default_value_t = 15)]
         pause_secs: u64,
+        /// Restart only the first N targets (deterministic canary; the list is sorted). Omitted = all.
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Stop every agent (mark `stopped`, drop each a stop-file the loop checks) but LEAVE the tmux
     /// windows open, so their scrollback survives for inspection.
@@ -1541,7 +1547,11 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
     let fleet = Fleet::new(paths);
     match cmd {
         FleetCmd::Up { crons_only } => up(&fleet, crons_only),
-        FleetCmd::RestartAll { apply, pause_secs } => restart_all(&fleet, apply, pause_secs),
+        FleetCmd::RestartAll {
+            apply,
+            pause_secs,
+            limit,
+        } => restart_all(&fleet, apply, pause_secs, limit),
         FleetCmd::Down => down(&fleet),
         FleetCmd::Status => status(&fleet),
         FleetCmd::Hub => hub(&fleet),
@@ -14498,10 +14508,23 @@ fn restart_all_targets(
     v
 }
 
+/// Apply the optional canary `--limit`: keep only the first `n` targets. The target list is already
+/// sorted (see [`restart_all_targets`]), so truncating is DETERMINISTIC — the same n windows every run,
+/// which is what makes `--apply --limit 1` a repeatable one-worker canary. `None` = no limit (restart
+/// all). `Some(0)` = restart nothing (an honest no-op the caller reports). Kept pure + separate from
+/// selection so the truncation is unit-testable without tmux/registry.
+fn apply_restart_limit(mut targets: Vec<String>, limit: Option<usize>) -> Vec<String> {
+    if let Some(n) = limit {
+        targets.truncate(n);
+    }
+    targets
+}
+
 /// Rolling-restart every live worker/vertical window (see the `RestartAll` CLI doc + [`restart_all_targets`]).
-/// DEFAULT is a dry-run preview; `apply` actually restarts. Server-direct: resolves the session from
-/// `$CDZ_FLEET_SESSION`, else the current tmux session, else `main`.
-fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64) {
+/// DEFAULT is a dry-run preview; `apply` actually restarts. `limit` restarts only the first N targets (a
+/// deterministic canary). Server-direct: resolves the session from `$CDZ_FLEET_SESSION`, else the current
+/// tmux session, else `main`.
+fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64, limit: Option<usize>) {
     let session = std::env::var("CDZ_FLEET_SESSION")
         .ok()
         .filter(|s| !s.is_empty())
@@ -14510,15 +14533,20 @@ fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64) {
     let live_windows = tmux_windows(&session);
     let self_window = current_window_agent(); // never restart the window the loop runs in
     let reg = fleet.load();
-    let targets = restart_all_targets(&reg.agents, &live_windows, self_window.as_deref());
+    let selected = restart_all_targets(&reg.agents, &live_windows, self_window.as_deref());
     // Surface what is SKIPPED-though-live (interactive/concierge/pr-sync) so the preview is self-explaining.
+    // Computed against the FULL selected set (before the canary --limit) so a limit-deferred worker is
+    // reported as deferred below, not miscounted here as an interactive/concierge skip.
     let skipped: Vec<String> = reg
         .agents
         .iter()
         .filter(|a| a.status == "active" && live_windows.iter().any(|w| w == &a.name))
-        .filter(|a| !targets.contains(&a.name))
+        .filter(|a| !selected.contains(&a.name))
         .map(|a| format!("{} ({})", a.name, a.role))
         .collect();
+    let full_count = selected.len();
+    let targets = apply_restart_limit(selected, limit);
+    let deferred_by_limit = full_count - targets.len();
     println!(
         "fleet restart-all: session '{session}' — {} live target(s), {} skipped, pause {pause_secs}s{}",
         targets.len(),
@@ -14533,6 +14561,13 @@ fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64) {
         println!(
             "  skipped (design/concierge/pr-sync/self, or windowless/stopped): {}",
             skipped.join(", ")
+        );
+    }
+    if deferred_by_limit > 0 {
+        println!(
+            "  canary --limit {}: restarting {} of {full_count} target(s); {deferred_by_limit} deferred — re-run without --limit for the full bounce.",
+            limit.unwrap_or(0),
+            targets.len(),
         );
     }
     if targets.is_empty() {
@@ -23163,6 +23198,33 @@ mod tests {
         );
         // Empty live set → nothing to restart.
         assert!(restart_all_targets(&agents, &[], None).is_empty());
+    }
+
+    #[test]
+    fn apply_restart_limit_truncates_deterministically_for_a_canary() {
+        let targets = || {
+            vec![
+                "breaker".to_string(),
+                "v-alpha".to_string(),
+                "v-beta".to_string(),
+            ]
+        };
+        // None → no limit: every target survives, unchanged order.
+        assert_eq!(apply_restart_limit(targets(), None), targets());
+        // Some(1) → the canary: exactly the FIRST target (sorted, so deterministic run-to-run).
+        assert_eq!(
+            apply_restart_limit(targets(), Some(1)),
+            vec!["breaker".to_string()]
+        );
+        // Some(2) → first two, in order.
+        assert_eq!(
+            apply_restart_limit(targets(), Some(2)),
+            vec!["breaker".to_string(), "v-alpha".to_string()]
+        );
+        // A limit ≥ len is a no-op (never over-reads / panics), same as None.
+        assert_eq!(apply_restart_limit(targets(), Some(9)), targets());
+        // Some(0) → restart nothing (an honest no-op the caller reports as "nothing to restart").
+        assert!(apply_restart_limit(targets(), Some(0)).is_empty());
     }
 
     #[test]
