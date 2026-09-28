@@ -4025,25 +4025,26 @@ pub(super) fn emit_tuple_reg_flatten(
             )?;
             continue;
         }
-        // A HETEROGENEOUS MIXED `variant` element (scalar + tuple + WIT-ordered-record payload cases, NO mem
-        // case): read its handle (`arr-get i`, borrows the tuple) → flatten to `(disc, joined-slots…)` via
+        // A HETEROGENEOUS MIXED `variant` element (scalar + tuple + WIT-ordered-record + Bytes/List payload
+        // cases): read its handle (`arr-get i`, borrows the tuple) → flatten to `(disc, joined-slots…)` via
         // `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant / a mixed-variant
-        // record FIELD (SHAPE 264/266) use. Checked after the scalar-/single-tuple variant arms. EXCLUDED cases
-        // (decline at the final `get_op_ty`, decline-don't-miscompile): a Bytes/List case needs a `mem` spill +
-        // a reserved cursor; a Record case whose guest NAME-LEX field order DIVERGES from its element WIT order
-        // (the component `(record …)` is built name-lex, so a divergent order would mis-link — the tuple-element
-        // twin of SHAPE 266's record-FIELD guard). The bare-ARG + mem `list`-element (SHAPE 261) Record cases work.
+        // record FIELD (SHAPE 264/266/268/269) use. Checked after the scalar-/single-tuple variant arms. Two admit
+        // conditions (decline-don't-miscompile): a Bytes/List case rope-copies / marshals into `mem` at the cursor,
+        // so it needs the tuple's cursor RESERVED (`tuple_arg_needs_cursor`'s variant leaf) — else `cursor` is
+        // `None` and it declines; a Record case whose guest NAME-LEX field order DIVERGES from its element WIT
+        // order declines (the component `(record …)` is built name-lex — the tuple-element twin of SHAPE 266's guard).
         if crate::backend::wasm::host::variant_mixed_payload_cases(db, ety).is_some_and(|cases| {
             cases
                 .iter()
                 .all(|(_, k)| crate::backend::wasm::host::variant_mem_mixed_kind_supported(k))
-                && !cases.iter().any(|(_, k)| {
-                    matches!(
-                        k,
-                        crate::backend::wasm::host::VariantPayloadKind::Bytes
-                            | crate::backend::wasm::host::VariantPayloadKind::List(_)
-                    )
-                })
+                && (cursor.is_some()
+                    || !cases.iter().any(|(_, k)| {
+                        matches!(
+                            k,
+                            crate::backend::wasm::host::VariantPayloadKind::Bytes
+                                | crate::backend::wasm::host::VariantPayloadKind::List(_)
+                        )
+                    }))
                 && crate::backend::wasm::host::mixed_variant_record_cases_wit_ordered(
                     db,
                     ety,
@@ -4071,7 +4072,9 @@ pub(super) fn emit_tuple_reg_flatten(
                 ety,
                 &cases,
                 elem_wit,
-                cursor.unwrap_or(var_slot), // unused: the no-mem case set never spills
+                // A Bytes/List case spills at this cursor (guaranteed reserved by the `cursor.is_some()` guard
+                // above via `tuple_arg_needs_cursor`); a no-mem case set never touches it (fallback unused).
+                cursor.unwrap_or(var_slot),
                 work_base + 1,
                 high,
                 scratch_ty,

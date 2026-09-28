@@ -9922,3 +9922,56 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level tuple<variant{a, b(s64), c(bytes)}, s64> host-op arg crosses (BYTES payload case at a register tuple ELEMENT, cursor-reserved)"
+  (doc
+    "SHAPE 270 (v-wit-boundary) — a top-level `tuple<variant{a, b(s64), c(bytes)}, s64>` bare host-op ARGUMENT
+           (probe.push) whose ELEMENT 0 is a HETEROGENEOUS MIXED variant with a BYTES payload case (c) at the
+           REGISTER tuple-ELEMENT position — the tuple-element twin of SHAPE 268 (record-FIELD bytes). Reachable
+           once `tuple_arg_needs_cursor`'s `leaf_needs` recognizes a mixed-variant leaf with a Bytes/List case
+           (reserving the tuple's scratch cursor) and `tuple_arg_crosses` admits it; `emit_tuple_reg_flatten`'s
+           mixed-variant element arm admits a Bytes case guarded by `cursor.is_some()`. needs-memory rides
+           `record_field_abi_needs_memory`'s VariantMemMixed arm (Bytes/List → true) propagated by
+           `HostParam::Tuple`. `emit_variant_mixed_arg_reg_flatten`'s Bytes arm copies the rope into `mem` at the
+           cursor → `(ptr, len)`. The outer tuple flattens to `(v-disc:i32, ptr:i32, len:i32, n:i64)`. run() builds
+           (C(b\"hi\"), 5) and performs probe.push; a VALID running component (live-objects=0) pins it.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (variant (a) (b (s64)) (c (list (u8)))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (Tuple Sig Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Sig.C b"hi") 5))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level tuple<variant{a, b(s64), c(list<s64>)}, s64> host-op arg crosses (LIST payload case at a register tuple ELEMENT, cursor-reserved)"
+  (doc
+    "SHAPE 271 (v-wit-boundary) — a top-level `tuple<variant{a, b(s64), c(list<s64>)}, s64>` bare host-op ARGUMENT
+           (probe.push) whose ELEMENT 0 is a HETEROGENEOUS MIXED variant with a LIST-of-scalar payload case (c) at
+           the REGISTER tuple-ELEMENT position — the list twin of SHAPE 270 / the tuple-element twin of SHAPE 269.
+           `emit_variant_mixed_arg_reg_flatten`'s List arm marshals the payload list's backing array into `mem` at
+           the reserved cursor → `(ptr, count)`; same `tuple_arg_needs_cursor` + `cursor.is_some()` machinery as
+           SHAPE 270. The outer tuple flattens to `(v-disc:i32, ptr:i32, count:i32, n:i64)`. run() builds
+           (C([1,2,3]), 5) and performs probe.push; a VALID running component (live-objects=0) pins it.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (variant (a) (b (s64)) (c (list (s64)))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (List Int64)))
+      (effect probe (op push (-> (Tuple Sig Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Sig.C #list(1 2 3)) 5))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
