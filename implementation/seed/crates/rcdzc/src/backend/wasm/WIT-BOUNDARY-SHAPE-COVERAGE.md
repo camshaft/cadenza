@@ -461,12 +461,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `any_scalar && (any_mem || any_tuple)`. A FLOAT scalar case in a mixed variant is now ✅ DONE / TESTED (SHAPE
   244): `variant{a, b(f64), c(bytes)}` — the int-only restriction is lifted; the float scalar case joins with the
   mem case's integer slots via the canonical reinterpret lattice (`variant_mixed_join_slots` already reinterprets;
-  the emit's Scalar arm coerces via `emit_scalar_coerce_into_slot` — `i64.reinterpret_f64` here). REMAINING
+  the emit's Scalar arm coerces via `emit_scalar_coerce_into_slot` — `i64.reinterpret_f64` here). A FLOAT tuple
+  ELEMENT in a mixed variant is now ✅ DONE / TESTED (SHAPE 245): `variant{a, b(s64), c(tuple<f64,s64>)}` — the
+  Tuple arm coerces each element via `emit_scalar_coerce_into_slot` (element 0 f64→i64 reinterpret when folded
+  against b's i64 slot), so a mixed variant's inline (scalar/tuple) cases fully support int AND float. REMAINING
   variant-payload gaps: a mixed LIST case of a NON-scalar element (needs the element WIT threaded), a RECORD
   compound payload case in a mixed variant (needs the payload record's WIT threaded into the detector — a
-  multi-site change since the detector has only the guest type), a mixed variant tuple case with a NON-scalar or
-  FLOAT element, and ALL of the compound-payload variants at the FIELD / list-element positions
-  (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case `b(s64,s64)` is ✅ DONE — SHAPE 236.)
+  multi-site change since the detector has only the guest type), and ALL of the compound-payload variants at the
+  FIELD / list-element positions (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case
+  `b(s64,s64)` is ✅ DONE — SHAPE 236.)
 - **[emit, ARG-side] a scalar-payload variant MIXING int with float — the reinterpret join — ✅ DONE / TESTED
   (SHAPE 233/234/235).** A `variant{nullary…, scalar-case(s)}` whose payloads mix an integer with a float (or
   `f32` with `f64`) — the case the uniform `HostParam::Variant` declines (its join has no clean slot). Handled by

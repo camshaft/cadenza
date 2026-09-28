@@ -2177,12 +2177,12 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                 for k in (0..cnt).rev() {
                     out.push(Lir::LocalSet(temp_base + k));
                 }
-                // Coerce each element into the joined slot: widen `i32 -> i64` iff the join made this slot i64.
+                // Coerce each element into its joined slot via the shared `emit_scalar_coerce_into_slot`: an
+                // integer widens (`i64.extend_i32_u`) and a FLOAT element reinterprets (`i64.reinterpret_f64` /
+                // `i32.reinterpret_f32`) when the join folded it against another case's integer slot.
                 for k in 0..cnt {
                     out.push(Lir::LocalGet(temp_base + k));
-                    if slot_vts[k as usize] == ValType::I64 && nat_vts[k as usize] == ValType::I32 {
-                        out.push(Lir::I64ExtendI32U);
-                    }
+                    emit_scalar_coerce_into_slot(nat_vts[k as usize], slot_vts[k as usize], out);
                     out.push(Lir::LocalSet(base_slot + k));
                 }
                 cnt
