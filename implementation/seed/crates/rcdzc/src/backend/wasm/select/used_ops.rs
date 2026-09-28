@@ -237,6 +237,11 @@ pub(super) fn collect_list_elem_ops(
                 crate::backend::wasm::host::VariantPayloadKind::Tuple(_) => {
                     collect_list_elem_ops(db, &pty, out); // Tuple arm: arr-get + per-element ops
                 }
+                crate::backend::wasm::host::VariantPayloadKind::Bytes => {
+                    // A Bytes case copies its rope into `mem` at the cursor (`bytes-len`/`bytes-get`).
+                    out.insert(OP_BYTES_LEN);
+                    out.insert(OP_BYTES_GET);
+                }
                 _ => {
                     if let Ok(Some(read)) = get_op_ty(db, &pty) {
                         out.insert(read);

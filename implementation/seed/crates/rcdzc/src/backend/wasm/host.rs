@@ -1531,7 +1531,9 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                 && mixed.iter().all(|(_, k)| {
                     matches!(
                         k,
-                        VariantPayloadKind::Scalar(_) | VariantPayloadKind::Tuple(_)
+                        VariantPayloadKind::Scalar(_)
+                            | VariantPayloadKind::Tuple(_)
+                            | VariantPayloadKind::Bytes
                     )
                 })
             {
@@ -2214,7 +2216,9 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
                 cases.iter().all(|(_, k)| {
                     matches!(
                         k,
-                        VariantPayloadKind::Scalar(_) | VariantPayloadKind::Tuple(_)
+                        VariantPayloadKind::Scalar(_)
+                            | VariantPayloadKind::Tuple(_)
+                            | VariantPayloadKind::Bytes
                     )
                 })
             }) =>

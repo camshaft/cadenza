@@ -123,14 +123,15 @@ pub(super) fn emit_list_arg_marshal(
     } else {
         crate::backend::wasm::host::variant_scalar_payload_cases(db, elem).is_some()
                 || crate::backend::wasm::host::variant_tuple_payload_case(db, elem).is_some()
-                // A HETEROGENEOUS scalar+tuple variant element → `emit_variant_to_mem`'s mixed per-case
-                // dispatcher. Scoped to Scalar/Tuple payload kinds (matching `list_elem_marshalable`).
+                // A HETEROGENEOUS scalar+tuple+bytes variant element → `emit_variant_to_mem`'s mixed per-case
+                // dispatcher. Scoped to Scalar/Tuple/Bytes payload kinds (matching `list_elem_marshalable`).
                 || crate::backend::wasm::host::variant_mixed_payload_cases(db, elem).is_some_and(|cases| {
                     cases.iter().all(|(_, k)| {
                         matches!(
                             k,
                             crate::backend::wasm::host::VariantPayloadKind::Scalar(_)
                                 | crate::backend::wasm::host::VariantPayloadKind::Tuple(_)
+                                | crate::backend::wasm::host::VariantPayloadKind::Bytes
                         )
                     })
                 })
@@ -407,7 +408,17 @@ pub(super) fn emit_list_arg_marshal(
         // VARIANT<scalar> element (`list<variant{a, b(s64), …}>`): write the value-heap variant IN PLACE into
         // the outer slot at `slotaddr` per its canonical variant layout (disc + uniform scalar payload), via
         // `emit_variant_to_mem`. `eh` is the borrowed element variant handle. work_base ABOVE this level (`+9`).
-        emit_variant_to_mem(db, eh, slotaddr, elem, work_base + 9, high, scratch_ty, out)?;
+        emit_variant_to_mem(
+            db,
+            eh,
+            slotaddr,
+            elem,
+            cursor,
+            work_base + 9,
+            high,
+            scratch_ty,
+            out,
+        )?;
     } else {
         // scalar element: outer[i] = unbox(eh), width-narrowed, stored INLINE (no cursor advance).
         let read = read.expect("a scalar element has an unbox op");
@@ -608,6 +619,7 @@ pub(super) fn emit_product_to_mem(
                     var_slot,
                     field_addr,
                     fty,
+                    cursor,
                     work_base + 5,
                     high,
                     scratch_ty,
@@ -1162,6 +1174,10 @@ pub(super) fn emit_variant_to_mem(
     var_slot: u32,
     dest_addr: u32,
     variant_ty: &Ty,
+    // The running byte-position local for `Bytes`/`List` payload SPILLS (a mixed variant's `Bytes` case copies
+    // its rope here). The scalar/tuple paths never touch it; the list-element / product-field callers pass their
+    // own backing cursor.
+    cursor: u32,
     work_base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
@@ -1180,13 +1196,14 @@ pub(super) fn emit_variant_to_mem(
                 db, var_slot, dest_addr, variant_ty, tuple_disc, work_base, high, scratch_ty, out,
             );
         }
-        // A HETEROGENEOUS mix (scalar + tuple payload cases) → the general per-case dispatcher. Checked after
-        // the uniform-scalar and single-tuple fast-paths (this claims only the residual mix). A Bytes/List/record
+        // A HETEROGENEOUS mix (scalar + tuple + bytes payload cases) → the general per-case dispatcher. Checked
+        // after the uniform-scalar and single-tuple fast-paths (this claims only the residual mix). A List/record
         // payload case declines inside `emit_variant_mixed_to_mem` (a later slice).
         if let Some(mixed) = crate::backend::wasm::host::variant_mixed_payload_cases(db, variant_ty)
         {
             return emit_variant_mixed_to_mem(
-                db, var_slot, dest_addr, variant_ty, &mixed, work_base, high, scratch_ty, out,
+                db, var_slot, dest_addr, variant_ty, &mixed, cursor, work_base, high, scratch_ty,
+                out,
             );
         }
     }
@@ -1417,8 +1434,9 @@ fn emit_variant_tuple_to_mem(
 /// zero-filled region. The general per-case sibling of [`emit_variant_to_mem`]'s uniform-scalar path and
 /// [`emit_variant_tuple_to_mem`]'s single-tuple path — used for a `list<…scalar+tuple variant…>` element. The
 /// payload offset + region size come from [`canonical_layout`], so they agree byte-for-byte with the per-element
-/// stride the list marshal reserves. SCOPED to scalar + tuple-of-scalars payload cases — a `Bytes`/`List`/record
-/// payload case declines (a later slice needing the mem cursor / a WIT-ordered record write).
+/// stride the list marshal reserves. A `Bytes` case writes a `(ptr,len)` header at the payload offset and copies
+/// its rope to the running `cursor`. SCOPED to scalar + tuple-of-scalars + Bytes payload cases — a `List`/record
+/// payload case declines (a later slice).
 #[allow(clippy::too_many_arguments)]
 fn emit_variant_mixed_to_mem(
     db: &mut Db,
@@ -1426,6 +1444,7 @@ fn emit_variant_mixed_to_mem(
     dest_addr: u32,
     variant_ty: &Ty,
     cases: &[(i32, crate::backend::wasm::host::VariantPayloadKind)],
+    cursor: u32,
     work_base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
@@ -1459,11 +1478,13 @@ fn emit_variant_mixed_to_mem(
     let disc = work_base;
     let field_addr = work_base + 1;
     let tup_slot = work_base + 2;
-    let cursor = work_base + 3; // scalar/all-scalar-tuple cases → no Bytes spill; a valid i32 local for the product writer
-    for s in [disc, field_addr, tup_slot, cursor] {
+    let rope = work_base + 3; // a Bytes case's rope handle
+    let pos = work_base + 4; // a Bytes case's copy loop counter
+    let blen = work_base + 5; // a Bytes case's rope length
+    for s in [disc, field_addr, tup_slot, rope, pos, blen] {
         scratch_ty.insert(s, ValType::I32);
     }
-    *high = (*high).max(work_base + 4);
+    *high = (*high).max(work_base + 6);
 
     // disc @ offset 0.
     out.push(Lir::LocalGet(var_slot));
@@ -1566,17 +1587,67 @@ fn emit_variant_mixed_to_mem(
                     field_addr,
                     &layout,
                     cursor,
-                    work_base + 4,
+                    work_base + 6, // ABOVE this fn's disc/field_addr/tup_slot/rope/pos/blen scratch
                     high,
                     scratch_ty,
                     out,
                 )?;
                 out.push(Lir::End);
             }
-            // A Bytes/List/Record payload case needs the mem cursor / a WIT-ordered record write — a later slice.
+            // A `Bytes`/`String` payload case: write a `(ptr, len)` header at the payload offset and copy the
+            // rope into `mem` at the running `cursor` (the canonical `list<u8>` case layout), advancing `cursor`.
+            VariantPayloadKind::Bytes => {
+                out.push(Lir::LocalGet(disc));
+                out.push(Lir::ConstI32(*pd));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty));
+                // rope = sum-payload(var); blen = bytes-len(rope); pos = 0.
+                out.push(Lir::LocalGet(var_slot));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                out.push(Lir::LocalSet(rope));
+                out.push(Lir::LocalGet(rope));
+                out.push(Lir::CallImport(OP_BYTES_LEN));
+                out.push(Lir::LocalSet(blen));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(pos));
+                // copy loop: while pos < blen { mem[cursor+pos] = bytes-get(rope, pos); pos++ }
+                out.push(Lir::Block(BlockType::Empty));
+                out.push(Lir::Loop(BlockType::Empty));
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::LocalGet(blen));
+                out.push(Lir::I32GeS);
+                out.push(Lir::BrIf(1));
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::I32Add); // addr = cursor + pos
+                out.push(Lir::LocalGet(rope));
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::CallImport(OP_BYTES_GET));
+                out.push(Lir::I32Store8 { offset: 0 });
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(pos));
+                out.push(Lir::Br(0));
+                out.push(Lir::End);
+                out.push(Lir::End);
+                // ptr@field_addr = cursor ; len@field_addr+4 = blen ; cursor += blen.
+                out.push(Lir::LocalGet(field_addr));
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::I32Store { offset: 0 });
+                out.push(Lir::LocalGet(field_addr));
+                out.push(Lir::LocalGet(blen));
+                out.push(Lir::I32Store { offset: 4 });
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(blen));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(cursor));
+                out.push(Lir::End);
+            }
+            // A List/record payload case needs the element-array marshal / a WIT-ordered record write — a later slice.
             _ => {
                 return Err(Reject::decline(
-                    "a mixed variant element has a Bytes/List/record payload case (not this increment)",
+                    "a mixed variant element has a List/record payload case (not this increment)",
                 ));
             }
         }
