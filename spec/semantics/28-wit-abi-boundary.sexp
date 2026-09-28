@@ -9799,3 +9799,38 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a RECORD host-op arg with a mixed variant{a, b(s64), c(record{p: s32, q: s64})} field crosses (WIT-ordered record payload case, register flatten)"
+  (doc
+    "SHAPE 266 (v-wit-boundary) — a RECORD host-op ARGUMENT `record{ v: variant{a, b(s64), c(record{p: s32,
+           q: s64})}, n: s64 }` (probe.push) whose `v` FIELD is a HETEROGENEOUS MIXED variant with a RECORD
+           payload case (c) beside a scalar case (b) + a nullary case (a), at the REGISTER record-FIELD position.
+           SHAPE 264 landed the scalar+TUPLE mix at this position but a RECORD payload case CDZ0910'd — the
+           component variant type built by `host_imports::record_field_cref` declared the record case as NULLARY
+           (payload `None`), so its canonical flatten under-counted by the record's slots and disagreed with
+           serialize's `VariantMemMixed` join (`expected (i32 i64 i64 i64)` vs `found (i32 i64 i64)`). Fixed:
+           `record_field_cref`'s VariantMemMixed arm now lays a real `(record (p s32) (q s64))` DEFINED type for a
+           Record case (kebab field names in guest NAME-LEX order), so the component type flattens to the same
+           slots serialize + the guest push (`emit_variant_mixed_arg_reg_flatten`'s Record arm) produce. The
+           register arm re-admits a Record case guarded by `mixed_variant_record_cases_wit_ordered` (guest name-lex
+           order == WIT declaration order — here p<q ↔ WIT `(p s32)(q s64)` — since the component `(record …)` is
+           built name-lex; a DIVERGENT order still declines cleanly, decline-don't-miscompile). The bare-ARG +
+           mem `list`-element (SHAPE 261) Record cases were always fine. The whole record flattens to
+           `(v-disc:i32, p:i64, q:i64, n:i64)` (p's i32 joins into the i64 slot 0). run() builds
+           { v: C({p:3, q:7}), n: 5 } and performs probe.push; a VALID running component (live-objects=0) pins the
+           register record-payload-case round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= v (variant (a) (b (s64)) (c (record (= p (s32)) (= q (s64)))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (Record (: p Int32) (: q Int64))))
+      (effect probe (op push (-> (Record (: v Sig) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Sig.C #record((= p 3) (= q 7)))) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

@@ -163,17 +163,21 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `variant` DEFINED type were already produced; serialize's VariantMemMixed flatten is now the canonical
   position-wise join (`variant_mixed_join_slots` — matching the bare-ARG path + the guest push +
   `wit_ctype::flatten_variant`) rather than the former DISCARDED widest-case placeholder, so the record's core
-  param flatten agrees with the guest marshal. `collect_record_field_ops` gained the matching arm. SCOPED to
-  **scalar + tuple** payload cases — a Bytes/List case (needing a `mem` spill + a cursor reserved by the emit.rs
-  pre-scan) declines cleanly, and a **Record** payload case ALSO declines cleanly at this register-FIELD position
-  (⚠ OPEN DEFECT: it CDZ0910'd — the guest-import functype from serialize's name-lex `field_boundary_abi`
-  `VariantMemMixed` flatten and the emitted host stub disagree by ONE join slot; the bare-ARG Record case and the
-  mem `list`-element Record case (SHAPE 261) are UNAFFECTED and work, so the defect is register-field/element
-  specific — the Record exclusion was added to keep decline-don't-miscompile). Faithfully verified: status-0
-  shred-compile (1538-byte component, `wasm-tools validate` clean) emitting `push: func(record{v: variant{a,
-  b(s64), c(tuple<s32,s64>)}, n: s64})`. REMAINING at a register position: the same MIX with a Bytes/List case
-  (cursor reservation); the register-position Record-case one-join-slot defect (needs the serialize host-import
-  functype vs host-stub flatten reconciled).
+  param flatten agrees with the guest marshal. `collect_record_field_ops` gained the matching arm. Admits
+  **scalar + tuple + WIT-ordered-record** payload cases. A scalar+tuple mix is SHAPE 264; a **Record** payload case
+  is SHAPE 266 (`record{v: variant{a, b(s64), c(record{p: s32, q: s64})}, n: s64}`) — it initially CDZ0910'd
+  because `record_field_cref`'s VariantMemMixed arm declared a Record case as NULLARY (payload `None`), so the
+  component variant's canonical flatten under-counted by the record's slots vs serialize's join (`expected (i32 i64
+  i64 i64)` vs `found (i32 i64 i64)`); FIXED by laying a real `(record (p s32)(q s64))` DEFINED type for the case
+  (kebab names, guest name-lex order). The register arm re-admits a Record case guarded by
+  `mixed_variant_record_cases_wit_ordered` (guest name-lex order == WIT declaration order, since the component
+  `(record …)` is built name-lex) — a DIVERGENT-order record case still declines cleanly (decline-don't-miscompile,
+  the register twin of SHAPE 261's mem-path order guard). A Bytes/List case (needing a `mem` spill + a cursor
+  reserved by the emit.rs pre-scan) still declines. Faithfully verified: status-0 shred-compile
+  (1542-byte component, `wasm-tools validate` clean) emitting `push: func(record{v: variant{a, b(s64),
+  c(record{p: s32, q: s64})}, n: s64})`. REMAINING at a register position: the same MIX with a Bytes/List case
+  (cursor reservation); a mixed-variant Record case at a TUPLE-ELEMENT position (SHAPE 265 still excludes Record —
+  `tuple_arg_crosses` has no per-element WIT for the divergence guard).
 - **[emit] a HETEROGENEOUS MIXED `variant` at a REGISTER tuple-ELEMENT position — ✅ DONE / TESTED (SHAPE 265).**
   The tuple-element twin of SHAPE 264 (as SHAPE 257 was the tuple-element twin of the SHAPE 256 record-field
   variant-tuple). A `tuple<variant{a, b(s64), c(tuple<s32,s64>)}, s64>` arg previously DECLINED

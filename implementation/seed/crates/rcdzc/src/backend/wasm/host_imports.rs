@@ -523,9 +523,35 @@ pub(super) fn record_field_cref(
                             CRef::Idx(list_def + 1)
                         })
                     }
-                    // A record payload kind is out of this increment's scope (the field abi is only built for
-                    // Scalar/Tuple/Bytes/List-of-scalar cases); treat as nullary defensively (discarded on decline).
-                    _ => None,
+                    // A RECORD payload case (all-scalar fields): lay a `(record (field <prim>)…)` DEFINED type
+                    // over the guest record's fields in NAME-LEX order (the order the field abis were collected in),
+                    // kebab-naming each field, and reference its index. The register record-FIELD emit
+                    // (`emit_record_arg_marshal`'s VariantMemMixed arm) only admits a Record case whose guest
+                    // name-lex order MATCHES the WIT declaration order, so name-lex order IS the WIT order here —
+                    // keeping this component type structurally aligned with the world's declared variant case.
+                    Some(host::VariantPayloadKind::Record(abis, rty)) => {
+                        match rty.strip_nominal() {
+                            crate::ty::Ty::Record(rfields) if rfields.len() == abis.len() => {
+                                let rec_fields: Vec<(String, CRef)> = rfields
+                                    .keys()
+                                    .zip(abis.iter())
+                                    .map(|(sym, a)| {
+                                        (
+                                            crate::backend::common::export_name::kebab_extern_name(
+                                                sym.name.as_ref(),
+                                            ),
+                                            CRef::Prim(a.comp_byte()),
+                                        )
+                                    })
+                                    .collect();
+                                let rec_def = base + 2 * table.len() as u32;
+                                table.push(emit_cdef(&CDef::Record(rec_fields)));
+                                Some(CRef::Idx(rec_def + 1))
+                            }
+                            _ => None,
+                        }
+                    }
+                    None => None,
                 };
                 vcases.push((name.clone(), payload));
             }

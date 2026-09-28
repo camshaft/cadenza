@@ -5155,17 +5155,18 @@ pub(super) fn emit_record_arg_marshal(
                     out,
                 )?;
             }
-            // A HETEROGENEOUS MIXED `variant` field (scalar + tuple payload cases, NO mem/record case) flattens
-            // (canonical variant flatten) to `(disc:i32, joined-slots…)` via `emit_variant_mixed_arg_reg_flatten`
-            // — the SAME helper the bare-ARG mixed variant uses, so the field and bare-arg marshals stay in
-            // lockstep. serialize's `VariantMemMixed` flatten + `host_imports`'s variant DEFINED type agree on this
-            // join. Detected AFTER the scalar-/tuple-payload variant arms (they claim their clean single-kind
-            // shapes). EXCLUDED cases (decline at the None catch-all, decline-don't-miscompile): a `Bytes`/`List`
-            // payload case needs a `mem` spill + a reserved cursor (the emit.rs pre-scan does not yet reserve one
-            // for a mixed-variant field); a `Record` payload case crosses correctly as a BARE arg but at a REGISTER
-            // record-FIELD position the host-import functype (serialize's name-lex `field_boundary_abi`
-            // `VariantMemMixed` flatten) and the guest push disagree by one join slot — an open register-Record
-            // defect (the mem `list`-element Record case, SHAPE 261, is unaffected and works).
+            // A HETEROGENEOUS MIXED `variant` field (scalar + tuple + WIT-ordered-record payload cases, NO mem
+            // case) flattens (canonical variant flatten) to `(disc:i32, joined-slots…)` via
+            // `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant uses, so the field
+            // and bare-arg marshals stay in lockstep. serialize's `VariantMemMixed` flatten + `host_imports`'s
+            // variant DEFINED type (incl. a record case's `(record …)` DEFINED type, built name-lex by
+            // `record_field_cref`) agree on this join. Detected AFTER the scalar-/tuple-payload variant arms (they
+            // claim their clean single-kind shapes). EXCLUDED (decline at the None catch-all,
+            // decline-don't-miscompile): a `Bytes`/`List` payload case needs a `mem` spill + a reserved cursor (the
+            // emit.rs pre-scan does not yet reserve one for a mixed-variant field); a `Record` payload case whose
+            // guest NAME-LEX field order DIVERGES from its WIT declaration order is declined by
+            // `mixed_variant_record_cases_wit_ordered` (the component `(record …)` type is built name-lex, so a
+            // divergent order would mis-link — SHAPE 261's mem-path guard twin at a register position).
             None if crate::backend::wasm::host::variant_mixed_payload_cases(db, fty)
                 .is_some_and(|cases| {
                     cases.iter().all(|(_, k)| {
@@ -5175,9 +5176,12 @@ pub(super) fn emit_record_arg_marshal(
                             k,
                             crate::backend::wasm::host::VariantPayloadKind::Bytes
                                 | crate::backend::wasm::host::VariantPayloadKind::List(_)
-                                | crate::backend::wasm::host::VariantPayloadKind::Record(..)
                         )
-                    })
+                    }) && crate::backend::wasm::host::mixed_variant_record_cases_wit_ordered(
+                        db,
+                        fty,
+                        Some(fwit),
+                    )
                 }) =>
             {
                 let cases = crate::backend::wasm::host::variant_mixed_payload_cases_wit(
@@ -5212,8 +5216,8 @@ pub(super) fn emit_record_arg_marshal(
                 return Err(Reject::decline(
                     "a record host-arg field has no boundary read (only scalar, list<u8>, list<T>, \
                      option<scalar>, option<tuple-of-scalars>, variant<scalar>, variant<tuple-of-scalars>, \
-                     mixed variant<scalar+tuple>, nested-record, and result<list<u8>, enum> fields \
-                     cross this increment)",
+                     mixed variant<scalar+tuple+wit-ordered-record>, nested-record, and \
+                     result<list<u8>, enum> fields cross this increment)",
                 ));
             }
         }
