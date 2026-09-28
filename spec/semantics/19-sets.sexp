@@ -6227,3 +6227,25 @@
   (call main (: 2 Int64))
   (output (: -87 Int64))
   (live-objects known-leak))
+
+(case
+  "chdo1 a Set threaded tail-recursively by Set.remove, DEAD at the base arm, reclaims the CHAMP orphan"
+  (doc
+    "The (d) CHAMP tail-threaded-dead-at-base orphan: `go` removes `n` from the Set each step and
+     recurses, the base arm (n=0) returns a SCALAR 0 — the threaded Set is dead-after at the base, so
+     its final handle ORPHANED one cell until v-core-opt admitted Set.remove as CHAMP reclaim-on-edge
+     (e2f72191e0: Set.remove arms in arg_reclaims_binder_as_base(_dupbacked), body_analysis.rs — the
+     consume-and-rebuild fold reclaims the varying accumulator ON THE EDGE, epilogue reclaims the final
+     value). Runtime-seeded `#set(k …)` so it does not const-fold (a const `#set(1 2 3)` DCE's away).
+     List.push / Bytes.concat / String.concat threaded-dead-at-base all reclaim CLEAN already — only
+     Set/Map leaked, hence the Ty::List selfloop-orphan machinery extended to Ty::Set/Map. Verified
+     live-objects 0 (leaked 1 pre-fix).")
+  (input
+    (do
+      (def (go (: s (Set Int64)) (: n Int64))
+        (if (= n 0) 0 (+ 1 (go (Set.remove s n) (- n 1)))))
+      (def (main (: k Int64)) (go #set(k (+ k 1) (+ k 2)) 3))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))

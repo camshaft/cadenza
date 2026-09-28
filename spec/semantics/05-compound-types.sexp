@@ -38299,3 +38299,23 @@
   (output (: 2 Int64))
   (call main (: 5 Int64) (: -2 Int64))
   (output (: 3 Int64)))
+
+(case
+  "chdo2 a Map threaded tail-recursively by Map.remove, DEAD at the base arm, reclaims the CHAMP orphan"
+  (doc
+    "The (d) CHAMP tail-threaded-dead-at-base orphan, Map sibling of chdo1 (19-sets): `go` removes key
+     `n` from the Map each step and recurses, the base arm (n=0) returns a SCALAR 0 — the threaded Map
+     is dead-after at the base, orphaning its final handle until v-core-opt admitted Map.remove as CHAMP
+     reclaim-on-edge (e2f72191e0: Map.remove arms in arg_reclaims_binder_as_base(_dupbacked),
+     body_analysis.rs, a 1:1 mirror of the Map.insert reclaim-on-edge; op_map_remove consumes the base +
+     borrows the key). Runtime-seeded `#map((= k k) …)` so it does not const-fold. Verified live-objects
+     0 (leaked 1 pre-fix).")
+  (input
+    (do
+      (def (go (: m (Map Int64 Int64)) (: n Int64))
+        (if (= n 0) 0 (+ 1 (go (Map.remove m n) (- n 1)))))
+      (def (main (: k Int64)) (go #map((= k k) (= (+ k 1) (+ k 1)) (= (+ k 2) (+ k 2))) 3))
+      (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))

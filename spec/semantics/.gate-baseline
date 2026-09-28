@@ -899,6 +899,7 @@ pass	a Char const param folds a VALUE through a bare recursive call
 pass	a Char threaded through a recursion const-folds (cb04)
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a Char.from-int-derived runtime char has literal-char collection identity
+pass	chdo1 a Set threaded tail-recursively by Set.remove, DEAD at the base arm, reclaims the CHAMP orphan
 pass	a DEAD-branch Float32 overflow folds away and the taken branch runs (no over-rejection)
 pass	a DEEP recursive NAME-HEAD tuple destructure-let terminates within deadline — guards the ML/paren-surface path (#6042)
 pass	a DEEP recursive tuple destructure-let TERMINATES within deadline — the #6000 init-re-eval hang regression guard
@@ -10476,6 +10477,7 @@ pass	the STATE-outer nesting of the dual-sum arm threads fresh payloads across t
 pass	the STRING-accumulator face: a tail loop borrowing its owned String while concat-threading it also leaks per-iteration (O(n))
 pass	the Sign sum orders Neg below Pos per its declaration
 pass	the THREE-WAY Ordering.of over a single-variant newtype's inner peels like the boolean ordering ops
+pass	chdo2 a Map threaded tail-recursively by Map.remove, DEAD at the base arm, reclaims the CHAMP orphan
 pass	the WIDTH-indexed Int constructor with two width arguments names the width arity
 pass	the WIDTH-indexed Int constructor with zero width arguments names the width arity
 pass	the WIDTH-indexed UInt constructor with zero width arguments names the width arity
