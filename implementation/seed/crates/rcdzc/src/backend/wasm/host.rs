@@ -80,6 +80,18 @@ pub enum HostParam {
     /// component discriminant order). The guest marshals it via `select::emit_variant_reg_flatten` (the same
     /// helper a `RecordFieldAbi::Variant` field uses); a mixed int/float payload is excluded by the detector.
     Variant(Vec<(String, Option<AbiValType>)>),
+    /// A bare `variant{nullary…, bytes-case(s)}` param (the top-level position, not nested in a record/list) —
+    /// a variant whose payload cases each carry a `Bytes`/`String` (`list<u8>`), the rest nullary. Crosses as
+    /// the declared `variant` DEFINED type (laid STRUCTURALLY from the op's WIT via `add_wit_type_deduped` →
+    /// `CDef::Variant`, so a `(list u8)` payload is expressed — the same structural path a `Result`/`List` param
+    /// rides, NOT the scalar `Variant`'s nominal-`AbiValType` builder which cannot express a Bytes payload). Its
+    /// core form flattens (canonical variant flatten) to `(disc:i32, ptr:i32, len:i32)` — the SAME 3-slot shape
+    /// as [`Result`](HostParam::Result): on a Bytes case the guest copies the payload rope into `mem` at the
+    /// running cursor and pushes `(disc, ptr, len)`; on a nullary case pushes `(disc, 0, 0)`. Carries the
+    /// Bytes-payload cases' DISCRIMINANTS (declaration = component order). The guest marshals it via
+    /// `select::emit_variant_bytes_arg_reg_flatten`. A mixed scalar+Bytes / compound payload variant is a later
+    /// increment (`variant_bytes_payload_cases` requires every payload case to be `Bytes`/`String`).
+    VariantBytes(Vec<i32>),
     /// A bare `option<scalar>` param (the top-level position, not nested in a record/list) — crosses as the
     /// built-in WIT `option<T>` type (NOT a nominal `variant` DEFINED type; a `variant{none,some(T)}` substitute
     /// fails the structural component-link match against a host declaring `option`), referenced by a per-param
@@ -682,6 +694,48 @@ pub fn variant_liftable_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(Strin
         }
     }
     any_payload.then_some(cases)
+}
+
+/// ARG-SIDE: whether `ty` is a variant each of whose cases is nullary or carries ONE `Bytes`/`String` payload,
+/// with AT LEAST ONE such Bytes-payload case. Returns the DISCRIMINANTS (declaration = component order) of the
+/// Bytes-payload cases. This is the ARG marshal's admission for a `variant{nullary…, bytes-case(s)}` — the
+/// register-flatten twin of [`result_bytes_enum`], flattening to `(disc:i32, ptr:i32, len:i32)`: the guest
+/// `select::emit_variant_bytes_arg_reg_flatten` reads the disc and, on a Bytes case, copies the payload rope
+/// into `mem` at the running cursor + pushes `(disc, ptr, len)`; on a nullary case pushes `(disc, 0, 0)`. The
+/// component boundary type is the declared `variant` DEFINED type, laid STRUCTURALLY from the op's WIT
+/// (`add_wit_type_deduped` → `CDef::Variant`), so a `(list u8)` payload case is expressed there. DISTINCT from
+/// [`variant_scalar_payload_cases`] (scalar payloads, no `mem`) — a variant that MIXES a scalar payload with a
+/// Bytes payload is a later increment (this requires every payload case to be `Bytes`/`String`, so the single
+/// rope-copy marshal covers them all). Excludes option/result-shaped sums (their own arms).
+pub fn variant_bytes_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<i32>> {
+    let Ty::Sum { decl, .. } = ty.strip_nominal() else {
+        return None;
+    };
+    if option_payload_ty(db, ty).is_some() || result_bytes_enum(db, ty).is_some() {
+        return None;
+    }
+    let decl = *decl;
+    let payload_counts: Vec<usize> = {
+        let d = db.type_decl_by_occ(decl)?;
+        d.variants.iter().map(|v| v.payloads.len()).collect()
+    };
+    let mut bytes_discs = Vec::new();
+    for (disc, n) in payload_counts.into_iter().enumerate() {
+        match n {
+            0 => {} // a nullary case → no payload slot
+            1 => {
+                let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
+                // Every payload case MUST be Bytes/String (the single rope-copy marshal covers only Bytes); a
+                // scalar/compound payload case → not this increment (returns None → the arg declines cleanly).
+                if !matches!(pty.strip_nominal(), Ty::Bytes | Ty::String) {
+                    return None;
+                }
+                bytes_discs.push(disc as i32);
+            }
+            _ => return None, // a multi-payload case → a later increment
+        }
+    }
+    (!bytes_discs.is_empty()).then_some(bytes_discs)
 }
 
 /// The boundary ABI of a shape-d record FIELD, or `None` if the field has no boundary form yet. Supports a
@@ -1811,6 +1865,19 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             variant_scalar_payload_cases(db, &at).unwrap(),
                         ));
                     }
+                    // A `variant{nullary…, bytes-case(s)}` arg — a variant whose payload cases each carry a
+                    // `Bytes`/`String` (`list<u8>`). Crosses as the declared `variant` DEFINED type (laid
+                    // structurally from the WIT), flattening to `(disc, ptr, len)` — the 3-slot Bytes shape a
+                    // `result<list<u8>, enum>` uses, but at a variant with arbitrary case discs. Marshalled by
+                    // `emit_variant_bytes_arg_reg_flatten`. Checked BEFORE the scalar `_` arm (a Sum has no
+                    // `abi_val_type`) and disjoint from the scalar `Variant` arm above (that returns None for a
+                    // Bytes payload). A mixed scalar+Bytes / compound-payload variant is a later increment
+                    // (`variant_bytes_payload_cases` requires every payload case to be `Bytes`/`String`).
+                    _ if !peer_bound && variant_bytes_payload_cases(db, &at).is_some() => {
+                        params.push(HostParam::VariantBytes(
+                            variant_bytes_payload_cases(db, &at).unwrap(),
+                        ));
+                    }
                     // A top-level `result<list<u8>, enum>` arg crosses as the built-in WIT
                     // `result<list<u8>, <enum>>` — the answer-back envelope shape. It flattens to
                     // `(disc:i32, ptr/errdisc:i32, len/0:i32)`: on Ok the guest writes the `list<u8>` payload
@@ -2531,6 +2598,10 @@ pub fn set_needs_memory(imports: &[HostImport]) -> bool {
             // memory core module + the host op lower's `Memory(0)`. The register-only scalar/record/tuple results
             // do NOT (they flatten to slots), so they fall to `_ => false`.
             HostParam::Result(_) | HostParam::ResultList(_) => true,
+            // A `variant{…, bytes-case(s)}` copies a Bytes case's payload rope into `mem`
+            // (`emit_variant_bytes_arg_reg_flatten`), so it needs the shared-memory core module + the host op
+            // lower's `Memory(0)` — like the Bytes `Result`.
+            HostParam::VariantBytes(_) => true,
             // A `result<record, enum>` needs `mem` iff its Ok record has a field that marshals into memory (a
             // Bytes/list field — a record of only scalars flattens to registers, no mem). Mirrors the direct
             // `HostParam::Record` arm's per-field check.
@@ -2658,6 +2729,14 @@ pub fn first_unrepresentable_host_op(
             let arg_is_boundary_variant = allow_option_bytes
                 && !peer_bound
                 && variant_scalar_payload_cases(db, &at).is_some();
+            // A top-level `variant{nullary…, bytes-case(s)}` arg crosses NATIVELY as the declared `variant`
+            // DEFINED type — the guest flattens the value-heap variant to `(disc, ptr/0, len/0)` core slots
+            // (`select::emit_variant_bytes_arg_reg_flatten`, the arbitrary-disc twin of the `result<list<u8>,
+            // enum>` flatten; a Bytes case copies its rope into `mem`). Same reducer/host-fused gating; a mixed
+            // scalar+Bytes / compound-payload variant is a later increment (`variant_bytes_payload_cases`
+            // declines it), matching the classifier + the marshal, in lockstep.
+            let arg_is_boundary_variant_bytes =
+                allow_option_bytes && !peer_bound && variant_bytes_payload_cases(db, &at).is_some();
             // A top-level `option<scalar>` / `option<bytes>` / `option<tuple-of-scalars>` arg crosses NATIVELY
             // as the built-in WIT `option<T>` — the guest flattens the value-heap Option to `(disc, payload)`
             // core slots (`select::emit_option_reg_flatten`, the register twin of the `option<scalar>`/`::bytes`/
@@ -2714,6 +2793,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_enum
                 && !arg_is_boundary_list
                 && !arg_is_boundary_variant
+                && !arg_is_boundary_variant_bytes
                 && !arg_is_boundary_option
                 && !arg_is_boundary_tuple
                 && !arg_is_boundary_result

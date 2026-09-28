@@ -374,6 +374,21 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   variant-field>` ARG (173, `emit_option_reg_flatten`'s record branch → `emit_record_arg_marshal`'s variant-field
   arm). REMAINING variant gaps: a multi-payload variant case at the ARG register-flatten position, and a mixed
   int↔float / f32↔f64 single-payload variant (the canonical reinterpret join).
+- **[emit, ARG-side] a COMPOUND (Bytes) single-payload variant host-op ARG — ✅ DONE / TESTED (SHAPE 227).**
+  A `variant{nullary…, bytes-case(s)}` bare top-level ARG now crosses via the NEW additive `HostParam::VariantBytes`
+  (the scalar `HostParam::Variant` declines a Bytes payload — `AbiValType` can't express `list<u8>`). It mirrors
+  the `result<list<u8>, enum>` family: the component `variant` DEFINED type is laid STRUCTURALLY from the declared
+  WIT (`add_wit_type_deduped` → `CDef::Variant` with a `(list u8)` payload, export-remapped like a record — NOT the
+  scalar variant's nominal-`AbiValType` builder), and `emit_variant_bytes_arg_reg_flatten` flattens to `(disc:i32,
+  ptr:i32, len:i32)` — the SAME 3-slot Bytes shape as `HostParam::Result`, but branching on `disc ∈ bytes-discs`
+  (arbitrary case discs, one or more Bytes cases) instead of Ok=0/Err≠0. On a Bytes case it copies the payload rope
+  into `mem` at the reserved cursor → `(disc, ptr, len)`; a nullary case → `(disc, 0, 0)`. Additive across ~11
+  lockstep sites (detector `variant_bytes_payload_cases`, `HostParam::VariantBytes`, the classifier arm,
+  `first_unrepresentable_host_op`'s `arg_is_boundary_variant_bytes`, the marshal, the emit dispatch + reclaim,
+  serialize's 3-slot flatten, host_imports' structural-WIT `matches!` gate + per-param `CRef`, `used_ops`,
+  `set_needs_memory`, the emit.rs cursor pre-scan). REMAINING: a variant with a MIXED scalar+Bytes payload set, or a
+  non-Bytes compound payload (`list<T>`/record/tuple) case — a later increment (this admits only all-`Bytes`/`String`
+  payload cases so the single rope-copy marshal covers them).
 - **[emit, ARG-side] the BARE (top-level) named-variant host-op ARG — ✅ DONE / TESTED (SHAPE 184/185).**
   `emit_variant_reg_flatten` has always been documented as "the bare-variant ARG marshal", but the corpus never
   pinned it at the top-level param position directly — every prior `variant` case sat inside a record field /

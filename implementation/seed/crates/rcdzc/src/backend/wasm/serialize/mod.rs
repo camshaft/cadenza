@@ -231,6 +231,16 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                 wasm_abi::CORE_I32,
                 wasm_abi::CORE_I32,
             ]),
+            // A bare `variant{nullary…, bytes-case(s)}` param flattens (canonical variant flatten) to
+            // `(disc:i32, i32, i32)` — the discriminant then the join of the Bytes case's `(ptr,len)` and a
+            // nullary case's `(0,0)` — the SAME 3-slot core shape as a `HostParam::Result` (a `result` IS the
+            // 2-case Ok(bytes)/Err(enum) special case). The component boundary type is the declared `variant`
+            // DEFINED type (laid structurally from the WIT; see host_imports.rs).
+            HostParam::VariantBytes(_) => params.extend_from_slice(&[
+                wasm_abi::CORE_I32,
+                wasm_abi::CORE_I32,
+                wasm_abi::CORE_I32,
+            ]),
             // A bare `result<scalar, enum>` param flattens to `(disc:i32, join)` — 2 slots. The join is `i64`
             // iff the Ok scalar is 64-bit (the `i32` err disc widens into it), else `i32`. NOT the 3-slot Bytes
             // shape. The component boundary type is the built-in `result<ok, err-enum>` (mod.rs
