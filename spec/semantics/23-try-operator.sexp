@@ -1586,6 +1586,63 @@
   (output (: 1 Int64))
   (live-objects 0))
 
+(case
+  "trmtl1 a `?`-bound Map enumerated by Map.to-list in the Ok arm reclaims the try shell on both paths"
+  (doc
+    "The Map.to-list (heap-result borrow-producer) reclaim companion of trmp1 (Map.len): a `?`-bound scalar
+     builds a `#map` under the Ok arm of a `(Result (Map Int64 Int64) Int64)` boundary, then the arm reads
+     the matched Map payload with `(List.len (Map.to-list m))`. `Map.to-list` BORROWS the map (an O(n)
+     enumeration) and yields a FRESH List whose entries independently co-own the cells — so the map operand
+     is genuinely borrowed, exactly like `Map.len`. Two fixes compose to make this leak-clean: (1)
+     v-core-opt's `arm_borrows_heap_subvalue` MapToList relax (936d26fae8) un-blocks the enclosing
+     `MatchSum` shell-reclaim so the re-wrapped Err husk reclaims (Err path); (2) the emit-side twin — the
+     `Core::MapToList` arm reclaims the child-dup'd BORROWED source (the try-materialized `Core::SumPayload`
+     payload-view is child-dup'd at its materialization since it is a `dup_sites` node, but `map-to-list`
+     only BORROWS it, so the preservation-dup was unbalanced → the +1 Ok-path residual). rc-trace confirms
+     the map node is DUP'd 1->2->3 and the added drop lands on a live handle (no double-free). Verified
+     leak-clean (live-objects 0) every path.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok #map((= x x)))) (Result (Map Int64 Int64) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok m) (List.len (Map.to-list m)))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case
+  "trstl1 a `?`-bound Set enumerated by Set.to-list in the Ok arm reclaims the try shell on both paths"
+  (doc
+    "The Set.to-list sibling of trmtl1 (same heap-result borrow-producer reclaim family): a `?`-bound scalar
+     builds a `#set` under the Ok arm of a `(Result (Set Int64) Int64)` boundary, then the arm reads the
+     matched Set payload with `(List.len (Set.to-list s))`. `Set.to-list` BORROWS the set (op_set_to_list
+     dups each element into the fresh List), so the set operand is genuinely borrowed; the `arm_borrows`
+     SetToList relax + the emit-side `Core::SetToList` child-dup'd-borrowed-source reclaim compose to un-block
+     the shell-reclaim so the re-wrapped Err husk (Err path) + the built set and its enumeration
+     preservation-dup (Ok path) reclaim. UNLIKE `Set.contains` (trsc1) — a scalar-returning borrow whose set
+     operand is never a `dup_sites` child-dup — to-list's heap result forces the preservation-dup, so this
+     needs the emit reclaim where contains does not. Verified leak-clean (live-objects 0) every path.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok #set(x))) (Result (Set Int64) Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 5) (Err 111)))
+          ((Ok s) (List.len (Set.to-list s)))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
 ; trnt1 (TODO): the NESTED try `(try (try rr))` — a `?` whose OPERAND is itself a `?`. The desugar for
 ; this is known and small (inner-first hoisting in `find_hoistable_try`'s `(try e)` arm: descend the
 ; operand FIRST so `(try (try rr))` lifts to `(let ((a (try rr))) (let ((b (try a))) …))`, each level a
