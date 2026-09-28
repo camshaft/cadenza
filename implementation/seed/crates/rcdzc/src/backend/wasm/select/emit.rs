@@ -6586,6 +6586,9 @@ pub(super) fn emit(
                     // A top-level `variant{…, list<scalar>-case(s)}` arg marshals a list case's payload into `mem`
                     // (`emit_variant_list_arg_reg_flatten` → `emit_list_arg_marshal`) → needs the scratch cursor.
                     || crate::backend::wasm::host::variant_list_payload_cases(db, &at).is_some()
+                    // A top-level MIXED `variant{…, bytes-case(s), …}` arg rope-copies a bytes case's payload into
+                    // `mem` (`emit_variant_mixed_arg_reg_flatten`) → needs the scratch cursor.
+                    || crate::backend::wasm::host::variant_mixed_payload_cases(db, &at).is_some()
                     // A top-level `result<list<scalar>, enum>` arg marshals the Ok payload list into `mem` on the
                     // Ok arm (`emit_result_list_arg_reg_flatten` → `emit_list_arg_marshal`) → needs the cursor too.
                     || crate::backend::wasm::host::result_list_enum(db, &at).is_some()
@@ -7141,6 +7144,36 @@ pub(super) fn emit(
                         )?;
                         // MARSHALED-ARG RECLAIM (variant-record twin): pure-borrow flatten → the variant handle is
                         // DEAD after. Deep-drop when OWNED or a dup-site.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(var_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
+                    // A top-level MIXED `variant{…, scalar-case(s), bytes-case(s)}` argument: the guest emits the
+                    // value-heap variant HANDLE into a slot, then decomposes it into the canonical variant JOIN
+                    // flatten via `emit_variant_mixed_arg_reg_flatten` (per-case dispatch: scalar → unbox, bytes →
+                    // rope-copy at the cursor). Checked AFTER the uniform variant arms and BEFORE the scalar `_`.
+                    _ if crate::backend::wasm::host::variant_mixed_payload_cases(db, &at)
+                        .is_some() =>
+                    {
+                        let cases =
+                            crate::backend::wasm::host::variant_mixed_payload_cases(db, &at)
+                                .expect("gated by the arm guard");
+                        let var_slot = arg_base.max(*high);
+                        scratch_ty.insert(var_slot, ValType::I32);
+                        *high = (*high).max(var_slot + 1);
+                        emit(db, arg, slots, var_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(var_slot));
+                        let cursor = scratch_cursor_slot
+                            .expect("a mixed variant arg reserves the scratch cursor (pre-scan)");
+                        let work_base = *high;
+                        emit_variant_mixed_arg_reg_flatten(
+                            db, var_slot, &at, &cases, cursor, work_base, high, scratch_ty, out,
+                        )?;
+                        // MARSHALED-ARG RECLAIM (mixed-variant twin): pure-borrow flatten (sum-disc/payload +
+                        // unbox/bytes-get) → the variant handle is DEAD after. Deep-drop when OWNED or a dup-site.
                         if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
                             || out.dup_sites.contains(&arg)
                         {

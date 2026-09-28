@@ -413,11 +413,22 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   case's WIT from the arg's `WitType::Variant` at the record disc). `emit_variant_record_arg_reg_flatten` recurses
   `emit_record_arg_marshal` (WIT-order field push) on the record case; a nullary case zero-fills. All-scalar → NO
   `mem`/cursor. SHAPE 231 uses DISTINCT field widths (s64 then bool) to pin the positional slot widths. This
-  COMPLETES the single-compound-payload variant ARG family: scalar (SHAPE 53) / bytes (227/228) / list (229) /
-  tuple (230) / record (231). REMAINING variant-payload gaps: a MIXED scalar+Bytes+list payload set (per-case
-  marshal dispatch), a compound (`list<compound>`/bytes/nested) tuple/record ELEMENT-or-FIELD, a SECOND product
-  case / MULTI-payload case (≥2 payloads/case, the multi-case join), and ALL of the compound-payload variants at
-  the FIELD / list-element positions (`RecordFieldAbi::Variant` is scalar-only).
+  COMPLETES the UNIFORM single-compound-payload variant ARG family: scalar (SHAPE 53) / bytes (227/228) /
+  list (229) / tuple (230) / record (231).
+- **[emit, ARG-side] a MIXED (heterogeneous) scalar+Bytes variant host-op ARG — ✅ DONE / TESTED (SHAPE 232).** The
+  canonical heterogeneous tagged-union: a `variant{nullary…, scalar-case(s), bytes-case(s)}` mixing ≥1 scalar
+  payload case with ≥1 Bytes payload case, via `HostParam::VariantMixed(Vec<(disc, VariantPayloadKind)>)`. This is
+  the hardest variant flatten — the canonical variant JOIN `[disc] ++ position-wise-join(payload flattens)`
+  (`host::variant_mixed_join_slots`, replicating `wit_ctype::flatten_variant`: a scalar → one slot, a Bytes →
+  `(i32 ptr, i32 len)`, joined slot-wise, mixed int widths → `i64`). `emit_variant_mixed_arg_reg_flatten`
+  DISPATCHES per case in a nested `if disc==d … else …` chain: a scalar case unboxes into slot 0 coerced to the
+  joined width (wrap `i64→i32` iff slot 0 joined narrow), a Bytes case rope-copies at the cursor → `(ptr extended
+  to the joined width, len)`, the innermost else (nullary) zeroes all slots; every arm zeroes the slots it does
+  not own. Additive across the same ~11 sites. Verified `variant{a, b(s64), c(bytes)}` → `(i32, i64, i32)`, all
+  three arms. REMAINING variant-payload gaps: a mixed set that also includes a LIST/compound payload case, a
+  compound (`list<compound>`/bytes/nested) tuple/record ELEMENT-or-FIELD, an int↔float scalar mix (the reinterpret
+  join), a SECOND product case / MULTI-payload case (≥2 payloads/case), and ALL of the compound-payload variants
+  at the FIELD / list-element positions (`RecordFieldAbi::Variant` is scalar-only).
 - **[emit, ARG-side] the BARE (top-level) named-variant host-op ARG — ✅ DONE / TESTED (SHAPE 184/185).**
   `emit_variant_reg_flatten` has always been documented as "the bare-variant ARG marshal", but the corpus never
   pinned it at the top-level param position directly — every prior `variant` case sat inside a record field /

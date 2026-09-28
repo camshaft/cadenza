@@ -269,6 +269,14 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                     flatten_record_field_abi(abi, &mut params);
                 }
             }
+            // A bare MIXED `variant{…, scalar-case(s), bytes-case(s)}` param flattens to `(disc:i32, joined-slots…)`
+            // — the discriminant then the canonical position-wise join over the payload cases
+            // (`host::variant_mixed_join_slots`, matching `wit_ctype::flatten_variant`). MUST match the declared
+            // `variant` DEFINED type's flatten (structural WIT).
+            HostParam::VariantMixed(cases) => {
+                params.push(wasm_abi::CORE_I32); // the discriminant
+                params.extend(crate::backend::wasm::host::variant_mixed_join_slots(cases));
+            }
             // A bare `result<scalar, enum>` param flattens to `(disc:i32, join)` — 2 slots. The join is `i64`
             // iff the Ok scalar is 64-bit (the `i32` err disc widens into it), else `i32`. NOT the 3-slot Bytes
             // shape. The component boundary type is the built-in `result<ok, err-enum>` (mod.rs

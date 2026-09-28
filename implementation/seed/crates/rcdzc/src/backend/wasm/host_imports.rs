@@ -577,7 +577,8 @@ pub(super) fn host_op_comp_functype(
             HostParam::VariantBytes(_)
             | HostParam::VariantList(_)
             | HostParam::VariantTuple(..)
-            | HostParam::VariantRecord(..) => {
+            | HostParam::VariantRecord(..)
+            | HostParam::VariantMixed(_) => {
                 let cref = list_param_crefs
                     .get(i)
                     .cloned()
@@ -716,6 +717,7 @@ pub(super) fn build_host_result_types(
                     | host::HostParam::VariantList(_)
                     | host::HostParam::VariantTuple(..)
                     | host::HostParam::VariantRecord(..)
+                    | host::HostParam::VariantMixed(_)
             ) && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
             {
                 per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
@@ -1140,6 +1142,7 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::VariantList(_)
         | host::HostParam::VariantTuple(..)
         | host::HostParam::VariantRecord(..)
+        | host::HostParam::VariantMixed(_)
         | host::HostParam::Option(_)
         | host::HostParam::Tuple(_)
         | host::HostParam::Result(_)

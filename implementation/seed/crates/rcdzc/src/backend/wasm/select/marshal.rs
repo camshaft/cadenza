@@ -1789,6 +1789,162 @@ pub(super) fn emit_variant_record_arg_reg_flatten(
     Ok(())
 }
 
+/// Marshal a top-level value-heap MIXED `variant{nullary…, scalar-case(s), bytes-case(s)}` host argument whose
+/// handle is in `var_slot` into the canonical variant JOIN flatten `[disc:i32] ++ joined-payload-slots`, pushing
+/// `1 + n` values. The HETEROGENEOUS generalization of the uniform variant marshals: the payload slots are the
+/// position-wise join over all payload cases ([`host::variant_mixed_join_slots`], matching
+/// `wit_ctype::flatten_variant`), and the guest DISPATCHES per case (a nested `if disc==d … else …` chain): a
+/// SCALAR case unboxes its payload into slot 0 (coerced to the joined width — wrap `i64→i32` when slot 0 joined
+/// narrow, else keep `i64`), zeroing the rest; a BYTES case rope-copies its payload into `mem` at the `cursor`
+/// and writes `(ptr → slot 0 extended to the joined width, len → slot 1)`, zeroing the rest, advancing the
+/// cursor; the innermost else (a nullary case) zeroes ALL slots. `variant_ty` resolves each scalar case's unbox
+/// op. `BlockType` is single-value so the arms side-effect into scratch and the values are pushed AFTER.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_variant_mixed_arg_reg_flatten(
+    db: &mut Db,
+    var_slot: u32,
+    variant_ty: &Ty,
+    cases: &[(i32, crate::backend::wasm::host::VariantPayloadKind)],
+    cursor: u32,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    use crate::backend::wasm::host::VariantPayloadKind;
+    let slot_bytes = crate::backend::wasm::host::variant_mixed_join_slots(cases);
+    let slot_vts: Vec<ValType> = slot_bytes
+        .iter()
+        .map(|b| {
+            ValType::from_byte(*b).ok_or_else(|| {
+                Reject::decline("a mixed variant join slot is not a numeric core type")
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let n = slot_vts.len() as u32;
+    let disc_out = work_base;
+    let base_slot = work_base + 1;
+    let pay = base_slot + n;
+    let rope = pay + 1;
+    let blen = pay + 2;
+    let pos = pay + 3;
+    scratch_ty.insert(disc_out, ValType::I32);
+    for (k, vt) in slot_vts.iter().enumerate() {
+        scratch_ty.insert(base_slot + k as u32, *vt);
+    }
+    for s in [pay, rope, blen, pos] {
+        scratch_ty.insert(s, ValType::I32);
+    }
+    *high = (*high).max(pay + 4);
+    let zero = |vt: ValType| match vt {
+        ValType::I64 => Lir::ConstI64(0),
+        ValType::F64 => Lir::F64ConstBits(0),
+        ValType::F32 => Lir::F32ConstBits(0),
+        _ => Lir::ConstI32(0),
+    };
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component variant disc, decl order)
+    out.push(Lir::LocalSet(disc_out));
+    // Per-case dispatch: a nested `if disc==d { marshal } else { … }` chain; the innermost else is the nullary
+    // arm. Each arm writes the slots it owns and zeroes the rest, so every slot is defined on every path.
+    for (case_disc, kind) in cases {
+        out.push(Lir::LocalGet(disc_out));
+        out.push(Lir::ConstI32(*case_disc));
+        out.push(Lir::I32Eq);
+        out.push(Lir::If(BlockType::Empty));
+        let written: u32 = match kind {
+            VariantPayloadKind::Scalar(_) => {
+                let payload_ty = variant_payload_ty_at(db, variant_ty, *case_disc as u32)
+                    .ok_or_else(|| {
+                        Reject::decline("a mixed variant scalar payload type could not be resolved")
+                    })?;
+                let read = get_op_ty(db, &payload_ty)?.ok_or_else(|| {
+                    Reject::decline("a mixed variant scalar payload has no unbox op")
+                })?;
+                out.push(Lir::LocalGet(var_slot));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload scalar]
+                out.push(Lir::CallImport(read));
+                // Coerce to slot 0's joined width: the unbox `get-int` yields i64; wrap to i32 iff slot 0 joined
+                // narrow (all payload cases contribute an i32 to slot 0), else keep the i64.
+                if read == OP_GET_INT && slot_vts.first() == Some(&ValType::I32) {
+                    out.push(Lir::I32WrapI64);
+                }
+                out.push(Lir::LocalSet(base_slot)); // slot 0
+                1
+            }
+            VariantPayloadKind::Bytes => {
+                // Rope-copy the payload Bytes into `mem` at the cursor → (ptr, len); ptr → slot 0 (extended to
+                // the joined width iff slot 0 is i64), len → slot 1.
+                out.push(Lir::LocalGet(var_slot));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [Bytes handle]
+                out.push(Lir::LocalSet(rope));
+                out.push(Lir::LocalGet(rope));
+                out.push(Lir::CallImport(OP_BYTES_LEN));
+                out.push(Lir::LocalSet(blen));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(pos));
+                out.push(Lir::Block(BlockType::Empty));
+                out.push(Lir::Loop(BlockType::Empty));
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::LocalGet(blen));
+                out.push(Lir::I32GeS);
+                out.push(Lir::BrIf(1));
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalGet(rope));
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::CallImport(OP_BYTES_GET));
+                out.push(Lir::I32Store8 { offset: 0 });
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(pos));
+                out.push(Lir::Br(0));
+                out.push(Lir::End); // loop
+                out.push(Lir::End); // block
+                // slot 0 = ptr (= cursor), extended to i64 iff slot 0 joined wide.
+                out.push(Lir::LocalGet(cursor));
+                if slot_vts.first() == Some(&ValType::I64) {
+                    out.push(Lir::I64ExtendI32U);
+                }
+                out.push(Lir::LocalSet(base_slot));
+                // slot 1 = len (slot 1's joined valtype is i32 — only bytes cases contribute it).
+                if n >= 2 {
+                    out.push(Lir::LocalGet(blen));
+                    out.push(Lir::LocalSet(base_slot + 1));
+                }
+                // advance the cursor past the copied bytes.
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(blen));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(cursor));
+                2
+            }
+        };
+        // Zero the slots this case did not write (so every slot is defined).
+        for k in written..n {
+            out.push(zero(slot_vts[k as usize]));
+            out.push(Lir::LocalSet(base_slot + k));
+        }
+        out.push(Lir::Else);
+    }
+    // Innermost else — a nullary case: zero ALL payload slots.
+    for (k, vt) in slot_vts.iter().enumerate() {
+        out.push(zero(*vt));
+        out.push(Lir::LocalSet(base_slot + k as u32));
+    }
+    // Close every `if` opened above.
+    for _ in cases {
+        out.push(Lir::End);
+    }
+    out.push(Lir::LocalGet(disc_out)); // push (disc, slot0, slot1, …)
+    for k in 0..n {
+        out.push(Lir::LocalGet(base_slot + k));
+    }
+    Ok(())
+}
+
 /// Marshal a top-level value-heap `result<scalar, enum>` host argument whose handle is in `result_slot` into the
 /// canonical `(disc:i32, join)` core-slot flatten the built-in `result<ok-scalar, err-enum>` param lowers to,
 /// pushing the two values onto the operand stack. The 2-slot scalar-Ok twin of `emit_result_arg_reg_flatten`
