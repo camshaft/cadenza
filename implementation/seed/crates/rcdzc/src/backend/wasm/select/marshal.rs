@@ -1962,9 +1962,12 @@ pub(super) fn emit_variant_record_arg_reg_flatten(
 /// narrow, else keep `i64`), zeroing the rest; a BYTES case rope-copies its payload into `mem` at the `cursor`
 /// and writes `(ptr → slot 0 extended to the joined width, len → slot 1)`, zeroing the rest, advancing the
 /// cursor; a LIST case marshals its `list<scalar>` payload into `mem` (via [`emit_list_arg_marshal`], which
-/// advances the cursor) and writes `(ptr → slot 0 extended, count → slot 1)`, zeroing the rest; the innermost
-/// else (a nullary case) zeroes ALL slots. `variant_ty` resolves each scalar case's unbox op. `BlockType` is
-/// single-value so the arms side-effect into scratch and the values are pushed AFTER.
+/// advances the cursor) and writes `(ptr → slot 0 extended, count → slot 1)`, zeroing the rest; a TUPLE case
+/// (a multi-payload / `tuple`-typed case) flattens its payload POSITIONALLY inline via
+/// [`emit_tuple_reg_flatten`], coercing each element into its joined slot width (`i64.extend_i32_u` iff the
+/// join widened that slot), zeroing the rest; the innermost else (a nullary case) zeroes ALL slots.
+/// `variant_ty` resolves each scalar case's unbox op. `BlockType` is single-value so the arms side-effect into
+/// scratch and the values are pushed AFTER.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_variant_mixed_arg_reg_flatten(
     db: &mut Db,
@@ -2118,6 +2121,62 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                     out.push(Lir::LocalSet(base_slot + 1));
                 }
                 2
+            }
+            VariantPayloadKind::Tuple(abis) => {
+                // Marshal the tuple payload POSITIONALLY inline via the shared `emit_tuple_reg_flatten` (the
+                // same machinery `emit_variant_tuple_arg_reg_flatten` uses), then coerce each element into its
+                // JOINED slot width. The payload handle is a value-heap tuple; `emit_tuple_reg_flatten` pushes
+                // one value per element at its NATURAL width — captured in reverse into temp slots, then widened
+                // (`i64.extend_i32_u` iff another case joined that slot to i64) into the joined `base_slot+k`.
+                let tuple_ty = variant_payload_ty_at(db, variant_ty, *case_disc as u32)
+                    .ok_or_else(|| {
+                        Reject::decline("a mixed variant tuple payload type could not be resolved")
+                    })?;
+                let nat_vts: Vec<ValType> = abis
+                    .iter()
+                    .map(|a| {
+                        ValType::from_byte(a.core_byte()).ok_or_else(|| {
+                            Reject::decline(
+                                "a mixed variant tuple element is not a numeric core type",
+                            )
+                        })
+                    })
+                    .collect::<Result<_, _>>()?;
+                let cnt = nat_vts.len() as u32;
+                let tup_slot = pay + 4;
+                let temp_base = pay + 5;
+                scratch_ty.insert(tup_slot, ValType::I32);
+                for (k, vt) in nat_vts.iter().enumerate() {
+                    scratch_ty.insert(temp_base + k as u32, *vt);
+                }
+                *high = (*high).max(temp_base + cnt);
+                out.push(Lir::LocalGet(var_slot));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [tuple handle]
+                out.push(Lir::LocalSet(tup_slot));
+                emit_tuple_reg_flatten(
+                    db,
+                    tup_slot,
+                    &tuple_ty,
+                    None, // all-scalar elements are offset-agnostic → no tuple WIT / no `mem`
+                    None,
+                    temp_base + cnt, // work_base past the temp element slots
+                    high,
+                    scratch_ty,
+                    out,
+                )?; // pushes `cnt` element values (natural widths)
+                // Capture in reverse (stack top = last element).
+                for k in (0..cnt).rev() {
+                    out.push(Lir::LocalSet(temp_base + k));
+                }
+                // Coerce each element into the joined slot: widen `i32 -> i64` iff the join made this slot i64.
+                for k in 0..cnt {
+                    out.push(Lir::LocalGet(temp_base + k));
+                    if slot_vts[k as usize] == ValType::I64 && nat_vts[k as usize] == ValType::I32 {
+                        out.push(Lir::I64ExtendI32U);
+                    }
+                    out.push(Lir::LocalSet(base_slot + k));
+                }
+                cnt
             }
         };
         // Zero the slots this case did not write (so every slot is defined).
