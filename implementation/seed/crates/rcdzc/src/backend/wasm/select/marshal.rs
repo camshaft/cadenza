@@ -2234,27 +2234,27 @@ pub(super) fn emit_option_reg_flatten(
     // no `mem`) or `Bytes` (`(inner-disc, ptr, len)`, the inner recursion copies the rope into `mem` at the
     // threaded cursor). MUST precede the scalar fallthrough (an option handle's `valtype_of` is `Some(I32)`, so
     // that arm would else treat the inner option as a scalar and miscompile).
-    if let Some(inner_payload) = crate::backend::wasm::host::option_payload_ty(db, &payload_ty)
-        .filter(|pp| {
-            crate::backend::wasm::host::abi_val_type(pp).is_some()
-                || matches!(pp.strip_nominal(), Ty::Bytes | Ty::List(_))
-        })
+    if crate::backend::wasm::host::option_payload_ty(db, &payload_ty).is_some()
+        && let Some(inner_opt_abi) = crate::backend::wasm::host::field_boundary_abi(db, &payload_ty)
     {
-        // The inner option flattens to `(inner-disc:i32, <inner payload slots>)`: a SCALAR payload is ONE slot;
-        // a `Bytes` payload is `(ptr:i32, len:i32)` and a `list<T>` payload is `(ptr:i32, count:i32)` — TWO slots
-        // each — whose backing the inner recursion writes into `mem` at the threaded cursor (`option<option<bytes>>`
-        // → `(outer-disc, inner-disc, ptr, len)`; `option<option<list>>` → `(outer-disc, inner-disc, ptr, count)`).
-        // Check `Bytes`/`List` FIRST: a bytes/list handle's `valtype_of` is `Some(I32)`, so the scalar arm would
-        // else undercount the capture to 2 slots and leave a value on the operand stack.
-        let slot_vts: Vec<ValType> =
-            if matches!(inner_payload.strip_nominal(), Ty::Bytes | Ty::List(_)) {
-                vec![ValType::I32, ValType::I32, ValType::I32] // (inner-disc, ptr, len/count)
-            } else {
-                vec![
-                    ValType::I32,
-                    valtype_of(&inner_payload).expect("filter admitted a scalar payload"),
-                ]
-            };
+        // The inner option flattens to `(inner-disc:i32, <inner payload slots>)`, derived GENERICALLY from the
+        // inner option's boundary abi (`field_boundary_abi(option<T>)` = `Option(T-abi)`) via the SAME
+        // `flatten_record_field_abi` → `ValType::from_byte` mapping the record/tuple flatten uses. Reproduces the
+        // scalar (2 slots), Bytes/list (3), and handles a tuple/record inner (variable width) UNIFORMLY. The inner
+        // recursion (`emit_option_reg_flatten` on the inner option) pushes exactly these slots; a Bytes/list leaf
+        // (or a Bytes/list field of a record/tuple inner) writes its backing into `mem` at the threaded cursor.
+        // NB the outer disc slot is separate (`disc_out`); `slot_vts` is the INNER option's own flatten (which
+        // itself begins with the inner disc).
+        let mut flat_bytes = Vec::new();
+        crate::backend::wasm::serialize::flatten_record_field_abi(&inner_opt_abi, &mut flat_bytes);
+        let slot_vts: Vec<ValType> = flat_bytes
+            .iter()
+            .map(|b| {
+                ValType::from_byte(*b).ok_or_else(|| {
+                    Reject::decline("a nested-option inner flatten byte is not a core valtype")
+                })
+            })
+            .collect::<Result<_, _>>()?;
         let n = slot_vts.len() as u32;
         let disc_out = work_base;
         let base_slot = work_base + 1;

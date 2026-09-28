@@ -6543,14 +6543,17 @@ pub(super) fn emit(
                     // A top-level `option<bytes>` arg copies the payload rope into `mem` on Some → needs the cursor.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
                         .is_some_and(|p| matches!(p, Ty::Bytes))
-                    // A top-level `option<option<bytes>>`/`option<option<list>>` arg writes the INNER option's
-                    // payload backing into `mem` on outer+inner Some (`emit_option_reg_flatten`'s nested-option
-                    // branch recurses into the inner option<bytes>/option<list> branch) → needs the cursor, like
-                    // the direct `option<bytes>`/`option<list>` arg above.
+                    // A top-level `option<option<X>>` arg writes the INNER option's payload backing into `mem` on
+                    // outer+inner Some iff `X` carries a `Bytes`/`list` leaf anywhere (`emit_option_reg_flatten`'s
+                    // nested-option branch recurses into the inner option's mem-writing branch) → reserve the cursor
+                    // iff the inner option's boundary abi needs `mem` (`record_field_abi_needs_memory`), in lockstep
+                    // with the general nested-option admit gate. An all-scalar inner (option<option<tuple-of-scalars>>)
+                    // needs no cursor.
                     || crate::backend::wasm::host::option_payload_ty(db, &at).is_some_and(|p| {
-                        crate::backend::wasm::host::option_payload_ty(db, &p).is_some_and(|pp| {
-                            matches!(pp.strip_nominal(), Ty::Bytes | Ty::String | Ty::List(_))
-                        })
+                        crate::backend::wasm::host::option_payload_ty(db, &p).is_some()
+                            && crate::backend::wasm::host::field_boundary_abi(db, &p).is_some_and(
+                                |abi| crate::backend::wasm::host::record_field_abi_needs_memory(&abi),
+                            )
                     })
                     // A top-level `option<tuple-with-a-bytes-element>` arg copies the payload tuple's Bytes
                     // ropes into `mem` on Some (`emit_option_reg_flatten`'s tuple branch → `emit_tuple_reg_

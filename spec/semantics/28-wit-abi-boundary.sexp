@@ -8321,3 +8321,54 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level option<option<tuple<s64,s64>>> host-op arg crosses on the outer+inner Some arm (nested-option product payload)"
+  (doc
+    "SHAPE 220 (v-wit-boundary) — a top-level `option<option<tuple<s64,s64>>>` bare host-op ARGUMENT (probe.push),
+           outer+inner Some. Generalizes the nested-option arg (SHAPE 218/219 did Bytes/list inners) to a PRODUCT
+           inner via a variable-width flatten: `emit_option_reg_flatten`'s nested-option branch now derives the inner
+           option's flatten GENERICALLY from `field_boundary_abi(option<tuple<s64,s64>>)` = `Option(Tuple([s64,s64]))`
+           → `flatten_record_field_abi` → `(inner-disc:i32, s64, s64)` = 3 slots (i32, i64, i64). So the arg flattens
+           to `(outer-disc, inner-disc, e0, e1)` = 4 core slots `(param i32 i32 i64 i64)`. An all-scalar tuple inner
+           writes NOTHING to `mem` (no cursor). `option_arg_crosses` + the classifier + `collect_used_ops` all admit
+           it via the single `field_boundary_abi(inner-option).is_some()` gate. run() builds Some(Some((2,3))) and
+           performs probe.push; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (option (tuple (s64) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Option (Tuple Int64 Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Some (Some #tuple(2 3))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level option<option<record{a,b}>> host-op arg crosses on the outer+inner Some arm (nested-option record payload)"
+  (doc
+    "SHAPE 221 (v-wit-boundary) — a top-level `option<option<record{a: s64, b: s64}>>` bare host-op ARGUMENT
+           (probe.push), outer+inner Some. The record twin of SHAPE 220: the nested-option branch derives the inner
+           option's flatten from `field_boundary_abi(option<record{a,b}>)` = `Option(Record([a,b]))` →
+           `(inner-disc:i32, a:s64, b:s64)` = 3 slots. The inner recursion (`emit_option_reg_flatten`'s record
+           branch) reads each field WIT-ordered; an all-scalar record writes nothing to `mem` (no cursor). Arg
+           flattens to `(outer-disc, inner-disc, a, b)`. run() builds Some(Some({a: 1, b: 2})) and performs
+           probe.push; a VALID running component (live-objects=0) is the pin. Completes the top-level nested-option
+           family (scalar/bytes/list/tuple/record inner) via the single generic `field_boundary_abi` flatten.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (option (record (= a (s64)) (= b (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Option (Record (: a Int64) (: b Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push (Some (Some #record((= a 1) (= b 2)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
