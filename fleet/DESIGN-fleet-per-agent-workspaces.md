@@ -1,7 +1,14 @@
 # DESIGN: per-agent workspaces + a shared bare-mirror repo store (the generic, repo-agnostic fleet)
 
-Status: **operator-confirmed DIRECTION (2026-09-28)** — the unifying end-state. Design captured now;
-the BUILD is gated behind the perf-push (same gate as the extraction lift). Owner: `v-fleet-tooling`.
+Status: **operator-confirmed DIRECTION (2026-09-28)** — the unifying end-state. Owner: `v-fleet-tooling`.
+
+**North star (operator, 2026-09-28, verbatim intent):** "over time I want the board to be the source of
+truth. I really want to get away from all of the cadenza-specific tooling as much as possible. We need to
+be able to work across repos and do more and more complex things." So the target is: the board is the
+authoritative registry, the fleet tooling is repo-agnostic, and cadenza is one target repo among many.
+Every step here is measured against that — additive first, but the destination is board-authoritative +
+cadenza-nonspecific. The BUILD is gated behind the perf-push (same gate as the extraction lift); additive
+mirror/observability steps that don't change a load-bearing read path proceed under the operator's GO.
 
 This doc is the UMBRELLA that reconciles the two in-flight fleet designs into one coherent model:
 - `DESIGN-fleet-extraction-standalone-multirepo.md` — lift the tooling out of `cadenza-xtask` into a
@@ -85,10 +92,14 @@ Runtime state (heartbeats/leases/windows) stays hub-central; the board is not a 
 
 ## Phasing (additive-first, the source-of-truth flip LAST, BUILD gated on perf-push)
 
-- **Now (design):** this doc + board task #82 (metadata bag incl. `repos` list + `update_agent`) + the
-  verified charter fetch. Non-disruptive; nothing running changes.
-- **P-mirror:** stand up `~/.fleet/mirrors/` + the per-agent-directory materializer ALONGSIDE the current
-  cadenza-worktree model; migrate one non-owner pilot agent to the new workspace shape.
+- **Now (design) — DONE:** this doc + board task #82 (metadata bag + `update_agent` + `get_agent`,
+  shipped + deployed) + the verified sessionless charter fetch. Non-disruptive.
+- **P-mirror (STARTED 2026-09-28):** `fleet/board-mirror-metadata.py` mirrors every ACTIVE agent's
+  registry metadata bag onto the board (idempotent upsert; `registry.json` stays authoritative). First
+  run mirrored all 35 active agents. `repos` deliberately not yet set (see `metadata_bag`). STILL TODO:
+  stand up `~/.fleet/mirrors/` + the per-agent-directory materializer ALONGSIDE the current
+  cadenza-worktree model; migrate one non-owner pilot agent to the new workspace shape; decide
+  mirror-wiring (cron/`fleet up`) vs prompt-driven per-agent self-register.
 - **P-lift:** the extraction lift (`~/.fleet` + `fleet` binary), per-repo adapters, slack-bridge move.
 - **P-flip (high-risk, gated):** tooling reads the board as the registry; `registry.json` becomes a
   derived cache or is retired. Only after the pilot + mirror are proven AND explicit operator confirm.
