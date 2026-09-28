@@ -1034,6 +1034,13 @@ pub enum VariantPayloadKind {
     Bytes,
     List(Ty),
     Tuple(Vec<AbiValType>),
+    // A RECORD payload case whose fields are ALL scalar: flattens POSITIONALLY inline like a `Tuple` — one core
+    // slot per field — but the slot ORDER follows the WIT record's field DECLARATION order (not the guest's
+    // name-lex order). Carries the field ABIs (in WIT order once ordered by `variant_mixed_payload_cases_wit`;
+    // in guest name-lex order from the bare `variant_mixed_payload_cases`, which is used only for presence
+    // checks that do not care about slot order) and the guest record `Ty` (so the emit reads its named fields
+    // via `emit_record_arg_marshal`, which itself orders field VALUES to WIT).
+    Record(Vec<AbiValType>, Ty),
 }
 
 /// ARG-SIDE: whether `ty` is a variant whose payload cases MIX at least one `Scalar` case with at least one
@@ -1064,6 +1071,7 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
     let mut cases: Vec<(i32, VariantPayloadKind)> = Vec::new();
     let mut any_mem = false; // a Bytes OR List case — both take the two-i32-slot `(ptr, len|count)` mem flatten
     let mut any_tuple = false; // a multi-payload / `tuple`-typed case — inline positional flatten (N slots)
+    let mut any_record = false; // a record-payload case — inline positional flatten (N slots), WIT field order
     for (disc, n) in payload_counts.into_iter().enumerate() {
         if n == 0 {
             continue; // a nullary case → no payload slot
@@ -1107,8 +1115,23 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
             // float scalar case mixed with a mem/tuple case is representable (an all-scalar int↔float mix, with
             // no mem/tuple case, is not "mixed" here and routes to `VariantScalarsMixed` instead).
             cases.push((disc as i32, VariantPayloadKind::Scalar(v)));
+        } else if let Ty::Record(fields) = stripped {
+            // A RECORD payload case whose fields are all SCALAR: like a tuple, it flattens POSITIONALLY inline to
+            // one core slot per field — but the slot ORDER follows the WIT record's field DECLARATION order. Here
+            // (no WIT) the ABIs are collected in guest name-lex order; `variant_mixed_payload_cases_wit` reorders
+            // them to WIT order at the two sites that CONSUME the slot order (the classifier → serialize, and the
+            // emit). A Bytes/list/nested-compound field would need the cursor + a richer flatten — a later increment.
+            let mut abis = Vec::with_capacity(fields.len());
+            for fty in fields.values() {
+                abis.push(abi_val_type(fty)?);
+            }
+            if abis.is_empty() {
+                return None;
+            }
+            any_record = true;
+            cases.push((disc as i32, VariantPayloadKind::Record(abis, pty.clone())));
         } else {
-            return None; // a record payload case → a later increment
+            return None; // an option/result-shaped or otherwise non-representable payload → a later increment
         }
     }
     // MIXED fires when AT LEAST ONE multi-slot payload case is present — a mem case (Bytes/List, two `(ptr,
@@ -1119,10 +1142,64 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
     // case sets first and MIXED only sees what they decline. That residue is any representable combination the
     // per-case emit arms (Scalar/Bytes/List/Tuple/nullary) cover: a scalar mixed with a mem/tuple case, OR — with
     // NO scalar case — multiple or differing multi-slot cases (two tuples, a tuple beside a list, a Bytes beside a
-    // list), which no narrower detector handles. No `any_scalar` requirement: a scalar-less set flattens the same
-    // way (the join is computed over whatever cases exist; the emit simply never takes a Scalar arm). A record /
-    // non-scalar-element case still returns `None` above (a later increment), so this never over-claims.
-    (any_mem || any_tuple).then_some(cases)
+    // list), or a record case, which no narrower detector handles. No `any_scalar` requirement: a scalar-less set
+    // flattens the same way (the join is computed over whatever cases exist; the emit simply never takes a Scalar
+    // arm). A non-scalar-element / non-scalar-field case still returns `None` above (a later increment), so this
+    // never over-claims.
+    (any_mem || any_tuple || any_record).then_some(cases)
+}
+
+/// [`variant_mixed_payload_cases`] with the variant's WIT type applied so any `Record` payload case's field ABIs
+/// are ordered by the WIT record's field DECLARATION order (the canonical component-ABI slot order), not the
+/// guest's name-lex order. The bare detector cannot do this (it has no WIT), so it collects a `Record` case's
+/// ABIs name-lex; this wrapper — called ONLY where the slot order is CONSUMED (the classifier that builds the
+/// `HostParam` fed to `serialize`, and the emit) — fixes them, keeping `serialize` (the param core type), the
+/// emit (the pushed values, via `emit_record_arg_marshal` which also orders to WIT), and `host_imports` (the WIT
+/// `variant` DEFINED type) all in the SAME order. Returns `None` (a clean decline) if a `Record` case has no
+/// resolvable WIT record type or a WIT field is absent from the guest record. `variant_wit` is the arg's WIT type
+/// (a `WitType::Variant`); `None` leaves the cases name-lex (a non-record set is unaffected either way).
+pub fn variant_mixed_payload_cases_wit(
+    db: &mut Db,
+    ty: &Ty,
+    variant_wit: Option<&crate::wit_world::WitType>,
+) -> Option<Vec<(i32, VariantPayloadKind)>> {
+    let mut cases = variant_mixed_payload_cases(db, ty)?;
+    let has_record = cases
+        .iter()
+        .any(|(_, k)| matches!(k, VariantPayloadKind::Record(..)));
+    if !has_record {
+        return Some(cases); // no record case → the name-lex order is already the flatten order
+    }
+    let wit_cases = match variant_wit {
+        Some(crate::wit_world::WitType::Variant(c)) => c,
+        // A record case needs the WIT to order its fields — no WIT means we cannot lay a well-defined flatten.
+        _ => return None,
+    };
+    for (disc, kind) in cases.iter_mut() {
+        let VariantPayloadKind::Record(abis, record_ty) = kind else {
+            continue;
+        };
+        let Ty::Record(fields) = record_ty.strip_nominal() else {
+            return None;
+        };
+        // The guest field NAMES in name-lex order — the order `abis` was collected in.
+        let names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
+        let rec_wit = wit_cases
+            .get(*disc as usize)
+            .and_then(|(_, p)| p.as_ref())?;
+        let crate::wit_world::WitType::Record(wit_fields) = rec_wit else {
+            return None;
+        };
+        // Reorder `abis` (name-lex) into WIT field-declaration order: for each WIT field, take the ABI at its
+        // guest name-lex position. A WIT field absent from the guest record → decline.
+        let mut ordered = Vec::with_capacity(wit_fields.len());
+        for (fname, _) in wit_fields {
+            let idx = names.iter().position(|n| n == fname)?;
+            ordered.push(abis[idx]);
+        }
+        *abis = ordered;
+    }
+    Some(cases)
 }
 
 /// The canonical variant-flatten PAYLOAD slots (core valtype bytes, EXCLUDING the leading disc) for a mixed
@@ -1150,6 +1227,9 @@ pub fn variant_mixed_join_slots(cases: &[(i32, VariantPayloadKind)]) -> Vec<u8> 
             VariantPayloadKind::Bytes | VariantPayloadKind::List(_) => vec![CORE_I32, CORE_I32],
             // A Tuple case → one core slot per element, positionally.
             VariantPayloadKind::Tuple(abis) => abis.iter().map(|a| a.core_byte()).collect(),
+            // A Record case → one core slot per field, in the field ABIs' order (WIT declaration order once
+            // `variant_mixed_payload_cases_wit` has ordered them). Same positional inline flatten as a Tuple.
+            VariantPayloadKind::Record(abis, _) => abis.iter().map(|a| a.core_byte()).collect(),
         };
         for (i, cb) in case_flat.into_iter().enumerate() {
             if i < flat.len() {
@@ -2490,9 +2570,18 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     // uniform scalar/bytes/list/tuple/record variant arms (this fires only when BOTH a scalar and
                     // a bytes payload case are present) and BEFORE the scalar `_` arm.
                     _ if !peer_bound && variant_mixed_payload_cases(db, &at).is_some() => {
-                        params.push(HostParam::VariantMixed(
-                            variant_mixed_payload_cases(db, &at).unwrap(),
-                        ));
+                        // Build the WIT-AWARE cases so a RECORD payload case's field slots follow the WIT record's
+                        // declaration order (the bare detector orders them name-lex) — keeping `serialize` (the
+                        // flatten of these cases) aligned with `host_imports` (the WIT `variant` type) + the emit.
+                        // A record case with no resolvable WIT field order → push nothing (the arg count falls
+                        // short → a clean decline), mirroring the `VariantRecord` arm's `all_ok` guard.
+                        if let Some(cases) = variant_mixed_payload_cases_wit(
+                            db,
+                            &at,
+                            wit_params.as_ref().and_then(|ps| ps.get(arg_i)),
+                        ) {
+                            params.push(HostParam::VariantMixed(cases));
+                        }
                     }
                     // A top-level `result<list<u8>, enum>` arg crosses as the built-in WIT
                     // `result<list<u8>, <enum>>` — the answer-back envelope shape. It flattens to

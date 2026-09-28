@@ -1650,6 +1650,20 @@ pub(super) fn collect_used_ops_into_seen(
                                             }
                                         }
                                     }
+                                    VariantPayloadKind::Record(_, record_ty) => {
+                                        // The record payload is flattened via `emit_record_arg_marshal`:
+                                        // `arr-get` to index the record handle's fields + each field's unbox op.
+                                        out.insert(OP_ARR_GET);
+                                        if let crate::ty::Ty::Record(fields) =
+                                            record_ty.strip_nominal()
+                                        {
+                                            for fty in fields.values() {
+                                                if let Ok(Some(read)) = get_op_ty(db, fty) {
+                                                    out.insert(read);
+                                                }
+                                            }
+                                        }
+                                    }
                                     VariantPayloadKind::Bytes => {} // bytes-len/bytes-get declared above
                                 }
                             }
