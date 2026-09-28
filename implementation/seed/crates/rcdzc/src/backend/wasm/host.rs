@@ -789,14 +789,16 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                     let inner = field_boundary_abi(db, &payload)?; // `Variant(cases)`
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
                 }
-                // A nested `option<option<scalar>>` payload crosses as `option<option<T>>` — `(outer-disc,
-                // inner-disc, scalar)`; recurse the inner option's abi (`Option(Scalar)`). Scoped to a SCALAR
-                // inner payload this increment (no `mem`). Marshalled by `emit_option_reg_flatten`'s
+                // A nested `option<option<T>>` payload crosses iff the INNER option itself crosses — recurse its
+                // abi (`Option(T-abi)`) for ANY inner `T` (scalar → `(disc, scalar)`, bytes/list → `(disc, ptr,
+                // len/count)`, tuple/record → `(disc, <fields…>)`). Marshalled by `emit_option_reg_flatten`'s
                 // nested-option branch (a top-level arg / tuple element) / `emit_record_arg_marshal`'s
-                // nested-option field arm (a record FIELD) — MUST agree with those marshal arms
-                // (decline-don't-miscompile). Checked last (an option is a Sum, distinct from all the above).
-                if option_payload_ty(db, &payload).is_some_and(|pp| abi_val_type(&pp).is_some()) {
-                    let inner = field_boundary_abi(db, &payload)?; // `Option(Scalar)`
+                // nested-option field arm (which DELEGATES to `emit_option_reg_flatten`) — kept in lockstep by
+                // deriving the flatten from THIS abi. Checked last (an option is a Sum, distinct from all above).
+                if option_payload_ty(db, &payload).is_some()
+                    && field_boundary_abi(db, &payload).is_some()
+                {
+                    let inner = field_boundary_abi(db, &payload)?; // `Option(T-abi)`
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
                 }
                 return None;
@@ -1178,6 +1180,10 @@ pub fn record_has_option_field_needing_mem(db: &mut Db, ty: &Ty) -> bool {
             matches!(p.strip_nominal(), Ty::Bytes | Ty::String | Ty::List(_))
                 || record_has_bytes_field(&p)
                 || record_has_list_field(&p)
+                // A NESTED option field (`option<option<X>>`): reserve iff the inner option's abi needs `mem`
+                // (a Bytes/list leaf anywhere in `X`) — in lockstep with the delegating nested-option field marshal.
+                || (option_payload_ty(db, &p).is_some()
+                    && field_boundary_abi(db, &p).is_some_and(|abi| record_field_abi_needs_memory(&abi)))
         }) || record_has_option_field_needing_mem(db, f)
     })
 }

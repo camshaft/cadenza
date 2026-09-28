@@ -3420,15 +3420,17 @@ pub(super) fn emit_record_arg_marshal(
                 out.push(Lir::LocalGet(var_disc));
                 out.push(Lir::LocalGet(pval));
             }
-            None if crate::backend::wasm::host::option_payload_ty(db, fty)
-                .and_then(|p| crate::backend::wasm::host::option_payload_ty(db, &p))
-                .is_some_and(|pp| crate::backend::wasm::host::abi_val_type(&pp).is_some()) =>
+            None if crate::backend::wasm::host::option_payload_ty(db, fty).is_some_and(|p| {
+                crate::backend::wasm::host::option_payload_ty(db, &p).is_some()
+                    && crate::backend::wasm::host::field_boundary_abi(db, &p).is_some()
+            }) =>
             {
-                // An option<option<scalar>> field flattens to `(outer-disc, inner-disc, scalar)`. Read the
-                // field's OUTER option handle (arr-get, borrows the record) into a slot, then delegate to the
-                // shared `emit_option_reg_flatten` (whose nested-option branch recurses on the inner option
-                // handle) — the SAME helper the top-level option arg uses, so field + arg stay in lockstep. No
-                // `mem` (scalar inner). MUST precede the option<scalar> arm below (an inner option handle's
+                // An option<option<T>> field flattens to `(outer-disc, inner-disc, <inner payload slots>)` for ANY
+                // inner `T` that crosses. Read the field's OUTER option handle (arr-get, borrows the record) into a
+                // slot, then delegate to the shared `emit_option_reg_flatten` (whose nested-option branch derives
+                // the inner flatten from its abi + recurses on the inner option handle; a Bytes/list leaf writes its
+                // backing into `mem` at the threaded cursor) — the SAME helper the top-level option arg uses, so
+                // field + arg stay in lockstep. MUST precede the option<scalar> arm below (an inner option handle's
                 // `valtype_of` is `Some(I32)`, so that arm's guard would else match + miscompile it).
                 let opt_slot = work_base;
                 scratch_ty.insert(opt_slot, ValType::I32);

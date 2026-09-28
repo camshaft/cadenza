@@ -8372,3 +8372,30 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a RECORD host-op arg with an option<option<bytes>> FIELD crosses on the outer+inner Some arm (nested-option record FIELD)"
+  (doc
+    "SHAPE 222 (v-wit-boundary) — a RECORD host-op ARGUMENT (probe.push : func(record{a: option<option<list<u8>>>,
+           k: s64}) -> s64) whose field `a` is a nested `option<option<bytes>>`. Extends the TOP-LEVEL nested-option
+           family (SHAPE 218–221) to the record-FIELD position: `field_boundary_abi`'s nested-option arm now admits
+           ANY inner that crosses (building `Option(Option(Bytes))`), so `is_boundary_record` admits the record, and
+           `emit_record_arg_marshal`'s nested-option field arm DELEGATES to the shared `emit_option_reg_flatten`
+           (which derives the inner flatten from the abi + copies the inner Bytes rope into `mem` at the reserved
+           cursor). The `a` field flattens to `(a-outer-disc, a-inner-disc, ptr, len)`; the whole arg to that + `k`.
+           The cursor RESERVATION rides `record_has_option_field_needing_mem`'s new nested-option clause (reserve iff
+           the inner option's abi `record_field_abi_needs_memory`). run() builds {a: Some(Some(b\"hi\")), k: 5} and
+           performs probe.push; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= a (option (option (list (u8))))) (= k (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: a (Option (Option Bytes))) (: k Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= a (Some (Some b"hi"))) (= k 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
