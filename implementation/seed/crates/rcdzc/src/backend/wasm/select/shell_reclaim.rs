@@ -873,11 +873,26 @@ pub(crate) fn sum_shell_reclaim_ok(
                     | Core::ValueDecode { .. }
                     | Core::StrFromBytes { .. }
                     | Core::HostCall { .. }
+                    // INLINED fresh-producer (v-core-opt node#6-nonlen / P7, v-mem-safety instrumented): when a
+                    // pure fresh-producer fn (e.g. a `?`-desugaring `mk` returning `Result<Bytes/Map/Set,_>`) is
+                    // INLINED into its caller, its body replaces the `Core::Call` scrutinee with the inlined
+                    // `Core::MatchSum` (the BRICK-3b try-desugar) — equivalently a freshly-minted owned value
+                    // when `Owned` + dead-after (its arms each CONSTRUCT a fresh owned shell: `(Ok (Bytes.of …))`
+                    // / a re-wrapped `Err`), so its bare payload is owned exclusively exactly like a Call result.
+                    // Without it the inlined-`mk` outer-match Ok-shell + payload leaked (node6nonlen-* view-husks,
+                    // champ-*insert-consume-tryview) because the node-kind gate below missed the MatchSum. RESUME-
+                    // ESCAPE SAFETY: the `Owned` gate ABOVE (heap_operand_ownership) already excludes a handler-
+                    // THREADED-STATE MatchSum (classified Borrowed, rrb1) — the only resume-escape vector — so an
+                    // `Owned` MatchSum reaching here cannot resume-escape a payload. `Core::If` is the sibling
+                    // inlined join but is DEFERRED (no witness needs it yet; the doc flags If as a resume-escape
+                    // vector, so add it only with its own witness + RED-review — leak-over-UAF).
+                    | Core::MatchSum { .. }
             )
                 && scrutinee_dead_after_destructure(db, scrutinee, root)
                 // FRESH-PRODUCER path: bare_payload_result_ok = TRUE. The scrutinee is a Call/HostCall/
-                // AstDecode/StrFromBytes result — a freshly-minted owned value whose bare payload is owned
-                // exclusively by it, so a bare-payload-in-result reclaim nets 1:1 (28-wit:1043 run.run).
+                // AstDecode/StrFromBytes result (or an INLINED MatchSum fresh-producer body) — a freshly-minted
+                // owned value whose bare payload is owned exclusively by it, so a bare-payload-in-result reclaim
+                // nets 1:1 (28-wit:1043 run.run; node#6-nonlen inlined-`mk`).
                 && nontail_param_compound_extra_ok(db, scrutinee, scrut_ty, never_diverges, root, true)))
 }
 

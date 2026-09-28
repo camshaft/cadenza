@@ -3267,6 +3267,14 @@ fn collect_consuming_payload_sites_expr_inner(
             collect_consuming_payload_sites_expr(db, start, scrut, false, out);
             collect_consuming_payload_sites_expr(db, end, scrut, false, out);
         }
+        // NB — `Core::BytesSlice` is DELIBERATELY NOT borrow-classified here (falls to the `_ =>` CONSUMING
+        // fallback below). Unlike `StrSlice` (a String slice-view the runtime manages such that the shell
+        // deep-drop is safe), `Bytes.slice` returns a raw sub-slice VIEW that ALIASES the source buffer, so
+        // marking `bytes` a borrow would empty the consuming set → admit the inlined-MatchSum shell deep-drop →
+        // the cascade frees the buffer the live slice-view aliases → DOUBLE-FREE (corpus-10-bytes:0028 trap +
+        // node6nonlen-bytesslice Ok-path, v-mem-safety censused). Keeping it CONSUMING declines the reclaim
+        // (a safe LEAK, leak-over-UAF) — the intentional asymmetry with StrSlice. (A prior v-core-opt edit
+        // borrow-classified it as a "StrSlice twin"; REVERTED — Bytes-slice aliasing is not String-slice's.)
         // BORROWING compares/ops (mirror `binding_escapes` arm-for-arm): each reads both operands in place
         // (dropping only an OWNED temporary), so a scrutinee-child reached DIRECTLY as an operand is BORROWED,
         // never moved out — descend with `consuming=false` so it is NOT marked a consumed-child dup site.
@@ -7215,6 +7223,14 @@ pub(super) fn nontail_param_compound_extra_ok(
                     | Core::ValueDecode { .. }
                     | Core::StrFromBytes { .. }
                     | Core::HostCall { .. }
+                    // INLINED fresh-producer MatchSum (node#6-nonlen) — the sibling of the `sum_shell_reclaim_ok`
+                    // fresh-producer-set extension: an inlined `?`-desugaring `mk` body is a `Core::MatchSum`, so
+                    // the interior-view relax (a dead-after fallible-extraction over the payload — Bytes.slice/
+                    // Map.lookup, EMPTY consuming set) must fire for it too, else the inlined-`mk` Ok-shell leaks
+                    // behind this fence. Reached ONLY via the `Owned`-gated `sum_shell_reclaim_ok` caller (the
+                    // other caller `matchsum_matchextract_owned_reclaim_ok` is inert), so the `Owned`-gate resume-
+                    // escape exclusion holds here identically. `Core::If` deferred (see the sum_shell_reclaim_ok note).
+                    | Core::MatchSum { .. }
             ) && {
                 let mut consuming = HashSet::new();
                 collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
