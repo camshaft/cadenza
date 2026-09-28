@@ -1180,6 +1180,22 @@ pub fn record_has_option_field_needing_mem(db: &mut Db, ty: &Ty) -> bool {
     })
 }
 
+/// Whether a record ARG has a `result<list<u8>, enum>` FIELD anywhere in its tree (recursing into nested
+/// records) — its Ok arm copies the payload rope into shared `mem` (`emit_record_arg_marshal`'s Result-field
+/// arm), so the arg needs the running scratch cursor reserved. Complements [`record_has_bytes_field`]/
+/// [`record_has_list_field`]/[`record_has_option_field_needing_mem`] for the cursor-reservation gate — a
+/// `result` field is a `Sum`, invisible to the `Ty::Bytes`/`Ty::List`/`Ty::Tuple` matches those use. Without
+/// it the marshal's `cursor.expect(...)` panics on a record-with-a-result-field ARG (SHAPE 215).
+pub fn record_has_result_field(db: &mut Db, ty: &Ty) -> bool {
+    let Ty::Record(fields) = ty.strip_nominal() else {
+        return false;
+    };
+    let fields = (**fields).clone(); // release the borrow of `ty` before the recursive `&mut db` calls
+    fields
+        .values()
+        .any(|f| result_bytes_enum(db, f).is_some() || record_has_result_field(db, f))
+}
+
 /// The payload type of an OPTION-SHAPED sum (`option<T>`) — a sum with exactly two variants, one nullary
 /// and one single-payload, instantiated at a single type argument — else `None`. Returns `T` (the instantiated
 /// payload = the sum's sole type argument). The general option classifier (superseding the former Bytes-only

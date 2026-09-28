@@ -6534,6 +6534,10 @@ pub(super) fn emit(
                     || crate::backend::wasm::host::record_has_option_field_needing_mem(db, &at)
                     // A record arg with a `tuple<…>` FIELD may copy a Bytes element's rope → reserve the cursor.
                     || crate::backend::wasm::host::record_has_tuple_field(&at)
+                    // A record arg with a `result<list<u8>, enum>` FIELD copies the Ok rope into `mem` on the Ok
+                    // arm (`emit_record_arg_marshal`'s Result-field arm) → reserve the cursor (else that arm's
+                    // `cursor.expect(...)` panics — SHAPE 215).
+                    || crate::backend::wasm::host::record_has_result_field(db, &at)
                     // A `list<T>` arg marshals into `mem` (its outer array + each element) → needs the cursor.
                     || matches!(at.strip_nominal(), Ty::List(_))
                     // A top-level `option<bytes>` arg copies the payload rope into `mem` on Some → needs the cursor.
@@ -6556,6 +6560,7 @@ pub(super) fn emit(
                             || crate::backend::wasm::host::record_has_list_field(&p)
                             || crate::backend::wasm::host::record_has_option_field_needing_mem(db, &p)
                             || crate::backend::wasm::host::record_has_tuple_field(&p)
+                            || crate::backend::wasm::host::record_has_result_field(db, &p)
                     })
                     // A top-level `option<list<T>>` arg marshals the payload list into `mem` on Some → cursor.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
@@ -6574,6 +6579,7 @@ pub(super) fn emit(
                             || crate::backend::wasm::host::record_has_list_field(&ok)
                             || crate::backend::wasm::host::record_has_option_field_needing_mem(db, &ok)
                             || crate::backend::wasm::host::record_has_tuple_field(&ok)
+                            || crate::backend::wasm::host::record_has_result_field(db, &ok)
                     })
                     // A top-level `result<tuple, enum>` arg whose Ok tuple has a runtime-compound ELEMENT
                     // (bytes/list/nested-compound) copies that element's bytes into `mem` on the Ok arm
