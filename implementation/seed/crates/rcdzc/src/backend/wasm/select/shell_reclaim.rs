@@ -1844,14 +1844,30 @@ pub(crate) fn payload_escapes_to_consumer_dupable(
     never_diverges: bool,
     root: &crate::core::SumCont,
 ) -> Option<Vec<StructId>> {
-    // Shared shell-reclaim floor (mirrors matchsum_rebuild_moved_child_nodes — MINUS the ownership gate, which
-    // is the drop side's UAF-critical guard, dup-side is leak-safe).
+    // Shared shell-reclaim floor (mirrors matchsum_rebuild_moved_child_nodes).
     if never_diverges
         || !is_heap_type(scrut_ty)
         || ty_is_enum_disc(db, scrut_ty)
         || cont_rematches_scrutinee(db, scrutinee, root)
         || !scrutinee_dead_after_destructure(db, scrutinee, root)
     {
+        return None;
+    }
+    // OWNED-SCRUTINEE gate (added after v-memory-safety's gate-local RED, 2026-09-28): the dup pays off ONLY
+    // when the producing shell is itself reclaimed (so its deep-drop cascades the escaping extraction down and
+    // the dup keeps a live ref for the consumer). If the scrutinee is a BORROWED reusable param / persistent
+    // alias, the producing shell reclaim DECLINES (stashed_slot None on the drop side) and every dup here is
+    // ORPHANED → a LEAK regression (v-mem's BST del-min: `(match t ((Node p) (match p (#tuple(l k r) (match l
+    // …)))))` — p=SumPayload(t)/l=Proj(p) are ordinary IN-PLACE destructures of a BORROWED param, both root at
+    // t and are re-matched, so the un-gated walk mis-classified them as escapes and orphan-dup'd them → 0→4
+    // leak). Requiring the scrutinee OWNED excludes those (a borrowed param + its bare-alias views are all
+    // Borrowed) and keeps the genuine owned-producer escapes (trnt's materialized `if`-operand; node6xd/(e)'s
+    // owned Result). This is the leak-TIGHTNESS gate; leak-SAFETY (no UAF) held without it, but a leak is still
+    // a regression. Keeps drop ⊆ dup: the drop side ANDs stashed-I32 (⇒ owned), a strict subset of this.
+    if !matches!(
+        heap_operand_ownership(db, scrutinee),
+        Ok(HandleOwnership::Owned)
+    ) {
         return None;
     }
     // Collect every `Leaf` arm body of the cont — the try-desugar root is a 2-arm disc `Switch` (SUCCESS/FAILURE
