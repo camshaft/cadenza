@@ -8578,3 +8578,34 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a BARE variant{a, b(list<s64>)} as the direct host-op arg emits, loads, and runs (via an imposed WIT world)"
+  (doc
+    "SHAPE 229 (v-wit-boundary) — a `variant{a, b(list<s64>)}` passed BARE as the TOP-LEVEL host-op ARGUMENT
+           (probe.push), the FIRST list-payload variant ARG (the `list` sibling of the Bytes-payload SHAPE 227).
+           Crosses via the NEW additive `HostParam::VariantList`: the component `variant` DEFINED type is laid
+           STRUCTURALLY from the declared WIT (`add_wit_type_deduped` → `CDef::Variant` with a `(list s64)` payload
+           case, export-remapped), and the guest flattens to `(disc:i32, ptr:i32, count:i32)` — the SAME 3-slot
+           shape as `HostParam::VariantBytes`, but on a list case `emit_variant_list_arg_reg_flatten` MARSHALS the
+           payload list into `mem` at the reserved cursor via `emit_list_arg_marshal` (`vec-len`/`vec-get` + the
+           scalar element) and pushes `(disc, ptr, count)`; on a nullary case pushes `(disc, 0, 0)`. Mirrors the
+           VariantBytes family additively (detector `variant_list_payload_cases` requiring a shared scalar element,
+           HostParam, classifier, first_unrepresentable, marshal, emit dispatch + reclaim, serialize, host_imports
+           structural CRef, used_ops, set_needs_memory, cursor reservation). run() performs TWO pushes —
+           `(B [1,2,3])` the list case then `A` the nullary case — exercising BOTH arms; a VALID running component
+           (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (list (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B (List Int64)))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B #list(1 2 3))) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)) (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push) (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

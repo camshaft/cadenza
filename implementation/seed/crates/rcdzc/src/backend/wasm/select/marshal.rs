@@ -1512,6 +1512,79 @@ pub(super) fn emit_variant_bytes_arg_reg_flatten(
     Ok(())
 }
 
+/// Marshal a top-level value-heap `variant{nullary…, list<scalar>-case(s)}` host argument whose handle is in
+/// `var_slot` into the canonical `(disc:i32, i32, i32)` core-slot flatten, pushing the three values. The `list`
+/// sibling of [`emit_variant_bytes_arg_reg_flatten`]: branch on whether the sum's disc is a list-payload case
+/// (`disc ∈ list_discs`, decl = component order). A list case → the payload list MARSHALLED into `mem` at `cursor`
+/// via `emit_list_arg_marshal` (which leaves `(outer-ptr, count)`) gives `(disc, ptr, count)`; a nullary case →
+/// `(disc, 0, 0)`. All list cases share the scalar element `elem` (the detector guarantees it), so the single
+/// `emit_list_arg_marshal(elem)` covers whichever case fired. `BlockType` is SINGLE-value, so the `if` arms
+/// SIDE-EFFECT into scratch and the 3 values are pushed AFTER the `if`. `cursor` is the running `mem` write slot;
+/// `work_base` is the first free scratch slot.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_variant_list_arg_reg_flatten(
+    db: &mut Db,
+    var_slot: u32,
+    list_discs: &[i32],
+    elem: &Ty,
+    cursor: u32,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let disc = work_base;
+    let is_list = work_base + 1;
+    let p0 = work_base + 2;
+    let p1 = work_base + 3;
+    let list_slot = work_base + 4;
+    for s in [disc, is_list, p0, p1, list_slot] {
+        scratch_ty.insert(s, ValType::I32);
+    }
+    *high = (*high).max(work_base + 5);
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component variant disc, decl order)
+    out.push(Lir::LocalSet(disc));
+    // is_list = OR over the list-payload-case discs of (disc == ld).
+    for (k, ld) in list_discs.iter().enumerate() {
+        out.push(Lir::LocalGet(disc));
+        out.push(Lir::ConstI32(*ld));
+        out.push(Lir::I32Eq);
+        if k > 0 {
+            out.push(Lir::I32Or);
+        }
+    }
+    out.push(Lir::LocalSet(is_list));
+    out.push(Lir::LocalGet(is_list));
+    out.push(Lir::If(BlockType::Empty)); // a list case → marshal the payload list, (p0,p1) = (ptr,count)
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [list handle]
+    out.push(Lir::LocalSet(list_slot));
+    emit_list_arg_marshal(
+        db,
+        elem,
+        None, // a scalar element is offset-agnostic → no element WIT needed
+        list_slot,
+        cursor,
+        work_base + 5,
+        high,
+        scratch_ty,
+        out,
+    )?; // leaves [outer-ptr, count]
+    out.push(Lir::LocalSet(p1)); // count (top of stack)
+    out.push(Lir::LocalSet(p0)); // ptr
+    out.push(Lir::Else); // a nullary case → (0, 0)
+    out.push(Lir::ConstI32(0));
+    out.push(Lir::LocalSet(p0));
+    out.push(Lir::ConstI32(0));
+    out.push(Lir::LocalSet(p1));
+    out.push(Lir::End); // if
+    out.push(Lir::LocalGet(disc)); // push the 3 flattened core values
+    out.push(Lir::LocalGet(p0));
+    out.push(Lir::LocalGet(p1));
+    Ok(())
+}
+
 /// Marshal a top-level value-heap `result<scalar, enum>` host argument whose handle is in `result_slot` into the
 /// canonical `(disc:i32, join)` core-slot flatten the built-in `result<ok-scalar, err-enum>` param lowers to,
 /// pushing the two values onto the operand stack. The 2-slot scalar-Ok twin of `emit_result_arg_reg_flatten`

@@ -388,9 +388,17 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   lockstep sites (detector `variant_bytes_payload_cases`, `HostParam::VariantBytes`, the classifier arm,
   `first_unrepresentable_host_op`'s `arg_is_boundary_variant_bytes`, the marshal, the emit dispatch + reclaim,
   serialize's 3-slot flatten, host_imports' structural-WIT `matches!` gate + per-param `CRef`, `used_ops`,
-  `set_needs_memory`, the emit.rs cursor pre-scan). REMAINING: a variant with a MIXED scalar+Bytes payload set, or a
-  non-Bytes compound payload (`list<T>`/record/tuple) case — a later increment (this admits only all-`Bytes`/`String`
-  payload cases so the single rope-copy marshal covers them).
+  `set_needs_memory`, the emit.rs cursor pre-scan).
+- **[emit, ARG-side] a LIST<scalar> single-payload variant host-op ARG — ✅ DONE / TESTED (SHAPE 229).** The `list`
+  sibling of VariantBytes: a `variant{nullary…, list<scalar>-case(s)}` (all list cases sharing the scalar element)
+  crosses via the additive `HostParam::VariantList`. Same structural-WIT `variant` component type (`(list <elem>)`
+  payload case) and same `(disc, ptr, count)` 3-slot flatten, but `emit_variant_list_arg_reg_flatten` MARSHALS the
+  payload list into `mem` via `emit_list_arg_marshal` (`vec-len`/`vec-get` + the scalar element) on a list case
+  instead of a Bytes rope-copy. Detector `variant_list_payload_cases` returns the list-case discs + the shared
+  element `Ty` (re-derived at emit/used_ops time). Additive across the same ~11 sites as VariantBytes. REMAINING
+  variant-payload gaps: a MIXED scalar+Bytes+list payload set (per-case marshal dispatch), a `list<compound>`
+  element / mixed element types, a PRODUCT (record/tuple) payload case, a MULTI-payload case (≥2 payloads/case),
+  and VariantBytes/List at the FIELD / list-element positions (`RecordFieldAbi::Variant` is scalar-only).
 - **[emit, ARG-side] the BARE (top-level) named-variant host-op ARG — ✅ DONE / TESTED (SHAPE 184/185).**
   `emit_variant_reg_flatten` has always been documented as "the bare-variant ARG marshal", but the corpus never
   pinned it at the top-level param position directly — every prior `variant` case sat inside a record field /
