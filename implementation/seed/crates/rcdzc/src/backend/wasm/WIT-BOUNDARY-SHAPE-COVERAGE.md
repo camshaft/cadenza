@@ -443,10 +443,14 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   recursion copies the rope into `mem` at the threaded cursor; widened in lockstep across `option_arg_crosses` +
   the classifier nested-option arm + `emit_option_reg_flatten` + `collect_used_ops` (the bytes inner needs
   `bytes-len`/`bytes-get` declared — its condition already admitted bytes via the I32 handle but the body only did
-  `get_op_ty`, so the rope-copy `CallImport` was u32::MAX / CDZ0910) + the emit.rs cursor pre-scan. REMAINING: a
-  `record`/`tuple`/`list` inner payload (`option<option<record/tuple/list>>`); the nested-option at a record-FIELD
-  / tuple-ELEMENT with a Bytes inner (only the TOP-LEVEL arg is exercised); and `list<option<option>>` (the
-  `emit_option_to_mem` in-mem writer has no nested-option arm).
+  `get_op_ty`, so the rope-copy `CallImport` was u32::MAX / CDZ0910) + the emit.rs cursor pre-scan. A `list<T>`
+  inner (`option<option<list<T>>>`, TOP-LEVEL arg) is now DONE too — SHAPE 219: bytes and list inners are
+  structurally identical (both flatten the inner option to the 3-slot `(inner-disc, ptr, len/count)`), so the same
+  four sites generalize (`Bytes | List(_)` takes the 3-slot capture; a list inner declares `vec-len`/`vec-get` +
+  element ops via `collect_list_elem_ops`). REMAINING: a `record`/`tuple` inner payload
+  (`option<option<record/tuple>>`); the nested-option at a record-FIELD / tuple-ELEMENT with a Bytes/list inner
+  (only the TOP-LEVEL arg is exercised); and `list<option<option>>` (the `emit_option_to_mem` in-mem writer has no
+  nested-option arm).
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
 - **[emit, export] typed enum RESULT under a DECLARED world — ✅ DONE (SHAPE 60).** A payloadless-enum
