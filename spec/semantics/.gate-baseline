@@ -10939,7 +10939,7 @@ pass	trc1 two `?`s as CALL ARGUMENTS hoist left-to-right and short-circuit at th
 pass	trmc1 a `?` as the argument of a MODULE-MEMBER call unwraps then calls
 pass	trmd1 `?`s as `#map` KEY and VALUE hoist KEY-BEFORE-VALUE and short-circuit in evaluation order
 pass	trhe1 a `?` short-circuit propagates a HEAP Err payload through the boundary re-wrap, reclaim-clean
-todo	trnt1 a NESTED `?` `(try (try rr))` unwraps twice, each level short-circuiting to the boundary
+pass	trnt1 a NESTED `?` `(try (try rr))` unwraps twice, each level short-circuiting to the boundary
 pass	trl1 expression-position `?`s as `#list` elements hoist left-to-right and short-circuit
 pass	trn1 two `?`s NESTED across compound constructors (record + list inside a tuple) each short-circuit
 pass	trmp1 a `?`-bound value in a `(Ok #map)` Ok arm reclaims on the Err short-circuit and the Ok path

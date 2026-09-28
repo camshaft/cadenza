@@ -1944,18 +1944,14 @@
   (output (: 7 Int64))
   (live-objects known-leak))
 
-; trnt1 (TODO): the NESTED try `(try (try rr))` — a `?` whose OPERAND is itself a `?`. The desugar for
-; this is known and small (inner-first hoisting in `find_hoistable_try`'s `(try e)` arm: descend the
-; operand FIRST so `(try (try rr))` lifts to `(let ((a (try rr))) (let ((b (try a))) …))`, each level a
-; binding-tail `let` riding `lower_let`), and it produces the CORRECT values (verified: 111/222/7). It is
-; held back by a REACHABLE-ON-MAIN reclaim leak, NOT the desugar: a `?` on a `(Result Sum E)` — a Result
-; whose Ok-arm is ITSELF a Sum (nested Result/Option/enum) — leaks 1 object on the short-circuit re-wrap.
-; Isolated with three do-def controls (the LANDED path, no nested-try): scalar-both-arms Result = clean,
-; heap-`List` Ok-arm = clean, nested-Result (heap-Sum) Ok-arm = LEAKS. Same Sum-shell reclaim family as the
-; CHAMP husk fix (62750d2b57), which covered a CHAMP Ok-arm but not a nested-Sum Ok-arm; routed to
-; v-memory-safety. Until BOTH the reclaim fix and the inner-first desugar land, `(try (try rr))` stays a
-; clean CDZ0900 decline (the safe floor — a decline beats a leaky compile). Idealistic values + leak-clean
-; pinned here; flips todo→pass when the reclaim lands and the desugar is enabled.
+; trnt1: the NESTED try `(try (try rr))` — a `?` whose OPERAND is itself a `?`. Lowered by inner-first
+; hoisting in `find_hoistable_try`'s `(try e)` arm: the operand is descended FIRST, so `(try (try rr))`
+; lifts to `(let ((a (try rr))) (let ((b (try a))) …))` — each `?` level its own binding-tail `let` riding
+; `lower_let`, inner unwrap before outer. The intermediate `a` is a bare-alias inner-Result whose shell
+; reclaims via the unified chained-`?` reclaim (the producing-side `(try rr)` reclaims rr's outer shell + the
+; dup-backed nested-match reclaims `a` — mem-safety a1e26895c3, fenced to an OWNED scrutinee: a chained-`?`
+; on a borrowed-param scrutinee stays a clean decline, leak-over-UAF). Verified leak-clean (live-objects 0
+; every path) with SCALAR Int64 errors; a HEAP error type on this shape stays a fenced safe-leak decline.
 (case
   "trnt1 a NESTED `?` `(try (try rr))` unwraps twice, each level short-circuiting to the boundary"
   (doc
@@ -1965,9 +1961,9 @@
      Result (short-circuiting on the inner Err) — so `(Ok (try (try rr)))` under a `(Result Int64 Int64)`
      boundary yields the doubly-unwrapped payload, with two distinct short-circuit points. Pinned with
      DISTINCT Err payloads: at k=0 the OUTER Result is Err (→ 111, inner-`?` short-circuits first); at k=1
-     it is `(Ok (Err 222))` (→ 222, outer-`?` short-circuits); at k=2 `(Ok (Ok 7))` → 7. Idealistic +
-     leak-clean; declines CDZ0900 today (see the trnt1 comment above — held on the nested-Sum-Ok-arm
-     reclaim leak, routed to v-memory-safety, plus the inner-first desugar).")
+     it is `(Ok (Err 222))` (→ 222, outer-`?` short-circuits); at k=2 `(Ok (Ok 7))` → 7. Verified leak-clean
+     (live-objects 0 every path): the inner-first hoist rides `lower_let` and the intermediate bare-alias
+     inner-Result reclaims via the unified chained-`?` shell reclaim (see the trnt1 comment above).")
   (input
     (do
       (def
@@ -2001,9 +1997,9 @@
      on the Ok path `x` unwraps and the result is `10 + 1 = 11`; on the Err path the `?` short-circuits,
      re-wrapping the caught heap-`List` Err into `mk`'s Result type and propagating it — the caller reads
      `List.len` of the payload (3). Verified leak-clean (live-objects 0 both paths): the try short-circuit's
-     `Core::Block`/`Break` emit threads and reclaims a HEAP Err payload correctly. Complements the nested-Sum
-     Ok-arm husk case (trnt1, held on a reclaim fix) — this locks the ORTHOGONAL axis (heap Err, scalar Ok),
-     which reclaims correctly today, guarding the Err-propagation path adjacent to that fix.")
+     `Core::Block`/`Break` emit threads and reclaims a HEAP Err payload correctly. Complements the nested-`?`
+     chained-reclaim case (trnt1) — this locks the ORTHOGONAL axis (heap Err, scalar Ok), guarding the
+     Err-propagation path alongside the chained-`?` shell reclaim.")
   (input
     (do
       (def

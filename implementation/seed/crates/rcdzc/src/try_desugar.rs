@@ -80,8 +80,18 @@ fn find_hoistable_try(ast: &Arenas, node: StructId) -> Option<(StructId, Vec<Str
     }
     let kids: Vec<StructId> = kids.clone();
     let hname = ast.as_name(kids[0]);
-    // `(try e)` — the node to hoist (exactly the arity-1 operator form); no prefix at this level.
+    // `(try e)` — the arity-1 operator form. If the OPERAND `e` itself holds a hoistable `?` (a NESTED try
+    // `(try (try rr))`, or a `?` buried in `e`'s subexpression), return that INNER hoist first — inner-first
+    // ordering. The next fixpoint pass then lifts THIS `(try …)` (whose operand is now a bound name) as its
+    // own binding-tail `let`, so each `?` level rides `lower_let` independently: `(try (try rr))` becomes
+    // `(let ((a (try rr))) (let ((b (try a))) …))`, evaluation order (inner unwrap before outer) preserved.
+    // The intermediate `a` is a bare-alias inner-Result whose shell reclaims via the unified chained-`?`
+    // reclaim (producing-side reclaims rr's outer shell + the dup-backed nested-match reclaims `a`; mem-safety
+    // a1e26895c3, fenced to an OWNED scrutinee). Otherwise `e` is `?`-free and THIS node is the hoist target.
     if hname == Some("try") && kids.len() == 2 {
+        if let Some(inner) = find_hoistable_try(ast, kids[1]) {
+            return Some(inner);
+        }
         return Some((node, Vec::new()));
     }
     // A MEMBER-CALL application `(recv.member arg…)` — its head `kids[0]` is a `.`-member-access node
