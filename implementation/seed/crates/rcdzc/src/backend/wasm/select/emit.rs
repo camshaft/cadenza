@@ -6971,9 +6971,21 @@ pub(super) fn emit(
                     _ if crate::backend::wasm::host::variant_mixed_payload_cases(db, &at)
                         .is_some() =>
                     {
-                        let cases =
-                            crate::backend::wasm::host::variant_mixed_payload_cases(db, &at)
-                                .expect("gated by the arm guard");
+                        // Use the WIT-AWARE cases so a RECORD payload case's field slots follow the WIT record's
+                        // declaration order (the bare detector orders them name-lex). Consistent with `serialize`
+                        // (which flattens the classifier's WIT-ordered `HostParam` cases) + `host_imports` (the WIT
+                        // `variant` type). A record case with no resolvable WIT field order → a clean decline.
+                        let wit_variant = wit_params.as_ref().and_then(|p| p.get(arg_i));
+                        let cases = crate::backend::wasm::host::variant_mixed_payload_cases_wit(
+                            db,
+                            &at,
+                            wit_variant,
+                        )
+                        .ok_or_else(|| {
+                            Reject::decline(
+                                "a mixed variant arg with a record case has no resolvable WIT field order",
+                            )
+                        })?;
                         let var_slot = arg_base.max(*high);
                         scratch_ty.insert(var_slot, ValType::I32);
                         *high = (*high).max(var_slot + 1);
@@ -6983,7 +6995,16 @@ pub(super) fn emit(
                             .expect("a mixed variant arg reserves the scratch cursor (pre-scan)");
                         let work_base = *high;
                         emit_variant_mixed_arg_reg_flatten(
-                            db, var_slot, &at, &cases, cursor, work_base, high, scratch_ty, out,
+                            db,
+                            var_slot,
+                            &at,
+                            &cases,
+                            wit_variant,
+                            cursor,
+                            work_base,
+                            high,
+                            scratch_ty,
+                            out,
                         )?;
                         // MARSHALED-ARG RECLAIM (mixed-variant twin): pure-borrow flatten (sum-disc/payload +
                         // unbox/bytes-get) → the variant handle is DEAD after. Deep-drop when OWNED or a dup-site.

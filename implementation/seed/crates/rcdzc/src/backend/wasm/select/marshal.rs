@@ -1977,6 +1977,10 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
     var_slot: u32,
     variant_ty: &Ty,
     cases: &[(i32, crate::backend::wasm::host::VariantPayloadKind)],
+    // The arg's WIT type (a `WitType::Variant`), when known — needed by a RECORD payload case to order its
+    // fields to the WIT record's field declaration order (via `emit_record_arg_marshal`). `None` for a case set
+    // with no record case (Scalar/Bytes/List/Tuple are offset-agnostic / positional, needing no WIT).
+    variant_wit: Option<&crate::wit_world::WitType>,
     cursor: u32,
     work_base: u32,
     high: &mut u32,
@@ -2196,6 +2200,74 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                 // Coerce each element into its joined slot via the shared `emit_scalar_coerce_into_slot`: an
                 // integer widens (`i64.extend_i32_u`) and a FLOAT element reinterprets (`i64.reinterpret_f64` /
                 // `i32.reinterpret_f32`) when the join folded it against another case's integer slot.
+                for k in 0..cnt {
+                    out.push(Lir::LocalGet(temp_base + k));
+                    emit_scalar_coerce_into_slot(nat_vts[k as usize], slot_vts[k as usize], out);
+                    out.push(Lir::LocalSet(base_slot + k));
+                }
+                cnt
+            }
+            VariantPayloadKind::Record(abis, record_ty) => {
+                // A RECORD payload case: marshal the payload record's scalar fields POSITIONALLY inline via the
+                // shared `emit_record_arg_marshal` (which pushes one value per field in WIT DECLARATION order — the
+                // SAME order `abis` was put in by `variant_mixed_payload_cases_wit`), then coerce each into its
+                // JOINED slot width. The record twin of the Tuple arm; `emit_record_arg_marshal` handles the guest
+                // name-lex → WIT-order field mapping internally, so the pushed value k aligns with `abis[k]`.
+                let Ty::Record(fields) = record_ty.strip_nominal() else {
+                    return Err(Reject::decline(
+                        "a mixed variant record payload is not a record",
+                    ));
+                };
+                let fields = fields.clone();
+                let record_wit = match variant_wit {
+                    Some(crate::wit_world::WitType::Variant(wcases)) => {
+                        wcases.get(*case_disc as usize).and_then(|(_, p)| p.clone())
+                    }
+                    _ => None,
+                };
+                let Some(record_wit) = record_wit else {
+                    return Err(Reject::decline(
+                        "a mixed variant record payload has no WIT record type (needed to order fields)",
+                    ));
+                };
+                let nat_vts: Vec<ValType> = abis
+                    .iter()
+                    .map(|a| {
+                        ValType::from_byte(a.core_byte()).ok_or_else(|| {
+                            Reject::decline(
+                                "a mixed variant record field is not a numeric core type",
+                            )
+                        })
+                    })
+                    .collect::<Result<_, _>>()?;
+                let cnt = nat_vts.len() as u32;
+                // Bump this arm's scratch off the RUNNING high-water (`*high`) — DISJOINT from the other arms'
+                // scratch (the SHAPE 248 discipline: a shared index carrying two ValTypes across arms → CDZ0910).
+                let rec_slot = *high;
+                let temp_base = *high + 1;
+                scratch_ty.insert(rec_slot, ValType::I32);
+                for (k, vt) in nat_vts.iter().enumerate() {
+                    scratch_ty.insert(temp_base + k as u32, *vt);
+                }
+                *high = (*high).max(temp_base + cnt);
+                out.push(Lir::LocalGet(var_slot));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [record handle]
+                out.push(Lir::LocalSet(rec_slot));
+                emit_record_arg_marshal(
+                    db,
+                    rec_slot,
+                    &fields,
+                    &record_wit,
+                    None,            // all-scalar fields → no `mem`/cursor
+                    temp_base + cnt, // work_base past the temp field slots
+                    high,
+                    scratch_ty,
+                    out,
+                )?; // pushes `cnt` field values (WIT order, natural widths)
+                // Capture in reverse (stack top = last WIT field).
+                for k in (0..cnt).rev() {
+                    out.push(Lir::LocalSet(temp_base + k));
+                }
                 for k in 0..cnt {
                     out.push(Lir::LocalGet(temp_base + k));
                     emit_scalar_coerce_into_slot(nat_vts[k as usize], slot_vts[k as usize], out);

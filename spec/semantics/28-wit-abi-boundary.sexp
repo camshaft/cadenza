@@ -9344,3 +9344,43 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a MIXED variant{a, b(s64), c(record{x,y})} with a RECORD payload case whose WIT field order differs from guest name-lex (imposed WIT)"
+  (doc
+    "SHAPE 252 (v-wit-boundary) — a `variant{a, b(s64), c(record{y:s32, x:s64})}` passed BARE as the TOP-LEVEL
+           host-op ARGUMENT (probe.push): a scalar case (b: s64) mixed with a RECORD payload case (c). Closes the
+           record-payload-in-a-MIXED-variant gap: `variant_record_payload_case` handles a SINGLE record case + rest
+           nullary, but a record case MIXED with another case fell to `VariantMixed`, whose detector returned None
+           at the record branch. Now `variant_mixed_payload_cases` recognizes a scalar-field record case
+           (`VariantPayloadKind::Record`), flattening it POSITIONALLY inline like a tuple — one slot per field. The
+           slot ORDER follows the WIT record's field DECLARATION order: here the WIT declares `(y:s32, x:s64)` but
+           the guest record is name-lex `(x, y)`, so the field ABIs must be REORDERED to WIT before the join, and
+           the emit marshals field VALUES in WIT order (via `emit_record_arg_marshal`). `variant_mixed_payload_cases_wit`
+           applies this reorder at the two sites that consume the slot order (the classifier -> serialize, and the
+           emit), keeping serialize (the param core type), the emit (pushed values), and host_imports (the WIT
+           `variant` type) all in the SAME order — a wrong reorder would fail canonical-ABI validation (CDZ0910).
+           The join is `(disc:i32, i64, i64)`: slot0 = join(b:s64=i64, record y:s32=i32) = i64, slot1 =
+           join(record x:s64=i64) = i64. run() pushes `(B 42)`, `(C {x:1, y:2})`, `A` — exercising the Scalar arm,
+           the Record arm (with a permuted WIT field order), and the nullary arm; a VALID running component
+           (live-objects=0) pins the WIT-ordered record payload case in a mixed variant.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (s64)) (c (record (= y (s32)) (= x (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C (Record (: x Int64) (: y Int32))))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B 42)) (probe.push (V.C #record((= x 1) (= y (: 2 Int32))))) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

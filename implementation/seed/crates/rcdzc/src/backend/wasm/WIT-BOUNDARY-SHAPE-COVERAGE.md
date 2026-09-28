@@ -492,12 +492,19 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   the emit's Scalar arm coerces via `emit_scalar_coerce_into_slot` — `i64.reinterpret_f64` here). A FLOAT tuple
   ELEMENT in a mixed variant is now ✅ DONE / TESTED (SHAPE 245): `variant{a, b(s64), c(tuple<f64,s64>)}` — the
   Tuple arm coerces each element via `emit_scalar_coerce_into_slot` (element 0 f64→i64 reinterpret when folded
-  against b's i64 slot), so a mixed variant's inline (scalar/tuple) cases fully support int AND float. REMAINING
-  variant-payload gaps: a mixed LIST case of a NON-scalar element (needs the element WIT threaded), a RECORD
-  compound payload case in a mixed variant (needs the payload record's WIT threaded into the detector — a
-  multi-site change since the detector has only the guest type), and ALL of the compound-payload variants at the
-  FIELD / list-element positions (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case
-  `b(s64,s64)` is ✅ DONE — SHAPE 236.)
+  against b's i64 slot), so a mixed variant's inline (scalar/tuple) cases fully support int AND float. A RECORD
+  compound payload case in a mixed variant (whose fields are all scalar) is now ✅ DONE / TESTED (SHAPE 252):
+  `variant{a, b(s64), c(record{y:s32, x:s64})}` — a `VariantPayloadKind::Record(field-abis, ty)` flattens
+  POSITIONALLY inline like a tuple (one slot per field) in the WIT record's field DECLARATION order. The bare
+  `variant_mixed_payload_cases` collects the field ABIs name-lex; `variant_mixed_payload_cases_wit` REORDERS them
+  to WIT order at the two sites that consume the slot order (the classifier → `serialize`, and the emit), and the
+  emit's Record arm marshals field VALUES in WIT order via `emit_record_arg_marshal` — so `serialize` (the param
+  core type), the emit (pushed values), and `host_imports` (the WIT `variant` type) all agree (a wrong reorder
+  fails canonical-ABI validation → CDZ0910). A record case with a NON-scalar field (Bytes/list/nested-compound)
+  still declines cleanly (the detector's `abi_val_type` gate). REMAINING variant-payload gaps: a mixed LIST case of
+  a NON-scalar element (needs the element WIT threaded), and ALL of the compound-payload variants at the FIELD /
+  list-element positions (`RecordFieldAbi::Variant` is scalar-only). (A MULTI-payload single case `b(s64,s64)` is
+  ✅ DONE — SHAPE 236.)
 - **[emit, ARG-side] a scalar-payload variant MIXING int with float — the reinterpret join — ✅ DONE / TESTED
   (SHAPE 233/234/235).** A `variant{nullary…, scalar-case(s)}` whose payloads mix an integer with a float (or
   `f32` with `f64`) — the case the uniform `HostParam::Variant` declines (its join has no clean slot). Handled by
