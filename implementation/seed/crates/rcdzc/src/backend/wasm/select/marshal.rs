@@ -123,16 +123,11 @@ pub(super) fn emit_list_arg_marshal(
     } else {
         crate::backend::wasm::host::variant_scalar_payload_cases(db, elem).is_some()
                 || crate::backend::wasm::host::variant_tuple_payload_case(db, elem).is_some()
-                // A HETEROGENEOUS scalar+tuple+bytes variant element → `emit_variant_to_mem`'s mixed per-case
-                // dispatcher. Scoped to Scalar/Tuple/Bytes payload kinds (matching `list_elem_marshalable`).
+                // A HETEROGENEOUS variant element (scalar/tuple/bytes/list-of-scalar payload cases) →
+                // `emit_variant_to_mem`'s mixed per-case dispatcher (matching `list_elem_marshalable`).
                 || crate::backend::wasm::host::variant_mixed_payload_cases(db, elem).is_some_and(|cases| {
                     cases.iter().all(|(_, k)| {
-                        matches!(
-                            k,
-                            crate::backend::wasm::host::VariantPayloadKind::Scalar(_)
-                                | crate::backend::wasm::host::VariantPayloadKind::Tuple(_)
-                                | crate::backend::wasm::host::VariantPayloadKind::Bytes
-                        )
+                        crate::backend::wasm::host::variant_mem_mixed_kind_supported(k)
                     })
                 })
     };
@@ -1644,10 +1639,39 @@ fn emit_variant_mixed_to_mem(
                 out.push(Lir::LocalSet(cursor));
                 out.push(Lir::End);
             }
-            // A List/record payload case needs the element-array marshal / a WIT-ordered record write — a later slice.
+            // A `List<scalar>` payload case: marshal the list into `mem` as an inline element array via the
+            // shared `emit_list_arg_marshal` (lays the backing array at the cursor, advances it, and leaves
+            // `[outer-ptr, count]` on the stack), then write `(ptr @ payload_off, count @ payload_off+4)` — the
+            // canonical `list` case layout. Scoped to a SCALAR element (`elem_wit = None`, offset-agnostic).
+            VariantPayloadKind::List(elem) => {
+                let elem = elem.clone();
+                out.push(Lir::LocalGet(disc));
+                out.push(Lir::ConstI32(*pd));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty));
+                out.push(Lir::LocalGet(var_slot));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [list handle]
+                out.push(Lir::LocalSet(rope)); // reuse the `rope` i32 slot for the list handle
+                // Allocate the list marshal's scratch from the running high-water (disjoint from the tuple/bytes
+                // arms), mirroring the register mixed List arm's `sub_base = *high` discipline.
+                let sub_base = *high;
+                emit_list_arg_marshal(
+                    db, &elem, None, rope, cursor, sub_base, high, scratch_ty, out,
+                )?; // [ptr, count]
+                out.push(Lir::LocalSet(blen)); // count (top of stack)
+                out.push(Lir::LocalSet(pos)); // ptr
+                out.push(Lir::LocalGet(field_addr));
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::I32Store { offset: 0 }); // ptr
+                out.push(Lir::LocalGet(field_addr));
+                out.push(Lir::LocalGet(blen));
+                out.push(Lir::I32Store { offset: 4 }); // count
+                out.push(Lir::End);
+            }
+            // A record payload case needs a WIT-ordered record write — a later slice.
             _ => {
                 return Err(Reject::decline(
-                    "a mixed variant element has a List/record payload case (not this increment)",
+                    "a mixed variant element has a record payload case (not this increment)",
                 ));
             }
         }

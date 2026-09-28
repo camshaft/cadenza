@@ -181,10 +181,11 @@ pub(crate) fn flatten_record_field_abi(
                     Some(crate::backend::wasm::host::VariantPayloadKind::Tuple(abis)) => {
                         slots.extend(abis.iter().map(|a| a.core_byte()))
                     }
-                    // A `Bytes` case flattens to `(ptr, len)` — two i32 slots.
-                    Some(crate::backend::wasm::host::VariantPayloadKind::Bytes) => {
-                        slots.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32])
-                    }
+                    // A `Bytes`/`List` case flattens to `(ptr, len|count)` — two i32 slots.
+                    Some(
+                        crate::backend::wasm::host::VariantPayloadKind::Bytes
+                        | crate::backend::wasm::host::VariantPayloadKind::List(_),
+                    ) => slots.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32]),
                     _ => {}
                 }
                 if slots.len() > widest.len() {

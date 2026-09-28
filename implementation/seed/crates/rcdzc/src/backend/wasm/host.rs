@@ -1089,6 +1089,22 @@ pub enum VariantPayloadKind {
     Record(Vec<AbiValType>, Ty),
 }
 
+/// Whether a heterogeneous mem variant's payload-case KIND is one `select::emit_variant_mixed_to_mem` writes
+/// in place at the canonical payload offset THIS increment: a `Scalar` (its width), a `Tuple` of scalars (the
+/// product), `Bytes` (a `(ptr,len)` header + rope copy at the cursor), or a `List` of SCALAR elements (a
+/// `(ptr,count)` header + backing array at the cursor). A `List` of a COMPOUND element or a `Record` payload
+/// case is a later slice (needs the element WIT / a WIT-ordered record write) and is NOT supported here — so a
+/// variant containing such a case declines at classification rather than admit-then-decline at emit.
+pub fn variant_mem_mixed_kind_supported(k: &VariantPayloadKind) -> bool {
+    match k {
+        VariantPayloadKind::Scalar(_)
+        | VariantPayloadKind::Tuple(_)
+        | VariantPayloadKind::Bytes => true,
+        VariantPayloadKind::List(elem) => abi_val_type(elem).is_some(),
+        VariantPayloadKind::Record(..) => false,
+    }
+}
+
 /// ARG-SIDE: whether `ty` is a variant whose payload cases MIX at least one `Scalar` case with at least one
 /// `Bytes`/`String` case (the rest nullary) — the canonical HETEROGENEOUS tagged-union. Returns each payload
 /// case's `(disc, kind)` in declaration order. Distinct from the uniform detectors: `variant_scalar_payload_cases`
@@ -1528,14 +1544,9 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
             // place by `emit_variant_mixed_to_mem` (a LIST element / mem product field). Scoped to Scalar/Tuple
             // payload kinds (a Bytes/List/record case declines here so the marshal never sees an unsupported kind).
             if let Some(mixed) = variant_mixed_payload_cases(db, ty)
-                && mixed.iter().all(|(_, k)| {
-                    matches!(
-                        k,
-                        VariantPayloadKind::Scalar(_)
-                            | VariantPayloadKind::Tuple(_)
-                            | VariantPayloadKind::Bytes
-                    )
-                })
+                && mixed
+                    .iter()
+                    .all(|(_, k)| variant_mem_mixed_kind_supported(k))
             {
                 use crate::backend::common::export_name::kebab_extern_name;
                 let Ty::Sum { decl, .. } = ty.strip_nominal() else {
@@ -2213,14 +2224,9 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
         // later slice (so this gate matches exactly what the marshal emits).
         ref other
             if variant_mixed_payload_cases(db, other).is_some_and(|cases| {
-                cases.iter().all(|(_, k)| {
-                    matches!(
-                        k,
-                        VariantPayloadKind::Scalar(_)
-                            | VariantPayloadKind::Tuple(_)
-                            | VariantPayloadKind::Bytes
-                    )
-                })
+                cases
+                    .iter()
+                    .all(|(_, k)| variant_mem_mixed_kind_supported(k))
             }) =>
         {
             true
