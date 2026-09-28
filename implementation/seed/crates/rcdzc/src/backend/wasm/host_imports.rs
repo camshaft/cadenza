@@ -574,7 +574,7 @@ pub(super) fn host_op_comp_functype(
             // `CRef` the caller computed (`add_wit_type_deduped` over the op's WIT) — the same structural-CRef
             // path `result`/`option`/`list` use. The variant is NOMINAL, so the export-aware remap exports it
             // (like the ARG-side records); the `CRef` resolves to its EXPORTED index.
-            HostParam::VariantBytes(_) => {
+            HostParam::VariantBytes(_) | HostParam::VariantList(_) => {
                 let cref = list_param_crefs
                     .get(i)
                     .cloned()
@@ -710,6 +710,7 @@ pub(super) fn build_host_result_types(
                     // payload expressed) — NOT the scalar `Variant`'s nominal-`AbiValType` builder. The
                     // export-aware remap below exports the nominal variant an import func references.
                     | host::HostParam::VariantBytes(_)
+                    | host::HostParam::VariantList(_)
             ) && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
             {
                 per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
@@ -1131,6 +1132,7 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::List(_)
         | host::HostParam::Variant(_)
         | host::HostParam::VariantBytes(_)
+        | host::HostParam::VariantList(_)
         | host::HostParam::Option(_)
         | host::HostParam::Tuple(_)
         | host::HostParam::Result(_)

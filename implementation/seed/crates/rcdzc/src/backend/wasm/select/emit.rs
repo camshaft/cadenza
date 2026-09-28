@@ -6583,6 +6583,9 @@ pub(super) fn emit(
                     // A top-level `variant{…, bytes-case(s)}` arg copies a Bytes case's payload rope into `mem`
                     // (`emit_variant_bytes_arg_reg_flatten`) → needs the running scratch cursor.
                     || crate::backend::wasm::host::variant_bytes_payload_cases(db, &at).is_some()
+                    // A top-level `variant{…, list<scalar>-case(s)}` arg marshals a list case's payload into `mem`
+                    // (`emit_variant_list_arg_reg_flatten` → `emit_list_arg_marshal`) → needs the scratch cursor.
+                    || crate::backend::wasm::host::variant_list_payload_cases(db, &at).is_some()
                     // A top-level `result<list<scalar>, enum>` arg marshals the Ok payload list into `mem` on the
                     // Ok arm (`emit_result_list_arg_reg_flatten` → `emit_list_arg_marshal`) → needs the cursor too.
                     || crate::backend::wasm::host::result_list_enum(db, &at).is_some()
@@ -7010,6 +7013,50 @@ pub(super) fn emit(
                         // child-dup site, deep-drop it (the payload was COPIED out, so the cascade is balanced;
                         // else the variant shell leaks per host call). A BORROWED variant is left untouched
                         // (leak-over-UAF). Import mirror in `collect_used_ops`'s variant-bytes-arg arm.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(var_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
+                    // A top-level `variant{nullary…, list<scalar>-case(s)}` argument: the guest emits the
+                    // value-heap variant HANDLE into a slot, then decomposes it into the canonical `(disc, i32,
+                    // i32)` register-flatten via `emit_variant_list_arg_reg_flatten` (the `list` sibling of the
+                    // bytes-case variant) — a list case marshals the payload list into `mem` at the cursor and
+                    // yields `(disc, ptr, count)`, a nullary case yields `(disc, 0, 0)`. Checked BEFORE the scalar
+                    // `_` arm and disjoint from the scalar/bytes variant arms above.
+                    _ if crate::backend::wasm::host::variant_list_payload_cases(db, &at)
+                        .is_some() =>
+                    {
+                        let (list_discs, elem) =
+                            crate::backend::wasm::host::variant_list_payload_cases(db, &at)
+                                .expect("gated by the arm guard");
+                        let var_slot = arg_base.max(*high);
+                        scratch_ty.insert(var_slot, ValType::I32);
+                        *high = (*high).max(var_slot + 1);
+                        emit(db, arg, slots, var_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(var_slot));
+                        let cursor = scratch_cursor_slot
+                            .expect("a variant{…,list} arg reserves the scratch cursor (pre-scan)");
+                        let work_base = *high;
+                        emit_variant_list_arg_reg_flatten(
+                            db,
+                            var_slot,
+                            &list_discs,
+                            &elem,
+                            cursor,
+                            work_base,
+                            high,
+                            scratch_ty,
+                            out,
+                        )?;
+                        // MARSHALED-ARG RECLAIM (variant-list twin of the variant-bytes reclaim):
+                        // `emit_variant_list_arg_reg_flatten` read the disc + (on a list case) marshalled the
+                        // payload list via borrowing `sum-disc`/`sum-payload`/`vec-*` — pure borrow, no dup, no
+                        // handle moved out — so the variant handle in `var_slot` is DEAD after the flatten.
+                        // Deep-drop it when the arg is a freshly-built OWNED variant or a dup-site; a BORROWED
+                        // variant is left untouched. Import mirror in `collect_used_ops`'s variant-list-arg arm.
                         if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
                             || out.dup_sites.contains(&arg)
                         {

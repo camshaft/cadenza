@@ -1486,6 +1486,32 @@ pub(super) fn collect_used_ops_into_seen(
                         out.insert(OP_DROP);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
+                    // A top-level `variant{…, list<scalar>-case(s)}` arg is decomposed by
+                    // `emit_variant_list_arg_reg_flatten`: `sum-disc` (the variant disc), and on a list case
+                    // `sum-payload` + `emit_list_arg_marshal`'s `vec-len`/`vec-get` + the scalar element's unbox
+                    // op. Declare them (else the marshal's `CallImport` resolves to u32::MAX → an invalid module),
+                    // then descend to collect the ops that BUILD the variant value. Checked BEFORE the `_`
+                    // fallthrough and disjoint from the scalar/bytes variant arms above.
+                    at if !peer_bound
+                        && crate::backend::wasm::host::variant_list_payload_cases(db, &at)
+                            .is_some() =>
+                    {
+                        out.insert(OP_SUM_DISC);
+                        out.insert(OP_SUM_PAYLOAD);
+                        out.insert(OP_VEC_LEN);
+                        out.insert(OP_VEC_GET);
+                        // The scalar element's own ops (its unbox get-op) via the shared list-element collector.
+                        if let Some((_, elem)) =
+                            crate::backend::wasm::host::variant_list_payload_cases(db, &at)
+                        {
+                            collect_list_elem_ops(db, &elem, out);
+                        }
+                        // Import mirror of the marshaled-variant-list-arg reclaim (emit.rs `HostCall` arm): the
+                        // emit deep-drops the variant cell iff `Owned` or a dup-site — declare `drop` for every
+                        // variant-list host-arg (safe superset, same policy as the other compound arms).
+                        out.insert(OP_DROP);
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     // A top-level `result<list<u8>, enum>` arg is decomposed by `emit_result_arg_reg_flatten`:
                     // `sum-disc` (the result disc), and on the Ok arm `sum-payload` + `bytes-len`/`bytes-get`
                     // (the payload rope copy into `mem`) / on the Err arm `sum-payload` + `sum-disc` (the err
