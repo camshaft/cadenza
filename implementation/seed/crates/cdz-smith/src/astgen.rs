@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(43);
+    let shape = c.variant(44);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -851,8 +851,25 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      POSITIONS with scalar payloads) + 39-41 (CHAMP-in-try): here the `?`-payload is a nested Result
         //      RETURNED BARE. k>0 -> mk returns the inner `(Ok 7)` -> v=7; k<=0 -> Err 111 short-circuits. Arg = a.
         //      Verified rust AGREE (1->7, 0->111, 9->7).
-        _ => (
+        42 => (
             "(do (def (mk (: rr (Result (Result Int64 Int64) Int64))) (: (do (def ir (try rr)) ir) (Result Int64 Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok (Ok 7)) (Err 111))) ((Ok v) v) ((Err e) e))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 43 — srm2 NESTED SET-REST RE-MATCH entry param (the #9962 materialized-set-rest-residual value fence). A
+        //      set-rest binder `r` in `(match #set(n 10 20) (#set(10 (.. r)) …))` is a first-class `(Set E)`
+        //      residual, RE-MATCHED by a SECOND set-rest `(#set(20 (.. r2)) …)` — peeling TWO residual layers.
+        //      #9962: the inner match's scrutinee reached compute's `Resolved::SetRest` arm as a BARE set-rest and
+        //      DECLINED CDZ0900; the fix MATERIALIZES the residual VALUE (the `Set.remove(scrutinee, named…)` chain
+        //      the set-matcher desugar builds, deep-copied via clone_subtree_plain + grafted at the occurrence) so
+        //      `core_of(SetRest)` succeeds and the residual is the first-class Set its type already says. A wrong
+        //      materialization (corrupted residual / reparented scrutinee) -> wrong value or a divergent set. FIRST
+        //      SET-REST-DESTRUCTURE shape (shapes 39/41 use `#set(…)` CONSTRUCT + Set.contains/remove; this is a
+        //      set-rest PATTERN `(.. r)`, nested). n=5 -> {5,10,20}, r={5,20}, r2={5}: 10*len + contains = 11;
+        //      n=20 -> dedup {10,20}, r={20}, r2={}: 0; n=10 -> {10,20}, r={20}, r2={}: 0; else -> 11. Arg = a.
+        //      Verified rust AGREE (5->11, 20->0, 7->11, 0->11); wasm PASS (corpus srm2).
+        _ => (
+            "(do (def (main (: n Int64)) (match #set(n 10 20) (#set(10 (.. r)) (match r (#set(20 (.. r2)) (+ (* (Set.len r2) 10) (if (Set.contains r2 n) 1 0))) (_ -2))) (_ -1))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6293,13 +6310,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main`.
-        let mut reached = [false; 43];
-        for seed in 0u64..2580 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main`.
+        let mut reached = [false; 44];
+        for seed in 0u64..2640 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(43) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-42 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(44) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-43 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6424,11 +6441,13 @@ mod tests {
                 reached[41] = true; // shape 41 = chdo1 Set.remove-threaded-dead-at-base entry-param `main` (CHAMP reclaim-on-edge #e2f72191e0)
             } else if ep.source.contains("(def ir (try rr))") {
                 reached[42] = true; // shape 42 = trae1 bare-returned `?`-bound heap-Result entry-param `main` ((a) alias-husk equalize #297538a0df)
+            } else if ep.source.contains("(#set(10 (.. r))") {
+                reached[43] = true; // shape 43 = srm2 nested set-rest re-match entry-param `main` (materialized set-rest residual #9962)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all forty-three export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all forty-four export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
