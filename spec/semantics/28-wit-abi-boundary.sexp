@@ -8512,3 +8512,35 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a BARE variant{a, b(bytes)} as the direct host-op arg emits, loads, and runs (via an imposed WIT world)"
+  (doc
+    "SHAPE 227 (v-wit-boundary) — a `variant{a, b(list<u8>)}` passed BARE as the TOP-LEVEL host-op ARGUMENT
+           (probe.push), the FIRST compound-payload variant ARG. Unlike the scalar-payload bare variant (SHAPE 53,
+           `HostParam::Variant` → the nominal-`AbiValType` builder), a Bytes payload cannot be expressed by
+           `AbiValType`, so this crosses via the NEW additive `HostParam::VariantBytes`: the component `variant`
+           DEFINED type is laid STRUCTURALLY from the declared WIT (`add_wit_type_deduped` → `CDef::Variant` with a
+           `(list u8)` payload case, export-remapped like a record), and the guest flattens to `(disc:i32, ptr:i32,
+           len:i32)` — the SAME 3-slot shape as `result<list<u8>, enum>` (a result IS the 2-case Ok(bytes)/Err(enum)
+           special case) but at arbitrary case discs — via `emit_variant_bytes_arg_reg_flatten`: on the Bytes case
+           (disc ∈ bytes-discs) it copies the payload rope into `mem` at the reserved cursor and pushes
+           `(disc, ptr, len)`; on a nullary case pushes `(disc, 0, 0)`. Mirrors the result-family additively across
+           ~11 sites (detector `variant_bytes_payload_cases`, HostParam, classifier, first_unrepresentable, marshal,
+           emit dispatch + reclaim, serialize, host_imports structural CRef, used_ops, set_needs_memory, cursor
+           reservation). run() performs TWO pushes — `(B b\"hi\")` the Bytes case then `A` the nullary case —
+           exercising BOTH marshal arms; a VALID running component (live-objects=0) is the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (list (u8))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Bytes))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B b"hi")) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)) (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push) (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

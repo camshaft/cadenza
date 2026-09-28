@@ -570,6 +570,18 @@ pub(super) fn host_op_comp_functype(
                     .unwrap_or(crate::backend::wasm::wit_ctype::CRef::Idx(list_type_idx));
                 crate::backend::wasm::wit_ctype::encode_cref(&cref, &mut param_items);
             }
+            // A `variant{…, bytes-case(s)}` param references its declared `variant` DEFINED type by the per-param
+            // `CRef` the caller computed (`add_wit_type_deduped` over the op's WIT) — the same structural-CRef
+            // path `result`/`option`/`list` use. The variant is NOMINAL, so the export-aware remap exports it
+            // (like the ARG-side records); the `CRef` resolves to its EXPORTED index.
+            HostParam::VariantBytes(_) => {
+                let cref = list_param_crefs
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or(crate::backend::wasm::wit_ctype::CRef::Idx(list_type_idx));
+                crate::backend::wasm::wit_ctype::encode_cref(&cref, &mut param_items);
+            }
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
@@ -693,6 +705,11 @@ pub(super) fn build_host_result_types(
                     | host::HostParam::ResultRecord(..)
                     | host::HostParam::ResultTuple(..)
                     | host::HostParam::ResultList(_)
+                    // A `variant{…, bytes-case(s)}` param's component type is the declared `variant` DEFINED type
+                    // laid structurally from the WIT (`add_wit_type_deduped` → `CDef::Variant`, a `(list u8)`
+                    // payload expressed) — NOT the scalar `Variant`'s nominal-`AbiValType` builder. The
+                    // export-aware remap below exports the nominal variant an import func references.
+                    | host::HostParam::VariantBytes(_)
             ) && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
             {
                 per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
@@ -1113,6 +1130,7 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
         | host::HostParam::Enum(_)
         | host::HostParam::List(_)
         | host::HostParam::Variant(_)
+        | host::HostParam::VariantBytes(_)
         | host::HostParam::Option(_)
         | host::HostParam::Tuple(_)
         | host::HostParam::Result(_)
