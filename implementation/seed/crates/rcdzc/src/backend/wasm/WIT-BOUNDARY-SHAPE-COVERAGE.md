@@ -437,8 +437,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   + `emit_record_arg_marshal`'s nested-option field arm (delegates to `emit_option_reg_flatten`) + the
   `collect_used_ops` option-payload dispatch. `flatten_record_field_abi` (`Option(Option(Scalar))` → 3 slots) +
   `record_field_cref` (recurses) were already general. The record-FIELD (RF) and tuple-ELEMENT (TE) positions
-  cross for free (verified). REMAINING: a non-scalar inner payload (`option<option<bytes/record/…>>`) — the inner
-  option's mem-writing payload needs threading through the recursion; and `list<option<option>>` (the
+  cross for free (verified). A `Bytes` inner (`option<option<bytes>>`, TOP-LEVEL arg) is now DONE too — SHAPE 218:
+  the nested-option branch computes the inner option's flatten width DYNAMICALLY (2 slots scalar / 3 slots
+  `(disc, ptr, len)` bytes, checking `Bytes` first since a bytes handle's `valtype_of` is `Some(I32)`), the inner
+  recursion copies the rope into `mem` at the threaded cursor; widened in lockstep across `option_arg_crosses` +
+  the classifier nested-option arm + `emit_option_reg_flatten` + `collect_used_ops` (the bytes inner needs
+  `bytes-len`/`bytes-get` declared — its condition already admitted bytes via the I32 handle but the body only did
+  `get_op_ty`, so the rope-copy `CallImport` was u32::MAX / CDZ0910) + the emit.rs cursor pre-scan. REMAINING: a
+  `record`/`tuple`/`list` inner payload (`option<option<record/tuple/list>>`); the nested-option at a record-FIELD
+  / tuple-ELEMENT with a Bytes inner (only the TOP-LEVEL arg is exercised); and `list<option<option>>` (the
   `emit_option_to_mem` in-mem writer has no nested-option arm).
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
