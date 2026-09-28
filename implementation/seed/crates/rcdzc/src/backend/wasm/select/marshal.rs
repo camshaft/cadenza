@@ -3840,6 +3840,28 @@ pub(super) fn emit_option_reg_flatten(
     Ok(())
 }
 
+/// The CORE wasm valtype a SCALAR WIT type flattens to (the canonical component-model lowering): a narrow int /
+/// bool / char / u32 → `i32`, a 64-bit int → `i64`, `f32`/`f64` → their float. `None` for a non-scalar WIT type
+/// (list/record/tuple/option/variant/…), whose flatten is not a single core slot. Used to compare a tuple
+/// element's WIT-declared width against the guest value's width (`valtype_of`) at the host boundary.
+fn wit_scalar_core_valtype(w: &crate::wit_world::WitType) -> Option<ValType> {
+    use crate::wit_world::WitType;
+    match w {
+        WitType::Bool
+        | WitType::U8
+        | WitType::U16
+        | WitType::U32
+        | WitType::S8
+        | WitType::S16
+        | WitType::S32
+        | WitType::Char => Some(ValType::I32),
+        WitType::U64 | WitType::S64 => Some(ValType::I64),
+        WitType::F32 => Some(ValType::F32),
+        WitType::F64 => Some(ValType::F64),
+        _ => None,
+    }
+}
+
 /// Marshal a top-level value-heap `tuple<…>` host argument whose handle is in `tup_slot` into the
 /// POSITIONALLY-FLATTENED core slots the built-in `tuple<T…>` param lowers to — pushed onto the operand stack
 /// in element (= declaration = component) order, no discriminant. A SCALAR element is one core slot (the
@@ -4155,6 +4177,23 @@ pub(super) fn emit_tuple_reg_flatten(
                 out,
             )?;
             continue;
+        }
+        // decline-don't-miscompile: a tuple arg's COMPONENT type is built from the WORLD-declared WIT
+        // (`add_wit_type_deduped` on the tuple WIT — authoritative), but the guest-side core flatten
+        // (`host_import_functype` + this marshal) is keyed off the guest VALUE's core width. When the guest
+        // value's width DIVERGES from the WIT-declared element width (e.g. an `Int64` literal element crossing a
+        // WIT `s32` slot — the literal is not coerced to the narrow WIT width), the guest flatten (i64) would
+        // disagree with the component functype (i32) and the runtime rejects the component at instantiation
+        // (CDZ0910). Decline cleanly instead. A WIT-authoritative narrow/widen at the boundary (making it cross)
+        // is a separate, larger fix — the whole boundary must key scalar widths off the WIT, incl. the direct
+        // record path whose component type is currently built from the guest abi.
+        if let Some(ews) = elem_wits.as_ref().and_then(|ws| ws.get(i))
+            && let Some(wvt) = wit_scalar_core_valtype(ews)
+            && valtype_of(ety) != Some(wvt)
+        {
+            return Err(Reject::decline(
+                "a tuple host-arg scalar element's guest width differs from its WIT-declared width",
+            ));
         }
         let read = get_op_ty(db, ety)?.ok_or_else(|| {
             Reject::decline(
