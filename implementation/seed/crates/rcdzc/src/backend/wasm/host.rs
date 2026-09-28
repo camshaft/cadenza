@@ -1412,8 +1412,9 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
         // option layout (disc byte + payload) by `select::emit_option_to_mem`. A SCALAR payload writes its width
         // inline; a `Bytes`/`list` payload writes a `(ptr,len)`/`(ptr,count)` header at the payload offset with the
         // bytes/backing spilled at the cursor; a RECORD/TUPLE payload is written at the payload offset via the
-        // product writer (each field `product_field_marshalable`, a Bytes field spilling at the cursor). An
-        // `option<option>` payload is a later slice (the option-to-mem writer has no arm for a nested-option).
+        // product writer (each field `product_field_marshalable`, a Bytes field spilling at the cursor). A nested
+        // `option<option<X>>` payload recurses `emit_option_to_mem` on the inner option, so it is admitted iff the
+        // inner option is itself a marshalable element (`list_elem_marshalable` on the payload option).
         ref other
             if option_payload_ty(db, other).is_some_and(|p| {
                 abi_val_type(&p).is_some()
@@ -1422,6 +1423,7 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
                         if list_elem_marshalable(db, &(**inner).clone()))
                     || (matches!(p.strip_nominal(), Ty::Record(_) | Ty::Tuple(_))
                         && list_elem_marshalable(db, &p))
+                    || (option_payload_ty(db, &p).is_some() && list_elem_marshalable(db, &p))
             }) =>
         {
             true

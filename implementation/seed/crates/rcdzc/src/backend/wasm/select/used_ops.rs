@@ -175,10 +175,14 @@ pub(super) fn collect_list_elem_ops(
         // (its Bytes/List/Record/Tuple arms), else a compound-payload op resolves to an out-of-range func index.
         out.insert(OP_SUM_DISC);
         out.insert(OP_SUM_PAYLOAD);
+        // A Bytes/String/list/record/tuple payload — OR a further-nested `option<option<X>>` payload — recurses
+        // the same collector (the nested option re-enters this arm, declaring its inner `sum-disc`/`sum-payload`
+        // + the inner payload's ops); a bare scalar payload unboxes with its own get-op.
         if matches!(
             payload.strip_nominal(),
             Ty::Bytes | Ty::String | Ty::List(_) | Ty::Record(_) | Ty::Tuple(_)
-        ) {
+        ) || crate::backend::wasm::host::option_payload_ty(db, &payload).is_some()
+        {
             collect_list_elem_ops(db, &payload, out);
         } else if let Ok(Some(read)) = get_op_ty(db, &payload) {
             out.insert(read);

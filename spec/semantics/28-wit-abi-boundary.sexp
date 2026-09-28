@@ -8426,3 +8426,32 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a typed reducer performing a list<option<option<s64>>> host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc
+    "SHAPE 224 (v-wit-boundary) — a top-level `list<option<option<s64>>>` bare host-op ARGUMENT (probe.push).
+           Extends the nested-option family (SHAPE 218–223) to the LIST-ELEMENT position: each element is an
+           `option<option<s64>>` written IN PLACE into the backing array by `emit_option_to_mem`, whose new
+           nested-option arm RECURSES itself on the inner option — on the outer Some it fetches the inner option
+           (`sum-payload`) and writes it at `dest + payload_off`, the inner recursion writing the inner disc byte +
+           the inner scalar payload inline (or its zero on inner None); on the outer None the payload area is left
+           unwritten. The element detector (`option_elem`), the representability gate (`list_elem_marshalable`'s
+           option arm), and `collect_list_elem_ops` all gained the same nested-option recursion, so a
+           `list<option<option<scalar>>>` arg is admitted and every op it calls is declared (no CDZ0910). run()
+           builds [Some(Some(5)), Some(None), None] — exercising all three states (outer+inner Some, outer Some /
+           inner None, outer None) — and performs probe.push; a VALID running component (live-objects=0) is the pin.
+           Closes the last nested-option-family shape (the list-element position).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (option (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Option (Option Int64))) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some (Some 5)) (Some None) None))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
