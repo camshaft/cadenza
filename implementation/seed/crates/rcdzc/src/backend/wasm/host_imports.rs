@@ -473,6 +473,14 @@ pub(super) fn record_field_cref(
             table.push(emit_cdef(&CDef::Enum(cases.clone())));
             CRef::Idx(enum_def + 1)
         }
+        // A `flags` field: lay a `flags` DEFINED type (NOMINAL → the export-aware remap gives it define+export,
+        // like an enum) over its labels, and reference its EXPORT index. The nested analogue of the top-level
+        // flags arg's `flags` DEFINED+EXPORTED type.
+        host::RecordFieldAbi::Flags { labels, .. } => {
+            let flags_def = base + 2 * table.len() as u32;
+            table.push(emit_cdef(&CDef::Flags(labels.clone())));
+            CRef::Idx(flags_def + 1)
+        }
     }
 }
 

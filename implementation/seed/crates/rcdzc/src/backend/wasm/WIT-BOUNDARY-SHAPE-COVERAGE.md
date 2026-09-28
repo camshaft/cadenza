@@ -392,9 +392,16 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `used_ops` is already covered (the record-arg arm declares `arr-get`+`get-bool`+`drop`). NOT-A-GAP: >32 labels
   is a Component Model SPEC LIMIT — a `flags` type is capped at 32 labels (one i32; the validator rejects a
   >32-label flags: "cannot have more than 32 flags"), so a >32-label flags has no component boundary form and
-  `flags_field_bits` correctly DECLINES it (decline-don't-miscompile), NOT a later increment. REMAINING: flags at
-  a record-FIELD / list-element ARG position (the field/element paths lack a flags-arg arm; the RESULT/param-lift
-  side already unpacks flags — `param_field.rs`, `list_elem.rs`).
+  `flags_field_bits` correctly DECLINES it (decline-don't-miscompile), NOT a later increment. Flags at a
+  record-FIELD ARG position is now ✅ DONE / TESTED (SHAPE 246): a new `RecordFieldAbi::Flags { field_bits, labels }`
+  (the field twin of `HostParam::Flags`) is constructed in `reorder_record_fields_to_wit` (the one site with both
+  the field abi + its WIT — converts a bool-record field whose WIT field is `flags` via `flags_field_bits_from_abi`,
+  requiring `Scalar(AbiValType::Bool)` sub-fields so an int field can't masquerade); `flatten_record_field_abi` →
+  `ceil(labels/32)` i32, `record_field_cref` → nominal `CDef::Flags`, `needs_memory`/`reaches_bytes` → false;
+  `emit_record_arg_marshal`'s flags-field arm arr-gets the nested bool-record handle and `emit_flags_arg_pack`s it
+  (used_ops already covers `arr-get`+`get-bool` via the generic record-field fallback). REMAINING: flags at a
+  list-ELEMENT ARG position (`list<flags>`; the element path lacks a flags arm). The RESULT/param-lift side
+  already unpacks flags — `param_field.rs`, `list_elem.rs`.
 - **[emit, ARG-side] a COMPOUND (Bytes) single-payload variant host-op ARG — ✅ DONE / TESTED (SHAPE 227, 228).**
   (SHAPE 228 hardens the MULTI-Bytes-case path: `variant{a, b(bytes), c(bytes)}`, `bytes_discs = [1,2]`, exercises
   the marshal's multi-disc OR fold — SHAPE 227's single Bytes case left it untested.)

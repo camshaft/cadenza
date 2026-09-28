@@ -3561,6 +3561,36 @@ pub(super) fn emit_record_arg_marshal(
                 out.push(Lir::I32Add);
                 out.push(Lir::LocalSet(cursor)); // cursor += len
             }
+            // A `flags` field: the guest field is a nested record-of-bools, its WIT field is `flags{labels}` →
+            // arr-get the nested record handle, then PACK its bool cells into the bitset word(s) via
+            // `emit_flags_arg_pack` (the record-FIELD twin of the top-level flags-arg pack). Placed BEFORE the
+            // generic record arm (a flags field's `fty` IS a record). Declines cleanly if the field is not a
+            // record-of-bools matching the labels.
+            None if matches!(fwit, crate::wit_world::WitType::Flags(_)) => {
+                let crate::wit_world::WitType::Flags(labels) = fwit else {
+                    unreachable!("guarded by the arm")
+                };
+                let Ty::Record(sub) = fty.strip_nominal() else {
+                    return Err(Reject::decline(
+                        "a flags host-arg record-field is not a record-of-bools",
+                    ));
+                };
+                let field_bits = crate::backend::wasm::host::flags_field_bits(sub, labels)
+                    .ok_or_else(|| {
+                        Reject::decline(
+                            "a flags host-arg record-field is not a matching record-of-bools \
+                             (label/field count or name mismatch)",
+                        )
+                    })?;
+                let handle_slot = *high;
+                scratch_ty.insert(handle_slot, ValType::I32);
+                *high = (*high).max(handle_slot + 1);
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [nested bool-record handle] (borrows rec)
+                out.push(Lir::LocalSet(handle_slot));
+                emit_flags_arg_pack(handle_slot, &field_bits, *high, high, scratch_ty, out); // pushes the word(s)
+            }
             // A NESTED record field (d3): arr-get its sub-record handle → recurse (fields flatten inline). The
             // nested record marshals in ITS OWN WIT declaration order (`fwit`, the nested WIT record type).
             None if matches!(fty, Ty::Record(_)) => {

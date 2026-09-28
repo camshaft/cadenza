@@ -90,6 +90,13 @@ pub(crate) fn flatten_record_field_abi(
     use crate::backend::wasm::host::RecordFieldAbi;
     match f {
         RecordFieldAbi::Scalar(v) => out.push(v.core_byte()),
+        // A `flags` field flattens to `ceil(labels/32)` i32 bitset word(s) — ONE word (≤32 labels, the
+        // Component Model flags cap), matching `wit_ctype::flatten(Flags)` + `emit_flags_arg_pack`.
+        RecordFieldAbi::Flags { labels, .. } => {
+            for _ in 0..labels.len().div_ceil(32).max(1) {
+                out.push(wasm_abi::CORE_I32);
+            }
+        }
         // A payload-less `enum` field flattens to a single `i32` discriminant slot.
         RecordFieldAbi::Enum(_) => out.push(wasm_abi::CORE_I32),
         RecordFieldAbi::Bytes => out.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32]),
