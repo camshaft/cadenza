@@ -9602,3 +9602,35 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level list<variant{a, b(s64), c(list<s64>)}> host-op arg crosses (HETEROGENEOUS scalar+list variant element at mem)"
+  (doc
+    "SHAPE 260 (v-wit-boundary) — a top-level `list<variant{a, b(s64), c(list<s64>)}>` bare host-op ARGUMENT
+           (probe.push): each list element is a HETEROGENEOUS variant MIXING a scalar payload case (b) and a
+           LIST-of-scalar payload case (c), plus a nullary case (a). Extends SHAPE 258/259 (scalar+tuple, +bytes)
+           with a List payload case: `emit_variant_mixed_to_mem` gained a List arm that marshals the payload
+           `list<scalar>` into `mem` via the shared `emit_list_arg_marshal` (backing array at the running cursor)
+           and writes a `(ptr, count)` header at the payload offset — the canonical `list` case layout.
+           `variant_mem_mixed_kind_supported` (the single gate helper shared by `field_boundary_abi`,
+           `list_elem_marshalable`, and the list marshal's `is_variant`) now admits a List-of-SCALAR case;
+           `collect_list_elem_ops` (→ `vec-len`/`vec-get` + element unbox), `record_field_cref` (→ a `(list <elem>)`
+           type), and serialize gained it. Scoped to a SCALAR list element — a `list<compound>` case (needing the
+           element WIT) or a record payload case remains a clean decline (later slices). The bare-ARG scalar+list
+           mix already rode `HostParam::VariantMixed` (SHAPE 241); this is its mem twin. run() pushes
+           `[C([1,2,3]), B(42), A]` in one list — exercising the list case, the scalar case, and the nullary case;
+           a VALID running component (live-objects=0) pins the round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (variant (a) (b (s64)) (c (list (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C (List Int64)))
+      (effect probe (op push (-> (List V) Int64)))
+      (def (run) (host (probe) (probe.push #list((V.C #list(1 2 3)) (V.B 42) V.A))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

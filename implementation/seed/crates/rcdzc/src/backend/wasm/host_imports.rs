@@ -513,8 +513,18 @@ pub(super) fn record_field_cref(
                     }
                     // A `Bytes` case references the shared `(list u8)` DEFINED type.
                     Some(host::VariantPayloadKind::Bytes) => Some(CRef::Idx(list_idx)),
-                    // A List/record payload kind is out of this increment's scope (the field abi is only built for
-                    // Scalar/Tuple/Bytes cases); treat as nullary defensively (discarded on the decline path).
+                    // A `List<scalar>` case: lay a `(list <elem>)` DEFINED type over the scalar element and
+                    // reference its index.
+                    Some(host::VariantPayloadKind::List(elem_ty)) => {
+                        let ec = host::abi_val_type(elem_ty).map(|v| CRef::Prim(v.comp_byte()));
+                        ec.map(|elem_cref| {
+                            let list_def = base + 2 * table.len() as u32;
+                            table.push(emit_cdef(&CDef::List(elem_cref)));
+                            CRef::Idx(list_def + 1)
+                        })
+                    }
+                    // A record payload kind is out of this increment's scope (the field abi is only built for
+                    // Scalar/Tuple/Bytes/List-of-scalar cases); treat as nullary defensively (discarded on decline).
                     _ => None,
                 };
                 vcases.push((name.clone(), payload));

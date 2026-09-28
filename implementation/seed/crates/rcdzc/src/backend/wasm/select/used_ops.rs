@@ -237,6 +237,11 @@ pub(super) fn collect_list_elem_ops(
                 crate::backend::wasm::host::VariantPayloadKind::Tuple(_) => {
                     collect_list_elem_ops(db, &pty, out); // Tuple arm: arr-get + per-element ops
                 }
+                crate::backend::wasm::host::VariantPayloadKind::List(_) => {
+                    // A List<scalar> case marshals its backing array into `mem` (`vec-len`/`vec-get` + the
+                    // element's unbox) — `collect_list_elem_ops`'s List arm on the payload list type.
+                    collect_list_elem_ops(db, &pty, out);
+                }
                 crate::backend::wasm::host::VariantPayloadKind::Bytes => {
                     // A Bytes case copies its rope into `mem` at the cursor (`bytes-len`/`bytes-get`).
                     out.insert(OP_BYTES_LEN);
