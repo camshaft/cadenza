@@ -206,8 +206,18 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `leaf_needs` recognizes a mixed-variant leaf with a Bytes/List case (reserving the tuple's cursor),
   `tuple_arg_crosses` admits it, and the emit arm admits a Bytes/List case guarded by `cursor.is_some()`;
   needs-memory rides `record_field_abi_needs_memory`'s VariantMemMixed arm propagated by `HostParam::Tuple`.
-  REMAINING at a register position: a Bytes/List mixed-variant case nested under option<record>/result<record>/
-  a record/tuple FIELD reached via option/result (the mirror pre-scan clauses do not yet reserve for it →
+  A Bytes/List mixed-variant FIELD nested under `option<record>` / `result<record>` is now ✅ DONE — SHAPE
+  272/273 (option, bytes/list) + 274/275 (result, bytes/list): `emit_option_reg_flatten` / `emit_result_record_
+  arg_reg_flatten`'s record branch recurse `emit_record_arg_marshal`, whose VariantMemMixed field arm already
+  handles a Bytes/List case guarded by `cursor.is_some()`, and needs-memory already rode
+  `record_field_abi_needs_memory` propagated by `HostParam::Option` / `HostParam::ResultRecord`; the ONLY
+  missing piece was the emit.rs cursor pre-scan, which now tests `record_has_mem_mixed_variant_field` on the
+  option/result payload record (the same helper the direct-record clause SHAPE 268 uses), reserving the cursor
+  the Bytes/List arm spills into. Faithfully verified: status-0 shred-compile + `wasm-tools validate` clean,
+  emitting `push: func(option<record{v: variant{a, b(s64), c(list<u8>)}, n: s64}>)` and the `result<…, enum>`
+  twin. REMAINING at a register position: a Bytes/List mixed-variant case nested under a `tuple` element reached
+  via option/result, or a record/tuple element reached via a `tuple` (the option<tuple>/result<tuple>/tuple
+  pre-scan mirror clauses use `tuple_has_bytes_element`, which does not yet recurse a mixed-variant leaf →
   declines cleanly); a DIVERGENT-order record payload case anywhere at register (`record_field_cref` builds
   name-lex, so it would mis-link).
 - **[emit, ARG-side]** `option<compound>` host-op record-ARG FIELD — ✅ scalar/bytes (pre-existing) + **tuple-of-scalars (SHAPE 123)** + **record-of-scalars (SHAPE 124)** + **record-with-a-Bytes-field (SHAPE 126)**. `field_boundary_abi` recurses the payload; `emit_record_arg_marshal` SCRATCH-FLATTENS it (`(disc, flatten(payload))` — disc + one core slot per scalar payload field / TWO `(ptr,len)` slots per Bytes field, marshalled into N scratch slots since LIR blocks are single-value, pushed after the `if`; the Some arm recurses `emit_record_arg_marshal` on the payload record and captures its N pushed slots in reverse, the None arm zero-fills; a record payload reads each WIT field from its name-lex cell index, `reorder_record_fields_to_wit` recursing the `Option(Record)` to WIT order; a Bytes payload leaf copies its rope into shared mem at the reserved scratch cursor, `record_has_option_bytes_field` reserving the cursor in the emit.rs pre-scan). NB: the slot count checks `Ty::Bytes` BEFORE `valtype_of` (which is `Some(I32)` for a Bytes handle) so a byte leaf counts as 2 slots, not 1. The `option<compound>` LIST ELEMENT (`list<option<compound>>`) is now DONE — SHAPE 152/153/154 (see the list-element entry below). REMAINING: a nested-compound (option/tuple/record-of-compound) payload field inside the option that is not yet exercised. The RESULT side is DONE — SHAPE 66.
