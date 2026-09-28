@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(45);
+    let shape = c.variant(46);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -888,8 +888,24 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      `(Ok (try (try rr)))` still DECLINES (inner-first desugar not enabled) — the do-def form is the
         //      compilable one. k>1 -> (Ok (Ok 7)) -> 7; k==1 -> (Ok (Err 222)) -> 222 (inner-`?` short-circuits);
         //      k<=0 -> (Err 111) -> 111 (outer-`?` short-circuits). Arg = a. Verified rust AGREE (2->7, 1->222, 0->111).
-        _ => (
+        44 => (
             "(do (def (mk (: rr (Result (Result Int64 Int64) Int64))) (: (do (def a (try rr)) (Ok (try a))) (Result Int64 Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (if (> k 1) (Ok (Ok 7)) (Ok (Err 222))) (Err 111))) ((Ok v) v) ((Err e) e))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 45 — trnt1c COMPACT NESTED-`?` `(Ok (try (try rr)))` entry param (the #9978 inner-first-hoist DESUGAR
+        //      value fence). The COMPACT face of shape 44: a `?` whose OPERAND is itself a `?`, written inline
+        //      `(Ok (try (try rr)))` (not the do-def `(do (def a (try rr)) (Ok (try a)))`). #9978 made
+        //      find_hoistable_try's `(try e)` arm descend the operand FIRST (inner-first), so `(try (try rr))`
+        //      lifts to `(let ((a (try rr))) (let ((b (try a))) …))` — inner unwrap before outer, evaluation
+        //      order preserved. This fences the DESUGAR path (a distinct FRONT-END lowering) that shape 44
+        //      BYPASSES with explicit lets: a mis-ordered/mis-hoisted inner-first descent -> wrong value or a
+        //      decline. It flips corpus trnt1 todo->pass on the SAME reclaim as shape 44 (a1e26895c3). Before
+        //      #9978 this form DECLINED CDZ0900 (S638 verified). Same values as 44: k>1->7, k==1->222 (inner-`?`
+        //      short-circuit), k<=0->111 (outer-`?` short-circuit). Arg = a. Verified rust AGREE (2->7, 1->222,
+        //      0->111, 9->7); corpus trnt1 idealistic 111/222/7.
+        _ => (
+            "(do (def (mk (: rr (Result (Result Int64 Int64) Int64))) (: (Ok (try (try rr))) (Result Int64 Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (if (> k 1) (Ok (Ok 7)) (Ok (Err 222))) (Err 111))) ((Ok v) v) ((Err e) e))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6330,13 +6346,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main`.
-        let mut reached = [false; 45];
-        for seed in 0u64..2700 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main`.
+        let mut reached = [false; 46];
+        for seed in 0u64..2760 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(45) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-44 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(46) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-45 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6465,11 +6481,13 @@ mod tests {
                 reached[43] = true; // shape 43 = srm2 nested set-rest re-match entry-param `main` (materialized set-rest residual #9962)
             } else if ep.source.contains("(Ok (try a))") {
                 reached[44] = true; // shape 44 = trnt1 chained double-`?` do-def entry-param `main` (unified chained-? shell reclaim #a1e26895c3)
+            } else if ep.source.contains("(Ok (try (try rr)))") {
+                reached[45] = true; // shape 45 = trnt1c compact nested-`?` entry-param `main` (inner-first-hoist desugar #9978)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all forty-five export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all forty-six export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
