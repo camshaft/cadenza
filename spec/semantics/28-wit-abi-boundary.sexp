@@ -9123,3 +9123,33 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a record host-op ARG with a FLAGS field (nested record-of-bools) crosses via a pure-IMPORT wit-world (imposed)"
+  (doc
+    "SHAPE 246 (v-wit-boundary) — a record host-op ARGUMENT one of whose FIELDS is a WIT `flags{read,write,
+           execute}` (import side, imposed wit-world), the record-FIELD twin of the top-level flags ARG (SHAPE
+           240). The guest models flags as a nested record-of-bools (operator ruling: flags is a PRODUCT), so the
+           arg is `record{ p: record{read,write,execute: Bool}, n: s64 }` whose WIT declares field `p` as `flags`.
+           Before this it DECLINED (`a record host-arg's declared WIT type is not a record` — the field marshal saw
+           field `p`'s guest type is a record but its WIT is flags). Now the NEW `RecordFieldAbi::Flags` +
+           `reorder_record_fields_to_wit`'s bool-record→flags conversion + `emit_record_arg_marshal`'s flags-field
+           arm PACK the nested bool-record's cells into a bitset word: field `p` flattens to ONE i32
+           (`flatten_record_field_abi` → `ceil(labels/32)`), `emit_flags_arg_pack` reads each bool cell
+           (`arr-get`+`get-bool`) and shifts it into its WIT-label bit, and the component record's `p` field is a
+           nominal `flags` DEFINED type (`record_field_cref`'s Flags arm / the structural WIT path). The core
+           flatten is `(p:i32-bitset, n:i64)` (WIT field order). run() passes `#record((= p #record((= read true)
+           (= write false) (= execute true))) (= n 5))`; a VALID running component that links against the imposed
+           world (live-objects=0) is the pin. Closes the flags-at-record-FIELD ARG gap. (>32 labels stays a
+           Component Model spec limit — declined.)")
+  (wit-world (world w (import cadenza:platform/probe
+    (member push (func (param m (record (p (flags read write execute)) (n (s64)))) (result (s64)))))))
+  (input (do
+    (effect probe (op push (-> (Record (: p (Record (: read Bool) (: write Bool) (: execute Bool))) (: n Int64)) Int64)))
+    (def (run) (host (probe) (probe.push #record((= p #record((= read true) (= write false) (= execute true))) (= n 5)))))
+    (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

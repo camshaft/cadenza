@@ -265,6 +265,8 @@ pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::Variant(_) => false,
         // A payload-less `enum` is a bare disc — never reaches `(list u8)`.
         RecordFieldAbi::Enum(_) => false,
+        // A `flags` field packs into i32 bitset word(s) — never reaches `(list u8)`.
+        RecordFieldAbi::Flags { .. } => false,
     }
 }
 
@@ -289,6 +291,8 @@ pub fn record_field_abi_needs_memory(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::Variant(_) => false,
         // A payload-less `enum` flattens to a single `i32` disc — no memory.
         RecordFieldAbi::Enum(_) => false,
+        // A `flags` field packs into i32 bitset word(s) inline — no memory.
+        RecordFieldAbi::Flags { .. } => false,
     }
 }
 
@@ -359,6 +363,18 @@ pub enum RecordFieldAbi {
     /// inline — no payload, no `mem`. Carries the case names (kebab, declaration order). The nested (record
     /// FIELD) analogue of the top-level [`HostParam::Enum`] arg.
     Enum(Vec<String>),
+    /// A WIT `flags{…}` FIELD — a bitset the guest models as a nested RECORD-of-bools. Crosses as a component
+    /// `flags` DEFINED type (laid structurally from the record's WIT by `add_wit_type_deduped`), flattening to
+    /// `ceil(labels/32)` `i32` bitset word(s) — ONE word (≤32 labels, the Component Model cap). The guest PACKS
+    /// the nested bool-record's fields into the word via `select::emit_flags_arg_pack` (`arr-get`+`get-bool` per
+    /// field, shifted into its label bit). Carries `field_bits` — the `(nested name-lex slot, flags bit)` per
+    /// field, matched by NAME to the WIT labels — and the kebab `labels`. The record-FIELD analogue of the
+    /// top-level [`HostParam::Flags`] arg; constructed by `reorder_record_fields_to_wit` (the only place with
+    /// both the field abi + its WIT), which converts a bool-record field whose WIT field is `flags`.
+    Flags {
+        field_bits: Vec<(u32, u32)>,
+        labels: Vec<String>,
+    },
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -1171,6 +1187,34 @@ pub(crate) fn flags_field_bits(
     Some(field_bits)
 }
 
+/// The `(nested name-lex slot, flags bit)` mapping for a record FIELD that is a nested record-of-bools crossing
+/// as a WIT `flags{labels}` — the abi-level twin of [`flags_field_bits`] (which works from the guest `Ty`),
+/// used by [`reorder_record_fields_to_wit`] where only the field's already-built [`RecordFieldAbi`] is on hand.
+/// Each nested sub-field must be a `Scalar(Bool)` (a distinct [`AbiValType::Bool`], so an int field can't
+/// masquerade as flags), its kebab name must match a WIT label, and there must be exactly `labels.len()`
+/// sub-fields (≤32 — the Component Model flags cap). `None` if any condition fails (then the field stays a
+/// record and the marshal declines on the WIT mismatch — decline-don't-miscompile).
+fn flags_field_bits_from_abi(
+    sub: &[(String, RecordFieldAbi)],
+    labels: &[String],
+) -> Option<Vec<(u32, u32)>> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    if labels.len() > 32 || sub.len() != labels.len() {
+        return None;
+    }
+    let label_kebab: Vec<String> = labels.iter().map(|l| kebab_extern_name(l)).collect();
+    let mut field_bits: Vec<(u32, u32)> = Vec::with_capacity(labels.len());
+    for (slot, (name, abi)) in sub.iter().enumerate() {
+        if !matches!(abi, RecordFieldAbi::Scalar(AbiValType::Bool)) {
+            return None;
+        }
+        let fk = kebab_extern_name(name);
+        let bit = label_kebab.iter().position(|l| *l == fk)?;
+        field_bits.push((slot as u32, bit as u32));
+    }
+    Some(field_bits)
+}
+
 /// The boundary ABI of a shape-d record FIELD, or `None` if the field has no boundary form yet. Supports a
 /// NO-WRAP scalar (`Int64`/`UInt64`/`Bool`/`Float64`/`Float32` — the read needs no i64→i32 narrow), a
 /// `Bytes` (`list<u8>`) field, a NESTED record (recurse), and a `result<list<u8>, enum>` field
@@ -1397,6 +1441,23 @@ pub fn reorder_record_fields_to_wit(
         // the emitted type MUST follow the host WIT (a `result<_, variant>` is a distinct component type from
         // a `result<_, enum>`; a name-lex/guest-default choice silently fails to instantiate).
         let abi = match abi {
+            // A bool-record field whose WIT field is `flags{…}` PACKS into a flags word (the record-FIELD twin
+            // of `HostParam::Flags`). This is the ONLY site with both the field abi and its WIT, so the flags
+            // conversion happens here. If the field is not a valid record-of-bools matching the labels,
+            // `flags_field_bits_from_abi` returns None and the field stays `Record` → the marshal then hits the
+            // WIT mismatch (WIT is flags, abi is record) and declines cleanly (decline-don't-miscompile).
+            RecordFieldAbi::Record(sub) if matches!(fwit, WitType::Flags(_)) => {
+                let WitType::Flags(labels) = fwit else {
+                    unreachable!("guarded")
+                };
+                match flags_field_bits_from_abi(&sub, labels) {
+                    Some(field_bits) => RecordFieldAbi::Flags {
+                        field_bits,
+                        labels: labels.clone(),
+                    },
+                    None => RecordFieldAbi::Record(sub),
+                }
+            }
             RecordFieldAbi::Record(sub) => {
                 RecordFieldAbi::Record(reorder_record_fields_to_wit(sub, fwit))
             }
