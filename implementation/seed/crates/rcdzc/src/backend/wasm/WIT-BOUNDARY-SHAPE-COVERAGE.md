@@ -453,9 +453,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   inner needs none). The record-FIELD position is now DONE too — SHAPE 222 (`record{a: option<option<bytes>>, k}`):
   `field_boundary_abi`'s nested-option arm admits any crossing inner, and `emit_record_arg_marshal`'s nested-option
   field arm DELEGATES to `emit_option_reg_flatten` (so it inherits the generic inner handling); the cursor rides a
-  new nested-option clause in `record_has_option_field_needing_mem`. REMAINING: the nested-option at a tuple-ELEMENT
-  with a non-scalar inner (the tuple-element arm delegates to `emit_option_reg_flatten` too, so likely just a gate +
-  a case); and `list<option<option>>` (the `emit_option_to_mem` in-mem writer has no nested-option arm).
+  new nested-option clause in `record_has_option_field_needing_mem`. The tuple-ELEMENT position is now DONE too —
+  SHAPE 223 (`tuple<option<option<bytes>>, s64>`): it needed NO code change (the tuple-element arm already delegates
+  to `emit_option_reg_flatten`, `tuple_arg_crosses` admits via `option_arg_crosses`, `tuple_arg_needs_cursor`
+  recurses nested options, and the tuple-element `used_ops` recurses `collect_record_field_ops`). So the nested
+  `option<option<X>>` now crosses at EVERY arg position (top-level, record-FIELD, tuple-ELEMENT). REMAINING (nested
+  option): `list<option<option>>` (the `emit_option_to_mem` in-mem writer has no nested-option arm).
 - **[emit]** `result<list<u8>, VARIANT>` err arm — `spilled_result_wit_type` always emits `enum`; a
   WIT `variant` err needs the world result type threaded (#3228 result-side).
 - **[emit, export] typed enum RESULT under a DECLARED world — ✅ DONE (SHAPE 60).** A payloadless-enum
