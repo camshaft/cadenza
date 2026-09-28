@@ -8206,3 +8206,32 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level option<record-with-a-result<bytes,enum>-field> host-op arg crosses on the Some arm"
+  (doc
+    "SHAPE 216 (v-wit-boundary) — a top-level `option<record{a: result<list<u8>, enum>, k: s64}>` bare host-op
+           ARGUMENT (probe.push), the Some arm. Composes the option<record> arg (SHAPE 130 family) with the
+           record `result<bytes,enum>` FIELD marshal (SHAPE 215): `option_arg_crosses` admits the payload record
+           via `is_boundary_record` (its result field crosses through `field_boundary_abi`'s Result arm), and
+           `emit_option_reg_flatten`'s record branch recurses `emit_record_arg_marshal`, whose Result-field arm
+           rope->mem-copies the Ok payload at the reserved scratch cursor. The cursor RESERVATION is load-bearing
+           and rides the SAME `record_has_result_field` pre-scan predicate the direct-record arg uses — the emit.rs
+           `has_runtime_compound` gate checks it on the option payload record too (a missing reservation panics the
+           marshal's `cursor.expect(...)`). On Some the arg flattens to `(opt-disc, a-disc, p0, p1, k)`. run()
+           builds Some({a: Ok(b\"hi\"), k: 5}) and performs probe.push; a VALID running component (live-objects=0)
+           is the pin. Complements SHAPE 215 (the direct-record twin).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= a (result (list (u8)) (enum timeout missing))) (= k (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Er2 (Timeout) (Missing))
+      (effect probe (op push (-> (Option (Record (: a (Result Bytes Er2)) (: k Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= a (Ok b"hi")) (= k 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
