@@ -1062,7 +1062,6 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
         d.variants.iter().map(|v| v.payloads.len()).collect()
     };
     let mut cases: Vec<(i32, VariantPayloadKind)> = Vec::new();
-    let mut any_scalar = false;
     let mut any_mem = false; // a Bytes OR List case — both take the two-i32-slot `(ptr, len|count)` mem flatten
     let mut any_tuple = false; // a multi-payload / `tuple`-typed case — inline positional flatten (N slots)
     for (disc, n) in payload_counts.into_iter().enumerate() {
@@ -1107,17 +1106,23 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
             // the unboxed value into that join slot (`emit_scalar_coerce_into_slot`). So no int-only guard — a
             // float scalar case mixed with a mem/tuple case is representable (an all-scalar int↔float mix, with
             // no mem/tuple case, is not "mixed" here and routes to `VariantScalarsMixed` instead).
-            any_scalar = true;
             cases.push((disc as i32, VariantPayloadKind::Scalar(v)));
         } else {
             return None; // a record payload case → a later increment
         }
     }
-    // MIXED means a scalar payload case AND a multi-slot payload case — a mem case (Bytes/List, two `(ptr,
-    // len|count)` slots) OR a tuple case (N inline slots) — are both present. A variant whose payload cases are
-    // ALL single scalars is handled by the uniform `Variant`/`VariantScalarsMixed` detectors; a SINGLE
-    // tuple/mem case (+ nullary) by `variant_tuple_payload_case`/`variant_bytes_payload_cases`.
-    (any_scalar && (any_mem || any_tuple)).then_some(cases)
+    // MIXED fires when AT LEAST ONE multi-slot payload case is present — a mem case (Bytes/List, two `(ptr,
+    // len|count)` slots) OR a tuple case (N inline slots). This is the RESIDUAL variant-arg classifier: it is
+    // dispatched LAST (after the `Variant`/`VariantScalarsMixed` all-scalar detectors, the all-`Bytes`
+    // `variant_bytes_payload_cases`, the all-`list<scalar>`-same-element `variant_list_payload_cases`, and the
+    // single-tuple `variant_tuple_payload_case`), so those narrower detectors claim their clean single-kind
+    // case sets first and MIXED only sees what they decline. That residue is any representable combination the
+    // per-case emit arms (Scalar/Bytes/List/Tuple/nullary) cover: a scalar mixed with a mem/tuple case, OR — with
+    // NO scalar case — multiple or differing multi-slot cases (two tuples, a tuple beside a list, a Bytes beside a
+    // list), which no narrower detector handles. No `any_scalar` requirement: a scalar-less set flattens the same
+    // way (the join is computed over whatever cases exist; the emit simply never takes a Scalar arm). A record /
+    // non-scalar-element case still returns `None` above (a later increment), so this never over-claims.
+    (any_mem || any_tuple).then_some(cases)
 }
 
 /// The canonical variant-flatten PAYLOAD slots (core valtype bytes, EXCLUDING the leading disc) for a mixed

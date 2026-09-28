@@ -480,7 +480,13 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   the tuple case flattens POSITIONALLY inline (one slot per element) joined slot-wise with the scalar case
   (`(disc:i32, i64, i64)`), the emit's Tuple arm marshalling via the shared `emit_tuple_reg_flatten` and coercing
   each element into its joined slot width (element 0 i32→i64 widened via `i64.extend_i32_u`). Gate =
-  `any_scalar && (any_mem || any_tuple)`. A FLOAT scalar case in a mixed variant is now ✅ DONE / TESTED (SHAPE
+  `(any_mem || any_tuple)` (RELAXED from `any_scalar && (any_mem || any_tuple)` in SHAPE 249): a variant with a
+  multi-slot case but NO scalar case (two tuples, a tuple beside a list, a Bytes beside a list) is now ✅ DONE /
+  TESTED (SHAPE 249) — it used to fall through every narrower detector (`variant_bytes_payload_cases` wants ALL
+  Bytes, `variant_list_payload_cases` ALL `list<scalar>` one element, `variant_tuple_payload_case` exactly ONE
+  tuple + rest nullary) to CDZ0903. `VariantMixed` is dispatched LAST, so dropping the `any_scalar` requirement
+  claims only the RESIDUE those decline — no case is stolen, and a scalar-less set flattens identically (the emit
+  simply never takes a Scalar arm). A FLOAT scalar case in a mixed variant is now ✅ DONE / TESTED (SHAPE
   244): `variant{a, b(f64), c(bytes)}` — the int-only restriction is lifted; the float scalar case joins with the
   mem case's integer slots via the canonical reinterpret lattice (`variant_mixed_join_slots` already reinterprets;
   the emit's Scalar arm coerces via `emit_scalar_coerce_into_slot` — `i64.reinterpret_f64` here). A FLOAT tuple

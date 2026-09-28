@@ -9232,3 +9232,43 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a MIXED variant{a, b(list<u8>), c(list<s64>), d(s32,s64)} with NO scalar case — Bytes + List + tuple as a host-op arg (imposed WIT)"
+  (doc
+    "SHAPE 249 (v-wit-boundary) — a `variant{a, b(list<u8>), c(list<s64>), d(tuple<s32,s64>)}` passed BARE as the
+           TOP-LEVEL host-op ARGUMENT (probe.push), with NO scalar case: a Bytes case (b: list<u8>), a List case
+           (c: list<s64>), and a Tuple case (d: tuple<s32,s64>). This closes a gap: `variant_mixed_payload_cases`
+           gated on `any_scalar && (any_mem || any_tuple)`, so a variant whose multi-slot cases were NOT accompanied
+           by a scalar case had NO home — `variant_bytes_payload_cases` requires ALL cases Bytes, `variant_list_
+           payload_cases` requires ALL cases `list<scalar>` of one element type, `variant_tuple_payload_case`
+           requires exactly ONE tuple case + rest nullary — so a Bytes+List+tuple mix (or two tuples, or a
+           tuple beside a list) fell through every detector to CDZ0903 (a legitimate WIT type, wrongly declined).
+           `VariantMixed` is dispatched LAST (after those narrower detectors), so relaxing its gate to just
+           `(any_mem || any_tuple)` claims only the RESIDUE they decline — no case is stolen. A scalar-less set
+           flattens the same way: the join is computed over whatever cases exist and the per-case emit simply never
+           takes a Scalar arm. run() performs FOUR pushes — `(B b\"hi\")`, `(C #list(1 2 3))`, `(D (: 1 Int32) 2)`,
+           `A` — exercising the Bytes, List, Tuple, and nullary arms with NO scalar arm; a VALID running component
+           (live-objects=0) pins the scalar-less mem+tuple mix.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (list (u8))) (c (list (s64))) (d (tuple (s32) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Bytes) (C (List Int64)) (D Int32 Int64))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B b"hi")) (probe.push (V.C #list(1 2 3))) (probe.push (V.D (: 1 Int32) 2)) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
