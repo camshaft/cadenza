@@ -379,9 +379,10 @@ promote passing breaker probes into it per the *breaker-promotes-passing-probes*
   prelude with docstrings; the CDZ0203 fix hint names them. **Green:** a case that converts an error type
   across a `?` boundary explicitly. (Small; may fold into T1/T2 if the prelude ops already exist.)
 
-### 7.1 Implementation status + the BRICK 3 slice plan (updated 2026-09-27, v-try-operator)
+### 7.1 Implementation status + the BRICK 3 slice plan (updated 2026-09-28, v-try-operator)
 
-What is actually built, and how the remaining EXPRESSION-position `?` decomposes into gated slices.
+What is actually built (expression-position `?` LANDED across every reachable position via the
+continuation-hoist) and the two remaining peer-blocked items (nested-`?` reclaim; try-under-effects).
 
 **Built (all three targets, corpus-gated):**
 - BRICK 1 (`Core::Block`/`Break` nodes + non-emit pass-through arms), BRICK 2a (constant-success fold →
@@ -394,13 +395,30 @@ What is actually built, and how the remaining EXPRESSION-position `?` decomposes
   The try-do-def→let desugar (`try_desugar.rs`, #9840) routes `(do (def x (try e)) body)` through it;
   the `enclosing_boundary_ty` `fn`-body fix (#9844) makes a `?`-in-closure resolve to the closure's own
   `Option`/`Result` result. So binding-tail runtime `?` (incl. inside a stored closure) computes.
+- **EXPRESSION-position runtime `?` — LANDED via the continuation-hoist (Slice 1/2 below).** A pre-resolve
+  AST desugar (`try_desugar.rs::desugar_try_expr_position` + `find_hoistable_try`) hoists an
+  expression-position `(try e)` to a boundary `let` so it rides the same inline-safe `lower_let` MatchSum:
+  `C[(try e)]` → `(let ((x (try e))) C[x])`. Covers every reachable position, each corpus-gated leak-clean:
+  tail `if`/`match` arms (trr1/trr2, both-arms independence); the compound-ctor element family across ALL
+  five containers — `#list` (trl1), `#tuple` (trt1), `#record` field values (trr3), `#set` (trsd1), `#map`
+  KEY/VALUE (trmd1) — plus nested-across-ctors (trn1); generic call args (trc1); MODULE-member-call args
+  (trmc1, the `.`-head arm with a pure-name receiver); and HEAP-Err propagation through the short-circuit
+  re-wrap (trhe1). A `?` under a user `if`/`match` in a NON-tail position, or with a computed member-call
+  receiver, correctly stays a clean CDZ0900 decline (hoisting would reorder/duplicate an effect).
 
-**Remaining — the EXPRESSION-position runtime `?`** (`(+ 1 (try e))`, a `#list(…)` element, a tail-call
-argument): reaches the generic `Resolved::Try` arm (`lower/compute.rs`) and DECLINES **CDZ0900** "lowers
-only a constant operand" — the honest safe floor (reject-don't-miscompile). This is the ONLY thing gating
-`trr1` (`23:1039`), `list-elem` (`14b:8783`), `mutual-rec` (`23:1114`); all three are confirmed
-expression-position (each declines CDZ0900, NOT a boundary bug). `bin-parse`/`tbx2` are a separate
-try-under-effects gap (behind glb1), not this.
+**Remaining — two BLOCKED items, both peer-gated (not this vertical's to land alone):**
+- **Nested `?` `(try (try rr))`** — the desugar is ready (inner-first hoist: descend the operand of a `(try
+  e)` first so each level lifts to its own binding-tail `let`; values verified). Pinned as the idealistic
+  TODO **`trnt1`** and held a clean CDZ0900 decline because it EXPOSES a reachable backend leak: a `?` on a
+  `(Result Sum E)` (Ok-arm itself a Sum) leaves the owned Err husk undropped — the SUCCESS arm returns the
+  payload BARE (Borrowed) while the FAILURE arm builds an OWNED husk, and the arm-blind ownership join reads
+  Borrowed → husk never dropped. Root-caused to **v-core-opt's node#6 divergent-arm ownership-join
+  (keep_scope) lane**; v-mem then wires the emit-equalize (`divergent_match_borrow_dupable`) + corpus lock,
+  then this vertical lands the desugar + flips `trnt1` todo→pass. (Registered downstream dep; v-core-opt loops
+  us on the land.)
+- **`bin-parse`/`tbx2`** — the try × BIN-MATCH × EFFECTS conjunction (a `try` distributing over a performing
+  operand under a handler); a separate try-under-effects gap gated behind **glb1** (the join-point/continuation
+  lowering), pinned as TODOs (`tbx2` twin of the passing match-spelled `tbx1`).
 
 **The `Core::Block`/`Break` emit path is INLINE-UNSAFE — do NOT build it (empirically confirmed
 2026-09-27).** The obvious plan — wrap the fallible fn body in a wasm `block` (BRICK 2) and emit each
@@ -436,25 +454,26 @@ tdd1/stored-closure already exercise). `e.g. (Ok (+ 1 (try r)))` → `match r { 
 Err e => (Err e) }`. Multiple `?`s nest (each success arm may contain the next `?`, hoisted recursively);
 `?` under a user `if`/`match` distributes into that arm's continuation.
 
-- **Slice 1 — a single expression-position `?` in a fallible boundary body, via the continuation-hoist
-  transform.** Implement as an AST/lowering rewrite (a generalization of `try_desugar.rs`, which already
-  hoists the binding-tail `(do (def x (try e)) body)` → `(let …)`): find an expression-position `(try e)`
-  within a fallible boundary body, replace the `?` occurrence with a fresh binder `x`, and wrap the body in
-  `(match e ((Ok x) <body'>) ((Err r) (Err r)))` (Result) / `((Some x) <body'>) ((None _) (None unit))`
-  (Option), where `body'` is the body with the `?` replaced by `x`. Gate with `trr1` (`23:1039`) — a single
-  runtime-`?` in expression position — which the transform turns green DIRECTLY (no separate const-failure
-  step needed: the MatchSum handles both a runtime and a constant operand, the constant folding away as
-  today). CRUX to get right: (a) BOUNDARY discovery — the nearest enclosing fallible fn body / `let` tail
-  (reuse `enclosing_boundary_ty`); (b) reconstructing `C[x]` (clone the boundary body with the `?` node
-  rewritten to the binder) as an AST rewrite BEFORE resolve, so it resolves/infers/lowers like hand-written
-  source and is inline-safe; (c) the leftmost/outermost `?` is hoisted first so a left-to-right evaluation
-  order matches `match`'s scrutinee-first semantics.
-- **Slice 2 — multiple / nested expression-position `?` + the `list<…>` element and mutual-recursion
-  shapes.** Recurse the hoist (a success arm containing another `?`), and confirm `list-elem` (`14b:8783`)
-  and `mutual-rec` (`23:1114`) go green. Reuses Slice 1's transform.
+- **Slice 1 (LANDED) — a single expression-position `?` in a fallible boundary body, via the
+  continuation-hoist transform.** Implemented as an AST rewrite in `try_desugar.rs`
+  (`desugar_try_expr_position` + `collect_tail_positions` + `find_hoistable_try`, a generalization of the
+  binding-tail `(do (def x (try e)) body)` → `(let …)` hoist): find an expression-position `(try e)` in a
+  fallible boundary body, replace the `?` with a fresh binder `x`, and wrap the boundary in `(let ((x (try
+  e))) C[x])` so it rides the inline-safe `lower_let` MatchSum. Gated by `trr1`. The three cruxes held: (a)
+  boundary discovery via `collect_tail_positions` (the `:`/`if`/`match`/`let`/`do`-def tail slots), (b) the
+  rewrite is a pre-resolve AST edit (resolves/infers/lowers like source, inline-safe), (c) leftmost/outermost
+  `?` hoisted first (a fixpoint pass per `?`) for left-to-right order. A `quote`-guard
+  (`collect_quoted_nodes`) keeps a quoted `?` reified verbatim (binary-AST round-trip identity).
+- **Slice 2 (LANDED) — multiple / nested expression-position `?` + the compound-ctor element, member-call,
+  and heap-Err shapes.** The fixpoint recurses the hoist (a success arm containing the next `?`); dedicated
+  `find_hoistable_try` arms descend `#record`/`#map` `(= k v)` pairs, the member-call `.`-head (pure-name
+  receiver), and the flat `#list`/`#tuple`/`#set` ctors, each preserving eval order via an impure-prefix
+  binding. `list-elem`, `mutual-rec`, and the whole compound-ctor + member-call + heap-Err family are green.
 
-Keep the CDZ0900 safe floor for expression-position `?` until each slice lands green
-(reject-don't-miscompile — a decline is strictly better than a wrong value). NOTE: the `Core::Block`/
+The CDZ0900 safe floor now applies only to the genuinely un-hoistable / peer-blocked positions (nested-`?`
+pending the ownership-join reclaim; a computed member-call receiver; a non-tail conditional `?`; try-under-
+effects behind glb1) — reject-don't-miscompile, a decline strictly better than a wrong/leaky value (verified:
+every un-hoistable position declines CDZ0900 cleanly, never crashes or miscompiles). NOTE: the `Core::Block`/
 `Break` nodes stay in `core.rs` (BRICK 1) for the eventual v2 explicit `try { }` block, where the boundary
 IS a lexical block that inlining preserves as a unit — but v1's function/expression boundary uses the
 inline-safe MatchSum hoist above, not the block.
