@@ -75,7 +75,8 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
 
 ## WIRED but UNTESTED (predicate admits; no dedicated running SHAPE — verify opportunistically)
 
-- `Qty`-over-scalar result.
+- (none — `Qty`-over-scalar arg + result are now pinned: SHAPE 237 Qty<Int64> arg, 238 Qty<Int64> result,
+  239 Qty<Float64> arg; `abi_val_type` peels `Qty{inner}` to the inner scalar, no code.)
 
 ## GAPS — DECLINED, tracked (owner in brackets)
 
