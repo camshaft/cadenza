@@ -112,13 +112,29 @@ pub(super) fn emit_list_arg_marshal(
     // in place at its canonical variant layout (disc + payload) by `emit_variant_to_mem`, which dispatches a
     // uniform SCALAR payload vs a SINGLE tuple-of-scalars payload case. Detected AFTER option/result (they take
     // their own arms), so this is the residual general variant.
-    let is_variant: bool =
-        if is_bytes || is_nested_list || is_record || is_tuple || is_option || is_result {
-            false
-        } else {
-            crate::backend::wasm::host::variant_scalar_payload_cases(db, elem).is_some()
+    let is_variant: bool = if is_bytes
+        || is_nested_list
+        || is_record
+        || is_tuple
+        || is_option
+        || is_result
+    {
+        false
+    } else {
+        crate::backend::wasm::host::variant_scalar_payload_cases(db, elem).is_some()
                 || crate::backend::wasm::host::variant_tuple_payload_case(db, elem).is_some()
-        };
+                // A HETEROGENEOUS scalar+tuple variant element → `emit_variant_to_mem`'s mixed per-case
+                // dispatcher. Scoped to Scalar/Tuple payload kinds (matching `list_elem_marshalable`).
+                || crate::backend::wasm::host::variant_mixed_payload_cases(db, elem).is_some_and(|cases| {
+                    cases.iter().all(|(_, k)| {
+                        matches!(
+                            k,
+                            crate::backend::wasm::host::VariantPayloadKind::Scalar(_)
+                                | crate::backend::wasm::host::VariantPayloadKind::Tuple(_)
+                        )
+                    })
+                })
+    };
     // The store for a scalar element, by its slot valtype + canonical size: i64→i64.store, f64→f64.store,
     // f32→f32.store, i32 → 4-byte i32.store / 2-byte store16 / 1-byte store8.
     let scalar_store: Option<Lir> = if is_bytes
@@ -1155,16 +1171,27 @@ pub(super) fn emit_variant_to_mem(
     // slot), so it takes its own writer; the uniform scalar-payload path is below. The scalar detector declines a
     // tuple payload, so this branch only claims the residual tuple-payload shape.
     let scalar = crate::backend::wasm::host::variant_scalar_payload_cases(db, variant_ty);
-    if scalar.is_none()
-        && let Some((tuple_disc, _)) =
+    if scalar.is_none() {
+        // A SINGLE tuple case (+ nullary rest) → the single-tuple writer.
+        if let Some((tuple_disc, _)) =
             crate::backend::wasm::host::variant_tuple_payload_case(db, variant_ty)
-    {
-        return emit_variant_tuple_to_mem(
-            db, var_slot, dest_addr, variant_ty, tuple_disc, work_base, high, scratch_ty, out,
-        );
+        {
+            return emit_variant_tuple_to_mem(
+                db, var_slot, dest_addr, variant_ty, tuple_disc, work_base, high, scratch_ty, out,
+            );
+        }
+        // A HETEROGENEOUS mix (scalar + tuple payload cases) → the general per-case dispatcher. Checked after
+        // the uniform-scalar and single-tuple fast-paths (this claims only the residual mix). A Bytes/List/record
+        // payload case declines inside `emit_variant_mixed_to_mem` (a later slice).
+        if let Some(mixed) = crate::backend::wasm::host::variant_mixed_payload_cases(db, variant_ty)
+        {
+            return emit_variant_mixed_to_mem(
+                db, var_slot, dest_addr, variant_ty, &mixed, work_base, high, scratch_ty, out,
+            );
+        }
     }
     let cases = scalar.ok_or_else(|| {
-        Reject::decline("a variant element is not a scalar- or tuple-payload variant")
+        Reject::decline("a variant element is not a scalar-, tuple-, or mixed-payload variant")
     })?;
     let ncases = cases.len();
     let payload_discs: Vec<i32> = cases
@@ -1380,6 +1407,180 @@ fn emit_variant_tuple_to_mem(
         off += step;
     }
     out.push(Lir::End);
+    Ok(())
+}
+
+/// Write a HETEROGENEOUS `variant` (payload cases MIXING scalar and tuple-of-scalars kinds, e.g. `variant{a,
+/// b(s64), c(tuple<s32,s64>)}`) into linear memory at `dest_addr` in the canonical variant layout: the
+/// discriminant at offset 0, then — per the SELECTED case — the payload written at the canonical payload offset
+/// (a scalar at its own width; a tuple product via [`emit_product_to_mem`]); a nullary case leaves the
+/// zero-filled region. The general per-case sibling of [`emit_variant_to_mem`]'s uniform-scalar path and
+/// [`emit_variant_tuple_to_mem`]'s single-tuple path — used for a `list<…scalar+tuple variant…>` element. The
+/// payload offset + region size come from [`canonical_layout`], so they agree byte-for-byte with the per-element
+/// stride the list marshal reserves. SCOPED to scalar + tuple-of-scalars payload cases — a `Bytes`/`List`/record
+/// payload case declines (a later slice needing the mem cursor / a WIT-ordered record write).
+#[allow(clippy::too_many_arguments)]
+fn emit_variant_mixed_to_mem(
+    db: &mut Db,
+    var_slot: u32,
+    dest_addr: u32,
+    variant_ty: &Ty,
+    cases: &[(i32, crate::backend::wasm::host::VariantPayloadKind)],
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    use crate::backend::wasm::host::VariantPayloadKind;
+    let ncases = {
+        let Ty::Sum { decl, .. } = variant_ty.strip_nominal() else {
+            return Err(Reject::decline("a mixed variant element is not a Sum"));
+        };
+        db.type_decl_by_occ(*decl)
+            .map(|d| d.variants.len())
+            .ok_or_else(|| Reject::decline("a mixed variant element has no decl"))?
+    };
+    let disc_size = disc_size_for(ncases);
+    // The payload area = MAX natural (size, align) over the payload cases (canonical Sum layout). Each case
+    // stores its own payload at `payload_off`; the host reads the SELECTED case's shape. (Same discipline as
+    // `emit_variant_to_mem`'s uniform path, generalized over heterogeneous case kinds.)
+    let mut psize = 0u32;
+    let mut palign = 1u32;
+    for (pd, _) in cases {
+        let pty = variant_payload_ty_at(db, variant_ty, *pd as u32).ok_or_else(|| {
+            Reject::decline("a mixed variant element payload type could not be resolved")
+        })?;
+        let (s, a) = canonical_layout(db, &pty);
+        psize = psize.max(s);
+        palign = palign.max(a);
+    }
+    let payload_off = align_up_u32(disc_size, palign);
+
+    let disc = work_base;
+    let field_addr = work_base + 1;
+    let tup_slot = work_base + 2;
+    let cursor = work_base + 3; // scalar/all-scalar-tuple cases → no Bytes spill; a valid i32 local for the product writer
+    for s in [disc, field_addr, tup_slot, cursor] {
+        scratch_ty.insert(s, ValType::I32);
+    }
+    *high = (*high).max(work_base + 4);
+
+    // disc @ offset 0.
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC));
+    out.push(Lir::LocalSet(disc));
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::LocalGet(disc));
+    out.push(match disc_size {
+        1 => Lir::I32Store8 { offset: 0 },
+        2 => Lir::I32Store16 { offset: 0 },
+        _ => Lir::I32Store { offset: 0 },
+    });
+    // field_addr = dest_addr + payload_off.
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::ConstI32(payload_off as i32));
+    out.push(Lir::I32Add);
+    out.push(Lir::LocalSet(field_addr));
+    // Zero-fill the payload region FIRST — a nullary case leaves it zero, and a scalar case narrower than `psize`
+    // leaves its high bytes zero (the host reads the selected case's width from the low bytes).
+    let mut off = 0u32;
+    while off < psize {
+        let rem = psize - off;
+        let (store, step) = if rem >= 8 {
+            out.push(Lir::LocalGet(field_addr));
+            out.push(Lir::ConstI64(0));
+            (Lir::I64Store { offset: off }, 8)
+        } else if rem >= 4 {
+            out.push(Lir::LocalGet(field_addr));
+            out.push(Lir::ConstI32(0));
+            (Lir::I32Store { offset: off }, 4)
+        } else if rem >= 2 {
+            out.push(Lir::LocalGet(field_addr));
+            out.push(Lir::ConstI32(0));
+            (Lir::I32Store16 { offset: off }, 2)
+        } else {
+            out.push(Lir::LocalGet(field_addr));
+            out.push(Lir::ConstI32(0));
+            (Lir::I32Store8 { offset: off }, 1)
+        };
+        out.push(store);
+        off += step;
+    }
+    // Per-case dispatch: on the SELECTED payload case, write its payload at `field_addr` (offset 0 = payload_off).
+    for (pd, kind) in cases {
+        match kind {
+            VariantPayloadKind::Scalar(_) => {
+                let pty = variant_payload_ty_at(db, variant_ty, *pd as u32).ok_or_else(|| {
+                    Reject::decline("a mixed variant scalar payload type could not be resolved")
+                })?;
+                let (sz, _) = canonical_layout(db, &pty);
+                let read = get_op_ty(db, &pty)?.ok_or_else(|| {
+                    Reject::decline("a mixed variant scalar payload has no unbox op")
+                })?;
+                let is_float = matches!(valtype_of(&pty), Some(ValType::F32 | ValType::F64));
+                let store = match (is_float, sz) {
+                    (true, 8) => Lir::F64Store { offset: 0 },
+                    (true, 4) => Lir::F32Store { offset: 0 },
+                    (false, 8) => Lir::I64Store { offset: 0 },
+                    (false, 4) => Lir::I32Store { offset: 0 },
+                    (false, 2) => Lir::I32Store16 { offset: 0 },
+                    (false, 1) => Lir::I32Store8 { offset: 0 },
+                    _ => {
+                        return Err(Reject::decline(
+                            "a mixed variant scalar payload has no width store",
+                        ));
+                    }
+                };
+                out.push(Lir::LocalGet(disc));
+                out.push(Lir::ConstI32(*pd));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty));
+                out.push(Lir::LocalGet(field_addr));
+                out.push(Lir::LocalGet(var_slot));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                out.push(Lir::CallImport(read));
+                if read == OP_GET_INT && sz <= 4 {
+                    out.push(Lir::I32WrapI64); // narrow the i64 heap cell to the <=4-byte slot
+                }
+                out.push(store);
+                out.push(Lir::End);
+            }
+            VariantPayloadKind::Tuple(_) => {
+                let pty = variant_payload_ty_at(db, variant_ty, *pd as u32).ok_or_else(|| {
+                    Reject::decline("a mixed variant tuple payload type could not be resolved")
+                })?;
+                let Ty::Tuple(elems) = pty.strip_nominal() else {
+                    return Err(Reject::decline("a mixed variant tuple case is not a tuple"));
+                };
+                let layout: Vec<(usize, Ty)> = elems.iter().cloned().enumerate().collect();
+                out.push(Lir::LocalGet(disc));
+                out.push(Lir::ConstI32(*pd));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty));
+                out.push(Lir::LocalGet(var_slot));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                out.push(Lir::LocalSet(tup_slot));
+                emit_product_to_mem(
+                    db,
+                    tup_slot,
+                    field_addr,
+                    &layout,
+                    cursor,
+                    work_base + 4,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+                out.push(Lir::End);
+            }
+            // A Bytes/List/Record payload case needs the mem cursor / a WIT-ordered record write — a later slice.
+            _ => {
+                return Err(Reject::decline(
+                    "a mixed variant element has a Bytes/List/record payload case (not this increment)",
+                ));
+            }
+        }
+    }
     Ok(())
 }
 

@@ -416,8 +416,19 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `variant_tuple_payload_case` admission in lockstep. Pinned by a `tuple<variant{go, stop(tuple<s32,s64>)}, s64>` arg.
   With SHAPE 254–257 the tuple-payload variant now crosses at EVERY reachable ARG position (bare list element, mem
   product field, register record field, register tuple element).
-  REMAINING: a HETEROGENEOUS scalar+tuple mix (per-case dispatch, mem); a Bytes/nested-compound tuple element; a
-  WIT-ordered RECORD payload case (needs WIT threading into `emit_variant_to_mem`).
+- **[emit] a HETEROGENEOUS scalar+tuple `variant` at a mem (list element) position — ✅ DONE / TESTED (SHAPE 258).**
+  A `variant{a, b(s64), c(tuple<s32,s64>)}` (MIXING a scalar payload case with a tuple payload case) as a `list`
+  element previously declined — `emit_variant_to_mem` handled only a UNIFORM scalar (SHAPE 171) or a SINGLE tuple
+  (SHAPE 254). Now it dispatches a `variant_mixed_payload_cases` shape (all Scalar/Tuple kinds) to a general
+  PER-CASE dispatcher `emit_variant_mixed_to_mem`: store the disc, zero-fill the payload region, then on the
+  SELECTED case write a scalar at its width OR the tuple product (`emit_product_to_mem`) at the canonical payload
+  offset. `field_boundary_abi` returns the new `RecordFieldAbi::VariantMemMixed` (so the classifier builds
+  `HostParam::List` → memory declared); `list_elem_marshalable`, the list marshal's `is_variant` gate, and
+  `collect_list_elem_ops` gained the scalar+tuple-mixed admission in lockstep. The bare-ARG mix already rode
+  `HostParam::VariantMixed` (SHAPE 243) — this is its mem twin.
+  REMAINING: a Bytes/List/record payload CASE in a mixed variant at mem (needs the mem cursor / a WIT-ordered
+  record write); a Bytes/nested-compound tuple ELEMENT; a WIT-ordered RECORD payload case at mem (WIT threading
+  into `emit_variant_to_mem`); the heterogeneous mix at a REGISTER record-field/tuple-element position (declines).
   REMAINING variant gaps: a RECORD compound payload case in a MIXED variant (the TUPLE compound payload
   case in a mixed variant is now ✅ DONE — SHAPE 243, `VariantPayloadKind::Tuple`; the ≥3-payload-case mem join is
   ✅ DONE — SHAPE 242). (The mixed

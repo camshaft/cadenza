@@ -494,6 +494,33 @@ pub(super) fn record_field_cref(
             table.push(emit_cdef(&CDef::Variant(vcases)));
             CRef::Idx(var_def + 1)
         }
+        // A heterogeneous `variant` field: lay each tuple case's `(tuple <elem>…)` DEFINED type (children-first),
+        // then a `variant` DEFINED type over ALL cases in DECLARATION order — a `Scalar` case → an inline prim
+        // payload, a `Tuple` case → the tuple ref, a nullary case → no payload — and reference the variant's
+        // EXPORT index. (For a LIST element the CRef is WIT-driven, not built here; a register record FIELD with
+        // this abi declines at emit, so this type is discarded — but it stays children-first and well-formed.)
+        host::RecordFieldAbi::VariantMemMixed(cases) => {
+            let mut vcases: Vec<(String, Option<CRef>)> = Vec::with_capacity(cases.len());
+            for (name, kind) in cases {
+                let payload = match kind {
+                    Some(host::VariantPayloadKind::Scalar(v)) => Some(CRef::Prim(v.comp_byte())),
+                    Some(host::VariantPayloadKind::Tuple(abis)) => {
+                        let elem_crefs: Vec<CRef> =
+                            abis.iter().map(|a| CRef::Prim(a.comp_byte())).collect();
+                        let tup_def = base + 2 * table.len() as u32;
+                        table.push(emit_cdef(&CDef::Tuple(elem_crefs)));
+                        Some(CRef::Idx(tup_def + 1))
+                    }
+                    // A Bytes/List/record payload kind is out of this increment's scope (the field abi is only
+                    // built for Scalar/Tuple cases); treat as nullary defensively (discarded on the decline path).
+                    _ => None,
+                };
+                vcases.push((name.clone(), payload));
+            }
+            let var_def = base + 2 * table.len() as u32;
+            table.push(emit_cdef(&CDef::Variant(vcases)));
+            CRef::Idx(var_def + 1)
+        }
         // A payload-less `enum` field: lay an `enum` DEFINED type (NOMINAL → the export-aware remap gives it
         // define+export, like a record/variant) over its case names, and reference its EXPORT index. The
         // nested analogue of the top-level enum arg's `enum` DEFINED+EXPORTED type.

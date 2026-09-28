@@ -267,6 +267,14 @@ pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::VariantTuple { elem_abis, .. } => {
             elem_abis.iter().any(record_field_abi_reaches_bytes)
         }
+        // A heterogeneous `variant` reaches `(list u8)` iff a payload case is `Bytes`/`List` (a `Scalar`/`Tuple`
+        // -of-scalars case never does; this increment's scope is Scalar/Tuple, so this is `false` in practice).
+        RecordFieldAbi::VariantMemMixed(cases) => cases.iter().any(|(_, k)| {
+            matches!(
+                k,
+                Some(VariantPayloadKind::Bytes | VariantPayloadKind::List(_))
+            )
+        }),
         // A payload-less `enum` is a bare disc — never reaches `(list u8)`.
         RecordFieldAbi::Enum(_) => false,
         // A `flags` field packs into i32 bitset word(s) — never reaches `(list u8)`.
@@ -299,6 +307,10 @@ pub fn record_field_abi_needs_memory(f: &RecordFieldAbi) -> bool {
         // forces the shared memory; a variant-tuple never reaches mem OUTSIDE a list (a top-level record/tuple
         // arg is register-flattened), so this stays `false` and avoids a spurious memory on a pure-register op.
         RecordFieldAbi::VariantTuple { .. } => false,
+        // A heterogeneous `variant` FIELD: same reasoning as `VariantTuple` — it reaches mem only as a `list<…>`
+        // element (the enclosing `HostParam::List(_) => true` forces memory); a register-flattened field position
+        // declines at emit. So `false` here.
+        RecordFieldAbi::VariantMemMixed(_) => false,
         // A payload-less `enum` flattens to a single `i32` disc — no memory.
         RecordFieldAbi::Enum(_) => false,
         // A `flags` field packs into i32 bitset word(s) inline — no memory.
@@ -382,6 +394,15 @@ pub enum RecordFieldAbi {
         tuple_disc: u32,
         elem_abis: Vec<RecordFieldAbi>,
     },
+    /// A HETEROGENEOUS `variant` FIELD whose payload cases MIX scalar and tuple-of-scalars kinds (e.g.
+    /// `variant{a, b(s64), c(tuple<s32,s64>)}`) — the general per-case sibling of [`Variant`] (uniform scalar) and
+    /// [`VariantTuple`] (single tuple). Carries the case NAMES (declaration order) paired with each case's payload
+    /// KIND (`None` = nullary). As a LIST element / mem product field it is written in place at its canonical
+    /// variant layout (disc + the SELECTED case's payload at the payload offset) by
+    /// `select::emit_variant_mixed_to_mem`. This increment scopes the payload kinds to `Scalar`/`Tuple` — a
+    /// `Bytes`/`List`/record payload case declines. At a REGISTER-flattened field position it is NOT emitted and
+    /// declines honestly (the bare-ARG mix rides `HostParam::VariantMixed`, a distinct path).
+    VariantMemMixed(Vec<(String, Option<VariantPayloadKind>)>),
     /// A payload-less `enum` field (a `Sum` whose every variant is nullary) — crosses as a component `enum`
     /// DEFINED type, ONE `i32` core slot (the discriminant, in declaration = discriminant order). The guest
     /// reads the value-heap sum's `sum-disc` (a payloadless enum's in-guest rep is a bare disc) and writes it
@@ -1503,6 +1524,42 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                     elem_abis,
                 });
             }
+            // A HETEROGENEOUS `variant` whose payload cases MIX scalar and tuple-of-scalars kinds — written in
+            // place by `emit_variant_mixed_to_mem` (a LIST element / mem product field). Scoped to Scalar/Tuple
+            // payload kinds (a Bytes/List/record case declines here so the marshal never sees an unsupported kind).
+            if let Some(mixed) = variant_mixed_payload_cases(db, ty)
+                && mixed.iter().all(|(_, k)| {
+                    matches!(
+                        k,
+                        VariantPayloadKind::Scalar(_) | VariantPayloadKind::Tuple(_)
+                    )
+                })
+            {
+                use crate::backend::common::export_name::kebab_extern_name;
+                let Ty::Sum { decl, .. } = ty.strip_nominal() else {
+                    return None;
+                };
+                let names: Vec<String> = {
+                    let d = db.type_decl_by_occ(*decl)?;
+                    d.variants
+                        .iter()
+                        .map(|v| kebab_extern_name(&v.name))
+                        .collect()
+                };
+                // Pair each case name (declaration order) with its payload kind (`None` = nullary).
+                let cases: Vec<(String, Option<VariantPayloadKind>)> = names
+                    .into_iter()
+                    .enumerate()
+                    .map(|(d, name)| {
+                        let kind = mixed
+                            .iter()
+                            .find(|(pd, _)| *pd as usize == d)
+                            .map(|(_, k)| k.clone());
+                        (name, kind)
+                    })
+                    .collect();
+                return Some(RecordFieldAbi::VariantMemMixed(cases));
+            }
             None
         }
     }
@@ -2145,8 +2202,25 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
         // canonical variant layout (disc + the tuple product at the payload offset) by `select::emit_variant_to_mem`
         // — the tuple case writes its all-scalar elements via `emit_product_to_mem`, a nullary case zero-fills the
         // payload region. Detected after the uniform scalar-variant arm (that arm declines a tuple payload). A
-        // heterogeneous scalar+tuple mix, or a bytes/nested-compound tuple element, is a later slice.
+        // heterogeneous scalar+tuple mix is the NEXT arm; a bytes/nested-compound tuple element is a later slice.
         ref other if variant_tuple_payload_case(db, other).is_some() => true,
+        // A HETEROGENEOUS `variant` element MIXING scalar + tuple-of-scalars payload cases (`list<variant{a,
+        // b(s64), c(tuple<s32,s64>)}>`): written per-case in place at its canonical variant layout by
+        // `select::emit_variant_mixed_to_mem`. Detected after the uniform scalar-variant + single-tuple arms
+        // (they claim their clean shapes). SCOPED to Scalar/Tuple payload kinds — a Bytes/List/record case is a
+        // later slice (so this gate matches exactly what the marshal emits).
+        ref other
+            if variant_mixed_payload_cases(db, other).is_some_and(|cases| {
+                cases.iter().all(|(_, k)| {
+                    matches!(
+                        k,
+                        VariantPayloadKind::Scalar(_) | VariantPayloadKind::Tuple(_)
+                    )
+                })
+            }) =>
+        {
+            true
+        }
         // A payload-less `enum` element (`list<enum{a, b, …}>`): written in place as its discriminant at the
         // enum's canonical width (`disc_size(n_cases)`) by `select::emit_enum_to_mem`. Detected AFTER variant
         // (both are Sums; `enum_cases` requires ALL-nullary variants). The list-ELEMENT analogue of the record
