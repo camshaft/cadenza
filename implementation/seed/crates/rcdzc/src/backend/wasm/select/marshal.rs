@@ -1747,8 +1747,8 @@ fn emit_variant_mixed_to_mem(
                     wit_fields.iter().map(|(n, _)| n.to_string()).collect();
                 if guest_names != wit_names {
                     return Err(Reject::decline(
-                        "a mixed variant record payload whose WIT field order diverges from the \
-                         guest order is a later slice",
+                        "a mixed variant record payload requires its WIT field order to match the \
+                         guest field order",
                     ));
                 }
                 out.push(Lir::LocalGet(disc));
@@ -4018,6 +4018,53 @@ pub(super) fn emit_tuple_reg_flatten(
                 var_slot,
                 tuple_disc,
                 &tuple_ty,
+                work_base + 1,
+                high,
+                scratch_ty,
+                out,
+            )?;
+            continue;
+        }
+        // A HETEROGENEOUS MIXED `variant` element (scalar/tuple/record payload cases, NO mem case this
+        // increment): read its handle (`arr-get i`, borrows the tuple) → flatten to `(disc, joined-slots…)` via
+        // `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant / a mixed-variant
+        // record FIELD (SHAPE 264) use. The element WIT (`elem_wits[i]`, a `WitType::Variant`) orders a record
+        // payload case's fields. Checked after the scalar-/single-tuple variant arms. A Bytes/List payload case
+        // (needing a `mem` spill + a reserved cursor) declines at the final `get_op_ty` (a later slice).
+        if crate::backend::wasm::host::variant_mixed_payload_cases(db, ety).is_some_and(|cases| {
+            cases
+                .iter()
+                .all(|(_, k)| crate::backend::wasm::host::variant_mem_mixed_kind_supported(k))
+                && !cases.iter().any(|(_, k)| {
+                    matches!(
+                        k,
+                        crate::backend::wasm::host::VariantPayloadKind::Bytes
+                            | crate::backend::wasm::host::VariantPayloadKind::List(_)
+                    )
+                })
+        }) {
+            let elem_wit = elem_wits.as_ref().and_then(|ws| ws.get(i));
+            let cases =
+                crate::backend::wasm::host::variant_mixed_payload_cases_wit(db, ety, elem_wit)
+                    .ok_or_else(|| {
+                        Reject::decline(
+                            "a tuple mixed-variant element's cases could not be WIT-ordered",
+                        )
+                    })?;
+            let var_slot = work_base;
+            scratch_ty.insert(var_slot, ValType::I32);
+            *high = (*high).max(work_base + 1);
+            out.push(Lir::LocalGet(tup_slot));
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::CallImport(OP_ARR_GET)); // [element variant handle] (borrows the tuple)
+            out.push(Lir::LocalSet(var_slot));
+            emit_variant_mixed_arg_reg_flatten(
+                db,
+                var_slot,
+                ety,
+                &cases,
+                elem_wit,
+                cursor.unwrap_or(var_slot), // unused: the no-mem case set never spills
                 work_base + 1,
                 high,
                 scratch_ty,
