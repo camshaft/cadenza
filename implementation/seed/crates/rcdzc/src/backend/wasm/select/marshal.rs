@@ -4025,12 +4025,13 @@ pub(super) fn emit_tuple_reg_flatten(
             )?;
             continue;
         }
-        // A HETEROGENEOUS MIXED `variant` element (scalar/tuple/record payload cases, NO mem case this
-        // increment): read its handle (`arr-get i`, borrows the tuple) → flatten to `(disc, joined-slots…)` via
+        // A HETEROGENEOUS MIXED `variant` element (scalar + tuple payload cases, NO mem/record case): read its
+        // handle (`arr-get i`, borrows the tuple) → flatten to `(disc, joined-slots…)` via
         // `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant / a mixed-variant
-        // record FIELD (SHAPE 264) use. The element WIT (`elem_wits[i]`, a `WitType::Variant`) orders a record
-        // payload case's fields. Checked after the scalar-/single-tuple variant arms. A Bytes/List payload case
-        // (needing a `mem` spill + a reserved cursor) declines at the final `get_op_ty` (a later slice).
+        // record FIELD (SHAPE 264) use. Checked after the scalar-/single-tuple variant arms. EXCLUDED cases
+        // (decline at the final `get_op_ty`, decline-don't-miscompile): a Bytes/List case needs a `mem` spill +
+        // a reserved cursor; a Record case has the open register-Record one-join-slot defect (see the record-FIELD
+        // arm) — the bare-ARG + mem `list`-element (SHAPE 261) Record cases are unaffected.
         if crate::backend::wasm::host::variant_mixed_payload_cases(db, ety).is_some_and(|cases| {
             cases
                 .iter()
@@ -4040,6 +4041,7 @@ pub(super) fn emit_tuple_reg_flatten(
                         k,
                         crate::backend::wasm::host::VariantPayloadKind::Bytes
                             | crate::backend::wasm::host::VariantPayloadKind::List(_)
+                            | crate::backend::wasm::host::VariantPayloadKind::Record(..)
                     )
                 })
         }) {
@@ -5153,13 +5155,17 @@ pub(super) fn emit_record_arg_marshal(
                     out,
                 )?;
             }
-            // A HETEROGENEOUS MIXED `variant` field (scalar/tuple/record payload cases, NO mem case this
-            // increment) flattens (canonical variant flatten) to `(disc:i32, joined-slots…)` via
-            // `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant uses, so the field
-            // and bare-arg marshals stay in lockstep. serialize's `VariantMemMixed` flatten + `host_imports`'s
-            // variant DEFINED type already agree on this join. A `Bytes`/`List` payload case (needing a `mem` spill
-            // + a reserved cursor via the emit.rs pre-scan) is a later slice — it declines at the None catch-all.
-            // Detected AFTER the scalar-/tuple-payload variant arms (they claim their clean single-kind shapes).
+            // A HETEROGENEOUS MIXED `variant` field (scalar + tuple payload cases, NO mem/record case) flattens
+            // (canonical variant flatten) to `(disc:i32, joined-slots…)` via `emit_variant_mixed_arg_reg_flatten`
+            // — the SAME helper the bare-ARG mixed variant uses, so the field and bare-arg marshals stay in
+            // lockstep. serialize's `VariantMemMixed` flatten + `host_imports`'s variant DEFINED type agree on this
+            // join. Detected AFTER the scalar-/tuple-payload variant arms (they claim their clean single-kind
+            // shapes). EXCLUDED cases (decline at the None catch-all, decline-don't-miscompile): a `Bytes`/`List`
+            // payload case needs a `mem` spill + a reserved cursor (the emit.rs pre-scan does not yet reserve one
+            // for a mixed-variant field); a `Record` payload case crosses correctly as a BARE arg but at a REGISTER
+            // record-FIELD position the host-import functype (serialize's name-lex `field_boundary_abi`
+            // `VariantMemMixed` flatten) and the guest push disagree by one join slot — an open register-Record
+            // defect (the mem `list`-element Record case, SHAPE 261, is unaffected and works).
             None if crate::backend::wasm::host::variant_mixed_payload_cases(db, fty)
                 .is_some_and(|cases| {
                     cases.iter().all(|(_, k)| {
@@ -5169,6 +5175,7 @@ pub(super) fn emit_record_arg_marshal(
                             k,
                             crate::backend::wasm::host::VariantPayloadKind::Bytes
                                 | crate::backend::wasm::host::VariantPayloadKind::List(_)
+                                | crate::backend::wasm::host::VariantPayloadKind::Record(..)
                         )
                     })
                 }) =>
@@ -5205,7 +5212,7 @@ pub(super) fn emit_record_arg_marshal(
                 return Err(Reject::decline(
                     "a record host-arg field has no boundary read (only scalar, list<u8>, list<T>, \
                      option<scalar>, option<tuple-of-scalars>, variant<scalar>, variant<tuple-of-scalars>, \
-                     mixed variant<scalar+tuple+record>, nested-record, and result<list<u8>, enum> fields \
+                     mixed variant<scalar+tuple>, nested-record, and result<list<u8>, enum> fields \
                      cross this increment)",
                 ));
             }

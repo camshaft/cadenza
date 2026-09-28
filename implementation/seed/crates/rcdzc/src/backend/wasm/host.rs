@@ -1833,15 +1833,21 @@ fn tuple_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
             // top-level bare variant-tuple ARG / a variant-tuple record FIELD, SHAPE 256, use) — pushes
             // `(disc, e0, e1, …)` inline. Checked after the scalar-variant arm (it declines a tuple payload).
             || variant_tuple_payload_case(db, &e.strip_nominal().clone()).is_some()
-            // a HETEROGENEOUS MIXED `variant` element (scalar/tuple/record payload cases, NO mem case this
-            // increment) crosses via `emit_variant_mixed_arg_reg_flatten` (the twin the bare-ARG mixed variant /
-            // a mixed-variant record FIELD, SHAPE 264, use) — pushes `(disc, joined-slots…)` inline. Checked after
-            // the scalar-/single-tuple variant arms (they claim their clean shapes). A Bytes/List payload case
-            // (needing a `mem` spill + a reserved cursor) is a later slice.
+            // a HETEROGENEOUS MIXED `variant` element (scalar + tuple payload cases, NO mem/record case) crosses
+            // via `emit_variant_mixed_arg_reg_flatten` (the twin the bare-ARG mixed variant / a mixed-variant
+            // record FIELD, SHAPE 264, use) — pushes `(disc, joined-slots…)` inline. Checked after the
+            // scalar-/single-tuple variant arms (they claim their clean shapes). EXCLUDED (a Bytes/List case needs
+            // a `mem` spill + a reserved cursor; a Record case has the open register-Record one-join-slot defect —
+            // the bare-ARG + mem `list`-element Record cases are unaffected) — kept in lockstep with the emit arm.
             || variant_mixed_payload_cases(db, &e.strip_nominal().clone()).is_some_and(|cases| {
                 cases.iter().all(|(_, k)| variant_mem_mixed_kind_supported(k))
                     && !cases.iter().any(|(_, k)| {
-                        matches!(k, VariantPayloadKind::Bytes | VariantPayloadKind::List(_))
+                        matches!(
+                            k,
+                            VariantPayloadKind::Bytes
+                                | VariantPayloadKind::List(_)
+                                | VariantPayloadKind::Record(..)
+                        )
                     })
             })
             // a payload-less `enum` element crosses as one i32 disc (the guest reads the value-heap sum's disc
