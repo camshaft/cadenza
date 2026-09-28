@@ -6282,6 +6282,12 @@ pub(super) fn emit(
                     // arm (`emit_record_arg_marshal`'s Result-field arm) → reserve the cursor (else that arm's
                     // `cursor.expect(...)` panics — SHAPE 215).
                     || crate::backend::wasm::host::record_has_result_field(db, &at)
+                    // A record arg with a HETEROGENEOUS MIXED `variant` FIELD carrying a `Bytes`/`List` payload
+                    // case rope-copies / marshals that case's payload into `mem` at the cursor
+                    // (`emit_record_arg_marshal`'s VariantMemMixed arm → `emit_variant_mixed_arg_reg_flatten`'s
+                    // Bytes/List arms) → reserve the cursor (else the field arm's `cursor.is_some()` guard would
+                    // decline the whole record; the reservation is what lets the Bytes/List mixed-variant field cross).
+                    || crate::backend::wasm::host::record_has_mem_mixed_variant_field(db, &at)
                     // A `list<T>` arg marshals into `mem` (its outer array + each element) → needs the cursor.
                     || matches!(at.strip_nominal(), Ty::List(_))
                     // A top-level `option<bytes>` arg copies the payload rope into `mem` on Some → needs the cursor.

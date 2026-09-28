@@ -5160,33 +5160,35 @@ pub(super) fn emit_record_arg_marshal(
                     out,
                 )?;
             }
-            // A HETEROGENEOUS MIXED `variant` field (scalar + tuple + WIT-ordered-record payload cases, NO mem
-            // case) flattens (canonical variant flatten) to `(disc:i32, joined-slots…)` via
+            // A HETEROGENEOUS MIXED `variant` field (scalar + tuple + WIT-ordered-record + Bytes/List payload
+            // cases) flattens (canonical variant flatten) to `(disc:i32, joined-slots…)` via
             // `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant uses, so the field
             // and bare-arg marshals stay in lockstep. serialize's `VariantMemMixed` flatten + `host_imports`'s
             // variant DEFINED type (incl. a record case's `(record …)` DEFINED type, built name-lex by
             // `record_field_cref`) agree on this join. Detected AFTER the scalar-/tuple-payload variant arms (they
-            // claim their clean single-kind shapes). EXCLUDED (decline at the None catch-all,
-            // decline-don't-miscompile): a `Bytes`/`List` payload case needs a `mem` spill + a reserved cursor (the
-            // emit.rs pre-scan does not yet reserve one for a mixed-variant field); a `Record` payload case whose
-            // guest NAME-LEX field order DIVERGES from its WIT declaration order is declined by
-            // `mixed_variant_record_cases_wit_ordered` (the component `(record …)` type is built name-lex, so a
-            // divergent order would mis-link — SHAPE 261's mem-path guard twin at a register position).
+            // claim their clean single-kind shapes). Two admit conditions (decline-don't-miscompile): a `Bytes`/
+            // `List` payload case rope-copies / marshals into `mem` at the cursor, so it needs the record's scratch
+            // cursor RESERVED (`record_has_mem_mixed_variant_field` in the emit.rs pre-scan) — else `cursor` is
+            // `None` and the arm declines cleanly; a `Record` payload case whose guest NAME-LEX field order
+            // DIVERGES from its WIT declaration order is declined by `mixed_variant_record_cases_wit_ordered` (the
+            // component `(record …)` type is built name-lex, so a divergent order would mis-link).
             None if crate::backend::wasm::host::variant_mixed_payload_cases(db, fty)
                 .is_some_and(|cases| {
                     cases.iter().all(|(_, k)| {
                         crate::backend::wasm::host::variant_mem_mixed_kind_supported(k)
-                    }) && !cases.iter().any(|(_, k)| {
-                        matches!(
-                            k,
-                            crate::backend::wasm::host::VariantPayloadKind::Bytes
-                                | crate::backend::wasm::host::VariantPayloadKind::List(_)
+                    }) && (cursor.is_some()
+                        || !cases.iter().any(|(_, k)| {
+                            matches!(
+                                k,
+                                crate::backend::wasm::host::VariantPayloadKind::Bytes
+                                    | crate::backend::wasm::host::VariantPayloadKind::List(_)
+                            )
+                        }))
+                        && crate::backend::wasm::host::mixed_variant_record_cases_wit_ordered(
+                            db,
+                            fty,
+                            Some(fwit),
                         )
-                    }) && crate::backend::wasm::host::mixed_variant_record_cases_wit_ordered(
-                        db,
-                        fty,
-                        Some(fwit),
-                    )
                 }) =>
             {
                 let cases = crate::backend::wasm::host::variant_mixed_payload_cases_wit(
@@ -5210,7 +5212,9 @@ pub(super) fn emit_record_arg_marshal(
                     fty,
                     &cases,
                     Some(fwit),
-                    cursor.unwrap_or(rope_slot), // unused: the no-mem case set never spills
+                    // A Bytes/List case spills at this cursor (guaranteed reserved by the `cursor.is_some()`
+                    // guard above); a no-mem case set never touches it (the `rope_slot` fallback is unused).
+                    cursor.unwrap_or(rope_slot),
                     work_base + 5,
                     high,
                     scratch_ty,

@@ -175,8 +175,16 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   the register twin of SHAPE 261's mem-path order guard). A Bytes/List case (needing a `mem` spill + a cursor
   reserved by the emit.rs pre-scan) still declines. Faithfully verified: status-0 shred-compile
   (1542-byte component, `wasm-tools validate` clean) emitting `push: func(record{v: variant{a, b(s64),
-  c(record{p: s32, q: s64})}, n: s64})`. REMAINING at a register position: the same MIX with a Bytes/List case
-  (cursor reservation).
+  c(record{p: s32, q: s64})}, n: s64})`. A **Bytes/List** payload case at a record FIELD is now ✅ DONE — SHAPE
+  268 (`c(bytes)`) / 269 (`c(list<s64>)`): `record_has_mem_mixed_variant_field` (emit.rs cursor pre-scan) reserves
+  the scratch cursor for a record arg with a Bytes/List mixed-variant field, and `record_field_abi_needs_memory`'s
+  VariantMemMixed arm returns true for a Bytes/List case (so the host import's canon `Lower` gets the `Memory`
+  option); the register field arm admits a Bytes/List case guarded by `cursor.is_some()` (a position whose arg
+  does not reserve a cursor still declines cleanly). `emit_variant_mixed_arg_reg_flatten`'s Bytes/List arms
+  (unchanged — the bare-ARG ones) rope-copy / marshal at the cursor → `(ptr, len|count)`. REMAINING at a register
+  position: a Bytes/List mixed-variant case at a TUPLE-ELEMENT (`tuple_arg_needs_cursor` + the SHAPE 265 arm would
+  need the same cursor-reservation extension); a Bytes/List mixed-variant field nested under option/result/tuple
+  (the option<record>/result<record>/tuple pre-scan mirror clauses do not yet reserve for it → declines cleanly).
 - **[emit] a HETEROGENEOUS MIXED `variant` at a REGISTER tuple-ELEMENT position — ✅ DONE / TESTED (SHAPE 265).**
   The tuple-element twin of SHAPE 264 (as SHAPE 257 was the tuple-element twin of the SHAPE 256 record-field
   variant-tuple). A `tuple<variant{a, b(s64), c(tuple<s32,s64>)}, s64>` arg previously DECLINED
