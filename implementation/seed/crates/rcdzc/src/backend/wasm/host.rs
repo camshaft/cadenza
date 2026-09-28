@@ -103,6 +103,17 @@ pub enum HostParam {
     /// guest marshals it via `select::emit_variant_list_arg_reg_flatten`. A `list<compound>` element / mixed
     /// element types / a mixed scalar+Bytes+list payload set is a later increment.
     VariantList(Vec<i32>),
+    /// A bare `variant{nullary…, one tuple-of-scalars case}` param — a variant with exactly one case carrying a
+    /// `tuple` of scalars, the rest nullary. The PRODUCT-payload sibling of [`VariantBytes`](HostParam::VariantBytes)
+    /// / [`VariantList`](HostParam::VariantList), but with a VARIABLE positional flatten `(disc:i32, e0, e1, …)` —
+    /// the discriminant then the tuple's elements INLINE (element = component order) — rather than a fixed 3 slots;
+    /// the register twin of [`ResultTuple`](HostParam::ResultTuple)'s Ok arm minus the err-disc (a nullary case
+    /// zero-fills ALL payload slots). All-scalar → NO `mem`. Crosses as the declared `variant` DEFINED type (laid
+    /// structurally from the WIT via `add_wit_type_deduped` → `CDef::Variant` with a `(tuple <e>…)` payload case).
+    /// Carries the tuple case's DISCRIMINANT + the element ABIs (for the flatten slot widths). The guest marshals it
+    /// via `select::emit_variant_tuple_arg_reg_flatten`. A compound/bytes tuple element, a second product case, or a
+    /// record payload is a later increment.
+    VariantTuple(i32, Vec<RecordFieldAbi>),
     /// A bare `option<scalar>` param (the top-level position, not nested in a record/list) — crosses as the
     /// built-in WIT `option<T>` type (NOT a nominal `variant` DEFINED type; a `variant{none,some(T)}` substitute
     /// fails the structural component-link match against a host declaring `option`), referenced by a per-param
@@ -800,6 +811,59 @@ pub fn variant_list_payload_cases(db: &mut Db, ty: &Ty) -> Option<(Vec<i32>, Ty)
         Some(e) if !list_discs.is_empty() => Some((list_discs, e)),
         _ => None,
     }
+}
+
+/// ARG-SIDE: whether `ty` is a variant with EXACTLY ONE case carrying a `tuple` of scalars, the rest nullary.
+/// Returns the tuple case's DISCRIMINANT (declaration = component order) paired with the element ABIs (one
+/// `RecordFieldAbi` per tuple element, all scalar). The PRODUCT-payload sibling of [`variant_bytes_payload_cases`]
+/// / [`variant_list_payload_cases`], but with a VARIABLE positional flatten `(disc:i32, e0, e1, …)` (the tuple's
+/// elements inline, in element = component order) rather than a fixed 3 slots — the register twin of
+/// [`result_tuple_enum`]'s Ok arm, minus the err-disc-in-slot-0 (a nullary variant case zero-fills ALL payload
+/// slots). All-scalar so it flattens to registers with NO `mem`. The component boundary type is the declared
+/// `variant` DEFINED type laid STRUCTURALLY from the WIT (`add_wit_type_deduped` → `CDef::Variant` with a
+/// `(tuple <e>…)` payload case). Scoped to a SINGLE tuple case + all-scalar elements (a compound/bytes element, a
+/// second product case, or a nested tuple is a later increment). Excludes option/result-shaped sums.
+pub fn variant_tuple_payload_case(db: &mut Db, ty: &Ty) -> Option<(i32, Vec<RecordFieldAbi>)> {
+    let Ty::Sum { decl, .. } = ty.strip_nominal() else {
+        return None;
+    };
+    if option_payload_ty(db, ty).is_some() || result_bytes_enum(db, ty).is_some() {
+        return None;
+    }
+    let decl = *decl;
+    let payload_counts: Vec<usize> = {
+        let d = db.type_decl_by_occ(decl)?;
+        d.variants.iter().map(|v| v.payloads.len()).collect()
+    };
+    let mut tuple_case: Option<(i32, Vec<RecordFieldAbi>)> = None;
+    for (disc, n) in payload_counts.into_iter().enumerate() {
+        match n {
+            0 => {} // a nullary case → no payload slot
+            1 => {
+                if tuple_case.is_some() {
+                    return None; // a SECOND payload case → a later increment (multi-payload-case join)
+                }
+                let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
+                let Ty::Tuple(elems) = pty.strip_nominal() else {
+                    return None; // a non-tuple payload → not this detector (bytes/list/scalar took their arms)
+                };
+                let elems: Vec<Ty> = elems.iter().cloned().collect();
+                if elems.is_empty() {
+                    return None;
+                }
+                let mut abis = Vec::with_capacity(elems.len());
+                for ety in &elems {
+                    // Every element MUST be a NO-mem scalar (`abi_val_type`) this increment — a bytes/list/nested
+                    // compound element would need the cursor + a richer flatten (a later increment).
+                    abi_val_type(ety)?;
+                    abis.push(field_boundary_abi(db, ety)?);
+                }
+                tuple_case = Some((disc as i32, abis));
+            }
+            _ => return None, // a multi-payload case → a later increment
+        }
+    }
+    tuple_case
 }
 
 /// The boundary ABI of a shape-d record FIELD, or `None` if the field has no boundary form yet. Supports a
@@ -1954,6 +2018,17 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             variant_list_payload_cases(db, &at).unwrap().0,
                         ));
                     }
+                    // A `variant{nullary…, one tuple-of-scalars case}` arg — the PRODUCT-payload sibling. Crosses
+                    // as the declared `variant` DEFINED type (structural WIT), flattening POSITIONALLY to
+                    // `(disc, e0, e1, …)` via `emit_variant_tuple_arg_reg_flatten` (a nullary case zero-fills the
+                    // payload slots). Checked BEFORE the scalar `_` arm and disjoint from the scalar/bytes/list
+                    // variant arms above (a tuple payload is none of those). A compound tuple element / second
+                    // product case is a later increment (`variant_tuple_payload_case` requires all-scalar, single).
+                    _ if !peer_bound && variant_tuple_payload_case(db, &at).is_some() => {
+                        let (tuple_disc, elem_abis) =
+                            variant_tuple_payload_case(db, &at).unwrap();
+                        params.push(HostParam::VariantTuple(tuple_disc, elem_abis));
+                    }
                     // A top-level `result<list<u8>, enum>` arg crosses as the built-in WIT
                     // `result<list<u8>, <enum>>` — the answer-back envelope shape. It flattens to
                     // `(disc:i32, ptr/errdisc:i32, len/0:i32)`: on Ok the guest writes the `list<u8>` payload
@@ -2824,6 +2899,13 @@ pub fn first_unrepresentable_host_op(
             // classifier + the marshal, in lockstep.
             let arg_is_boundary_variant_list =
                 allow_option_bytes && !peer_bound && variant_list_payload_cases(db, &at).is_some();
+            // A top-level `variant{nullary…, one tuple-of-scalars case}` arg crosses NATIVELY as the declared
+            // `variant` DEFINED type — the guest flattens the payload tuple positionally into
+            // `(disc, e0, e1, …)` (`select::emit_variant_tuple_arg_reg_flatten`, the register twin of the
+            // `result<tuple,enum>` Ok flatten; all-scalar → no `mem`). Same gating; a compound element / second
+            // product case is a later increment (`variant_tuple_payload_case` declines it), in lockstep.
+            let arg_is_boundary_variant_tuple =
+                allow_option_bytes && !peer_bound && variant_tuple_payload_case(db, &at).is_some();
             // A top-level `option<scalar>` / `option<bytes>` / `option<tuple-of-scalars>` arg crosses NATIVELY
             // as the built-in WIT `option<T>` — the guest flattens the value-heap Option to `(disc, payload)`
             // core slots (`select::emit_option_reg_flatten`, the register twin of the `option<scalar>`/`::bytes`/
@@ -2882,6 +2964,7 @@ pub fn first_unrepresentable_host_op(
                 && !arg_is_boundary_variant
                 && !arg_is_boundary_variant_bytes
                 && !arg_is_boundary_variant_list
+                && !arg_is_boundary_variant_tuple
                 && !arg_is_boundary_option
                 && !arg_is_boundary_tuple
                 && !arg_is_boundary_result

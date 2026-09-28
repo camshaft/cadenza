@@ -7064,6 +7064,42 @@ pub(super) fn emit(
                             out.push(Lir::CallImport(OP_DROP));
                         }
                     }
+                    // A top-level `variant{nullary…, one tuple-of-scalars case}` argument: the guest emits the
+                    // value-heap variant HANDLE into a slot, then decomposes it into the canonical `(disc, e0,
+                    // e1, …)` positional register-flatten via `emit_variant_tuple_arg_reg_flatten` (the product
+                    // sibling; all-scalar → NO `mem`/cursor). A nullary case zero-fills the payload slots. Checked
+                    // BEFORE the scalar `_` arm and disjoint from the scalar/bytes/list variant arms above.
+                    _ if crate::backend::wasm::host::variant_tuple_payload_case(db, &at)
+                        .is_some() =>
+                    {
+                        let (tuple_disc, _abis) =
+                            crate::backend::wasm::host::variant_tuple_payload_case(db, &at)
+                                .expect("gated by the arm guard");
+                        let tuple_ty = crate::backend::wasm::select::variant_payload_ty_at(
+                            db,
+                            &at,
+                            tuple_disc as u32,
+                        )
+                        .expect("the tuple case's payload type resolves (detector gated)");
+                        let var_slot = arg_base.max(*high);
+                        scratch_ty.insert(var_slot, ValType::I32);
+                        *high = (*high).max(var_slot + 1);
+                        emit(db, arg, slots, var_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(var_slot));
+                        let work_base = *high;
+                        emit_variant_tuple_arg_reg_flatten(
+                            db, var_slot, tuple_disc, &tuple_ty, work_base, high, scratch_ty, out,
+                        )?;
+                        // MARSHALED-ARG RECLAIM (variant-tuple twin): the flatten read the disc + (on the tuple
+                        // case) unboxed the elements via borrowing `sum-disc`/`sum-payload`/`arr-get`/unbox — pure
+                        // borrow — so the variant handle is DEAD after. Deep-drop when OWNED or a dup-site.
+                        if matches!(heap_operand_ownership(db, arg), Ok(HandleOwnership::Owned))
+                            || out.dup_sites.contains(&arg)
+                        {
+                            out.push(Lir::LocalGet(var_slot));
+                            out.push(Lir::CallImport(OP_DROP));
+                        }
+                    }
                     // A top-level `result<list<u8>, enum>` argument: the guest emits the value-heap Result
                     // HANDLE into a slot, then decomposes it into the canonical `(disc, i32, i32)`
                     // register-flatten via `emit_result_arg_reg_flatten` (the register twin of the `result<list

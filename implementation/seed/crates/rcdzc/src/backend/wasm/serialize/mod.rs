@@ -249,6 +249,16 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                 wasm_abi::CORE_I32,
                 wasm_abi::CORE_I32,
             ]),
+            // A bare `variant{nullary…, one tuple-of-scalars case}` param flattens to `(disc:i32, e0, e1, …)` —
+            // the discriminant then the tuple's elements POSITIONALLY, each by its scalar ABI width (NO err-disc
+            // join, unlike `ResultTuple` — a nullary case zero-fills). MUST match `wit_ctype::flatten_variant` of
+            // the declared `variant` DEFINED type (structural WIT).
+            HostParam::VariantTuple(_, elems) => {
+                params.push(wasm_abi::CORE_I32); // the discriminant
+                for abi in elems.iter() {
+                    flatten_record_field_abi(abi, &mut params);
+                }
+            }
             // A bare `result<scalar, enum>` param flattens to `(disc:i32, join)` — 2 slots. The join is `i64`
             // iff the Ok scalar is 64-bit (the `i32` err disc widens into it), else `i32`. NOT the 3-slot Bytes
             // shape. The component boundary type is the built-in `result<ok, err-enum>` (mod.rs
