@@ -1094,18 +1094,21 @@ pub enum VariantPayloadKind {
 /// product), `Bytes` (a `(ptr,len)` header + rope copy at the cursor), a `List` of SCALAR elements (a
 /// `(ptr,count)` header + backing array at the cursor), or a `Record` of SCALAR fields (the product written at
 /// the payload offset via `emit_record_to_mem`, WIT-ordered — the mem twin of the register mixed Record arm).
-/// A `List` of a COMPOUND element is a later slice (needs the element WIT) and is NOT supported here — so a
-/// variant containing such a case declines at classification rather than admit-then-decline at emit. NB the
-/// `Record` case's WIT field order MUST match the guest name-lex order (else the emit declines cleanly): the
-/// list marshal reserves the per-element stride from `canonical_layout(record)` in guest order, so a divergent
-/// WIT order could write past the reserved slot (record padding is field-order-dependent).
+/// A `List` case's element may be a SCALAR or any COMPOUND `emit_list_arg_marshal` handles (record/tuple/nested
+/// list/option) — the emit's List arm threads the element's declared WIT for those. This is unconditionally
+/// `true` because [`variant_mixed_payload_cases`] ALREADY validated the element is marshalable (its List arm
+/// admits only `abi_val_type(inner).is_some() || list_elem_marshalable(inner)`), and the three callers all pass
+/// that detector's output — so a `List` case reaching here is known-marshalable. NB the `Record` case's WIT
+/// field order MUST match the guest name-lex order (else the emit declines cleanly): the list marshal reserves
+/// the per-element stride from `canonical_layout(record)` in guest order, so a divergent WIT order could write
+/// past the reserved slot (record padding is field-order-dependent).
 pub fn variant_mem_mixed_kind_supported(k: &VariantPayloadKind) -> bool {
     match k {
         VariantPayloadKind::Scalar(_)
         | VariantPayloadKind::Tuple(_)
         | VariantPayloadKind::Record(..)
+        | VariantPayloadKind::List(_)
         | VariantPayloadKind::Bytes => true,
-        VariantPayloadKind::List(elem) => abi_val_type(elem).is_some(),
     }
 }
 
