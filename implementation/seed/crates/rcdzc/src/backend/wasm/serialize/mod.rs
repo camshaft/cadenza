@@ -205,6 +205,40 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                     params.push(cb);
                 }
             }
+            // A scalar-payload variant whose payloads MIX int with float (or f32 with f64) flattens (canonical
+            // variant flatten) to `(disc:i32, join)` where `join` is the FULL reinterpret lattice
+            // (`wit_ctype::flatten_variant`'s `join`): a same-width int/float → that int width (`join(i64,f64)=i64`,
+            // `join(i32,f32)=i32`), anything else → `i64`. It MUST match the guest push
+            // (`select::emit_variant_mixed_scalar_arg_reg_flatten`, which bit-reinterprets a float into the slot).
+            HostParam::VariantScalarsMixed(cases) => {
+                params.push(wasm_abi::CORE_I32); // the discriminant
+                let mut join: Option<u8> = None;
+                for pv in cases.iter().filter_map(|(_, p)| *p) {
+                    let cb = pv.core_byte();
+                    join = Some(match join {
+                        None => cb,
+                        Some(prev) if prev == cb => cb,
+                        // A same-width int/float pairs to the int (`join(i32,f32)=i32`, `join(i64,f64)=i64`);
+                        // any other mix (cross-width int/float, f32↔f64) widens to `i64`.
+                        Some(a)
+                            if (a == wasm_abi::CORE_I32 && cb == wasm_abi::CORE_F32)
+                                || (a == wasm_abi::CORE_F32 && cb == wasm_abi::CORE_I32) =>
+                        {
+                            wasm_abi::CORE_I32
+                        }
+                        Some(a)
+                            if (a == wasm_abi::CORE_I64 && cb == wasm_abi::CORE_F64)
+                                || (a == wasm_abi::CORE_F64 && cb == wasm_abi::CORE_I64) =>
+                        {
+                            wasm_abi::CORE_I64
+                        }
+                        Some(_) => wasm_abi::CORE_I64,
+                    });
+                }
+                if let Some(cb) = join {
+                    params.push(cb);
+                }
+            }
             // A top-level `option<scalar>` param flattens (canonical variant flatten) to `(disc:i32,
             // flatten(payload))` — the disc slot then the payload's own flattened slots (one scalar this
             // increment) — IDENTICAL to a `RecordFieldAbi::Option` field (`flatten_record_field_abi`). The

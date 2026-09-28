@@ -8709,3 +8709,103 @@ cases
     (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a BARE variant{a, b(s64), c(f64)} mixing an int and a float scalar case crosses as a host-op arg (imposed WIT)"
+  (doc
+    "SHAPE 233 (v-wit-boundary) — a `variant{a, b(s64), c(f64)}` passed BARE as the TOP-LEVEL host-op ARGUMENT
+           (probe.push), the FIRST int↔float REINTERPRET-JOIN scalar variant. The uniform scalar-variant path
+           (`HostParam::Variant`) DECLINES a payload set mixing an integer with a float (its join has no clean
+           slot); the NEW additive `HostParam::VariantScalarsMixed` handles it via the canonical reinterpret
+           join. b's payload flattens to `[i64]`, c's to `[f64]`; the canonical `wit_ctype::flatten_variant` join
+           of the ONE payload slot is `join(i64, f64) = i64` (`reinterpret_join_vt`), so the core flatten is
+           `(disc:i32, i64)`. `emit_variant_mixed_scalar_arg_reg_flatten` DISPATCHES per case (a nested
+           `if disc==d … else …` chain), each unboxing with ITS OWN read op and coercing into the shared i64
+           slot: b → `get-int` (i64, no coercion); c → `get-float` (f64) then `i64.reinterpret_f64` (the float
+           bit-reinterprets into the integer slot); a (nullary) → the i64 zero. run() performs THREE pushes —
+           `(B 42)`, `(C 3.5)`, `A` — exercising all three arms; the component TYPE-CHECKS the flatten against the
+           declared `variant` (a missing reinterpret would leave an `f64` where the `i64` slot is required → a
+           validation error), so a VALID running component (live-objects=0) pins the reinterpret coercion.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (s64)) (c (f64)))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C Float64))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B 42)) (probe.push (V.C 3.5)) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a BARE variant{a, b(s32), c(f32)} int↔float mix joining to an i32 slot crosses as a host-op arg (imposed WIT)"
+  (doc
+    "SHAPE 234 (v-wit-boundary) — a `variant{a, b(s32), c(f32)}` passed BARE as the TOP-LEVEL host-op ARGUMENT
+           (probe.push), the SAME-WIDTH-32 twin of SHAPE 233 exercising the i32 join slot. b's payload flattens to
+           `[i32]` (a narrow int), c's to `[f32]`; the canonical join is `join(i32, f32) = i32`, so the core
+           flatten is `(disc:i32, i32)`. Per-case coercion into the i32 slot: b → `get-int` (i64, NORMALIZED) then
+           `i32.wrap_i64` (narrow int → i32 slot); c → `get-float32` (f32) then `i32.reinterpret_f32` (the float
+           bit-reinterprets into the i32 slot); a (nullary) → the i32 zero. Pins the i32-slot reinterpret path +
+           the narrow-int wrap (distinct from SHAPE 233's i64 slot). VALID running component = the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (s32)) (c (f32)))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int32) (C Float32))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B (: 42 Int32))) (probe.push (V.C (: 3.5 Float32))) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a BARE variant{a, b(s64), c(f32)} cross-width int↔float mix widening to an i64 slot crosses (imposed WIT)"
+  (doc
+    "SHAPE 235 (v-wit-boundary) — a `variant{a, b(s64), c(f32)}` passed BARE as the TOP-LEVEL host-op ARGUMENT
+           (probe.push), the CROSS-WIDTH int↔float mix pinning the trickiest coercion. b's payload flattens to
+           `[i64]`, c's to `[f32]`; the canonical join is `join(i64, f32) = i64` (the `else` arm — an `f32` mixed
+           with an `i64` widens to `i64`, NOT the f32/i32 same-width pairing), so the core flatten is
+           `(disc:i32, i64)`. Per-case coercion into the i64 slot: b → `get-int` (i64, no coercion); c →
+           `get-float32` (f32) then `i32.reinterpret_f32` then `i64.extend_i32_u` (the f32 bits reinterpret to i32,
+           then zero-extend into the i64 slot — the two-step canonical coercion); a (nullary) → the i64 zero.
+           Pins the f32→i64 two-step coercion arm, the last distinct reinterpret path. VALID running component = the pin.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (s64)) (c (f32)))) (result (s64)))))))
+  (input
+    (do
+      (type V (A) (B Int64) (C Float32))
+      (effect probe (op push (-> V Int64)))
+      (def (run) (host (probe) (do (probe.push (V.B 42)) (probe.push (V.C (: 3.5 Float32))) (probe.push V.A))))
+      (export run)))
+  (call run)
+  (host-responses
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64))
+    (respond probe.push (: 55 Int64)))
+  (host-calls
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push)
+    (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

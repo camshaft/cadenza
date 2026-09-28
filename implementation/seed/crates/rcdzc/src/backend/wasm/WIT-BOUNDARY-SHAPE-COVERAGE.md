@@ -149,8 +149,8 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   ≥2 payloads (`(type V (Pair Int64 Int64) …)`) crosses as a WIT variant case with a `tuple<…>` payload
   (`canon_write_of`'s Variant arm resolves the case payload via the ctor + `payload_ty_at_instantiation`, which
   yields the tuple of the ctor's payload types, then writes it through the Tuple arm). REMAINING: the multi-
-  payload case at the ARG (register-flatten) position; and a mixed int↔float / f32↔f64 single-payload variant
-  join — see `variant_scalar_payload_cases` / `variant_liftable_payload_cases`.
+  payload case at the ARG (register-flatten) position (the mixed int↔float / f32↔f64 single-payload variant is
+  now ✅ DONE — SHAPE 233/234/235, `HostParam::VariantScalarsMixed`).
 - **[emit]** compound variant payload at the ARG (register-flatten) position; compound-payload
   variant list-element.
 - **[emit, ARG-side]** `option<compound>` host-op record-ARG FIELD — ✅ scalar/bytes (pre-existing) + **tuple-of-scalars (SHAPE 123)** + **record-of-scalars (SHAPE 124)** + **record-with-a-Bytes-field (SHAPE 126)**. `field_boundary_abi` recurses the payload; `emit_record_arg_marshal` SCRATCH-FLATTENS it (`(disc, flatten(payload))` — disc + one core slot per scalar payload field / TWO `(ptr,len)` slots per Bytes field, marshalled into N scratch slots since LIR blocks are single-value, pushed after the `if`; the Some arm recurses `emit_record_arg_marshal` on the payload record and captures its N pushed slots in reverse, the None arm zero-fills; a record payload reads each WIT field from its name-lex cell index, `reorder_record_fields_to_wit` recursing the `Option(Record)` to WIT order; a Bytes payload leaf copies its rope into shared mem at the reserved scratch cursor, `record_has_option_bytes_field` reserving the cursor in the emit.rs pre-scan). NB: the slot count checks `Ty::Bytes` BEFORE `valtype_of` (which is `Some(I32)` for a Bytes handle) so a byte leaf counts as 2 slots, not 1. The `option<compound>` LIST ELEMENT (`list<option<compound>>`) is now DONE — SHAPE 152/153/154 (see the list-element entry below). REMAINING: a nested-compound (option/tuple/record-of-compound) payload field inside the option that is not yet exercised. The RESULT side is DONE — SHAPE 66.
@@ -372,8 +372,8 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   sites in prior work; these pin the value round-trip): a `list<variant>` ELEMENT (171, `emit_variant_to_mem`),
   a `tuple<variant, …>` ELEMENT (172, `emit_variant_reg_flatten` positional), and an `option<record-with-a-
   variant-field>` ARG (173, `emit_option_reg_flatten`'s record branch → `emit_record_arg_marshal`'s variant-field
-  arm). REMAINING variant gaps: a multi-payload variant case at the ARG register-flatten position, and a mixed
-  int↔float / f32↔f64 single-payload variant (the canonical reinterpret join).
+  arm). REMAINING variant gaps: a multi-payload variant case at the ARG register-flatten position (the mixed
+  int↔float / f32↔f64 single-payload variant reinterpret join is now ✅ DONE — SHAPE 233/234/235).
 - **[emit, ARG-side] a COMPOUND (Bytes) single-payload variant host-op ARG — ✅ DONE / TESTED (SHAPE 227, 228).**
   (SHAPE 228 hardens the MULTI-Bytes-case path: `variant{a, b(bytes), c(bytes)}`, `bytes_discs = [1,2]`, exercises
   the marshal's multi-disc OR fold — SHAPE 227's single Bytes case left it untested.)
@@ -426,9 +426,26 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   to the joined width, len)`, the innermost else (nullary) zeroes all slots; every arm zeroes the slots it does
   not own. Additive across the same ~11 sites. Verified `variant{a, b(s64), c(bytes)}` → `(i32, i64, i32)`, all
   three arms. REMAINING variant-payload gaps: a mixed set that also includes a LIST/compound payload case, a
-  compound (`list<compound>`/bytes/nested) tuple/record ELEMENT-or-FIELD, an int↔float scalar mix (the reinterpret
-  join), a SECOND product case / MULTI-payload case (≥2 payloads/case), and ALL of the compound-payload variants
-  at the FIELD / list-element positions (`RecordFieldAbi::Variant` is scalar-only).
+  compound (`list<compound>`/bytes/nested) tuple/record ELEMENT-or-FIELD, a SECOND product case / MULTI-payload
+  case (≥2 payloads/case), and ALL of the compound-payload variants at the FIELD / list-element positions
+  (`RecordFieldAbi::Variant` is scalar-only).
+- **[emit, ARG-side] a scalar-payload variant MIXING int with float — the reinterpret join — ✅ DONE / TESTED
+  (SHAPE 233/234/235).** A `variant{nullary…, scalar-case(s)}` whose payloads mix an integer with a float (or
+  `f32` with `f64`) — the case the uniform `HostParam::Variant` declines (its join has no clean slot). Handled by
+  the NEW additive `HostParam::VariantScalarsMixed(Vec<(name, Option<AbiValType>)>)` (the SAME case shape as
+  `Variant`, so it rides Variant's nominal host_imports path — `comp_byte` expresses f32/f64). The core flatten is
+  `(disc:i32, join)` with the canonical `wit_ctype::flatten_variant` reinterpret join
+  (`marshal::reinterpret_join_vt`): a same-width int/float → that int width (`join(i64,f64)=i64`,
+  `join(i32,f32)=i32`), anything else → `i64` — always an INTEGER slot when a float is mixed in.
+  `emit_variant_mixed_scalar_arg_reg_flatten` dispatches per case (a nested `if disc==d … else …` chain), each
+  unboxing with ITS OWN read op and coercing the runtime value into the join slot via `emit_scalar_coerce_into_slot`
+  (`i64.reinterpret_f64` / `i32.reinterpret_f32`, a narrow int `i32.wrap_i64`, a bool/`f32`→i64 `i64.extend_i32_u`);
+  a nullary case pushes the join-width zero. Register-only (no `mem`). Detector `variant_mixed_scalar_payload_cases`
+  is DISJOINT from `variant_scalar_payload_cases` (extracted the shared `variant_all_scalar_cases` collector). Wired
+  ARG-side ONLY — a mixed variant as a list-ELEMENT / record-FIELD still cleanly DECLINES (the shared detector +
+  `emit_variant_to_mem` are unchanged; decline-don't-miscompile). Verified `{b(s64),c(f64)}`→i64 slot,
+  `{b(s32),c(f32)}`→i32 slot, `{b(s64),c(f32)}`→i64 slot (the f32→i64 two-step). REMAINING: the mixed int↔float at
+  the record-FIELD / list-element positions (structural enrichment, like the compound-payload variants above).
 - **[emit, ARG-side] the BARE (top-level) named-variant host-op ARG — ✅ DONE / TESTED (SHAPE 184/185).**
   `emit_variant_reg_flatten` has always been documented as "the bare-variant ARG marshal", but the corpus never
   pinned it at the top-level param position directly — every prior `variant` case sat inside a record field /
