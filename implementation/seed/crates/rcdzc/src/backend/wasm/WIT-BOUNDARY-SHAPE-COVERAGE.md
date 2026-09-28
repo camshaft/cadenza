@@ -462,7 +462,11 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   i32)`, all three arms. A multi-payload-CASE mix (≥3 payload-bearing cases where two mem cases share a slot) is
   ✅ DONE / TESTED (SHAPE 242): `variant{a, b(s64), c(list<u8>), d(list<s64>)}` — a scalar + a Bytes + a List case,
   so slot 1 is contributed by BOTH mem cases; `variant_mixed_join_slots` joins position-wise over ALL cases
-  (`join(i64,i32,i32)=i64`, `join(i32,i32)=i32` → `(i32, i64, i32)`), all four arms exercised. A TUPLE
+  (`join(i64,i32,i32)=i64`, `join(i32,i32)=i32` → `(i32, i64, i32)`), all four arms exercised. A THREE-KIND mix
+  (scalar + Bytes + Tuple simultaneously) is now ✅ DONE / TESTED (SHAPE 247), which exposed + fixed a slot-WIDTH
+  bug: when a TUPLE case's i64 element widens slot 1 to i64, the Bytes/List arm's len/count (an i32) must be
+  `i64.extend_i32_u`'d into slot 1 (it was stored raw → CDZ0910 "expected i64, found i32"). SHAPE 241/242 never
+  hit it (slot 1 stayed i32 with no tuple case). A TUPLE
   (multi-payload) compound payload case in a mixed variant is now ✅ DONE / TESTED (SHAPE 243): `variant{a, b(s64),
   c(tuple<s32,s64>)}` — the scalar+tuple mix routes to `VariantMixed` via `VariantPayloadKind::Tuple(elem-abis)`;
   the tuple case flattens POSITIONALLY inline (one slot per element) joined slot-wise with the scalar case
