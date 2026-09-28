@@ -1089,11 +1089,14 @@ pub enum VariantPayloadKind {
     Tuple(Vec<AbiValType>),
     // A RECORD payload case whose fields are ALL scalar: flattens POSITIONALLY inline like a `Tuple` — one core
     // slot per field — but the slot ORDER follows the WIT record's field DECLARATION order (not the guest's
-    // name-lex order). Carries the field ABIs (in WIT order once ordered by `variant_mixed_payload_cases_wit`;
-    // in guest name-lex order from the bare `variant_mixed_payload_cases`, which is used only for presence
-    // checks that do not care about slot order) and the guest record `Ty` (so the emit reads its named fields
-    // via `emit_record_arg_marshal`, which itself orders field VALUES to WIT).
-    Record(Vec<AbiValType>, Ty),
+    // name-lex order). Carries the field `(kebab-name, ABI)` pairs (in WIT order once ordered by
+    // `variant_mixed_payload_cases_wit` at the bare ARG, or by `wit_order_mem_mixed_record_cases` at a nested
+    // record-FIELD / tuple-ELEMENT; in guest name-lex order from the bare `variant_mixed_payload_cases`, which is
+    // used only for presence checks that do not care about slot order) and the guest record `Ty` (so the emit
+    // reads its named fields via `emit_record_arg_marshal`, which itself orders field VALUES to WIT). The
+    // `(name, abi)` pairs are the single WIT-orderable source: `record_field_cref` builds the `(record …)`
+    // component type from them (name AND order), and `variant_mixed_join_slots` reads their ABIs for the flatten.
+    Record(Vec<(String, AbiValType)>, Ty),
 }
 
 /// Whether a heterogeneous mem variant's payload-case KIND is one `select::emit_variant_mixed_to_mem` writes
@@ -1203,8 +1206,10 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
             // them to WIT order at the two sites that CONSUME the slot order (the classifier → serialize, and the
             // emit). A Bytes/list/nested-compound field would need the cursor + a richer flatten — a later increment.
             let mut abis = Vec::with_capacity(fields.len());
-            for fty in fields.values() {
-                abis.push(abi_val_type(fty)?);
+            for (sym, fty) in fields.iter() {
+                let name =
+                    crate::backend::common::export_name::kebab_extern_name(sym.name.as_ref());
+                abis.push((name, abi_val_type(fty)?));
             }
             if abis.is_empty() {
                 return None;
@@ -1257,78 +1262,66 @@ pub fn variant_mixed_payload_cases_wit(
         _ => return None,
     };
     for (disc, kind) in cases.iter_mut() {
-        let VariantPayloadKind::Record(abis, record_ty) = kind else {
+        let VariantPayloadKind::Record(abis, _) = kind else {
             continue;
         };
-        let Ty::Record(fields) = record_ty.strip_nominal() else {
-            return None;
-        };
-        // The guest field NAMES in name-lex order — the order `abis` was collected in.
-        let names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
         let rec_wit = wit_cases
             .get(*disc as usize)
             .and_then(|(_, p)| p.as_ref())?;
         let crate::wit_world::WitType::Record(wit_fields) = rec_wit else {
             return None;
         };
-        // Reorder `abis` (name-lex) into WIT field-declaration order: for each WIT field, take the ABI at its
-        // guest name-lex position. A WIT field absent from the guest record → decline.
+        // Reorder `abis` (guest name-lex) into WIT field-declaration order: for each WIT field, take the
+        // (kebab-named) pair whose name matches. A WIT field absent from the guest record → decline.
         let mut ordered = Vec::with_capacity(wit_fields.len());
         for (fname, _) in wit_fields {
-            let idx = names.iter().position(|n| n == fname)?;
-            ordered.push(abis[idx]);
+            let idx = abis.iter().position(|(n, _)| n == fname)?;
+            ordered.push(abis[idx].clone());
         }
         *abis = ordered;
     }
     Some(cases)
 }
 
-/// Whether EVERY `Record` payload case of a mixed variant `ty` has its guest NAME-LEX field order EQUAL to its
-/// WIT declaration order (from `variant_wit`, a `WitType::Variant`). The register record-FIELD mixed marshal
-/// builds the case's component `(record …)` DEFINED type (`host_imports::record_field_cref`) + `serialize`'s
-/// `VariantMemMixed` flatten in guest NAME-LEX order, while the world declares the case's record in WIT order —
-/// so a record case whose orders DIVERGE would produce a component type that mis-links against the world (and a
-/// core flatten disagreeing with the WIT-ordered guest push). Such a case must decline. A case set with NO record
-/// case trivially matches (the marshal is order-agnostic); a missing/!record WIT declines (returns false). Kebab
-/// the guest field names to compare against the world's (already-kebab) WIT field names.
-pub fn mixed_variant_record_cases_wit_ordered(
-    db: &mut Db,
-    ty: &Ty,
+/// Reorder each `Record` payload case's `(kebab-name, ABI)` field pairs in a NESTED [`RecordFieldAbi::VariantMemMixed`]
+/// abi (a mixed-variant record-FIELD or tuple-ELEMENT) to the case's WIT record DECLARATION order, using
+/// `variant_wit` (the field/element's WIT — a [`WitType::Variant`]). This is the register-flatten twin of
+/// [`variant_mixed_payload_cases_wit`] (which orders the BARE-ARG cases): it keeps `serialize`'s
+/// [`variant_mixed_join_slots`] flatten, [`host_imports::record_field_cref`]'s `(record …)` component type (which
+/// reads the pairs' names AND order), and the emit's WIT-ordered push all in the SAME order for a mixed-variant
+/// field/element whose guest name-lex record order DIVERGES from the WIT. A `Record` case with no resolvable WIT
+/// record, or one where a WIT field is absent from the pairs (no clean bijection), is left name-lex: the emit
+/// re-derives the WIT order itself ([`variant_mixed_payload_cases_wit`]) and declines cleanly when it cannot, so a
+/// mis-order never miscompiles. `variant_wit` `None` / non-variant leaves the cases untouched.
+pub fn wit_order_mem_mixed_record_cases(
+    cases: &mut [(String, Option<VariantPayloadKind>)],
     variant_wit: Option<&crate::wit_world::WitType>,
-) -> bool {
-    let Some(cases) = variant_mixed_payload_cases(db, ty) else {
-        return true; // not a mixed variant → nothing to constrain
+) {
+    let Some(crate::wit_world::WitType::Variant(wit_cases)) = variant_wit else {
+        return;
     };
-    if !cases
-        .iter()
-        .any(|(_, k)| matches!(k, VariantPayloadKind::Record(..)))
-    {
-        return true; // no record case → order-agnostic
-    }
-    let Some(crate::wit_world::WitType::Variant(wcases)) = variant_wit else {
-        return false; // a record case needs the WIT to confirm its field order
-    };
-    for (pd, kind) in &cases {
-        let VariantPayloadKind::Record(_, rty) = kind else {
+    for (disc, (_, kind)) in cases.iter_mut().enumerate() {
+        let Some(VariantPayloadKind::Record(pairs, _)) = kind else {
             continue;
         };
-        let crate::ty::Ty::Record(fields) = rty.strip_nominal() else {
-            return false;
-        };
-        let guest: Vec<String> = fields
-            .keys()
-            .map(|s| crate::backend::common::export_name::kebab_extern_name(s.name.as_ref()))
-            .collect();
-        let Some((_, Some(crate::wit_world::WitType::Record(wf)))) = wcases.get(*pd as usize)
+        let Some((_, Some(crate::wit_world::WitType::Record(wit_fields)))) = wit_cases.get(disc)
         else {
-            return false;
+            continue; // no WIT record for this case → leave name-lex (the emit declines cleanly)
         };
-        let witn: Vec<String> = wf.iter().map(|(n, _)| n.clone()).collect();
-        if guest != witn {
-            return false; // divergent field order → decline (component type would mis-link)
+        // Reorder `pairs` (guest name-lex) into WIT field-declaration order: for each WIT field, take the
+        // (kebab-named) pair whose name matches. Only replace on a clean bijection (every pair mapped exactly
+        // once) — else leave name-lex and let the emit's own WIT-ordering decline.
+        let mut ordered = Vec::with_capacity(wit_fields.len());
+        for (fname, _) in wit_fields {
+            let Some(idx) = pairs.iter().position(|(n, _)| n == fname) else {
+                break;
+            };
+            ordered.push(pairs[idx].clone());
+        }
+        if ordered.len() == pairs.len() {
+            *pairs = ordered;
         }
     }
-    true
 }
 
 /// The canonical variant-flatten PAYLOAD slots (core valtype bytes, EXCLUDING the leading disc) for a mixed
@@ -1358,7 +1351,9 @@ pub fn variant_mixed_join_slots(cases: &[(i32, VariantPayloadKind)]) -> Vec<u8> 
             VariantPayloadKind::Tuple(abis) => abis.iter().map(|a| a.core_byte()).collect(),
             // A Record case → one core slot per field, in the field ABIs' order (WIT declaration order once
             // `variant_mixed_payload_cases_wit` has ordered them). Same positional inline flatten as a Tuple.
-            VariantPayloadKind::Record(abis, _) => abis.iter().map(|a| a.core_byte()).collect(),
+            VariantPayloadKind::Record(abis, _) => {
+                abis.iter().map(|(_, a)| a.core_byte()).collect()
+            }
         };
         for (i, cb) in case_flat.into_iter().enumerate() {
             if i < flat.len() {
@@ -1774,6 +1769,15 @@ pub fn reorder_record_fields_to_wit(
                     other => other,
                 };
                 RecordFieldAbi::Option(Box::new(inner))
+            }
+            // A mixed-variant field: reorder each Record payload case's `(kebab-name, ABI)` pairs to the case's
+            // WIT record DECLARATION order (`fwit` is the field's WIT variant), so `serialize`'s flatten,
+            // `record_field_cref`'s `(record …)` component type, and the emit's WIT-ordered push all agree even
+            // when the guest name-lex record order DIVERGES from the WIT. A case the WIT cannot order is left
+            // name-lex — the emit re-derives the order and declines cleanly (decline-don't-miscompile).
+            RecordFieldAbi::VariantMemMixed(mut cases) => {
+                wit_order_mem_mixed_record_cases(&mut cases, Some(fwit));
+                RecordFieldAbi::VariantMemMixed(cases)
             }
             other => other,
         };
@@ -3171,11 +3175,21 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                                 // `emit_variant_mixed_arg_reg_flatten` (the twin a bare-ARG mixed variant / a
                                 // mixed-variant record FIELD, SHAPE 264, use). Its abi is the shared
                                 // `field_boundary_abi` (`RecordFieldAbi::VariantMemMixed`); serialize flattens it
-                                // with the canonical `variant_mixed_join_slots`. Checked after the scalar-/single-
-                                // tuple variant branches (they claim their clean shapes) and BEFORE the record else
-                                // (a variant is a Sum, NOT a `Ty::Record`, so the else would panic).
-                                field_boundary_abi(db, e)
-                                    .expect("mixed variant element crosses by `tuple_arg_crosses`")
+                                // with the canonical `variant_mixed_join_slots`. Reorder each Record payload case's
+                                // `(name, abi)` pairs to the element's WIT record order (`elem_wits.get(i)`), so
+                                // serialize's flatten agrees with the element's WIT-built component type + the
+                                // emit's WIT-ordered push even when the guest name-lex record order diverges.
+                                // Checked after the scalar-/single-tuple variant branches (they claim their clean
+                                // shapes) and BEFORE the record else (a variant is a Sum, NOT a `Ty::Record`).
+                                let mut abi = field_boundary_abi(db, e)
+                                    .expect("mixed variant element crosses by `tuple_arg_crosses`");
+                                if let RecordFieldAbi::VariantMemMixed(cases) = &mut abi {
+                                    wit_order_mem_mixed_record_cases(
+                                        cases,
+                                        elem_wits.as_ref().and_then(|ws| ws.get(i)),
+                                    );
+                                }
+                                abi
                             } else if enum_cases(db, &e.strip_nominal().clone()).is_some() {
                                 // a payload-less `enum` element flattens to one i32 disc (the guest reads the
                                 // value-heap sum's disc inline via the scalar-unbox path). Its abi is the shared

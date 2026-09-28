@@ -524,32 +524,20 @@ pub(super) fn record_field_cref(
                         })
                     }
                     // A RECORD payload case (all-scalar fields): lay a `(record (field <prim>)…)` DEFINED type
-                    // over the guest record's fields in NAME-LEX order (the order the field abis were collected in),
-                    // kebab-naming each field, and reference its index. The register record-FIELD emit
-                    // (`emit_record_arg_marshal`'s VariantMemMixed arm) only admits a Record case whose guest
-                    // name-lex order MATCHES the WIT declaration order, so name-lex order IS the WIT order here —
-                    // keeping this component type structurally aligned with the world's declared variant case.
-                    Some(host::VariantPayloadKind::Record(abis, rty)) => {
-                        match rty.strip_nominal() {
-                            crate::ty::Ty::Record(rfields) if rfields.len() == abis.len() => {
-                                let rec_fields: Vec<(String, CRef)> = rfields
-                                    .keys()
-                                    .zip(abis.iter())
-                                    .map(|(sym, a)| {
-                                        (
-                                            crate::backend::common::export_name::kebab_extern_name(
-                                                sym.name.as_ref(),
-                                            ),
-                                            CRef::Prim(a.comp_byte()),
-                                        )
-                                    })
-                                    .collect();
-                                let rec_def = base + 2 * table.len() as u32;
-                                table.push(emit_cdef(&CDef::Record(rec_fields)));
-                                Some(CRef::Idx(rec_def + 1))
-                            }
-                            _ => None,
-                        }
+                    // over the case's stored `(kebab-name, ABI)` pairs — which are in WIT DECLARATION order once
+                    // `wit_order_mem_mixed_record_cases` reordered this nested field/element abi (or already-WIT
+                    // when the guest name-lex order matched). Reading the pairs' names AND order directly keeps the
+                    // component `(record …)` type structurally aligned with the world's declared variant case even
+                    // when the guest name-lex order DIVERGES from the WIT (the register-flatten twin of the bare-ARG
+                    // path, which builds this type from the WIT via `add_wit_type_deduped`).
+                    Some(host::VariantPayloadKind::Record(pairs, _)) => {
+                        let rec_fields: Vec<(String, CRef)> = pairs
+                            .iter()
+                            .map(|(name, a)| (name.clone(), CRef::Prim(a.comp_byte())))
+                            .collect();
+                        let rec_def = base + 2 * table.len() as u32;
+                        table.push(emit_cdef(&CDef::Record(rec_fields)));
+                        Some(CRef::Idx(rec_def + 1))
                     }
                     None => None,
                 };

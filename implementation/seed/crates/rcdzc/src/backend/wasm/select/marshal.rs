@@ -2773,7 +2773,7 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                 };
                 let nat_vts: Vec<ValType> = abis
                     .iter()
-                    .map(|a| {
+                    .map(|(_, a)| {
                         ValType::from_byte(a.core_byte()).ok_or_else(|| {
                             Reject::decline(
                                 "a mixed variant record field is not a numeric core type",
@@ -4058,14 +4058,17 @@ pub(super) fn emit_tuple_reg_flatten(
             )?;
             continue;
         }
-        // A HETEROGENEOUS MIXED `variant` element (scalar + tuple + WIT-ordered-record + Bytes/List payload
-        // cases): read its handle (`arr-get i`, borrows the tuple) → flatten to `(disc, joined-slots…)` via
+        // A HETEROGENEOUS MIXED `variant` element (scalar + tuple + record + Bytes/List payload cases): read its
+        // handle (`arr-get i`, borrows the tuple) → flatten to `(disc, joined-slots…)` via
         // `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant / a mixed-variant
-        // record FIELD (SHAPE 264/266/268/269) use. Checked after the scalar-/single-tuple variant arms. Two admit
-        // conditions (decline-don't-miscompile): a Bytes/List case rope-copies / marshals into `mem` at the cursor,
+        // record FIELD (SHAPE 264/266/268/269) use. Checked after the scalar-/single-tuple variant arms. One admit
+        // condition (decline-don't-miscompile): a Bytes/List case rope-copies / marshals into `mem` at the cursor,
         // so it needs the tuple's cursor RESERVED (`tuple_arg_needs_cursor`'s variant leaf) — else `cursor` is
-        // `None` and it declines; a Record case whose guest NAME-LEX field order DIVERGES from its element WIT
-        // order declines (the component `(record …)` is built name-lex — the tuple-element twin of SHAPE 266's guard).
+        // `None` and it declines. A Record payload case whose guest NAME-LEX field order DIVERGES from its element
+        // WIT order is now supported: the element abi's Record-case `(name, abi)` pairs are WIT-ordered at
+        // construction (`wit_order_mem_mixed_record_cases` in the tuple abi builder), so serialize's flatten agrees
+        // with the element's WIT-built component type + the emit's WIT-ordered push; a truly unorderable case
+        // declines cleanly below via `variant_mixed_payload_cases_wit`.
         if crate::backend::wasm::host::variant_mixed_payload_cases(db, ety).is_some_and(|cases| {
             cases
                 .iter()
@@ -4078,11 +4081,6 @@ pub(super) fn emit_tuple_reg_flatten(
                                 | crate::backend::wasm::host::VariantPayloadKind::List(_)
                         )
                     }))
-                && crate::backend::wasm::host::mixed_variant_record_cases_wit_ordered(
-                    db,
-                    ety,
-                    elem_wits.as_ref().and_then(|ws| ws.get(i)),
-                )
         }) {
             let elem_wit = elem_wits.as_ref().and_then(|ws| ws.get(i));
             let cases =
@@ -5239,18 +5237,19 @@ pub(super) fn emit_record_arg_marshal(
                     out,
                 )?;
             }
-            // A HETEROGENEOUS MIXED `variant` field (scalar + tuple + WIT-ordered-record + Bytes/List payload
-            // cases) flattens (canonical variant flatten) to `(disc:i32, joined-slots…)` via
-            // `emit_variant_mixed_arg_reg_flatten` — the SAME helper the bare-ARG mixed variant uses, so the field
-            // and bare-arg marshals stay in lockstep. serialize's `VariantMemMixed` flatten + `host_imports`'s
-            // variant DEFINED type (incl. a record case's `(record …)` DEFINED type, built name-lex by
-            // `record_field_cref`) agree on this join. Detected AFTER the scalar-/tuple-payload variant arms (they
-            // claim their clean single-kind shapes). Two admit conditions (decline-don't-miscompile): a `Bytes`/
+            // A HETEROGENEOUS MIXED `variant` field (scalar + tuple + record + Bytes/List payload cases) flattens
+            // (canonical variant flatten) to `(disc:i32, joined-slots…)` via `emit_variant_mixed_arg_reg_flatten`
+            // — the SAME helper the bare-ARG mixed variant uses, so the field and bare-arg marshals stay in
+            // lockstep. serialize's `VariantMemMixed` flatten + `host_imports`'s variant DEFINED type (incl. a
+            // record case's `(record …)` DEFINED type, built by `record_field_cref` from the WIT-ordered
+            // `(name, abi)` pairs) agree on this join. Detected AFTER the scalar-/tuple-payload variant arms (they
+            // claim their clean single-kind shapes). One admit condition (decline-don't-miscompile): a `Bytes`/
             // `List` payload case rope-copies / marshals into `mem` at the cursor, so it needs the record's scratch
             // cursor RESERVED (`record_has_mem_mixed_variant_field` in the emit.rs pre-scan) — else `cursor` is
-            // `None` and the arm declines cleanly; a `Record` payload case whose guest NAME-LEX field order
-            // DIVERGES from its WIT declaration order is declined by `mixed_variant_record_cases_wit_ordered` (the
-            // component `(record …)` type is built name-lex, so a divergent order would mis-link).
+            // `None` and the arm declines cleanly. A `Record` payload case whose guest NAME-LEX field order
+            // DIVERGES from its WIT declaration order is now supported: `reorder_record_fields_to_wit` WIT-orders
+            // the field abi's Record-case `(name, abi)` pairs, so `record_field_cref` builds the component in WIT
+            // order and serialize's flatten agrees; a truly unorderable case declines cleanly below.
             None if crate::backend::wasm::host::variant_mixed_payload_cases(db, fty)
                 .is_some_and(|cases| {
                     cases.iter().all(|(_, k)| {
@@ -5263,11 +5262,6 @@ pub(super) fn emit_record_arg_marshal(
                                     | crate::backend::wasm::host::VariantPayloadKind::List(_)
                             )
                         }))
-                        && crate::backend::wasm::host::mixed_variant_record_cases_wit_ordered(
-                            db,
-                            fty,
-                            Some(fwit),
-                        )
                 }) =>
             {
                 let cases = crate::backend::wasm::host::variant_mixed_payload_cases_wit(
