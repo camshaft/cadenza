@@ -1913,84 +1913,93 @@ pub(crate) fn producing_husk_reclaim_consumed_callee_escape(
     false
 }
 
-/// Whether `payload` (a heap value) is passed, ANYWHERE in `id`'s subtree, as arg `i` to a `Core::Call` whose
-/// callee CONSUMES that param ([`def_consumes_param`]). Post-collapse the match binder `s` is SUBSTITUTED by the
-/// producing `SumNew`'s payload NODE, so `drain`'s arg IS `payload` (node identity) — a direct `arg == payload`
-/// match. The consuming gate excludes a borrow-only callee (whose arg the husk drop would then orphan).
-fn payload_consumed_by_callee_in(
+/// Collect the `SumPayload`/`Proj` PROJECTIONS off `husk` (a `Core::SumNew`) that, ANYWHERE in `id`'s subtree,
+/// are passed as arg `i` to a `Core::Call` whose callee CONSUMES that param ([`def_consumes_param`]). Post-
+/// collapse (`fold_ctor_match`/`lower_match_sum`, via `beta_reduce`'s SumPayload capture-share) the match binder
+/// `s` does NOT become a fresh payload node — it becomes `SumPayload{scrutinee: husk, [Payload]}`, a projection
+/// off the STILL-BUILT husk. So `drain`'s consuming arg is such a projection ([`extraction_roots_at_scrutinee`]
+/// rooting at `husk`), NOT the husk's raw payload node. A borrow-only callee is excluded (its arg the husk drop
+/// would orphan). These projection nodes are the ones the fold-extract dup-backs (checked against `dup_sites`).
+fn collect_husk_consumed_projections(
     db: &mut Db,
     id: StructId,
-    payload: StructId,
+    husk: StructId,
     seen: &mut HashSet<StructId>,
-) -> bool {
+    out: &mut Vec<StructId>,
+) {
     if !seen.insert(id) {
-        return false;
+        return;
     }
     if let Core::Call { callee, args } = core_of(db, id) {
         for (i, &arg) in args.iter().enumerate() {
-            if arg == payload && def_consumes_param(db, callee, i) {
-                return true;
+            if is_heap_type(&type_of(db, arg))
+                && extraction_roots_at_scrutinee(db, arg, husk, None)
+                && def_consumes_param(db, callee, i)
+                && !out.contains(&arg)
+            {
+                out.push(arg);
             }
         }
     }
     for c in core_child_ids(db, id) {
-        if payload_consumed_by_callee_in(db, c, payload, seen) {
-            return true;
-        }
+        collect_husk_consumed_projections(db, c, husk, seen, out);
     }
-    false
 }
 
 /// RECOGNIZER (v-core-opt-owned; node6xd/(e) FUSED-PRODUCER-HUSK reclaim). PURE decision, DROP-ONLY (no new dup).
-/// `true` ⟹ this `Core::SumNew` `id` is a DEAD producing husk that should be reclaimed: a match-of-known-ctor
-/// COLLAPSE (`fold_ctor_match` / `lower_match_sum`, eval.rs) folded away the `(match (Ok payload) ((Ok s) …))`
-/// producing match — binding `s := payload` and dropping the match — so the shell reclaim a real `MatchSum`
-/// would have done never fired, and the built `(Ok payload)` husk leaks (its payload ESCAPED into a downstream
-/// consumer, so node#6 suppresses the husk's own drop, one level up). v-mem rctrace node6xd k=1: extract dups
-/// the payload 1->2, `drain` consumes 2->1, the husk holds rc1 + leaks. Reclaiming the husk cascades the
-/// payload 1->0 (safe — the consumer released before the husk drop).
+/// `Some(husk)` ⟹ this `Core::SumNew` `id` is a DEAD producing husk to deep-drop: a match-of-known-ctor COLLAPSE
+/// (`fold_ctor_match`/`lower_match_sum`, eval.rs, front-end) folded away the `(match (Ok payload) ((Ok s) …))`
+/// producing match — binding `s` to a `SumPayload` PROJECTION off the still-built `(Ok payload)` husk (via
+/// `beta_reduce`'s SumPayload capture-share, NOT a fresh payload node) and dropping the match — so the shell
+/// reclaim a real `MatchSum` would do never fired, and the built husk leaks (its projected payload ESCAPES into
+/// a downstream consumer, so node#6 suppresses the husk's own drop, one level up, now at a `SumNew` instead of a
+/// `MatchSum`). v-mem rctrace node6xd k=1: the projection dup-extracts the payload 1->2, `drain` consumes 2->1,
+/// the husk holds rc1 + leaks. Deep-dropping the husk cascades the payload 1->0 (safe — the consumer released
+/// its dup'd ref before the husk drop). v-mem wires the deep-drop at the `SumNew` dead-point (emit lane); this is
+/// the DECISION only, returning the husk node to drop.
 ///
-/// GATES: (1) heap `SumNew` husk (boxed, not enum-disc, ≥1 heap payload). (2) every heap payload DUP-BACKED —
-/// `dup_sites.contains(p)` — the fold-extract already dup'd it (so the husk still holds an independent rc1 whose
-/// deep-drop is balanced, NOT a double-free of the consumer's ref). (3) every heap payload CONSUMED by a
-/// downstream callee ([`payload_consumed_by_callee_in`] over `top_body`, gated [`def_consumes_param`]) — a
-/// borrow-only consumer would leave the husk drop orphaning the extract-dup (leak-over-UAF decline). v-mem wires
-/// the actual husk deep-drop at the `SumNew` emit/dead-point (emit.rs:1240 lane); this is the DECISION only.
+/// GATES: (1) heap `SumNew` husk (boxed, not enum-disc, ≥1 heap payload) that is OWNED (a fresh construction).
+/// (2) ≥1 `SumPayload` projection off the husk is CONSUMED by a downstream callee ([`collect_husk_consumed_
+/// projections`], gated [`def_consumes_param`]) — a borrow-only consumer declines (leak-over-UAF). (3) every such
+/// consumed projection is DUP-BACKED (`dup_sites.contains` — the fold-extract dup'd it), so the husk's own rc1
+/// deep-drop is balanced, NOT a double-free of the consumer's ref. `None` otherwise (leak-over-UAF decline).
 ///
 /// v1: the CONSUMING-CALLEE consumer (node6xd). The VIEW-minting builtin consumer ((e)/Bytes.slice — the payload
 /// is view-aliased, gate the view-not-escaping) is the sibling arm, added next once node6xd censuses 0.
-#[allow(dead_code)] // TEMP: inert until v-mem wires the SumNew-dead-husk deep-drop (emit.rs:1240 dead-point) + censuses node6xd/(e) -> 0.
+#[allow(dead_code)] // TEMP: inert until v-mem wires the SumNew-dead-husk deep-drop (emit SumNew dead-point) + censuses node6xd/(e) -> 0.
 pub(crate) fn sumnew_collapsed_husk_reclaim(
     db: &mut Db,
     id: StructId,
     top_body: StructId,
     dup_sites: &HashSet<StructId>,
-) -> bool {
+) -> Option<StructId> {
     let Core::SumNew { payloads, .. } = core_of(db, id) else {
-        return false;
+        return None;
     };
     if node_is_enum_disc(db, id) || payloads.is_empty() {
-        return false;
+        return None;
     }
-    let heap_payloads: Vec<StructId> = payloads
-        .iter()
-        .copied()
-        .filter(|&p| is_heap_type(&type_of(db, p)))
-        .collect();
-    if heap_payloads.is_empty() {
-        return false;
+    if !payloads.iter().any(|&p| is_heap_type(&type_of(db, p))) {
+        return None;
     }
-    // (2) DUP-BACKED: the fold-extract dup'd each heap payload (rc1->2), so reclaiming the husk nets the husk's
-    // OWN rc1->0 without touching the consumer's ref. Absent ⇒ decline (a bare rc1 payload freed by both the
-    // consumer and the husk drop would double-free).
-    if !heap_payloads.iter().all(|p| dup_sites.contains(p)) {
-        return false;
+    // (1) OWNED husk (a SumNew is a fresh construction; belt-and-suspenders against a shared/interned handle).
+    if !matches!(heap_operand_ownership(db, id), Ok(HandleOwnership::Owned)) {
+        return None;
     }
-    // (3) CONSUMED downstream by a def_consumes_param callee (node6xd). Borrow-only ⇒ decline (leak-over-UAF).
+    // (2) a SumPayload projection off the husk is consumed by a def_consumes_param callee downstream.
     let mut seen = HashSet::new();
-    heap_payloads
-        .iter()
-        .all(|&p| payload_consumed_by_callee_in(db, top_body, p, &mut seen))
+    let mut projs = Vec::new();
+    collect_husk_consumed_projections(db, top_body, id, &mut seen, &mut projs);
+    if projs.is_empty() {
+        return None;
+    }
+    // (3) DUP-BACKED: each consumed projection was dup-extracted (rc1->2), so the husk's own rc1 deep-drop nets
+    // 1->0 without touching the consumer's ref. Absent ⇒ decline (a bare-rc1 projection freed by both the
+    // consumer and the husk drop would double-free — leak-over-UAF).
+    if !projs.iter().all(|p| dup_sites.contains(p)) {
+        return None;
+    }
+    Some(id)
 }
 
 /// CLASSIFIER (v-core-opt-owned; the UNIFIED producing-side "payload escapes into a downstream consumer"
