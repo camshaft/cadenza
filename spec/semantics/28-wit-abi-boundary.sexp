@@ -9812,10 +9812,10 @@ cases
            serialize's `VariantMemMixed` join (`expected (i32 i64 i64 i64)` vs `found (i32 i64 i64)`). Fixed:
            `record_field_cref`'s VariantMemMixed arm now lays a real `(record (p s32) (q s64))` DEFINED type for a
            Record case (kebab field names in guest NAME-LEX order), so the component type flattens to the same
-           slots serialize + the guest push (`emit_variant_mixed_arg_reg_flatten`'s Record arm) produce. The
-           register arm re-admits a Record case guarded by `mixed_variant_record_cases_wit_ordered` (guest name-lex
-           order == WIT declaration order — here p<q ↔ WIT `(p s32)(q s64)` — since the component `(record …)` is
-           built name-lex; a DIVERGENT order still declines cleanly, decline-don't-miscompile). The bare-ARG +
+           slots serialize + the guest push (`emit_variant_mixed_arg_reg_flatten`'s Record arm) produce. This case
+           has the guest name-lex order EQUAL to the WIT declaration order (p<q ↔ WIT `(p s32)(q s64)`); a DIVERGENT
+           order is handled by SHAPE 281 (`reorder_record_fields_to_wit` WIT-orders the field abi's Record-case
+           `(name, abi)` pairs so `record_field_cref` builds the component in WIT order). The bare-ARG +
            mem `list`-element (SHAPE 261) Record cases were always fine. The whole record flattens to
            `(v-disc:i32, p:i64, q:i64, n:i64)` (p's i32 joins into the i64 slot 0). run() builds
            { v: C({p:3, q:7}), n: 5 } and performs probe.push; a VALID running component (live-objects=0) pins the
@@ -9845,10 +9845,11 @@ cases
            defect, since fixed in SHAPE 266). Now that `record_field_cref` lays a proper `(record …)` DEFINED type
            for a Record case (SHAPE 266), the tuple-element CRef path (build_host_result_types → record_field_cref)
            produces the correct component type, so `emit_tuple_reg_flatten`'s mixed-variant element arm re-admits a
-           Record case — guarded by `mixed_variant_record_cases_wit_ordered` on the ELEMENT's WIT
-           (`elem_wits[i]`), so a divergent guest-name-lex-vs-WIT order still declines cleanly
-           (decline-don't-miscompile). `tuple_arg_crosses` admits the element (no per-element WIT there; the emit
-           runs the order guard). The outer tuple flattens to `(v-disc:i32, p:i64, q:i64, n:i64)`. run() builds
+           Record case. This case has the guest name-lex order EQUAL to the WIT order (p<q); a DIVERGENT order is
+           handled by SHAPE 282 (the tuple abi builder WIT-orders the element abi's Record-case `(name, abi)` pairs
+           via `wit_order_mem_mixed_record_cases` on `elem_wits[i]`). `tuple_arg_crosses` admits the element (no
+           per-element WIT there; the abi builder + emit carry the WIT order). The outer tuple flattens to
+           `(v-disc:i32, p:i64, q:i64, n:i64)`. run() builds
            (C({p:3, q:7}), 5) and performs probe.push; a VALID running component (live-objects=0) pins the register
            tuple-element record-payload-case round-trip.")
   (wit-world
@@ -10206,6 +10207,73 @@ cases
     (do
       (effect probe (op push (-> (Option (Tuple (List Int64) Int64)) Int64)))
       (def (run) (host (probe) (probe.push (Some #tuple(#list(1 2 3) 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a RECORD host-op arg with a mixed variant{a, b(s64), c(record{y,x})} field whose record case DIVERGES from WIT order crosses"
+  (doc
+    "SHAPE 281 (v-wit-boundary) — a RECORD host-op ARGUMENT `record{ v: variant{a, b(s64), c(record{y:s32,
+           x:s64})}, n: s64 }` (probe.push) whose `v` FIELD is a HETEROGENEOUS MIXED variant with a RECORD payload
+           case (c) at the REGISTER record-FIELD position, where the record case's guest NAME-LEX field order (x, y)
+           DIVERGES from its WIT declaration order (y, x) — the divergent-order twin of SHAPE 266 (matching order).
+           SHAPE 266 landed the matching-order record case but a DIVERGENT order still declined cleanly: the
+           component `(record …)` type `record_field_cref` built read the guest record's name-lex field order, while
+           the world declares it WIT order, so serialize's flatten (name-lex) disagreed with the emit's WIT-ordered
+           push. Fixed: `VariantPayloadKind::Record` now carries `(kebab-name, ABI)` pairs, and
+           `reorder_record_fields_to_wit`'s VariantMemMixed arm reorders each Record case's pairs to the field's WIT
+           record order (`wit_order_mem_mixed_record_cases`); `record_field_cref` builds the `(record …)` DEFINED
+           type from those WIT-ordered pairs (name AND order), so the component type, serialize's
+           `variant_mixed_join_slots` flatten, and the emit's `emit_record_arg_marshal` WIT-order push all agree.
+           The WIT declares c as `(y s32, x s64)`; the join is slot0 = join(b:s64=i64, y:s32=i32)=i64, slot1 =
+           join(x:s64=i64)=i64, so the whole record flattens to `(v-disc:i32, y:i64, x:i64, n:i64)`. run() builds
+           { v: C({x:3, y:7}), n: 5 } and performs probe.push; a VALID running component (live-objects=0) whose
+           declared `push` record type has `c(record{y, x})` in WIT order pins the divergent-order register
+           record-payload-case round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= v (variant (a) (b (s64)) (c (record (= y (s32)) (= x (s64)))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (Record (: x Int64) (: y Int32))))
+      (effect probe (op push (-> (Record (: v Sig) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Sig.C #record((= x 3) (= y (: 7 Int32))))) (= n 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level tuple<variant{a, b(s64), c(record{y,x})}, s64> host-op arg whose record case DIVERGES from WIT order crosses (register tuple ELEMENT)"
+  (doc
+    "SHAPE 282 (v-wit-boundary) — a top-level `tuple<variant{a, b(s64), c(record{y:s32, x:s64})}, s64>` bare
+           host-op ARGUMENT (probe.push) whose ELEMENT 0 is a HETEROGENEOUS MIXED variant with a RECORD payload case
+           (c) at the REGISTER tuple-ELEMENT position, where the record case's guest NAME-LEX field order (x, y)
+           DIVERGES from its WIT declaration order (y, x) — the tuple-element twin of SHAPE 281 / the divergent-order
+           twin of SHAPE 267. SHAPE 267 landed the matching-order record case but a DIVERGENT order CDZ0910'd: the
+           tuple-element component type (built WIT-ordered via `build_host_result_types` → `add_wit_type_deduped`)
+           disagreed with serialize's name-lex flatten of the stored abi. Fixed: the tuple abi builder now reorders
+           the mixed-variant element's Record-case `(name, abi)` pairs to the element's WIT order
+           (`wit_order_mem_mixed_record_cases`, using `elem_wits[i]`), so serialize's `variant_mixed_join_slots`
+           flatten matches the WIT-built component type + the emit's WIT-ordered push. The WIT declares c as
+           `(y s32, x s64)`; the outer tuple flattens to `(v-disc:i32, y:i64, x:i64, n:i64)`. run() builds
+           (C({x:3, y:7}), 5) and performs probe.push; a VALID running component (live-objects=0) whose declared
+           `push` tuple element has `c(record{y, x})` in WIT order pins the divergent-order register tuple-element
+           record-payload-case round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (variant (a) (b (s64)) (c (record (= y (s32)) (= x (s64))))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (Record (: x Int64) (: y Int32))))
+      (effect probe (op push (-> (Tuple Sig Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Sig.C #record((= x 3) (= y (: 7 Int32)))) 5))))
       (export run)))
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
