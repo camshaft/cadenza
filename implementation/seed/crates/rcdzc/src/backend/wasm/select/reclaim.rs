@@ -707,9 +707,19 @@ pub(crate) fn param_consume_sink_whitelisted(
                     }
                     true
                 }
-                // A clean-transfer LIST-consuming sink: a direct binder operand IS whitelisted (accounted
-                // here, not recursed into as a bare `Param`); a non-binder operand is scanned.
-                Core::ListConcat { .. } | Core::BytesConcat { .. } => {
+                // A clean-transfer consuming sink: a direct binder operand IS whitelisted (accounted here,
+                // not recursed into as a bare `Param`); a non-binder operand is scanned.
+                //   * `ListConcat`/`BytesConcat` — a fresh-result join Perceus reclaims the input to 0
+                //     (elc4/grx1, verified 0-leak).
+                //   * `BytesSlice` — `op_bytes_slice` takes its `bytes` operand and mints a view that OWNS the
+                //     backing; the view's own drop reclaims it, so a param whose ONLY occurrence is a slice
+                //     operand is cleanly consumed once (0-leak) with NO wrapper drop (drop_after=false). This
+                //     admits eab3 (`Bytes.len(Option.expect(Bytes.slice b 1 2))`, dup_sites=0 — the slice's
+                //     ref is consumed, not a surplus, so the borrow-lift path does not apply and a wrapper drop
+                //     would double-free). DISTINCT from byp3 (dup_sites=1 — a `match`-bound `s` retains a dup,
+                //     making the slot ref a surplus reclaimed via the dup-aware borrow-lift, drop_after=true);
+                //     the dup-aware escape query routes each to its correct path.
+                Core::ListConcat { .. } | Core::BytesConcat { .. } | Core::BytesSlice { .. } => {
                     core_child_ids(db, id).into_iter().all(|c| {
                         is_direct_binder(db, c, binder) || walk(db, c, binder, explored, seen)
                     })
