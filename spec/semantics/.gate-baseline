@@ -822,6 +822,7 @@ pass	a Bytes entry argument is marshalled as a Vec<u8>
 pass	a Bytes field projected off a nullary record with Ast siblings folds byte-exact and eliminates the record
 pass	a Bytes slice VIEW and a rope compare equal by content in both directions
 pass	a Bytes slice of a slice composes offsets against the VIEW and bounds against its length
+pass	a Bytes slice operand that is re-read after the slice survives the FBIP move-not-clone (shared parent not moved in place)
 pass	a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)
 pass	a Bytes where a String is expected offers no fix (the decode is fallible)
 pass	a Bytes-compact key and a flat rebuild both hit a rope-keyed map entry; a proper-prefix slice misses

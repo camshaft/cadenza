@@ -1099,6 +1099,39 @@
   (output (: 39980 Int64))
   (live-objects 0))
 
+; The SLICE-operand sibling of the concat FBIP fence above: #10145's move-not-clone covers concat AND slice
+; operands, so `Bytes.slice` also moves its buffer rather than cloning — sound only when the buffer is uniquely
+; owned. Here `base` is BOTH sliced AND re-read afterwards (live-after the slice, rc>1), so the move must NOT
+; consume it in place. Distinct from the parent-liveness cases above (664/688 read the resulting VIEW after the
+; parent's last use — this re-reads the PARENT itself, with a filler alloc between to reuse an over-dropped slot).
+(case
+  "a Bytes slice operand that is re-read after the slice survives the FBIP move-not-clone (shared parent not moved in place)"
+  (doc
+    "Regression guard for the concat/slice FBIP move-not-clone on the SLICE operand: `base =
+           [10,20,sel,40,50]` is sliced by `Bytes.slice base 1 2` (view [20,sel]) AND re-read by `Bytes.at base 2`
+           after a `filler` allocation. Because `base` is live-after the slice (rc>1), the move-not-clone must NOT
+           consume it in place — the re-read must still see `sel`. At sel=30: base[2]=30 → 30000, v[1]=sel=30 →
+           3000, filler[0]=99 → 990, len(v)=2 → 2; total 33992. An over-eager move that consumed the shared `base`
+           reads a wrong byte (the filler reuses its slot on release) or traps on the debug runtime (freed-cell
+           access). The slice sibling of the concat operand fence above. live-objects 0.")
+  (input
+    (do
+      (def
+        (main (: sel Int64))
+        (do
+          (def base (Bytes.of #list(10 20 (UInt8.wrap sel) 40 50)))
+          (def v (Option.expect (Bytes.slice base 1 2) "v"))
+          (def filler (Bytes.of #list(99 99 99)))
+          (+
+            (* 1000 (Option.expect (Bytes.at base 2) "b"))
+            (+
+              (* 100 (Option.expect (Bytes.at v 1) "v1"))
+              (+ (* 10 (Option.expect (Bytes.at filler 0) "f")) (Bytes.len v))))))
+      (export main)))
+  (call main (: 30 Int64))
+  (output (: 33992 Int64))
+  (live-objects 0))
+
 (case
   "String.from-bytes of a runtime slice decodes the WINDOW only"
   (doc
