@@ -174,7 +174,7 @@ pub(super) fn emit_runtime_sum_resource(
                 crate::diag::DeclineId::WasmMultiHostEffectDelegation,
                 "delegating more than one host effect from a resource-escaping entrypoint is supported \
                  only for scalar/unit ops; a string-param or compound-result op across multiple host \
-                 interfaces needs the shared-memory multi-interface emit (a later increment)",
+                 interfaces needs the shared-memory multi-interface emit",
             ));
         }
         // Two distinct effects sharing an op NAME would collide in the ONE `"host"` core module the program

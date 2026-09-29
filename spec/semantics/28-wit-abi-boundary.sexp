@@ -11841,15 +11841,20 @@ cases
   (doc
     "SHAPE 342 (v-wit-boundary) — DEFERRAL, corpus-pinned per the 084999 discipline. run() = Some(H.h + Math.add 5)
            composes a HOST effect (H, a plain host import) AND a PEER effect (Math, bound to the cross-component
-           contract cadenza:math/api) in one SUM-escaping resource entrypoint. Declines cleanly today (CDZ0900,
-           WasmHostPeerResourceFusion) because the resource-escape emit builds EITHER a host import space OR a peer
-           import space, not both fused. This is NOT a spec floor: host imports, peer (cross-component) imports,
-           and resource-escaping results are each individually legitimate, and no contract forbids their
-           combination in one component (host-interface-binding.md admits any manifest capability set; peer
-           contracts are ordinary cross-component imports). So it is a DEFERRAL to fix (emit the COMBINED
-           host-and-peer import space alongside the resource escape). Records the IDEALISTIC cross so it
-           auto-flips to PASS when the fused import-space emit lands. Intended value: H.h -> 1, Math.add(5) -> 6,
-           run() -> Some(7).")
+           contract cadenza:math/api) in one SUM-escaping resource entrypoint. Declines cleanly today (CDZ0900).
+           ROOT GAP (verified 2026-09-29): the host+peer import-space FUSION is unimplemented even in the
+           NON-escape path — a component that both delegates a host effect AND binds a peer declines up-front
+           (mod.rs, 'a cross-component extern import composed with a host effect is not supported'), because the
+           core-module emit builds EITHER a `\"host\"` import block OR a `\"peer\"` import block, not both, and the
+           two call kinds (`CallHostImport`/`CallExternImport`) each assume their kind is laid first. The
+           SUM-escape variant here is DOWNSTREAM of that: it needs the general fusion first, then the resource
+           escape on top. This is NOT a spec floor: host imports, peer (cross-component) imports, and
+           resource-escaping results are each individually legitimate, and no contract forbids their combination
+           (host-interface-binding.md admits any manifest capability set; peer contracts are ordinary
+           cross-component imports). So it is a DEFERRAL to fix (implement the general host+peer import-space
+           fusion — a unified leading-block index layout across `\"host\"`+`\"peer\"` — then compose it with the
+           resource escape). Records the IDEALISTIC cross so it auto-flips to PASS when the fused import-space
+           emit lands. Intended value: H.h -> 1, Math.add(5) -> 6, run() -> Some(7).")
   (peer "cadenza:math/api" (do (def (add (: x Int64)) (+ x 1)) (export add)))
   (input
     (do
