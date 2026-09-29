@@ -1122,6 +1122,31 @@ pub fn variant_mem_mixed_kind_supported(k: &VariantPayloadKind) -> bool {
     }
 }
 
+/// Whether `ty` is an `option<mixed-variant>` whose payload variant's cases are all ORDER-AGNOSTIC kinds
+/// (`Scalar`/`Bytes`/`List`/`Tuple`) — the shape `select::emit_option_to_mem` can write as a LIST ELEMENT in
+/// place (disc byte + the variant's mem layout at the payload offset via `emit_variant_mixed_to_mem`). A
+/// `Record` payload case is EXCLUDED: its mem size is field-order-dependent, but the option-element stride sizes
+/// GUEST order (`canonical_layout_wit` falls back to guest order for an option-shaped `Sum`), so a case whose
+/// WIT field order DIVERGES from the guest name-lex order could overflow the reserved element slot. A `Record`
+/// case therefore stays a clean CDZ0903 decline — a further WIT-order-sizing slice, the same class as the
+/// still-open `list<option<record{divergent}>>` follow-on. Scalar/Bytes/List/Tuple cases carry no order-
+/// dependent padding, so the guest-order stride cannot under-reserve them.
+pub fn option_mixed_variant_list_elem_ok(db: &mut Db, ty: &Ty) -> bool {
+    option_payload_ty(db, ty).is_some_and(|p| {
+        variant_mixed_payload_cases(db, &p).is_some_and(|cases| {
+            cases.iter().all(|(_, k)| {
+                matches!(
+                    k,
+                    VariantPayloadKind::Scalar(_)
+                        | VariantPayloadKind::Bytes
+                        | VariantPayloadKind::List(_)
+                        | VariantPayloadKind::Tuple(_)
+                )
+            })
+        })
+    })
+}
+
 /// ARG-SIDE: whether `ty` is a variant whose payload cases MIX at least one `Scalar` case with at least one
 /// `Bytes`/`String` case (the rest nullary) — the canonical HETEROGENEOUS tagged-union. Returns each payload
 /// case's `(disc, kind)` in declaration order. Distinct from the uniform detectors: `variant_scalar_payload_cases`
@@ -2372,6 +2397,13 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
         {
             true
         }
+        // An `option<MIXED-VARIANT>` element (`list<option<variant{a, b(s64), c(list<u8>)}>>`): written in place
+        // at its canonical option layout (disc byte + the payload variant's mem layout at the payload offset) by
+        // `select::emit_option_to_mem`'s mixed-variant arm, which recurses `emit_variant_mixed_to_mem`. The
+        // preceding option arm declines it (a mixed variant is not scalar/Bytes/List/Record/Tuple and is not
+        // option-shaped). SCOPED to order-agnostic payload cases (Scalar/Bytes/List/Tuple) — a Record case is a
+        // later WIT-order-sizing slice (see [`option_mixed_variant_list_elem_ok`]).
+        ref other if option_mixed_variant_list_elem_ok(db, other) => true,
         // A `variant<scalar>` element (`list<variant{a, b(s64), …}>`): written in place at its canonical
         // variant layout (disc + uniform scalar payload) by `select::emit_variant_to_mem`. Detected AFTER
         // option (option takes its own arm); this is the residual general scalar-payload variant. A mixed-

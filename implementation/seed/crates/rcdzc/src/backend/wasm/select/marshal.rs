@@ -79,7 +79,23 @@ pub(super) fn emit_list_arg_marshal(
                 payload.strip_nominal(),
                 Ty::Bytes | Ty::String | Ty::List(_) | Ty::Record(_) | Ty::Tuple(_)
             )
-            || crate::backend::wasm::host::option_payload_ty(db, &payload).is_some();
+            || crate::backend::wasm::host::option_payload_ty(db, &payload).is_some()
+            // A MIXED-VARIANT payload (`option<variant{a, b(s64), c(list<u8>)}>`) — written by
+            // `emit_option_to_mem`'s mixed-variant arm. Scoped to order-agnostic cases (matches
+            // `host::option_mixed_variant_list_elem_ok`, the `list_elem_marshalable` gate).
+            || crate::backend::wasm::host::variant_mixed_payload_cases(db, &payload).is_some_and(
+                |cases| {
+                    cases.iter().all(|(_, k)| {
+                        matches!(
+                            k,
+                            crate::backend::wasm::host::VariantPayloadKind::Scalar(_)
+                                | crate::backend::wasm::host::VariantPayloadKind::Bytes
+                                | crate::backend::wasm::host::VariantPayloadKind::List(_)
+                                | crate::backend::wasm::host::VariantPayloadKind::Tuple(_)
+                        )
+                    })
+                },
+            );
         if admit {
             let crate::ty::Ty::Sum { decl, .. } = elem.strip_nominal() else {
                 unreachable!("option is a Sum")
@@ -1007,9 +1023,39 @@ pub(super) fn emit_option_to_mem(
                 out,
             )?;
         }
+        // A MIXED-VARIANT payload (`list<option<variant{a, b(s64), c(list<u8>)}>>`): on outer Some, write the
+        // payload variant IN PLACE at `dest_addr + payload_off` via `emit_variant_mixed_to_mem` (the SAME writer
+        // a bare mixed-variant list element uses, SHAPE 283) — disc + the selected case's payload, a Bytes/List
+        // case's backing spilled at the shared `cursor`. `payload_wit` here is the variant's WIT (the option's
+        // inner, `WitType::Variant`), so `variant_mixed_payload_cases_wit` can WIT-order a record case (the
+        // classifier `host::option_mixed_variant_list_elem_ok` currently gates OUT a record case, so the
+        // reachable cases are order-agnostic — the WIT ordering is a no-op for them but stays correct).
+        v if crate::backend::wasm::host::variant_mixed_payload_cases(db, v).is_some() => {
+            let cases = crate::backend::wasm::host::variant_mixed_payload_cases_wit(
+                db,
+                payload_ty,
+                payload_wit,
+            )
+            .ok_or_else(|| {
+                Reject::decline("an option<mixed-variant> list element could not be WIT-ordered")
+            })?;
+            emit_variant_mixed_to_mem(
+                db,
+                payload_handle,
+                payload_addr,
+                payload_ty,
+                &cases,
+                payload_wit,
+                cursor,
+                work_base + 3,
+                high,
+                scratch_ty,
+                out,
+            )?;
+        }
         _ => {
             return Err(Reject::decline(
-                "an option list element payload is not a scalar/record/tuple this increment",
+                "an option list element payload is not a scalar/record/tuple/mixed-variant this increment",
             ));
         }
     }
