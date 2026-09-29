@@ -1150,6 +1150,20 @@ pub fn core_module_with_host(
     core_module_impl(funcs, imports, host_fns, &[], layout, &[], false)
 }
 
+/// [`core_module`] with BOTH a HOST-import set AND a peer extern-import set (the host+peer FUSION, SHAPE 342
+/// foundation): peer ops import from `"peer"` (core funcs `0..e`), then host ops from `"host"` (`e..e+h`),
+/// then any runtime ops from `"heap"` — the fixed order `core_module_impl` already lays. A host op's core-func
+/// index is thus shifted past the `e` peer ops (select adds `extern_order.len()` to a `CallHostImport`).
+pub fn core_module_with_host_extern(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    host_fns: &[crate::backend::wasm::host::HostImport],
+    extern_fns: &[crate::backend::wasm::host::ExternImport],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    core_module_impl(funcs, imports, host_fns, extern_fns, layout, &[], false)
+}
+
 /// A boundary WRAPPER core function to APPEND to the emitted module — a `(flattened params) -> result` func
 /// that builds each guest value-heap value from the flattened boundary params, calls the compiled def, and
 /// returns its result. Emitted for a typed WIT interface-export member whose param is a `record` (the canon

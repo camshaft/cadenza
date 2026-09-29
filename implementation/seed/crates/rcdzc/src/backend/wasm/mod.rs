@@ -933,14 +933,23 @@ pub fn emit(
             });
         }
     }
-    // An extern import composed with a HOST effect is not yet emitted (a consumer that both binds a peer
-    // AND delegates a host effect — a further fusion). An extern + the value-heap RUNTIME (a consumer that
-    // receives a compound `value` handle from a peer and inspects it) IS emitted (X5, `assemble_extern_runtime`).
+    // HOST + PEER FUSION (SHAPE 342 foundation): a consumer that BOTH delegates a host effect AND binds a
+    // peer interface. Supported for SCALAR/unit ops with NO value-heap runtime import and no host
+    // string-param / spilled-compound result — the core module lays peer ops then host ops
+    // (`core_module_with_host_extern`), and `assemble_host_extern` imports both interface spaces. A fusion
+    // that ALSO uses the runtime, or a host op needing shared memory (string param / spilled result),
+    // composes further import spaces and declines cleanly (decline-don't-miscompile).
     if !extern_imports.is_empty() && !host_imports.is_empty() {
-        return Err(Reject::unsupported(
-            "a cross-component extern import composed with a host effect is not supported \
-             (the extern + host import fusion is unavailable)",
-        ));
+        let fusion_out_of_scope = !imports.is_empty()
+            || host::set_needs_memory(&host_imports)
+            || host_imports.iter().any(|h| h.spilled_result.is_some());
+        if fusion_out_of_scope {
+            return Err(Reject::unsupported(
+                "a cross-component peer import composed with a host effect is supported for scalar/unit \
+                 ops without the value-heap runtime; a host string-param or compound-result op, or a \
+                 runtime-using host+peer program, composes additional import spaces that this shape omits",
+            ));
+        }
     }
     // A program mixing a host effect AND the value-heap runtime composes BOTH import spaces. A scalar/unit
     // host op takes `envelope::assemble_host_runtime`; a host op with a STRING parameter takes the
@@ -1071,7 +1080,18 @@ pub fn emit(
     // A HOST-delegating program threads its host imports through the core module's import section (from
     // module `"host"`, ahead of any runtime op); an ordinary program takes the runtime-only path
     // (byte-identical to before).
-    let mut core = if !extern_imports.is_empty() && !imports.is_empty() {
+    let mut core = if !extern_imports.is_empty() && !host_imports.is_empty() {
+        // HOST + PEER FUSION (SHAPE 342 foundation): the core imports peer ops from `"peer"` (`0..e`) then
+        // host ops from `"host"` (`e..e+h`) — no value-heap runtime on this scalar/unit path.
+        serialize::core_module_with_host_extern(
+            &funcs,
+            &imports,
+            &host_imports,
+            &extern_imports,
+            layout,
+        )
+        .map_err(Reject::decline)?
+    } else if !extern_imports.is_empty() && !imports.is_empty() {
         // X5: a consumer binding a peer AND using the value-heap runtime (it inspects a compound handle
         // the peer returned) — the core imports peer ops from `"peer"` AND runtime ops from `"heap"`.
         serialize::core_module_with_extern_runtime(&funcs, &extern_imports, &imports, layout)
@@ -1584,6 +1604,56 @@ pub fn emit(
              exports an interface must define every member that interface declares, each with a matching \
              definition of the right shape; this program defines only some of them, so it cannot cross the \
              typed interface-instance boundary",
+        ));
+    }
+
+    // HOST + PEER FUSION (SHAPE 342 foundation): a program that BOTH delegates host effect(s) AND binds
+    // peer interface(s), in scope (scalar/unit ops, no value-heap runtime, no host string-param/spilled
+    // result — guarded at the top). The core module already imports peer ops (`0..e`) then host ops
+    // (`e..e+h`) via `core_module_with_host_extern`; `assemble_host_extern` imports BOTH interface spaces
+    // (peer instances then host instances) and re-exports each through its `"peer"`/`"host"` core instance.
+    if !host_imports.is_empty() && !extern_imports.is_empty() {
+        // Peer side — one HostFn per peer op with its interface, in `extern_order` order.
+        let peer_op_ifaces: Vec<&str> = extern_imports
+            .iter()
+            .map(|e| e.interface.as_str())
+            .collect();
+        let peer_fns: Vec<envelope::HostFn> = extern_imports
+            .iter()
+            .map(|e| envelope::HostFn {
+                op: e.op.clone(),
+                comp_functype: extern_op_comp_functype(e),
+                core_functype: Vec::new(),
+                has_list_param: false,
+            })
+            .collect();
+        // Host side — one HostFn per host op with its FQ interface (scalar/unit: no nominal arg/result type).
+        let (_needs_list, _result_defs, result_crefs, _arg_list_crefs) =
+            build_host_result_types(db, &host_imports);
+        let host_op_ifaces_owned: Vec<String> = host_imports
+            .iter()
+            .map(|h| {
+                world_import_iface_for_effect(db, &h.effect).unwrap_or_else(|| h.effect.clone())
+            })
+            .collect();
+        let host_op_ifaces: Vec<&str> = host_op_ifaces_owned.iter().map(String::as_str).collect();
+        let host_fns: Vec<envelope::HostFn> = host_imports
+            .iter()
+            .enumerate()
+            .map(|(i, h)| envelope::HostFn {
+                op: h.op.clone(),
+                comp_functype: host_op_comp_functype(h, 0, 0, &[], result_crefs[i].clone()),
+                has_list_param: h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)),
+                core_functype: Vec::new(),
+            })
+            .collect();
+        return Ok(envelope::assemble_host_extern(
+            &core,
+            &boundary,
+            &peer_op_ifaces,
+            &peer_fns,
+            &host_op_ifaces,
+            &host_fns,
         ));
     }
 

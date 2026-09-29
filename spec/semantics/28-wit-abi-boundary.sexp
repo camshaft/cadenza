@@ -11837,6 +11837,31 @@ cases
   (live-objects 0))
 
 (case
+  "a HOST effect and a PEER effect both feeding a scalar entrypoint compose both import spaces"
+  (doc
+    "SHAPE 342a (v-wit-boundary) — WORKING, the NON-escape foundation of SHAPE 342. run() = H.h + Math.add 5
+           composes a HOST effect (H, a plain host import) AND a PEER effect (Math, bound to the cross-component
+           contract cadenza:math/api) in one entrypoint whose result is a SCALAR (no resource escape). The
+           component imports BOTH interface spaces: the core module lays peer ops (from `\"peer\"`) then host ops
+           (from `\"host\"`), and `assemble_host_extern` imports each peer interface then each host interface,
+           re-exporting the peer ops through the `\"peer\"` core instance and the host ops through the `\"host\"`
+           core instance. A host op's core-func index is shifted past the peer ops (select adds the peer count to
+           a host call). This is the general host+peer fusion (host-interface-binding.md admits any manifest
+           capability set; peer contracts are ordinary cross-component imports); the SUM-escape twin (SHAPE 342)
+           composes this with the resource escape. H.h -> 1, Math.add(5) -> 6, run() -> 7.")
+  (peer "cadenza:math/api" (do (def (add (: x Int64)) (+ x 1)) (export add)))
+  (input
+    (do
+      (effect H (op h (-> Unit Int64)))
+      (effect Math (op add (-> Int64 Int64)))
+      (bind Math "cadenza:math/api")
+      (def (run) (+ (host (H) (H.h unit)) (host (Math) (Math.add 5))))
+      (export run)))
+  (call run)
+  (host-responses (respond H.h (: 1 Int64)))
+  (output (: 7 Int64)))
+
+(case
   "a HOST effect + a PEER effect both feeding one sum-escaping entrypoint decline cleanly (deferral: host+peer fusion emit)"
   (doc
     "SHAPE 342 (v-wit-boundary) — DEFERRAL, corpus-pinned per the 084999 discipline. run() = Some(H.h + Math.add 5)

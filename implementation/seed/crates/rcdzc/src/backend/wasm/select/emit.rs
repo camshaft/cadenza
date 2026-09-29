@@ -6257,9 +6257,18 @@ pub(super) fn emit(
                 out.push(Lir::CallExternImport(index));
                 return Ok(());
             }
-            let index = layout.host_index(&effect, &op).ok_or_else(|| {
-                Reject::decline("a host call's operation is not in the host-import set")
-            })?;
+            // The core module lays imports peer-FIRST: peer ops `0..e`, then HOST ops `e..e+h`
+            // (`core_module_impl`'s fixed order). So a host op's ABSOLUTE core-func index is its
+            // `host_index` position SHIFTED past the `e` peer ops. `extern_order` is empty for every
+            // non-fused path (host-only, or the host resource-escape whose leading block is host-only), so
+            // the shift is `+0` there — byte-identical; it is non-zero only for a host+peer FUSION, where
+            // it lands the `CallHostImport` in the host block instead of the peer block.
+            let index = layout
+                .host_index(&effect, &op)
+                .map(|i| i + layout.extern_order.len())
+                .ok_or_else(|| {
+                    Reject::decline("a host call's operation is not in the host-import set")
+                })?;
             // A runtime String/Bytes arg is marshalled into a scratch region of the shared `mem` (copy the
             // rope's logical bytes in, pass `(ptr,len)`). N such args in one call each need a DISJOINT region,
             // so a running CURSOR (a scratch i32 local) starts at the fixed scratch base and advances by each
