@@ -101,12 +101,6 @@ pub(super) fn emit_runtime_sum_resource(
                  alongside the resource escape",
             ));
         }
-        if host::set_needs_memory(&host_imports) {
-            return Err(Reject::unsupported(
-                "a host op with a STRING parameter in a resource-escaping entrypoint is not supported \
-                 (a scalar/unit host op result-escaping as a resource IS supported)",
-            ));
-        }
         // A payloadless-ENUM host RESULT (`enum_result`) feeding a sum-escaping resource entrypoint IS
         // supported: the enum crosses as a BARE i32 disc, its boundary type declared via
         // `build_host_result_types` (the nominal `enum` DEFINED+EXPORTED type in each op's `comp_functype` +
@@ -129,6 +123,29 @@ pub(super) fn emit_runtime_sum_resource(
         // to the former `host_op_comp_functype(…, None)` + `&[]` emit.
         let (needs_list, result_defs, result_crefs, _arg_list_crefs) =
             host_imports::build_host_result_types(db, &host_imports);
+        // A STRING/Bytes/list (or a compound arg that marshals into memory) host PARAM crosses as `(ptr,len)`
+        // the host reads out of linear memory, so it needs the SHAPE-95 shared-`"mem"` core module + the host-op
+        // canon-lower's Memory/Realloc options. A scalar/unit param set gives `false` → the memoryless
+        // `assemble_host_runtime_resource` (byte-identical to before).
+        let needs_shared_mem = host::set_needs_memory(&host_imports);
+        // SCOPE: the shared-mem sum-escape host path marshals a STRING param (a `(ptr,len)` pair) + scalar/unit
+        // params (SHAPE 340). A `list<u8>`/`list<T>`/record/option/result/tuple param that marshals into memory
+        // has additional boundary machinery (a `list<u8>` defined type, per-field flatten) not yet composed
+        // here, so DECLINE it cleanly (decline-don't-miscompile) rather than emit an arity-mismatched import —
+        // each is a later SHAPE. A string-param op IS supported.
+        if needs_shared_mem
+            && host_imports.iter().any(|hi| {
+                hi.params
+                    .iter()
+                    .any(|p| !matches!(p, host::HostParam::Scalar(_) | host::HostParam::Str))
+            })
+        {
+            return Err(Reject::unsupported(
+                "a host op with a non-string compound parameter (list/bytes/record/option/…) in a \
+                 sum-escaping resource entrypoint is not supported (the shared-mem host path marshals \
+                 scalar + string params); a string-param host op IS supported",
+            ));
+        }
         let h = host_imports.len() as u32;
         let k = imports.len() as u32;
         let host_order: Vec<(String, String)> = host_imports
@@ -151,9 +168,31 @@ pub(super) fn emit_runtime_sum_resource(
         // envelopes already do this, B1b). Falls back to the effect name with no imposed world (byte-identical).
         let iface = crate::backend::wasm::world_import_iface_for_effect(db, &effect0)
             .unwrap_or_else(|| effect0.clone());
+        // Lay each distinct CONSTANT host-arg string into the shared `"mem"` data segment (the sum-escape
+        // dispatch runs BEFORE the plain path's `with_host_strings`, so `layout` carries none). A
+        // `Core::HostCall` string arg pushes `(host_string_offset, len)` into this segment; without it the
+        // const arg has no offset and the marshal declines ("a host-arg string was not laid in the data
+        // segment"). `with_host_needs_memory(needs_shared_mem)` imports `mem` even when the only string arg is
+        // a RUNTIME rope (no const data) — the copy loop writes into it. Mirrors mod.rs's plain host path.
+        let mut host_strings: Vec<(String, u32)> = Vec::new();
+        let mut next_offset: u32 = 0;
+        for &def in &layout.order {
+            let body = def_body(db, def)?;
+            let mut strs = Vec::new();
+            host_imports::collect_host_arg_strings(db, body, &mut strs);
+            for s in strs {
+                if !host_strings.iter().any(|(v, _)| *v == s) {
+                    let len = s.len() as u32;
+                    host_strings.push((s, next_offset));
+                    next_offset += len;
+                }
+            }
+        }
         let host_layout = layout
-            .with_import_base(h + k + 2)
-            .with_host_order(host_order);
+            .with_import_base(h + k + 2 + needs_shared_mem as u32)
+            .with_host_order(host_order)
+            .with_host_strings(host_strings)
+            .with_host_needs_memory(needs_shared_mem);
         let host_layout = &host_layout;
         let mut funcs: Vec<SelectedFunc> = Vec::new();
         for &def in &host_layout.order {
@@ -197,7 +236,7 @@ pub(super) fn emit_runtime_sum_resource(
             &escape_lifted_table(host_layout),
             0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
             &[], // no static-compound init
-            false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
+            needs_shared_mem, // SHAPE 95: a string/compound host PARAM crosses via the shared `"mem"` module
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -220,17 +259,31 @@ pub(super) fn emit_runtime_sum_resource(
                 core_functype: Vec::new(),
             })
             .collect();
-        return Ok(envelope::assemble_host_runtime_resource(
-            &main_core,
-            &dtor_core,
-            &imports,
-            &import_name,
-            &iface,
-            &host_fns,
-            &make_slots,
-            needs_list,
-            &result_defs,
-        ));
+        return Ok(if needs_shared_mem {
+            envelope::assemble_host_runtime_resource_shared_mem(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &iface,
+                &host_fns,
+                &make_slots,
+                needs_list,
+                &result_defs,
+            )
+        } else {
+            envelope::assemble_host_runtime_resource(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &iface,
+                &host_fns,
+                &make_slots,
+                needs_list,
+                &result_defs,
+            )
+        });
     }
     // The fused envelope supports MULTIPLE distinct peer interfaces (grouped into g imported instances).
     let p = extern_imports.len() as u32;
