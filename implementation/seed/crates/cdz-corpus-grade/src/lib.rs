@@ -1422,6 +1422,14 @@ const C1_FORBIDDEN_PHRASES: &[&str] = &[
 /// panic-y `Option::unwrap()` an internal-error message might leak. The BARE word `unwrap` is a Cadenza
 /// operation (see `C1_FORBIDDEN_PHRASES`'s note), so `(unwrap x)` / "unwrap the nominal" prose do NOT match
 /// (no `(`/`.` immediately after `unwrap`). Scoping resolved in `DESIGN-diagnostic-quality-rubric.md` §1b (#7921).
+///
+/// DELIBERATELY NOT extended to `.expect(`/`expect(` (the panic-y Rust twin of `.unwrap()`): `expect` is
+/// itself a CADENZA SURFACE operation — `Option.expect(opt, msg)` is the corpus's assert/extract idiom (10+
+/// occurrences in spec/semantics: `Option.expect((Type.try-as x : Option T), msg)`, chained
+/// `(Option.expect (Option.expect s))`), and it appears in golden diagnostic prose (did-you-mean / idiom
+/// suggestions). Adding `.expect(` would FALSE-POSITIVE those legitimate `Option.expect(…)` diagnostics —
+/// exactly the reason bare `unwrap` is exempt above. A genuine Rust-`expect` leak is indistinguishable from
+/// `Option.expect(` by syntax alone, so it is NOT lintable here (grounding checked 2026-09-29).
 const C1_FORBIDDEN_CALL_SYNTAX: &[&str] = &["unwrap(", ".unwrap"];
 
 /// Case-insensitive, WORD-BOUNDARIED substring test — the `\b…\b` match §1 requires so a forbidden phrase
