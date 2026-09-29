@@ -3034,8 +3034,9 @@ pub fn runtime_resource_core_module_form_ex(
         make_param_vts,
         make_core_slots,
         lifted_table,
-        0,   // no static compounds on this wrapper path (byte-identical to before)
-        &[], // no static-compound init
+        0,     // no static compounds on this wrapper path (byte-identical to before)
+        &[],   // no static-compound init
+        false, // this wrapper never shares memory (defines its own) — byte-identical
     )
 }
 
@@ -3081,6 +3082,14 @@ pub fn runtime_resource_core_module_form_ex2(
     // the body's `Core::Tuple`/… arms emit `global.get idx` (`try_emit_static_compound`) matching these globals.
     n_compounds: usize,
     static_compound_init: &[crate::backend::wasm::lir::Lir],
+    // SHARED-MEMORY mode (SHAPE 95, host->guest compound RESULT escape): when true, this module does NOT
+    // define its own memory + `cabi_realloc`; it IMPORTS `"mem"."mem"` (the shared linear memory) and
+    // `"mem"."cabi_realloc"` (the shared bump allocator) — mirroring `core_module_impl`'s `import_realloc` +
+    // `needs_memory` modes. Required so a host op returning a `string`/compound can canon-lower with a Memory
+    // + Realloc option pointing at a memory that exists BEFORE this (importing) module is instantiated,
+    // breaking the lower<->instance circularity. `false` (every existing resource-escape shape) is
+    // byte-identical: the module defines its own memory (page min 1) + a stub `cabi_realloc`.
+    needs_shared_mem: bool,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let e = extern_fns.len();
@@ -3176,9 +3185,38 @@ pub fn runtime_resource_core_module_form_ex2(
     }
     import_items.extend_from_slice(&import_item("resource-new", (e + k) as u32));
     import_items.extend_from_slice(&import_item("resource-rep", (e + k + 1) as u32));
-    let import_sec = section(2, &wasm_vec(e + k + 2, &import_items));
+    // SHARED-MEMORY mode: import `"mem"."cabi_realloc"` (a func, index `e+k+2`, reusing the realloc functype)
+    // + `"mem"."mem"` (the shared linear memory). Mirrors `core_module_impl`'s `import_realloc` + `needs_memory`
+    // (serialize/mod.rs ~1795-1822). The cabi_realloc FUNC import shifts every defined-func index +1 (captured
+    // by `ifc` below); the memory import does NOT occupy a func index. `import_index["cabi_realloc"]` lets the
+    // body's `CallImport("cabi_realloc")` resolve to the shared allocator.
+    if needs_shared_mem {
+        let realloc_fi = (e + k + 2) as u32;
+        let mut it = uleb_bytes("mem".len() as u64);
+        it.extend_from_slice(b"mem");
+        it.extend_from_slice(&uleb_bytes("cabi_realloc".len() as u64));
+        it.extend_from_slice(b"cabi_realloc");
+        it.push(0x00); // import desc: func
+        uleb128(realloc_type_idx as u64, &mut it);
+        import_items.extend_from_slice(&it);
+        import_index.insert("cabi_realloc", realloc_fi);
+        let mut m = uleb_bytes("mem".len() as u64);
+        m.extend_from_slice(b"mem");
+        m.extend_from_slice(&uleb_bytes("mem".len() as u64));
+        m.extend_from_slice(b"mem");
+        m.push(0x02); // import desc: memory
+        m.push(0x00); // limits flag: min only
+        uleb128(1, &mut m); // min 1 page
+        import_items.extend_from_slice(&m);
+    }
+    let n_extra_imports = if needs_shared_mem { 2 } else { 0 };
+    let import_sec = section(2, &wasm_vec(e + k + 2 + n_extra_imports, &import_items));
     let f_rnew = (e + k) as u32;
     let f_rrep = (e + k + 1) as u32;
+    // Func-index base for the DEFINED bodies: the import func count. In shared-mem mode the imported
+    // `cabi_realloc` (func) precedes the defined funcs, shifting every defined-func index +1 (the memory
+    // import is NOT a func, so it does not shift). `false` → `e+k+2`, byte-identical.
+    let ifc = (e + k + 2) as u32 + needs_shared_mem as u32;
 
     // ── Function section ── defined bodies use their functype (`defined_type_base + i`), then the three
     // synthesized funcs. Defined func indices: `k+2 .. k+2+n`; make = `k+2+n`, encode = `k+3+n`,
@@ -3189,11 +3227,15 @@ pub fn runtime_resource_core_module_form_ex2(
     }
     uleb128(make_type_idx as u64, &mut func_items);
     uleb128(encode_type_idx as u64, &mut func_items);
-    uleb128(realloc_type_idx as u64, &mut func_items);
+    // The defined `cabi_realloc` body exists only when NOT sharing memory; in shared-mem mode the allocator
+    // is IMPORTED, so no defined func here.
+    if !needs_shared_mem {
+        uleb128(realloc_type_idx as u64, &mut func_items);
+    }
     for &ti in &method_type_idx {
         uleb128(ti as u64, &mut func_items);
     }
-    let n_synth = 3 + methods.len();
+    let n_synth = (if needs_shared_mem { 2 } else { 3 }) + methods.len();
     // The STATIC-COMPOUND `start` init func LAST (after the methods), using `init_type_idx`. Appended last so
     // it shifts no existing func index. Present iff `n_init == 1`.
     if n_init == 1 {
@@ -3203,17 +3245,37 @@ pub fn runtime_resource_core_module_form_ex2(
         wasm_abi::CORE_SEC_FUNCTION,
         &wasm_vec(n + n_synth + n_init, &func_items),
     );
-    let make_abs = (defined_type_base + n) as u32;
+    // Defined funcs start at the import func count `ifc` (== `defined_type_base` in the non-shared mode, so
+    // byte-identical there; `+1` in shared-mem mode for the imported `cabi_realloc`).
+    let make_abs = ifc + n as u32;
     let encode_abs = make_abs + 1;
-    let realloc_abs = encode_abs + 1;
-    // Method i's core func index (the methods follow realloc, in list order).
-    let method_abs = |i: usize| realloc_abs + 1 + i as u32;
+    // `cabi_realloc`: a DEFINED func right after encode in the normal mode; the IMPORT (func `e+k+2`) in
+    // shared-mem mode. Any body that allocates a retarea resolves it via `import_index["cabi_realloc"]`, so
+    // this index feeds only the export table (skipped in shared mode).
+    let realloc_abs = if needs_shared_mem {
+        (e + k + 2) as u32
+    } else {
+        encode_abs + 1
+    };
+    // Method i's core func index: the methods follow `cabi_realloc` in the normal mode, but follow `encode`
+    // DIRECTLY in shared-mem mode (no defined realloc between them).
+    let method_base = if needs_shared_mem {
+        encode_abs + 1
+    } else {
+        encode_abs + 2
+    };
+    let method_abs = |i: usize| method_base + i as u32;
     // The init func's ABSOLUTE index — named by the START section, run once at instantiation. It follows the
-    // methods: import_count (`e+k+2`) + n defined bodies + n_synth (make/encode/realloc + methods).
-    let init_abs = (e + k + 2 + n + n_synth) as u32;
+    // methods: `ifc` + n defined bodies + n_synth (make/encode(/realloc) + methods).
+    let init_abs = ifc + (n + n_synth) as u32;
 
-    // ── Memory section ── one memory, min 1 page.
-    let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
+    // ── Memory section ── one memory, min 1 page. NONE in shared-mem mode: the memory is IMPORTED
+    // (`"mem"."mem"` above), so this module defines no memory of its own (it is still memory index 0).
+    let mem_sec = if needs_shared_mem {
+        Vec::new()
+    } else {
+        section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
+    };
 
     // ── Export section ── memory, make, t-encode, cabi_realloc.
     let export_sec = {
@@ -3225,14 +3287,20 @@ pub fn runtime_resource_core_module_form_ex2(
             item
         };
         let mut items = Vec::new();
-        items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
+        // In shared-mem mode the memory + `cabi_realloc` are IMPORTED (owned by the `"mem"` module), so this
+        // module exports neither — the assembler aliases them off the shared mem instance, not the program.
+        if !needs_shared_mem {
+            items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
+        }
         items.extend_from_slice(&export("make", wasm_abi::EXPORT_KIND_FUNC, make_abs));
         items.extend_from_slice(&export("t-encode", wasm_abi::EXPORT_KIND_FUNC, encode_abs));
-        items.extend_from_slice(&export(
-            "cabi_realloc",
-            wasm_abi::EXPORT_KIND_FUNC,
-            realloc_abs,
-        ));
+        if !needs_shared_mem {
+            items.extend_from_slice(&export(
+                "cabi_realloc",
+                wasm_abi::EXPORT_KIND_FUNC,
+                realloc_abs,
+            ));
+        }
         for (i, meth) in methods.iter().enumerate() {
             let name = match meth {
                 CoreMethod::Len => "t-len",
@@ -3241,7 +3309,7 @@ pub fn runtime_resource_core_module_form_ex2(
             };
             items.extend_from_slice(&export(name, wasm_abi::EXPORT_KIND_FUNC, method_abs(i)));
         }
-        let n_exports = 4 + methods.len();
+        let n_exports = (if needs_shared_mem { 2 } else { 4 }) + methods.len();
         section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(n_exports, &items))
     };
 
@@ -3521,8 +3589,9 @@ pub fn runtime_resource_core_module_form_ex2(
         }
     };
     code_items.extend_from_slice(&encode_body);
-    // cabi_realloc: stub (never called for a nullary-input list result).
-    {
+    // cabi_realloc: stub (never called for a nullary-input list result). Emitted only when this module DEFINES
+    // its allocator; in shared-mem mode the allocator is imported, so no body here.
+    if !needs_shared_mem {
         let mut inner = uleb_bytes(0);
         inner.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(0, &mut inner);

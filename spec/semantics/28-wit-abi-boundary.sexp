@@ -4960,15 +4960,16 @@ cases
 (case
   "a String host-import result escapes DIRECTLY as the entrypoint result via a pure-IMPORT custom wit-world"
   (doc
-    "SHAPE 95 (v-wit-boundary B2, corpus TODO) — a STRING host-import RESULT (probe.spell : func(s64) -> string)
-           that ESCAPES DIRECTLY as run()'s result, NOT consumed in-guest (contrast SHAPE 87, which reads its
-           scalar-len). A directly-escaping compound host result routes to the resource-escape entrypoint emit
-           (assemble_host_runtime_resource*), which does not yet declare the B1 result-lift machinery the plain
-           host-delegating envelope has; without it the lift op resolved to an out-of-range func index and the
-           component failed validation (invalid wasm). The idealistic behavior is that the host's string crosses
-           out unchanged (assert \"ok\"). Until B2 threads the result-lift through the resource-escape sites the
-           compiler DECLINES CLEANLY (CDZ0900, decline-don't-miscompile) rather than emitting invalid wasm — so
-           this case grades Todo now and auto-locks to Pass when B2 lands. Stub spell -> \"ok\".")
+    "SHAPE 95 (v-wit-boundary) — a STRING host-import RESULT (probe.spell : func(s64) -> string) that ESCAPES
+           DIRECTLY as run()'s result, NOT consumed in-guest (contrast SHAPE 87, which reads its scalar-len). A
+           directly-escaping compound host result routes to the resource-escape entrypoint emit; that emit now
+           uses the SHARED-MEMORY path (`assemble_host_runtime_resource_with_scalar_methods_shared_mem` +
+           `runtime_resource_core_module_form_ex2(needs_shared_mem)`): a `\"mem\"` core module (memory + bump
+           cabi_realloc) is instantiated FIRST, the host op's canon-lower carries the Memory + Realloc option
+           (so its lowered import gains the retptr param the guest pushes), the program core IMPORTS
+           `\"mem\".\"mem\"` + `\"mem\".\"cabi_realloc\"`, and the spilled result's lift ops are declared into the
+           runtime imports. The host's string crosses out unchanged: run() returns the host result directly, so
+           the entrypoint result IS the host's \"ok\". Verified 0-leak (live-objects 0). Stub spell -> \"ok\".")
   (wit-world
     (world w (import cadenza:platform/probe (member spell (func (param n (s64)) (result (string)))))))
   (input
