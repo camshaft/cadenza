@@ -11749,7 +11749,8 @@
           (match (Map.lookup m xs) ((Option.Some v) v) ((Option.None) -1))))
       (export main)))
   (call main (: #list(4 5 6) (List Int64)))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects 0))
 
 (case
   "elc4 List.concat consumes two lifted List entry params into one measured list"
@@ -11888,7 +11889,8 @@
           (match (Map.lookup m xs) ((Option.Some v) v) ((Option.None) -1))))
       (export main)))
   (call main (: #list(1 2 3) (List Int64)))
-  (output (: 24 Int64)))
+  (output (: 24 Int64))
+  (live-objects 0))
 
 (case
   "grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)"

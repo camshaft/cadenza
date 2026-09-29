@@ -1856,9 +1856,19 @@ fn binding_escapes_dup_aware_inner(
                 arms_inherit_borrow,
             )
         }),
-        // `Map.insert` CONSUMES the map, the key, and the value into the new map (the persistent op takes
-        // ownership of all three) — any of them used here escapes into the result.
+        // `Map.insert` consumes the map and the value into the new map. The KEY escapes (is consumed into
+        // the map) ONLY for a NON-canonicalizing (scalar/bytes) key; a CANONICALIZING (list-containing —
+        // `key_needs_canonicalize`) key is only BORROWED — value-canonicalize mints a FRESH owned canonical
+        // that OP_MAP_INSERT stores, while the input operand is read-only. So the input key does NOT escape
+        // when it canonicalizes. This escape-query classification MUST AGREE with the dup-emission arm
+        // (mark_binder_dups_body, this file ~6511): if they disagree (escape=consume but dup=borrow) the
+        // reclaim balance is inconsistent and the compiler DECLINES the case (leak-over-UAF); both must say
+        // borrow-when-canonicalizing so the input is borrowed at insert+lookup, no dup, single scope-drop
+        // reclaims (grx2/elc2 double-use list key → live-objects 0). CONDITIONAL: a bytes key genuinely
+        // escapes (consumed/stored), so it stays `false` — an unconditional borrow would UAF a live-after
+        // bytes key. Mirrors the always-borrow `Map.lookup` key below.
         Core::MapInsert { map, key, val, .. } => {
+            let key_borrows = key_needs_canonicalize(db, key);
             binding_escapes_dup_aware(
                 db,
                 map,
@@ -1871,7 +1881,7 @@ fn binding_escapes_dup_aware_inner(
                 db,
                 key,
                 binder,
-                false,
+                key_borrows,
                 dup_sites,
                 borrow_aware_calls,
                 arms_inherit_borrow,
@@ -1958,9 +1968,15 @@ fn binding_escapes_dup_aware_inner(
                 arms_inherit_borrow,
             )
         }),
-        // `Set.insert` CONSUMES the set AND the element into the new set (persistent op takes ownership) —
-        // both escape if used here.
+        // `Set.insert` consumes the set. The ELEMENT escapes (is consumed into the set) ONLY for a
+        // NON-canonicalizing (scalar/bytes) element; a CANONICALIZING (list-containing) element is only
+        // BORROWED — value-canonicalize mints a FRESH owned canonical that OP_SET_INSERT stores while the
+        // input is read-only (emit.rs:1707, byte-parallel to Map.insert). This escape arm MUST AGREE with
+        // the SetInsert dup-emission arm (this file ~6549): both borrow-when-canonicalizing, else the
+        // reclaim balance is inconsistent and the compiler DECLINES (the Map 1861↔6511 pairing, mirrored).
+        // CONDITIONAL: a bytes element genuinely escapes, so it stays `false`.
         Core::SetInsert { set, elem, .. } => {
+            let elem_borrows = key_needs_canonicalize(db, elem);
             binding_escapes_dup_aware(
                 db,
                 set,
@@ -1973,7 +1989,7 @@ fn binding_escapes_dup_aware_inner(
                 db,
                 elem,
                 binder,
-                false,
+                elem_borrows,
                 dup_sites,
                 borrow_aware_calls,
                 arms_inherit_borrow,
@@ -6497,12 +6513,26 @@ fn mark_binder_dups_body(
             }
             seq(db, &cs, live_after, sites)
         }
-        Core::MapInsert { map, key, val, .. } => seq_strict(
-            db,
-            &[(map, false), (key, false), (val, false)],
-            live_after,
-            sites,
-        ),
+        // `Map.insert` consumes the map (strict). The KEY is CONSUMED only for a NON-canonicalizing
+        // (scalar/bytes) key — champ collision_insert STORES the caller's input ref. A CANONICALIZING
+        // (list-containing — `key_needs_canonicalize`) key is BORROWED: value-canonicalize mints a FRESH
+        // owned canonical that OP_MAP_INSERT stores, while the input operand is only read. So a live-after
+        // canonicalizing key BINDER must NOT be dup-preserved here — the spurious dup for a consume that
+        // never touches the input leaves an rc1 surplus → leak (grx2/elc2 double-use list key). Same borrow
+        // class as MapRemove/MapLookup below, but CONDITIONAL: an unconditional borrow would under-dup a
+        // live-after BYTES key (insert genuinely consumes it) → the input is freed while a later use reads
+        // it → UAF. Discriminator = whether insert stores the INPUT (bytes: consume) or the CANONICAL
+        // (list: borrow) = `key_needs_canonicalize`. (The escape query at :1861 alone does NOT fix this —
+        // the surplus dup is minted HERE, at the dup-emission arm; v-memory-safety GRXDBG-pinned.)
+        Core::MapInsert { map, key, val, .. } => {
+            let key_borrows = key_needs_canonicalize(db, key);
+            seq_strict(
+                db,
+                &[(map, false), (key, key_borrows), (val, false)],
+                live_after,
+                sites,
+            )
+        }
         // `Map.lookup` BORROWS both the map AND the key: `map-lookup` reads the key without consuming it
         // (emit.rs), and the boxed/compacted key temporary is a FRESH value the emit builds+drops (`box-int`
         // copies a scalar; `bytes-compact` is refcount-neutral). So a live-after key BINDER must NOT be
@@ -6521,9 +6551,15 @@ fn mark_binder_dups_body(
             let cs: Vec<(StructId, bool)> = elems.iter().map(|&e| (e, false)).collect();
             seq(db, &cs, live_after, sites)
         }
-        // Set.insert consumes both set and element (strict).
+        // Set.insert consumes the set (strict). The element is CONSUMED (scalar/bytes) or BORROWED
+        // (canonicalizing list element — value-canonicalize stores the fresh canonical, borrows the input;
+        // emit.rs:1707, byte-parallel to Map.insert). CONDITIONAL on `key_needs_canonicalize`, exactly like
+        // the MapInsert dup arm above: a bytes element genuinely consumes (unconditional borrow → UAF on a
+        // live-after bytes elem). Pairs with the SetInsert escape arm (~1973); both must agree or the
+        // balancer declines (the Map 1861↔6511 pairing, mirrored).
         Core::SetInsert { set, elem, .. } => {
-            seq_strict(db, &[(set, false), (elem, false)], live_after, sites)
+            let elem_borrows = key_needs_canonicalize(db, elem);
+            seq_strict(db, &[(set, false), (elem, elem_borrows)], live_after, sites)
         }
         // Set.remove consumes the set (strict) but BORROWS the element (fresh boxed/compacted temporary) —
         // do not dup a live-after elem binder (dup-emission sibling of MapLookup:4717 / MapRemove).

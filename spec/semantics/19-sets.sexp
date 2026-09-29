@@ -927,6 +927,34 @@
   (live-objects 0))
 
 (case
+  "sci1 a canonicalizing list element inserted into a set then membership-tested reclaims to zero"
+  (doc
+    "The Set-side sibling of the grx2/elc2 Map.insert canonicalizing-KEY reclaim (reclaim.rs:6549
+        dup-emission arm + its escape sibling). A RUNTIME-built (List Int64) `xs` (from `n`, defeats
+        const-fold) is used at TWO canonicalizing sites — `Set.insert` (emit.rs:1707 mints a fresh canonical
+        via value-canonicalize and BORROWS the input, byte-parallel to Map.insert; OP_SET_INSERT consumes the
+        CANONICAL) and `Set.contains` (borrow). Pre-fix, `mark_binder_dups` classed the insert elem as
+        CONSUME and minted a spurious preservation dup for the live-after `xs` binder, orphaning it at rc1
+        (leak 2 = list backing + handle, the grx2 mechanism). With the canonicalize borrow gate
+        `(elem, key_needs_canonicalize)` on BOTH the escape and dup-emission arms, the insert borrows the
+        input, NO dup is minted, and `xs`'s single scope-drop reclaims it. `live-objects 0` is an exact drift
+        guard (a re-leak shows >0). Value: `xs`=[n,n+1,n+2] is present in the set it was just inserted into →
+        true for every n.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((xs #list(n (+ n 1) (+ n 2))))
+          (Set.contains (Set.insert #set(#list(9 9)) xs) xs)))
+      (export main)))
+  (call main (: 4 Int64))
+  (output (: true Bool))
+  (call main (: 1 Int64))
+  (output (: true Bool))
+  (live-objects 0))
+
+(case
   "src1 Set.contains invariant-param self-loop, caller REUSES the set (collection-arm caller-reuse guard)"
   (doc
     "The CALLER-REUSE companion of spc1 (v-memory-safety family gate): the caller `go` passes its `(Set

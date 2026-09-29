@@ -10269,6 +10269,7 @@ pass	sp6 TWO scalar params + 2-field record result (multi-scalar face)
 pass	sp7 SCALAR param + variant-with-payload result (sum face of the same gate)
 pass	spc1 a CONSTANT-origin sum spine (branch-selected literal) builds mortal and its walk leaks the full spine (joins the sp position matrix)
 pass	spc1 an INVARIANT Set param probed via Set.contains in a self-loop is reclaimed at loop exit (live-objects 0)
+pass	sci1 a canonicalizing list element inserted into a set then membership-tested reclaims to zero
 pass	spj1 a single-use projected list consume stays on the FBIP fast path
 pass	splice flattens where unquote nests
 pass	splice-flatten RECURSES through a nested statement-position (do …) — a def in a non-final inner do binds visibly
@@ -11404,10 +11405,10 @@ pass	byp2 a Bytes entry param destructured by a runtime bin match reclaims
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
-todo	elc2 a Map keyed by the lifted List entry param answers its value on lookup
+pass	elc2 a Map keyed by the lifted List entry param answers its value on lookup
 todo	expect traps on the absent case of a runtime optional
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
-todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
+pass	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 todo	hce2 a borrowing op (=) over a captured value in a closure body declines pending the ownership proof (todo)
 todo	lcap2 an ESCAPING closure capturing a LET-LOCAL scalar applies across the boundary
