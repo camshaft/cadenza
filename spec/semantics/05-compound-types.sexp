@@ -7288,6 +7288,24 @@
   (output (: true Bool)))
 
 (case
+  "concatenating a runtime-built list with the empty list on the right survives to emit as the operand"
+  (doc
+    "The empty right-operand identity when the left operand is a RUNTIME value that does not const-fold:
+           `(List.concat (bld 3) (list))`, where `bld` grows a 3-element list by recursion, is NOT folded
+           away, so a backend must EMIT the concat (collections-and-text.md §A List Is Grown By Functional
+           Construction: the empty-operand identity). The empty operand contributes no elements, so the
+           length is 3 — the same answer as the const-folding right-identity case above, but reached through
+           emit rather than the folder. Pins that the empty operand's element type is grounded from the
+           concat RESULT type (here `List Int64`) even though the empty-list literal carries no element of
+           its own, so the identity holds element-for-element on a non-constant operand.")
+  (input
+    (do
+      (def (bld (: k Int64)) (if (< k 1) #list() (List.push (bld (- k 1)) k)))
+      (def (main) (List.len (List.concat (bld 3) #list())))
+      (export main)))
+  (output (: 3 Int64)))
+
+(case
   "list concatenation is associative by content"
   (doc
     "`(List.concat (List.concat a b) c)` and `(List.concat a (List.concat b c))` denote the same list
