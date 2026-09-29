@@ -338,6 +338,35 @@
   (live-objects 0))
 
 (case
+  "a slice of a slice over a multi-chunk CONCAT rope composes both offsets across the chunk seam"
+  (doc
+    "The view-of-a-view face over a RUNTIME CONCAT ROPE — the case directly above slices a single flat
+           literal, so its window never crosses a chunk boundary; this one's parent is a two-chunk ByteVec and
+           both slices STRADDLE the seam. `rope = concat([11,22,sel],[44,55,66])` seams between index 2 and 3;
+           `outer = slice(rope,1,4) = [22,sel,44,55]` windows across the seam and `inner = slice(outer,1,2) =
+           [sel,44]` narrows a second time — the slice-of-slice collapse (structural chunk-view narrowing) must
+           compose BOTH offsets down onto the two source chunks. At sel=33: inner=[33,44], len 2 -> 200, byte0=33
+           -> 330, byte1=44 -> +44 = 574. A rep that dropped the outer offset or mis-composed the seam would read
+           a wrong byte. live-objects 0: the nested owned slice-shells balance.")
+  (input
+    (do
+      (def
+        (main (: sel Int64))
+        (do
+          (def rope (Bytes.concat (Bytes.of #list(11 22 (UInt8.wrap sel))) (Bytes.of #list(44 55 66))))
+          (def outer (Option.expect (Bytes.slice rope 1 4) "o"))
+          (def inner (Option.expect (Bytes.slice outer 1 2) "i"))
+          (+
+            (* 100 (Bytes.len inner))
+            (+
+              (* 10 (Option.expect (Bytes.at inner 0) "a"))
+              (Option.expect (Bytes.at inner 1) "b")))))
+      (export main)))
+  (call main (: 33 Int64))
+  (output (: 574 Int64))
+  (live-objects 0))
+
+(case
   "a slice OF a slice over a CONCAT rope composes offsets across the seam"
   (doc
     "The view-of-a-view composition case above runs over a FLAT parent; here the parent is a
@@ -3419,6 +3448,37 @@
       (export main)))
   (call main (: 20 Int64))
   (output (: 110 Int64)))
+
+(case
+  "a raw cross-chunk slice-view of a concat rope is compacted at the CHAMP key site and hits its flat twin"
+  (doc
+    "The RAW-slice-view champ-key face — the case above keys by a slice of a Bytes.COMPACTed rope (single
+           chunk); this one keys by an UN-compacted cross-chunk slice-view straight off a concat rope. `rope =
+           concat([104,sel],[130,140])` is a two-chunk ByteVec (seam between index 1 and 2); `view =
+           slice(rope,1,2) = [sel,130]` is a structural chunk-view that STRADDLES the seam and was never
+           materialized. Used directly as a `Map.lookup` key it must be compacted-to-canonical at the CHAMP key
+           site so it hashes to the flat twin `[sel,130]`'s slot — the compact-makes-canonical champ contract
+           over a raw multi-chunk slice-view. At sel=105 the lookup hits (7) -> 7000, plus len 2 -> 20 and
+           byte1=130 -> 150; total 7150. A champ op that hashed the raw chunk-view layout instead of the
+           canonical bytes would MISS, and `Option.expect` would TRAP (not return a wrong value) — so 7150
+           proves the hit. live-objects 0.")
+  (input
+    (do
+      (def
+        (main (: sel Int64))
+        (do
+          (def rope (Bytes.concat (Bytes.of #list(104 (UInt8.wrap sel))) (Bytes.of #list(130 140))))
+          (def view (Option.expect (Bytes.slice rope 1 2) "in"))
+          (def m (Map.insert Map.empty (Bytes.of #list((UInt8.wrap sel) 130)) 7))
+          (+
+            (* 1000 (Option.expect (Map.lookup m view) "hit"))
+            (+
+              (* 10 (Bytes.len view))
+              (Option.expect (Bytes.at view 1) "b")))))
+      (export main)))
+  (call main (: 105 Int64))
+  (output (: 7150 Int64))
+  (live-objects 0))
 
 ; --- The packet idiom: Bytes fields projected and re-framed. ---
 (case
