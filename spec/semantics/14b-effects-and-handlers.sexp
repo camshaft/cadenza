@@ -3624,6 +3624,35 @@
   (output (: 6 Int64)))
 
 (case
+  "a mutually-recursive group const-folds a DEAD performing branch away — a live literal-if perform is kept while a dead literal-if perform is eliminated with no spurious state advance (adv-69 rw4 sub-face, dead-branch elimination)"
+  (doc
+    "The dead-branch-elimination face of the mutual-SCC literal-if const-fold. The rw4 cases above
+           pin that the const-fold routes to the PERFORMING branch when the literal condition selects it
+           (`(if true (St.get) 0)` → `(St.get)`, `(if false 0 (St.get))` → `(St.get)`). This pins the DUAL:
+           when the literal condition selects the NON-performing branch, the perform in the DEAD branch must
+           be ELIMINATED — not kept, and crucially not left to advance the handler state spuriously. Each
+           member body has TWO literal-if branch-performs on the strict spine alongside the mutual call: a
+           LIVE one `(if true (St.get) 0)` (const-folds to `(St.get)`, kept) and a DEAD one `(if false
+           (St.get) 0)` (const-folds to `0`, the perform dropped). If the dead branch's perform were wrongly
+           retained, each recursion step would read the state TWICE and advance it twice, changing the total.
+           Seeded St=1 with exactly ONE surviving read per step, the three live gets read 1,2,3 → 6 — the same
+           value as the single-perform rw4 cases, which is precisely what proves the dead perform was dropped
+           without a spurious advance. Guards the const-fold against a doubled-advance miscompile in the
+           dead-branch direction.")
+  (input
+    (do
+      (effect St (op get (-> Unit Int64)))
+      (def
+        (even-w (: n Int64))
+        (if (= n 0) 0 (+ (if true (St.get) 0) (+ (if false (St.get) 0) (odd-w (- n 1))))))
+      (def
+        (odd-w (: n Int64))
+        (if (= n 0) 0 (+ (if true (St.get) 0) (+ (if false (St.get) 0) (even-w (- n 1))))))
+      (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (even-w 3)))
+      (export main)))
+  (output (: 6 Int64)))
+
+(case
   "a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds"
   (doc
     "The `match` companion of the separate-branch mutual case above — the cycle dispatches on a
