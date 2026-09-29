@@ -5876,7 +5876,7 @@
   (output (: 1 Int64)))
 
 (case
-  "ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)"
+  "ckr2 a consumed String ENTRY param crosses on wasm and rust (dup-aware borrow-lift reclaim)"
   (input
     (do
       (def

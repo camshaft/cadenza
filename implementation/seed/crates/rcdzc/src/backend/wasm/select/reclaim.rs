@@ -202,12 +202,36 @@ pub(super) fn binding_escapes(
 /// Reuses v-core-opt's vetted `def_consumes_param` as the callee-borrow oracle (back-edge-aware, invariance-
 /// gated, default-deny) — no co-induction needed (a non-member forward is a non-borrow use ⇒ consumes).
 pub(crate) fn param_borrow_aware_escapes(db: &mut Db, body: StructId, binder: StructId) -> bool {
+    // DUP-AWARE (ACYCLIC ONLY): on an ACYCLIC flow, collect `binder`'s Perceus retain (dup) sites in `body`
+    // first, so a CONSUMING occurrence whose value was DUP'd a fresh reference beforehand is recognized as
+    // leaving the param's OWN slot ref a reclaimable surplus (NOT a true escape). A non-scalar entry param
+    // whose downstream ops dup what they retain leaves the lifted handle for the wrapper to reclaim
+    // (drop_after = true, the borrow-lift path) rather than transferring ownership to a sink that never frees
+    // it. This fixes the consumed-value entry-param CDZ0904 class: ckr2 (`main(s: String)` feeding `Symbol.of
+    // s` interned into a `Set` that dup-stores — rc-trace showed the lifted leaf DUP'd/DROP'd by transient sum
+    // cells but its base rc=1 never released, a 1-object leak) and byp3 (`main(b: Bytes)` sliced via
+    // `Bytes.slice b` — the slice view dups the parent) both cross with a 0-leak wrapper reclaim (rc-trace:
+    // LEAK SUMMARY none). GATED to `!param_flow_into_cycle`: a param THREADED through a RECURSION is
+    // consumed-and-rethreaded per iteration, and its dup-backed surplus is NOT a single clean reclaim — the
+    // dup-aware relaxation there over-admits and leaks (13-strings "a recursive scalar-walk classifies
+    // characters across a multibyte String entry arg": dup-aware flipped it to a leaking cross). On a cyclic
+    // flow we keep the NON-dup-aware query (unchanged: a recursive borrowed param crosses via the existing
+    // callee-borrow lane, a recursive consumed one stays declined). Self-gating either way: a NON-dup-backed
+    // genuine move is not in `dup_sites`, so it still reports escaping (drop_after = false) — leak-over-UAF
+    // safe (eab3's `Option.expect(Bytes.slice …)` flow is not yet dup-backed here and stays declined).
+    let dup_sites: Option<HashSet<StructId>> = if param_flow_into_cycle(db, body, binder) {
+        None
+    } else {
+        let mut s: HashSet<StructId> = HashSet::new();
+        collect_dup_sites(db, body, &[binder], &mut s);
+        Some(s)
+    };
     binding_escapes_dup_aware(
         db,
         body,
         EscapeTarget::Binder(binder),
         false,
-        None,
+        dup_sites.as_ref(),
         true,
         false,
     )

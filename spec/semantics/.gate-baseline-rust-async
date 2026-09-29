@@ -7162,7 +7162,7 @@ pass	by4 nested SAME-effect handlers with independent BYTES states — the outer
 pass	by5 the slmin11 slot-clobber shape on a BYTES slot, phi-merged Bytes.concat growth in a tuple state, 2 puts + 2 reads
 pass	byp1 a Bytes entry param measured by Bytes.len reclaims
 pass	byp2 a Bytes entry param destructured by a runtime bin match reclaims
-pass	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
+pass	byp3 a Bytes entry param sliced crosses on wasm and rust (dup-aware borrow-lift reclaim)
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
@@ -7367,7 +7367,7 @@ pass	ck4 a Map keyed by Char discriminates and looks up
 pass	ck5b Symbol set dedup+membership, in-program strings
 pass	ckp1 a CHECKPOINT/RESTORE protocol — save copies the live slot into the shadow slot, work mutates only the live one, restore copies the shadow back and later work resumes from the checkpoint
 pass	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
-pass	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
+pass	ckr2 a consumed String ENTRY param crosses on wasm and rust (dup-aware borrow-lift reclaim)
 pass	cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows
 pass	cla1 the arm runs a PURE data-dependent-depth recursion on the crossed ARGUMENT — collatz length computed wholly inside one dispatch frame, the state accumulates the lengths and a final read exposes the total
 pass	clb1 a nested match RE-MATCHES the same owned runtime list scrutinee — Class-B LIST re-match reclaim (no double-free, no leak)
