@@ -1195,6 +1195,29 @@ pub(super) fn emit_option_to_mem(
                 out,
             )?;
         }
+        // A SCALAR-payload variant (`list<record{o: option<variant{go, stop(s64)}>}>`, SHAPE 326): on outer
+        // Some, write the payload variant IN PLACE at `dest_addr + payload_off` via the GENERAL
+        // `emit_variant_to_mem` (disc + the selected case's scalar payload at the variant's canonical layout).
+        // The scalar-payload variant is dispatched BEFORE the mixed arm because `variant_mixed_payload_cases`
+        // requires at least one non-scalar case (returns None for an all-scalar/nullary variant), so a pure
+        // scalar-payload variant would otherwise fall to the decline. `field_boundary_abi`'s option arm already
+        // admits it (returning `Option(Variant(cases))`), so the classifier + stride sizing agree; this arm is
+        // the emit twin. `emit_variant_to_mem` internally dispatches scalar vs mixed, so it also subsumes the
+        // mixed arm below, but that arm is kept for its WIT-ordered record-case handling.
+        v if crate::backend::wasm::host::variant_scalar_payload_cases(db, v).is_some() => {
+            emit_variant_to_mem(
+                db,
+                payload_handle,
+                payload_addr,
+                payload_ty,
+                payload_wit,
+                cursor,
+                work_base + 3,
+                high,
+                scratch_ty,
+                out,
+            )?;
+        }
         // A MIXED-VARIANT payload (`list<option<variant{a, b(s64), c(list<u8>)}>>`): on outer Some, write the
         // payload variant IN PLACE at `dest_addr + payload_off` via `emit_variant_mixed_to_mem` (the SAME writer
         // a bare mixed-variant list element uses, SHAPE 283) — disc + the selected case's payload, a Bytes/List
