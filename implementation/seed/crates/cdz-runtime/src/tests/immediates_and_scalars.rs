@@ -1858,7 +1858,7 @@ fn value_eq_shaped_handles_float_leaves_and_list_spine() {
 }
 
 #[test]
-fn value_cmp_shaped_flattens_a_bytes_slice_view_list_element() {
+fn value_cmp_shaped_flattens_a_multichunk_bytes_list_element() {
     use super::Descriptor;
     use super::S;
     use core::cmp::Ordering;
@@ -1876,19 +1876,25 @@ fn value_cmp_shaped_flattens_a_bytes_slice_view_list_element() {
         }
         h
     };
-    // A slice VIEW of [9,20,30,8] at offset 1 len 2 → window [20,30] (arity>0, NOT a flat leaf).
-    let parent = mk_bytes(&[9, 20, 30, 8]);
-    let view = op_bytes_slice(parent, 1, 2);
+    // A >cap CONCAT is a genuinely MULTI-CHUNK bytes leaf; that is the shape that exercises the flatten
+    // path. (A slice is always single-chunk-contiguous, and a ≤cap result is eagerly inline — neither
+    // would force value_cmp_shaped to compact.) The concat and its flat twin have identical bytes.
+    let a = mk_bytes(&[1, 2, 3, 4, 5, 6, 7]);
+    let b = mk_bytes(&[8, 9, 10, 11, 12, 13, 14]);
+    let rope = op_bytes_concat(a, b); // 14 bytes > INLINE_RAW_CAP → multi-chunk leaf
     assert!(
-        with_node(view, 0usize, |n| n.handles.len()) > 0,
-        "precondition: the slice is a VIEW node (arity>0), not already flat"
+        !raw_is_contiguous(rope),
+        "precondition: the concat is a MULTI-CHUNK leaf (not contiguous), so the compare must flatten it"
     );
-    let list_view = op_vec_push(op_vec_empty(), view);
-    let list_flat = op_vec_push(op_vec_empty(), mk_bytes(&[20, 30]));
+    let list_rope = op_vec_push(op_vec_empty(), rope);
+    let list_flat = op_vec_push(
+        op_vec_empty(),
+        mk_bytes(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]),
+    );
     assert_eq!(
-        value_cmp_shaped(&desc, list_view, list_flat, 1),
+        value_cmp_shaped(&desc, list_rope, list_flat, 1),
         Some(Ordering::Equal),
-        "[<slice-view 20,30>] == [<flat 20,30>]: the Bytes list element flattens the view before comparing"
+        "[<multi-chunk rope>] == [<flat>]: the Bytes list element flattens the rope before comparing"
     );
 }
 

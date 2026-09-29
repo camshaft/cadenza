@@ -303,27 +303,26 @@ const INLINE_RAW_CAP: usize = 12;
 ///
 /// The `Rope` arm holds the bytes/string leaf content so a node `dup` shares the `ByteVec` (a refcount
 /// bump on the shared `Bytes`, not a copy) and a host crossing hands the `Bytes` off by reference-count
-/// — the zero-cost host binary passing this migration targets (operator seq-1382). A bytes/string LEAF
-/// is single-chunk by construction (every constructor builds it from one contiguous `Vec`/`Bytes`, and
-/// a slice of a single chunk stays single-chunk), so `as_slice` can borrow it contiguously; a concat
-/// rope stays a node-rope (children in `handles`) and never reaches this arm.
+/// — the zero-cost host binary passing this migration targets (operator seq-1382). `bytes-concat` builds
+/// a `Rope` by appending the operands' chunks (deferred copy) and `bytes-slice` by narrowing a chunk view
+/// (`ByteVec::slice`, structural share), so a `Rope` leaf may be MULTI-CHUNK. A multi-chunk `Rope` is
+/// compacted to a single contiguous chunk before it is read as a contiguous slice — `bytes-get`/`bytes-read`
+/// compact-on-read and `bytes-flatten` (=`bytes-compact`) materializes a single chunk — so `as_slice`
+/// panics if handed an un-compacted multi-chunk `Rope` (should-never-happen: readers compact first). Map/set
+/// keys are compacted by the compiler before every champ op (the compact-makes-canonical contract), so the
+/// raw champ hash/eq/cmp always see a single-chunk operand.
 enum Raw {
-    Inline {
-        len: u8,
-        buf: [u8; INLINE_RAW_CAP],
-    },
+    Inline { len: u8, buf: [u8; INLINE_RAW_CAP] },
     Heap(Vec<u8>),
     // BOXED so the (relatively large) `ByteVec` does not inflate `Raw` — and thus every `Node`, most of
     // which are scalars/compounds using the `Inline` arm. The box is one indirection paid only by a
     // >inline-cap bytes/string leaf; its `ByteVec` (and the refcounted `Bytes` inside) lives behind it.
     //
-    // NOT CONSTRUCTED YET: this variant is the target of the in-progress `bytes-concat`/`bytes-slice` →
-    // `ByteVec` migration. Its read arms (`as_slice`/`clear`/`extend_from_slice`/`as_mut_slice`/`len`/
-    // `Clone`) are wired so that migration can start building it without churning this enum; until then no
-    // constructor produces it (blanket-`Rope`ing every >cap raw regressed the vector/CHAMP hot paths, so
-    // `Raw::from` now defaults to `Heap`). Remove this `allow` in the commit that makes concat/slice build
-    // `Rope` leaves.
-    #[allow(dead_code)]
+    // Constructed ONLY by `bytes-concat`/`bytes-slice` (via `bytes_leaf_from_bytevec`): a leaf that shares
+    // its chunks by refcount so a concat cascade defers copying and a slice narrows a chunk view without
+    // copying. `Raw::from` (the neutral eager-materialization path used by vector/CHAMP internal buffers
+    // and plain bytes/string construction) does NOT build `Rope` — it defaults to `Heap` — because
+    // blanket-`Rope`ing every >cap raw regressed the vector/CHAMP hot paths (see `Raw::from`).
     Rope(alloc::boxed::Box<etude_bytevec::ByteVec>),
 }
 

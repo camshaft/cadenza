@@ -1020,6 +1020,20 @@ pub(crate) fn raw_is_heap(h: Handle) -> bool {
     matches!(unsafe { &(*h.0).raw }, Raw::Heap(_) | Raw::Rope(_))
 }
 
+/// Test-only: is the node's raw directly readable as ONE contiguous `&[u8]` — an inline/heap leaf or a
+/// SINGLE-chunk `Raw::Rope`? False for a MULTI-chunk `Rope` leaf (a `bytes-concat`/`bytes-slice` result
+/// before compaction). Used to assert the compact-on-read invariant (a rope compacts to one chunk on
+/// the first full read).
+pub(crate) fn raw_is_contiguous(h: Handle) -> bool {
+    if is_immediate(h) {
+        return true;
+    }
+    match unsafe { &(*h.0).raw } {
+        Raw::Rope(bv) => bv.as_contiguous().is_some(),
+        _ => true,
+    }
+}
+
 /// Test-only: is the node's handle vector HEAP-backed (spilled past the inline cap) rather than
 /// inline? The handles-arm twin of `raw_is_heap`: used to assert the reuse constructors normalize a
 /// reused shell's HANDLES back to inline for a ≤`INLINE_HANDLES_CAP`-child node, matching a fresh
