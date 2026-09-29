@@ -133,14 +133,20 @@ VNOTE=""
 # stall). So the kickoff runs `/loop <interval> <TICK>` with this explicit tick recipe, guaranteeing
 # the loop both SCHEDULES the recurring cron AND runs the role body each fire.
 TICK="Run one tick of your role ($ROLE)$VNOTE: (1) 'fleet heartbeat' (stop cleanly if a stop-file \
-exists); (2) drain your inbox by listing it with 'fleet inbox' (auto-targets THIS agent + is the \
+exists), AND — coexisting with the file hub, per the board-backed migration — refresh your BOARD presence \
+with the task-board MCP set_status (agent_id '$AGENT') to a one-line note of what this tick did; the board \
+MCP tools are in your session, so this is a normal tool call, BUT it is best-effort: if the board is \
+unreachable, note it and continue — NEVER block or stall a tick on the board; (2) drain BOTH inboxes \
+oldest-first, acting on each message: your FILE-HUB inbox via 'fleet inbox' (the load-bearing transport + \
 RESOLVER — it prints the canonical HUB inbox path; NEVER ls a worktree-relative '.claude/fleet/inbox/...' \
-glob, which silently matches an empty shadow dir and stalls you), oldest-first — act on each message, \
-then move it to processed/ ('fleet inbox --processed <msg>'); (3) sync your base with 'fleet sync' (the \
-safe base-sync: resets onto trunk + replays only your not-yet-upstream commits by patch-id, so it never \
-orphans a queued merge-request's --ref like a bare 'git reset --hard trunk' would), then do ONE \
-well-scoped unit of work per $SRC/loops/$ROLE.md and gate it green before sending pr-sync a \
-merge-request. Coordinate with peers only via 'fleet send'; if you need a human decision send the \
+glob, which silently matches an empty shadow dir and stalls you), moving each to processed/ ('fleet inbox \
+--processed <msg>'), AND your BOARD inbox via the task-board MCP check_notifications (agent_id '$AGENT'); \
+(3) sync your base with 'fleet sync' (the safe base-sync: resets onto trunk + replays only your \
+not-yet-upstream commits by patch-id, so it never orphans a queued merge-request's --ref like a bare \
+'git reset --hard trunk' would), then do ONE well-scoped unit of work per $SRC/loops/$ROLE.md and gate it \
+green before sending pr-sync a merge-request; mirror progress on the board (comment_task / set_status) — \
+the board is the tracking mirror, the file hub stays the load-bearing transport. Coordinate with peers via \
+'fleet send' (or board send_message for a board-native peer); if you need a human decision send the \
 concierge an 'ask' and keep working — never wait for a reply."
 
 KICKOFF="You are the fleet agent named '$AGENT' (role: $ROLE), running UNATTENDED.$VNOTE \
