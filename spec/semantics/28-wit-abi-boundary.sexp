@@ -11158,3 +11158,81 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record{v: variant{a, b(record{p:s32, q:s64})}}> host-op arg crosses (a variant field with a RECORD payload case)"
+  (doc
+    "SHAPE 315 (v-wit-boundary) — a `list<record{v: variant{a, b(record{p:s32, q:s64})}}>` host-op ARGUMENT: a
+           record list element with a `variant` FIELD one of whose cases carries a RECORD payload.
+           `emit_product_to_mem`'s variant-field arm wrote only a uniform-scalar or single-tuple-payload variant
+           via `emit_variant_to_mem` (mixed-kind `None`), so a variant with a RECORD payload case declined CDZ0903.
+           Now the arm's guard also admits a HETEROGENEOUS mixed variant whose cases are all
+           `variant_mem_mixed_kind_supported` and threads the field's variant WIT (`fwit == Some(WitType::Variant
+           (…))`, present on the `emit_record_to_mem` path) to `emit_variant_to_mem` → `emit_variant_mixed_to_mem`,
+           which orders + sizes the RECORD payload case WIT-order. `product_field_marshalable` admits it on the
+           `wit = true` path (a record case needs the WIT to order its fields); `used_ops`' mixed-variant field arm
+           already recursed each case's ops. run() pushes TWO elements — a `b(record)` case then a nullary `a` case
+           [{v: B{p:1,q:2}}, {v: A}] — exercising both the record-payload and nullary discriminants; a VALID running
+           component (live-objects=0) pins the variant-record-case field across both arms.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (list (record (= v (variant (a) (b (record (= p (s32)) (= q (s64))))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (Record (: p Int32) (: q Int64))))
+      (effect probe (op push (-> (List (Record (: v Sig))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= v (Sig.B #record((= p (: 1 Int32)) (= q 2))))) #record((= v (Sig.A)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{v: variant{a, b(record{a1:s32, c1:s64, b1:s32} divergent)}}> host-op arg crosses (WIT-order variant record case)"
+  (doc
+    "SHAPE 316 (v-wit-boundary) — the DIVERGENT-order twin of SHAPE 315: the variant's `b` case record WIT declares
+           (a1, c1, b1) — diverging from the guest name-lex order (a1, b1, c1), 16 vs 24 padded bytes. The record
+           payload case is sized + written WIT-order by `emit_variant_mixed_to_mem`'s `canonical_layout_wit`
+           (threading the case WIT out of the field's `WitType::Variant`) — the same machinery SHAPE 298 pins for
+           the option-nested position, now reached for the record-FIELD variant. run() pushes one `b` case
+           [{v: B{a1:1, b1:2, c1:3}}]; a VALID running component (live-objects=0) pins the divergent-order variant
+           record payload case in a record field.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (list (record (= v (variant (a) (b (record (= a1 (s32)) (= c1 (s64)) (= b1 (s32))))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (Record (: a1 Int32) (: b1 Int32) (: c1 Int64))))
+      (effect probe (op push (-> (List (Record (: v Sig))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= v (Sig.B #record((= a1 (: 1 Int32)) (= b1 (: 2 Int32)) (= c1 3)))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{v: variant{a, b(record{d: bytes, n: s64})}}> host-op arg DECLINES CDZ0903 (Bytes in a variant record case)"
+  (doc
+    "SHAPE 317 (v-wit-boundary) — the SCOPE BOUNDARY of the variant-record-case field slice: the variant's record
+           payload case carries a `Bytes` field. A record payload case with only SCALAR fields crosses (SHAPE
+           315/316), but a `Bytes` (or other cursor-spilling) field inside the case declines CLEANLY (CDZ0903 at
+           the arg level — `variant_mixed_payload_cases` does not classify a cursor-spilling record case as a
+           marshalable mixed case here). Grades Todo. The idealistic behavior is that it crosses (the rope spilling
+           at the shared cursor); CROSSING it is a QUEUED unit needing the scratch-memory pre-scan to reserve for a
+           Bytes field nested inside a variant record payload case (the same pre-scan family as the option-payload
+           nesting, SHAPE 314).")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (list (record (= v (variant (a) (b (record (= d (list (u8))) (= n (s64))))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (Record (: d Bytes) (: n Int64))))
+      (effect probe (op push (-> (List (Record (: v Sig))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= v (Sig.B #record((= d b"hi") (= n 2)))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

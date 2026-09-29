@@ -656,14 +656,28 @@ pub(super) fn emit_product_to_mem(
                     out,
                 )?;
             }
-            // A general `variant` field (uniform SCALAR payload, or a SINGLE tuple-of-scalars payload case +
-            // nullary rest): write it at `dest_addr + foff` per the canonical variant layout (disc + payload) via
-            // `emit_variant_to_mem`, which internally dispatches the scalar vs tuple payload shape — the N-case
-            // generalization of the option field arm. Its base address is computed into a temp (the writer's
-            // store offsets are relative to that base). Reuses the proven variant memory-writer wholesale.
+            // A general `variant` field (uniform SCALAR payload, a SINGLE tuple-of-scalars payload case + nullary
+            // rest, OR a HETEROGENEOUS mix incl. a RECORD payload case): write it at `dest_addr + foff` per the
+            // canonical variant layout (disc + payload) via `emit_variant_to_mem`, which internally dispatches the
+            // scalar / tuple / mixed payload shape — the N-case generalization of the option field arm. The
+            // field's variant WIT (`fwit == Some(WitType::Variant(…))`, present on the `emit_record_to_mem` path)
+            // is threaded so a mixed variant's RECORD payload case orders its fields to the host declaration order
+            // (and sizes the payload region WIT-order); a mixed variant lacking that WIT declines the record case
+            // cleanly inside `emit_variant_mixed_to_mem`. Its base address is computed into a temp (the writer's
+            // store offsets are relative to that base).
             None if crate::backend::wasm::host::variant_scalar_payload_cases(db, fty).is_some()
-                || crate::backend::wasm::host::variant_tuple_payload_case(db, fty).is_some() =>
+                || crate::backend::wasm::host::variant_tuple_payload_case(db, fty).is_some()
+                || crate::backend::wasm::host::variant_mixed_payload_cases(db, fty)
+                    .is_some_and(|cases| {
+                        cases.iter().all(|(_, k)| {
+                            crate::backend::wasm::host::variant_mem_mixed_kind_supported(k)
+                        })
+                    }) =>
             {
+                let variant_wit = match fwit {
+                    Some(w @ crate::wit_world::WitType::Variant(_)) => Some(w),
+                    _ => None,
+                };
                 let var_slot = work_base + 3;
                 let field_addr = work_base + 4;
                 scratch_ty.insert(var_slot, ValType::I32);
@@ -682,7 +696,7 @@ pub(super) fn emit_product_to_mem(
                     var_slot,
                     field_addr,
                     fty,
-                    None, // this arm admits only scalar/tuple variant fields — no mixed record case here
+                    variant_wit,
                     cursor,
                     work_base + 5,
                     high,
