@@ -2949,7 +2949,19 @@ pub enum EscapeForm<'a> {
         box_op: &'static str,
         extend: Option<bool>,
     },
-    Sum(&'a crate::lower::SumFormTemplate),
+    /// A SUM result: `encode()` switches on the runtime discriminant (`sum-disc`) and renders the matching
+    /// variant. `enum_disc` = the sum is a C-style ENUM (≥2 variants, all nullary — `db.is_enum_disc`), whose
+    /// RUNTIME value is a BARE i32 disc, NOT a value-heap handle (`ty_is_enum_disc`, emit.rs). For such a
+    /// result the `make` body must MATERIALIZE the bare disc into a heap sum cell (`sum-new(disc, IMM_UNIT)`)
+    /// after `call <export>` so `resource-new` receives a real handle and `t-encode`'s `sum-disc(rep)` reads a
+    /// live cell — the enum-disc analogue of `FlatScalar`'s `box_op`. A CONST enum result never reaches here
+    /// (it const-folds to a baked static blob); only a RUNTIME enum-disc (host-op result / dynamic branch)
+    /// does. A payload-bearing (or unit-payload) sum returns a real handle already, so `enum_disc = false` and
+    /// no box is emitted. The caller MUST import `sum-new` when `enum_disc`.
+    Sum {
+        tpl: &'a crate::lower::SumFormTemplate,
+        enum_disc: bool,
+    },
     /// A RUNTIME `Bytes` result — a VARIABLE-length value form the walker builds by LOOPING (the first
     /// non-unrolled `encode()`): write the static prefix, the runtime `bytes-len` as a LEB, a
     /// `bytes-get` copy loop, then the static suffix. `DESIGN-runtime-bytes-escape-walker.md`.
@@ -3325,7 +3337,7 @@ pub fn runtime_resource_core_module_form_ex2(
         // A scalar-erased flat form lays its ONE template exactly like `Flat`; the only difference is the
         // `make` body boxes the scalar (below) before `resource-new`.
         EscapeForm::FlatScalar { tpl, .. } => vec![*tpl],
-        EscapeForm::Sum(s) => s.variants.iter().collect(),
+        EscapeForm::Sum { tpl, .. } => tpl.variants.iter().collect(),
         // RuntimeBytes writes its entire output at run time (variable length) — no preloaded template,
         // no data section. The walker uses a fixed retarea at offset 0 and writes the value form after it.
         EscapeForm::RuntimeBytes(_) => Vec::new(),
@@ -3555,6 +3567,25 @@ pub fn runtime_resource_core_module_form_ex2(
             inner.push(op::CALL);
             uleb128(import_index[*box_op] as u64, &mut inner);
         }
+        // A C-style ENUM result (`enum_disc`) leaves a BARE i32 discriminant on the stack, not a value-heap
+        // handle (`ty_is_enum_disc`, emit.rs — no `sum-new` on construction). MATERIALIZE it into a heap sum
+        // cell `sum-new(disc, IMM_UNIT)` so `resource-new` gets a real rep and `t-encode`'s `sum-disc(rep)`
+        // reads a live cell (else it treats the bare disc as a handle → garbage → renders variant 0). The
+        // enum-disc twin of the `FlatScalar` box above; a CONST enum result const-folds elsewhere (never here),
+        // and a payload/unit-payload sum returns a real handle (`enum_disc = false`, no box). The caller
+        // imports `sum-new` whenever `enum_disc`.
+        if let EscapeForm::Sum {
+            enum_disc: true, ..
+        } = &form
+        {
+            inner.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(
+                crate::backend::wasm::runtime_abi::IMM_UNIT as i64,
+                &mut inner,
+            );
+            inner.push(op::CALL);
+            uleb128(import_index["sum-new"] as u64, &mut inner);
+        }
         inner.push(op::CALL);
         uleb128(f_rnew as u64, &mut inner);
         inner.push(op::END);
@@ -3580,9 +3611,12 @@ pub fn runtime_resource_core_module_form_ex2(
             rep_src,
             &import_index,
         ),
-        EscapeForm::Sum(s) => {
-            encode_sum_walk_body(&s.variants, &placed_pairs(&placed), rep_src, &import_index)
-        }
+        EscapeForm::Sum { tpl, .. } => encode_sum_walk_body(
+            &tpl.variants,
+            &placed_pairs(&placed),
+            rep_src,
+            &import_index,
+        ),
         EscapeForm::RuntimeBytes(form) => encode_bytes_walk_body(form, rep_src, &import_index),
         EscapeForm::RecursiveSum(desc) => {
             encode_recursive_sum_walk_body(desc, rep_src, &import_index)

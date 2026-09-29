@@ -11691,3 +11691,70 @@ cases
   (host-arg-received cadenza:platform/probe.push #list(#record((= o (Some #tuple((Some 7) 9))))))
   (output 55)
   (live-objects 0))
+
+(case
+  "an ENUM host-import result escapes DIRECTLY as the entrypoint result via a pure-IMPORT custom wit-world"
+  (doc
+    "SHAPE 336 (v-wit-boundary) — a payloadless-ENUM host-import RESULT (probe.color : () -> enum{red,green,blue})
+           that ESCAPES DIRECTLY as run()'s result (the enum-disc twin of SHAPE 95's string escape). A C-style
+           enum crosses at runtime as a BARE i32 discriminant (`ty_is_enum_disc` — never a value-heap handle), so
+           two things are needed and BOTH now happen: (1) the host op's result TYPE is declared — the sum-escape
+           host path threads `build_host_result_types` (the nominal `enum` DEFINED+EXPORTED type into the op's
+           `comp_functype` + the host effect instance-type), so the WIT shows `enum host-result-t0 {red,green,blue}`
+           + `color: func() -> that`, and the core import carries the i32 result; (2) the enum-disc is MATERIALIZED
+           into a value-heap sum cell — the escape `make` body inserts `sum-new(disc, IMM_UNIT)` after `call run`
+           (gated by `EscapeForm::Sum { enum_disc }`), so `resource-new` gets a real rep and `t-encode`'s
+           `sum-disc(rep)` reads a live cell rather than treating the bare disc as a handle (which rendered variant
+           0). Before the materialization bridge this DECLINED cleanly (CDZ0900, decline-don't-miscompile — a
+           declaration-only cross rendered the WRONG variant). The host import is named by the world's FQ interface
+           (`cadenza:platform/probe`). Stub color -> green; run() returns it directly. Verified byte-exact + 0-leak.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member color (func (result (enum red green blue)))))))
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (effect probe (op color (-> Unit Col)))
+      (def (run) (host (probe) (probe.color unit)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.color (: (green unit) color)))
+  (host-calls (call cadenza:platform/probe.color))
+  (output (: (Green unit) Col))
+  (live-objects 0))
+
+(case
+  "a dynamic payloadless-enum discriminant escapes as run's resource result"
+  (doc
+    "SHAPE 337 (v-wit-boundary) — a RUNTIME (non-const) payloadless-enum discriminant escaping as run()'s result:
+           run(n) = if n > 0 then Col.Green else Col.Red. The disc is selected at runtime (a branch, not a
+           constant), so it is a BARE i32 (the enum-disc representation) that must be MATERIALIZED into a value-heap
+           sum cell (`sum-new(disc, IMM_UNIT)`) by the escape `make` body before `resource-new` — the non-host twin
+           of SHAPE 336. Before the materialization bridge this SILENTLY MISCOMPILED (a valid component that
+           rendered variant 0 regardless of the runtime disc, because `t-encode`'s `sum-disc` treated the bare disc
+           as a heap handle). Pins that a runtime enum-disc crosses with the CORRECT variant. Contrast the LITERAL
+           escape (SHAPE 338), which const-folds to a baked value-form blob and never reaches this path. n=5 -> Green.")
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (def (run (: n Int64)) (if (> n 0) (Col.Green) (Col.Red)))
+      (export run)))
+  (call run (: 5 Int64))
+  (output (: (Green unit) Col))
+  (live-objects 0))
+
+(case
+  "a literal payloadless-enum value escapes as run's resource result"
+  (doc
+    "SHAPE 338 (v-wit-boundary) — a CONSTANT payloadless-enum value escaping as run()'s result: run() = Col.Green.
+           A const enum result const-folds to a build-once STATIC value-form blob (the baked `(Green unit)` document)
+           and its `make` returns the pre-rendered bytes — it never reaches the runtime `sum-disc` walker, so it was
+           always correct and stays byte-identical after the materialization bridge (SHAPE 336/337) lands. Pins the
+           const path as the drift guard alongside the runtime enum-disc crossings.")
+  (input
+    (do
+      (type Col (Red) (Green) (Blue))
+      (def (run) (Col.Green))
+      (export run)))
+  (call run)
+  (output (: (Green unit) Col))
+  (live-objects 0))
