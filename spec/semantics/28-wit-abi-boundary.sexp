@@ -11809,18 +11809,17 @@ cases
   (live-objects 0))
 
 (case
-  "TWO host effects delegated from one sum-escaping entrypoint decline cleanly (deferral: multi-interface import emit)"
+  "TWO host effects delegated from one sum-escaping entrypoint each import their own interface"
   (doc
-    "SHAPE 341 (v-wit-boundary) — DEFERRAL, corpus-pinned per the 084999 discipline. run() = Some(a.f + b.g)
-           delegating TWO distinct host effects (a, b) from one sum-escaping resource entrypoint. Declines
-           cleanly today (CDZ0906, WasmMultiHostEffectDelegation) because the resource-escape assembler imports
-           exactly ONE host interface. This is an IMPLEMENTATION limit, NOT a spec floor: host-interface-binding.md
-           fixes that a component's imported host operations MUST EQUAL the set of capabilities its manifest
-           enumerates (a SET — multiple capabilities/interfaces are legitimate), with no 'one interface per
-           envelope' invariant anywhere in the contracts. So delegating >1 host interface is a legitimate
-           component-boundary shape and this is a DEFERRAL to fix (emit the combined multi-interface import space
-           from the escaping entrypoint), not a floor. Records the IDEALISTIC cross so it auto-flips to PASS when
-           the multi-interface emit lands. Intended value: a.f -> 3, b.g -> 4, run() -> Some(7).")
+    "SHAPE 341 (v-wit-boundary) — WORKING. run() = Some(a.f + b.g) delegating TWO distinct host effects (a, b)
+           from one sum-escaping resource entrypoint. The resource-escape emit now imports EACH host effect as
+           its own component instance (its FQ interface's instance-type) and aliases each op out of ITS instance
+           (`assemble_host_runtime_resource_multi`), re-exporting all ops through the ONE `\"host\"` core module
+           the program binds (each op bound by its unique name). This matches host-interface-binding.md — a
+           component's imported host operations equal the SET of capabilities its manifest enumerates, with no
+           'one interface per envelope' invariant. SCOPE: scalar/unit ops (a string-param or compound-result op
+           across >1 interface routes through the shared-memory multi form, a later SHAPE). a.f -> 3, b.g -> 4,
+           run() -> Some(7); byte-exact and zero-leak.")
   (wit-world
     (world w
       (import cadenza:platform/a (member f (func (result (s64)))))
@@ -11834,7 +11833,8 @@ cases
   (call run)
   (host-responses (respond a.f (: 3 Int64)) (respond b.g (: 4 Int64)))
   (host-calls (call cadenza:platform/a.f) (call cadenza:platform/b.g))
-  (output (: (Some 7) (Option Int64))))
+  (output (: (Some 7) (Option Int64)))
+  (live-objects 0))
 
 (case
   "a HOST effect + a PEER effect both feeding one sum-escaping entrypoint decline cleanly (deferral: host+peer fusion emit)"
