@@ -303,3 +303,99 @@ async fn a_put_over_the_body_ceiling_is_413() {
         "a body exactly at the ceiling is accepted"
     );
 }
+
+/// A [`BlobStore`] whose every method errors — to drive the server's backend-error (`500`) paths. A
+/// backend failure (disk/network/S3) is NOT a miss: the server must surface it as `500`, never a `404`.
+struct FailingStore;
+#[async_trait::async_trait]
+impl BlobStore for FailingStore {
+    async fn put(&self, _bytes: Bytes) -> Result<Hash, cdz_platform::BlobStoreError> {
+        Err(cdz_platform::BlobStoreError::Io(
+            "failing store".to_string(),
+        ))
+    }
+    async fn get(&self, _hash: Hash) -> Result<Option<Bytes>, cdz_platform::BlobStoreError> {
+        Err(cdz_platform::BlobStoreError::Io(
+            "failing store".to_string(),
+        ))
+    }
+    async fn has(&self, _hash: Hash) -> Result<bool, cdz_platform::BlobStoreError> {
+        Err(cdz_platform::BlobStoreError::Io(
+            "failing store".to_string(),
+        ))
+    }
+}
+
+/// Spawn a CAS server whose backend store always errors (both credentials configured), for the
+/// backend-error (`500`) tests.
+async fn spawn_failing_server() -> SocketAddr {
+    let server = Arc::new(
+        CasServer::new(Box::new(FailingStore))
+            .with_read_credential(READ.to_string())
+            .with_write_credential(WRITE.to_string()),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(server.serve(listener));
+    addr
+}
+
+/// A raw request of `method` to `/{key}` (authorized to read), returning the response status code.
+async fn raw_method_status(addr: SocketAddr, method: reqwest::Method, key: &str) -> u16 {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let client = reqwest::Client::new();
+    client
+        .request(method, format!("http://{addr}/{key}"))
+        .bearer_auth(READ)
+        .send()
+        .await
+        .expect("send")
+        .status()
+        .as_u16()
+}
+
+#[tokio::test]
+async fn a_backend_error_on_get_is_500_not_a_miss() {
+    let addr = spawn_failing_server().await;
+    let key = Hash::of(HashTag::Blob, b"anything").to_string();
+    // The store errored (it could not determine an answer) — that is NOT a miss. The client must see
+    // 500 so it RETRIES, rather than a 404 that would let it treat a possibly-present blob as absent.
+    assert_eq!(
+        raw_method_status(addr, reqwest::Method::GET, &key).await,
+        500,
+        "a backend error on GET is 500, not a 404 miss"
+    );
+}
+
+#[tokio::test]
+async fn a_backend_error_on_head_is_500_not_a_miss() {
+    let addr = spawn_failing_server().await;
+    let key = Hash::of(HashTag::Blob, b"anything").to_string();
+    assert_eq!(
+        raw_method_status(addr, reqwest::Method::HEAD, &key).await,
+        500,
+        "a backend error on HEAD is 500, not a 404 miss"
+    );
+}
+
+#[tokio::test]
+async fn a_backend_error_on_put_is_500() {
+    let addr = spawn_failing_server().await;
+    // The body matches its key (the content-address check passes), so the 500 is the STORE failing to
+    // persist — the caller must learn the write did not land.
+    let body = b"store me".to_vec();
+    let key = Hash::of(HashTag::Blob, &body).to_string();
+    assert_eq!(
+        raw_put(addr, &key, Some(WRITE), body).await,
+        500,
+        "a store failure on PUT is 500"
+    );
+}
+
+#[tokio::test]
+async fn a_backend_error_on_post_is_500() {
+    let addr = spawn_failing_server().await;
+    let (status, location, _) = raw_post(addr, "/", Some(WRITE), b"store me".to_vec()).await;
+    assert_eq!(status, 500, "a store failure on POST is 500");
+    assert_eq!(location, None, "a failed store assigns no address");
+}
