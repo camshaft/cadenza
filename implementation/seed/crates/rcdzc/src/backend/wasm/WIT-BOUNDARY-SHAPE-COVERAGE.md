@@ -156,17 +156,26 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   (`host_import_functype` keeps the core result a bare i32), so removing the plain-path enum-result decline
   guard sufficed — no extra emit. WIT-dump verified `enum host-result-t0 {…}`. The plain-path twin of `wen1`
   (which crossed the same shape only via a typed record-interface export).
-- **[emit, RESOURCE-ESCAPE]** the resource-escape entrypoint form — a host result escaping DIRECTLY as
-  the guest export result (`run()->String = host sim in (sim.echo "hi")`, v-hivemind's literal repro) —
-  still declines on `assemble_host_runtime_resource*` (scalar/unit host ops only; a String-param or
-  compound result declines). Needs the same instance-type + `needs_realloc` mem threading B1 applied to
-  the plain envelope, across the 5 resource-escape assembler variants (B2). **A COMPOUND host RESULT now
-  declines CLEANLY (CDZ0900) at both resource-escape sites (`mod.rs` ~2528 and ~5315, next to the existing
-  String-PARAM guard) — decline-don't-miscompile.** Before this guard a scalar-param host op with a
-  compound (e.g. String) result laid the result-lift op without declaring it, so the lift resolved to an
-  out-of-range func index and the component failed wasm validation ("unknown function"). SHAPE 95 pins the
-  idealistic escaping-String behavior as a corpus TODO (grades Todo via CDZ0900, auto-locks to Pass when
-  B2 lands).
+- **[emit, RESOURCE-ESCAPE] a SPILLED-COMPOUND host RESULT escaping DIRECTLY as the guest export result —
+  ✅ DONE (SHAPE 95, #10096).** `run()->String = host probe in (probe.spell 5)` — a host op returning a
+  `string` (spilled compound) that escapes directly as run()'s resource entrypoint result. The host-op
+  canon-lower needs a Memory + Realloc option pointing at a memory that exists BEFORE the (importing)
+  program core is instantiated — the lower↔instance circularity the self-memory assembler cannot resolve.
+  Fixed by the shared-`"mem"`-module shape (mirroring the plain host path's `assemble_host_runtime_mem`):
+  `runtime_resource_core_module_form_ex2` gained `needs_shared_mem` (the program core IMPORTS `"mem"."mem"` +
+  `"mem"."cabi_realloc"` instead of defining them; guarded, `false` = byte-identical), and a NEW assembler
+  `assemble_host_runtime_resource_with_scalar_methods_shared_mem` instantiates the `"mem"` module first,
+  aliases `mem.mem`→memory 0 + `mem.cabi_realloc`→core func 0 before the host-op lowers, lowers the host op
+  with `canon_lower_item_mem_realloc`, and reads memory 0 + the shared realloc in the encode/method lifts
+  (`rs=1` core-func shift). `host_as_extern_for` appends the trailing i32 retptr param for a spilled result
+  (matching the guest's `(args, retptr)` call); `resource_sig.rs` declares the result-lift ops, sets
+  `import_base += needs_shared_mem`, builds the op's `comp_functype` with the spilled result `CRef`, and names
+  the host import by the world's FQ interface. The self-memory assembler is UNTOUCHED, so every non-escaping
+  resource shape is byte-identical (native 396/396, ch28 coarse gate GREEN). SHAPE 95 crosses byte-exact
+  (`"ok"` String), live-objects 0. REMAINING: a payloadless ENUM RESULT escaping as a resource still declines
+  cleanly (a distinct nominal-enum lift, not the spilled-compound path) — a small follow-on if a case needs it;
+  the other 4 resource-escape assembler variants (sum/recursive-sum/closure/peer) do not yet carry a spilled
+  host result (no case exercises them), but the `needs_shared_mem` core-module mode is ready for them.
 - **[naming, B1b] the PLAIN host-delegating envelope now names the host import by the world's FQ import
   interface — ✅ DONE.** `world_import_iface_for_effect(db, effect)` reverse-maps the guest effect (named
   after the interface's SHORT kebab segment by `synthesize_world_import_effect_decls`) to the world IMPORT
