@@ -3403,6 +3403,36 @@ fn bind_runtime_into(
     Ok(())
 }
 
+/// A short variant tag for a component `Val` — for the `CDZ_ARGECHO_DEBUG` per-call diagnostic (shows what
+/// wasmtime actually delivered to a host closure so a capture-miss is legible without a full gate).
+fn val_variant_tag(v: &Val) -> &'static str {
+    match v {
+        Val::Bool(_) => "Bool",
+        Val::S8(_) => "S8",
+        Val::U8(_) => "U8",
+        Val::S16(_) => "S16",
+        Val::U16(_) => "U16",
+        Val::S32(_) => "S32",
+        Val::U32(_) => "U32",
+        Val::S64(_) => "S64",
+        Val::U64(_) => "U64",
+        Val::Float32(_) => "Float32",
+        Val::Float64(_) => "Float64",
+        Val::Char(_) => "Char",
+        Val::String(_) => "String",
+        Val::List(_) => "List",
+        Val::Record(_) => "Record",
+        Val::Tuple(_) => "Tuple",
+        Val::Variant(..) => "Variant",
+        Val::Enum(_) => "Enum",
+        Val::Option(_) => "Option",
+        Val::Result(_) => "Result",
+        Val::Flags(_) => "Flags",
+        Val::Resource(_) => "Resource",
+        _ => "other", // Future/Stream/ErrorContext (async component types — not host-arg shapes)
+    }
+}
+
 /// Bind every HOST-effect import the component declares (E2h) so its delegated operations resolve to the
 /// recorded responses, consumed in call order. A host effect is imported as an INSTANCE (the interface);
 /// each function in it is a delegated operation. We enumerate the imported instances OFF THE COMPONENT
@@ -3508,6 +3538,17 @@ fn bind_host_imports(
                         [one] => Some(render_val(one)),
                         many => Some(render_val(&Val::Tuple(many.to_vec()))),
                     };
+                    // CDZ_ARGECHO_DEBUG=1: per-call diagnostic (op, arity, per-param variant tag, captured
+                    // value-form) — disambiguates a genuine capture-miss (params empty / a wasmtime lift that
+                    // delivers no component Val for a shape) from a downstream grade issue, without a 15-min
+                    // gate. Off by default (zero cost); env-gated so it never pollutes a normal grade run.
+                    if std::env::var_os("CDZ_ARGECHO_DEBUG").is_some() {
+                        let tags: Vec<&str> = params.iter().map(val_variant_tag).collect();
+                        eprintln!(
+                            "argecho-debug: op={op_label} params.len={} param-tags={tags:?} captured={vf:?}",
+                            params.len()
+                        );
+                    }
                     if let Some(vf) = vf {
                         ra.lock()
                             .expect("received args mutex")
