@@ -2404,6 +2404,7 @@ pass	a cross-kind clash message picks the indefinite article by SOUND, not lette
 pass	a cross-kind equality of a tuple against a list is one coded error with no uncoded heap-walk decline
 pass	a cross-kind ordering comparison is a single coded type error, not a double with the ordering decline
 pass	a cross-kind ordering of a tuple against a list is one coded error with no uncoded heap-walk decline
+pass	a cross-seam String slice-view of a multi-chunk concat rope hits its flat champ twin
 pass	a cross-type constructor pattern NESTED in a matching outer payload is rejected
 pass	a cross-type variant pattern of the SAME payload width and colliding tag is rejected
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled

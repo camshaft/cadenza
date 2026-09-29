@@ -2373,6 +2373,36 @@
   (live-objects 0))
 
 (case
+  "a cross-seam String slice-view of a multi-chunk concat rope hits its flat champ twin"
+  (doc
+    "The MULTI-CHUNK-ROPE face of the slice-view champ-key contract — the case above slices a FLAT
+           literal, so its view never straddles a chunk seam; this one slices a genuine RUNTIME concat rope
+           whose bytes span several ByteVec chunks. `rope = rep(\"abc\", n)` builds \"abc\"+\"d\"*n as a
+           chunk-appended rope (the runtime `n` defeats const-fold); `String.slice rope 2 4` = the \"cd\"
+           window that STRADDLES the [\"abc\"]|[\"d\"] seam. That cross-seam slice-view, used as a `Map.lookup`
+           key, must compact-to-canonical at the CHAMP key site (materializing across the chunk boundary) so it
+           hashes to the flat twin \"cd\"'s slot. n=1 (a 2-chunk rope) and n=3 (a 4-chunk rope) both hit → 42;
+           a champ op hashing the raw chunk-view layout would MISS (→ -1, not a wrong value). The String twin
+           of the Bytes cross-chunk slice-view champ-key case (10-bytes). live-objects 0.")
+  (input
+    (do
+      (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "d") (- n 1))))
+      (def
+        (main (: n Int64))
+        (let
+          ((rope (rep "abc" n))
+           (m (Map.insert Map.empty "cd" 42)))
+          (match (String.slice rope 2 4)
+            ((Some s) (match (Map.lookup m s) ((Some v) v) ((None _u) -1)))
+            ((None _u) -2))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64))
+  (call main (: 3 Int64))
+  (output (: 42 Int64))
+  (live-objects 0))
+
+(case
   "a runtime String.slice STORED as a map key is found by a flat probe"
   (doc
     "The stored-key direction: the slice view goes INTO the map as the key and the flat literal
