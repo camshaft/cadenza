@@ -1720,6 +1720,7 @@ pub(super) fn emit_runtime_bytes_resource(
             0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
             &[], // no static-compound init
             needs_shared_mem, // SHAPE 95: import `"mem"` when a compound host result escapes
+            None, // no host+peer leading split
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -1846,6 +1847,7 @@ pub(super) fn emit_runtime_bytes_resource(
         0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
         &[], // no static-compound init
         false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
+        None,  // no host+peer leading split
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
