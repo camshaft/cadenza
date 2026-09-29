@@ -143,7 +143,7 @@ pub(super) fn emit_list_arg_marshal(
     {
         None
     } else {
-        let (size, _) = canonical_layout(db, elem);
+        let (size, _) = canonical_layout_wit(db, elem, elem_wit);
         Some(match (valtype_of(elem), size) {
             (Some(ValType::I64), _) => Lir::I64Store { offset: 0 },
             (Some(ValType::F64), _) => Lir::F64Store { offset: 0 },
@@ -164,7 +164,10 @@ pub(super) fn emit_list_arg_marshal(
     let stride: u32 = if is_bytes {
         8
     } else {
-        canonical_layout(db, elem).0
+        // WIT-order-aware: a divergent-order record (or a record payload case in a variant element) must have
+        // its per-element stride sized in WIT declaration order, matching the WIT-order write
+        // (`emit_product_to_mem`) — a guest-order size could under-reserve and let the write overflow.
+        canonical_layout_wit(db, elem, elem_wit).0
     };
     // The outer element array's alignment: a `list<u8>`/`list<String>` element crosses as an
     // `(ptr, len)` header (align 4); a scalar element as its canonical width's alignment. The canonical
@@ -173,7 +176,7 @@ pub(super) fn emit_list_arg_marshal(
     let elem_align: u32 = if is_bytes {
         4
     } else {
-        canonical_layout(db, elem).1
+        canonical_layout_wit(db, elem, elem_wit).1
     };
     let read = if is_bytes
         || is_nested_list
@@ -1482,7 +1485,16 @@ fn emit_variant_mixed_to_mem(
         let pty = variant_payload_ty_at(db, variant_ty, *pd as u32).ok_or_else(|| {
             Reject::decline("a mixed variant element payload type could not be resolved")
         })?;
-        let (s, a) = canonical_layout(db, &pty);
+        // WIT-order-aware: a RECORD payload case is sized in WIT declaration order (the order
+        // `emit_record_to_mem` writes it), so the reserved payload region matches the write extent even when the
+        // guest name-lex record field order DIVERGES from the WIT (a guest-order size could under-reserve).
+        let case_wit = match variant_wit {
+            Some(crate::wit_world::WitType::Variant(wc)) => {
+                wc.get(*pd as usize).and_then(|(_, p)| p.as_ref())
+            }
+            _ => None,
+        };
+        let (s, a) = canonical_layout_wit(db, &pty, case_wit);
         psize = psize.max(s);
         palign = palign.max(a);
     }
@@ -1710,10 +1722,11 @@ fn emit_variant_mixed_to_mem(
             }
             // A RECORD payload case: write the record PRODUCT at the payload offset via `emit_record_to_mem`
             // (each field at its canonical offset, WIT-ordered) — the mem twin of the register mixed Record arm.
-            // The record's declared WIT (this case's payload in the variant WIT) orders the fields. GUARD: the
-            // per-element stride the enclosing list marshal reserved comes from `canonical_layout(record)` in
-            // GUEST name-lex order, so a WIT field order that diverges from the guest order could write past the
-            // reserved slot (record padding is field-order-dependent) — decline cleanly in that case.
+            // The record's declared WIT (this case's payload in the variant WIT) orders the fields. A guest
+            // name-lex field order that DIVERGES from the WIT order is supported: the enclosing list marshal's
+            // per-element stride and this variant's payload region are both sized WIT-order
+            // (`canonical_layout_wit`, above + in the stride site), matching the WIT-order write extent — so the
+            // write no longer risks overflowing the reserved slot (record padding is field-order-dependent).
             VariantPayloadKind::Record(..) => {
                 let pty = variant_payload_ty_at(db, variant_ty, *pd as u32).ok_or_else(|| {
                     Reject::decline("a mixed variant record payload type could not be resolved")
@@ -1735,20 +1748,9 @@ fn emit_variant_mixed_to_mem(
                         "a mixed variant record payload has no declared WIT record type",
                     )
                 })?;
-                let crate::wit_world::WitType::Record(wit_fields) = rec_wit else {
+                if !matches!(rec_wit, crate::wit_world::WitType::Record(_)) {
                     return Err(Reject::decline(
                         "a mixed variant record payload's declared WIT is not a record",
-                    ));
-                };
-                // WIT field order MUST equal guest name-lex order (see GUARD above), else the WIT-ordered write
-                // extent can exceed the guest-order stride the list marshal reserved.
-                let guest_names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
-                let wit_names: Vec<String> =
-                    wit_fields.iter().map(|(n, _)| n.to_string()).collect();
-                if guest_names != wit_names {
-                    return Err(Reject::decline(
-                        "a mixed variant record payload requires its WIT field order to match the \
-                         guest field order",
                     ));
                 }
                 out.push(Lir::LocalGet(disc));

@@ -10280,3 +10280,37 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<variant{a, b(s64), c(record{a,b,c})}> host-op arg whose record case DIVERGES from WIT order in SIZE crosses (mem path)"
+  (doc
+    "SHAPE 283 (v-wit-boundary) — a top-level list<variant{a, b(s64), c(record{a:s32, b:s32, c:s64})}> bare
+           host-op ARGUMENT (probe.push) whose record payload case (c) has a guest NAME-LEX field order (a, b, c)
+           that DIVERGES from its WIT declaration order (a, c, b) AND sizes DIFFERENTLY under alignment padding: the
+           guest-order layout is 16 bytes (a@0:s32, b@4:s32, c@8:s64) but the WIT-order layout is 24 (a@0:s32,
+           c@8:s64, b@16:s32). The MEM-path twin of the register SHAPE 281/282 divergent-order fix. Previously the
+           mem writer declined a divergent-order record case cleanly: the enclosing list marshal reserved the
+           per-element stride from canonical_layout(record) in GUEST order (16), while emit_record_to_mem writes the
+           fields at their WIT-order canonical offsets (extent 24), so a WIT-order write would overflow the reserved
+           slot -- a guest-order guard declined it (decline-don't-miscompile). Fixed: the stride site
+           (emit_list_arg_marshal) and the variant payload region (emit_variant_mixed_to_mem) now size the element
+           WIT-order via canonical_layout_wit (threading the element / case WIT), so the reserved stride (24) matches
+           the WIT-order write extent; the guest-order guard is removed. A matching-order record is byte-identical
+           (WIT order == guest order). run() builds a 2-element list [C({a:1, b:2, c:3}), B(9)] and performs
+           probe.push; a VALID running component (live-objects=0) whose declared push list element type has
+           c(record{a, c, b}) in WIT order -- with the multi-element list exercising the WIT-order stride -- pins the
+           mem-path divergent-order round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (variant (a) (b (s64)) (c (record (= a (s32)) (= c (s64)) (= b (s32))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (Record (: a Int32) (: b Int32) (: c Int64))))
+      (effect probe (op push (-> (List Sig) Int64)))
+      (def (run) (host (probe) (probe.push #list((Sig.C #record((= a (: 1 Int32)) (= b (: 2 Int32)) (= c 3))) (Sig.B 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

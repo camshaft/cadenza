@@ -71,6 +71,89 @@ pub(super) fn canonical_layout(db: &mut Db, ty: &Ty) -> (u32, u32) {
     }
 }
 
+/// [`canonical_layout`] with the value's declared WIT applied so a `Record`'s fields are sized in WIT
+/// DECLARATION order — the order the host's canonical ABI, and the guest's `emit_record_to_mem` /
+/// `emit_product_to_mem` write, actually use — rather than the guest's name-lex `BTreeMap` order. The two can
+/// differ in TOTAL size under alignment padding (`{a:u8, b:u32, c:u8}` sizes to 12, but the permutation
+/// `{a:u8, c:u8, b:u32}` to 8), so a divergent-order record's reserved per-element stride / variant payload
+/// region MUST be sized in WIT order or the WIT-order write overflows the reserved slot. Threads the WIT through
+/// a `Sum`'s payload cases (a mixed variant with a record payload case) and a `Tuple`'s elements. For a `List`,
+/// `Bytes`, scalar, or an OPTION-shaped `Sum` the layout is order-agnostic OR its writer still sizes guest-order
+/// (`emit_option_to_mem`), so those fall back to the guest-order [`canonical_layout`] — keeping this sizing in
+/// lockstep with the writer it pairs with. `wit` `None` / structurally mismatched → the same guest-order fallback
+/// (byte-identical for everything except a divergent-order record).
+pub(super) fn canonical_layout_wit(
+    db: &mut Db,
+    ty: &Ty,
+    wit: Option<&crate::wit_world::WitType>,
+) -> (u32, u32) {
+    use crate::wit_world::WitType;
+    match (ty.strip_nominal().clone(), wit) {
+        // A RECORD laid in WIT declaration order — each WIT field found in the guest cell by kebab name and
+        // recursed with its own WIT. A WIT field absent from the guest record → guest-order fallback.
+        (Ty::Record(fields), Some(WitType::Record(wit_fields))) => {
+            let names: Vec<String> = fields
+                .keys()
+                .map(|s| crate::backend::common::export_name::kebab_extern_name(s.name.as_ref()))
+                .collect();
+            let mut size = 0u32;
+            let mut align = 1u32;
+            for (fname, fwit) in wit_fields {
+                let Some(i) = names.iter().position(|n| n == fname) else {
+                    return canonical_layout(db, ty);
+                };
+                let fty = fields
+                    .values()
+                    .nth(i)
+                    .expect("name-lex index in range")
+                    .clone();
+                let (s, a) = canonical_layout_wit(db, &fty, Some(fwit));
+                size = align_up_u32(size, a) + s;
+                align = align.max(a);
+            }
+            (align_up_u32(size, align), align)
+        }
+        // A TUPLE is POSITIONAL (order-agnostic), but recurse each element with its WIT so a nested record
+        // element is sized WIT-order.
+        (Ty::Tuple(elems), Some(WitType::Tuple(elem_wits))) if elems.len() == elem_wits.len() => {
+            let mut size = 0u32;
+            let mut align = 1u32;
+            for (e, ew) in elems.iter().zip(elem_wits.iter()) {
+                let (s, a) = canonical_layout_wit(db, e, Some(ew));
+                size = align_up_u32(size, a) + s;
+                align = align.max(a);
+            }
+            (align_up_u32(size, align), align)
+        }
+        // A mixed `variant` (NOT option-shaped — that carries `WitType::Option`): disc + the max over payload
+        // cases of the WIT-order case layout, mirroring `canonical_layout`'s Sum arm AND
+        // `emit_variant_mixed_to_mem`'s `psize`/`payload_off` walk exactly.
+        (Ty::Sum { decl, .. }, Some(WitType::Variant(wit_cases))) => {
+            let nvar = db
+                .type_decl_by_occ(decl)
+                .map(|d| d.variants.len())
+                .unwrap_or(1);
+            let ds = disc_size_for(nvar);
+            let mut case_size = 0u32;
+            let mut case_align = 1u32;
+            for disc in 0..nvar {
+                if let Some(pty) = variant_payload_ty_at(db, ty, disc as u32) {
+                    let cwit = wit_cases.get(disc).and_then(|(_, p)| p.as_ref());
+                    let (s, a) = canonical_layout_wit(db, &pty, cwit);
+                    case_size = case_size.max(s);
+                    case_align = case_align.max(a);
+                }
+            }
+            let align = ds.max(case_align);
+            let payload_off = align_up_u32(ds, case_align);
+            (align_up_u32(payload_off + case_size, align), align)
+        }
+        // List / Bytes / scalar / option-shaped Sum / any mismatch: order-agnostic or the writer still sizes
+        // guest-order → the guest-order layout (kept in lockstep with that writer).
+        _ => canonical_layout(db, ty),
+    }
+}
+
 /// The `(size, align)` of a PRODUCT (tuple / record) whose fields (in layout order) are `tys` — each field
 /// aligned up to its own alignment, the total rounded to the max field alignment.
 pub(super) fn product_layout(db: &mut Db, tys: impl Iterator<Item = Ty>) -> (u32, u32) {
