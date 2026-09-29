@@ -3600,6 +3600,30 @@
   (output (: 6 Int64)))
 
 (case
+  "a mutually-recursive group with a CONSTANT-condition branch-perform whose FALSE literal selects the performing else-branch folds via literal-if const-fold (adv-69 rw4 sub-face, false-direction)"
+  (doc
+    "The FALSE-direction twin of the rw4 const-fold case above. The literal-`if` const-fold that
+           dissolves a mutual-SCC member body's branch-perform before the `branch_perform_coexists_with_
+           reentrant_call` floor handles BOTH literal directions — `(if true X Y)` → X AND `(if false X Y)`
+           → Y — but only the true-direction is witnessed above. Here the performing operand sits in the
+           ELSE branch of a false-literal condition: `(def (even-w n) (if (= n 0) 0 (+ (if false 0 (St.get))
+           (odd-w (- n 1)))))` (and the odd-w twin). The const-fold selects the else-branch, dissolving
+           `(if false 0 (St.get))` to the direct `(St.get)`, so the body becomes `(+ (St.get) (odd-w …))` —
+           the direct-perform + mutual-call shape the pure-mutual group fold threads. Seeded St=1 the three
+           gets read 1,2,3 → 6, identical to the true-direction rw4 value. Pins the `(if false X Y)` → Y arm
+           of the mutual-SCC literal-if const-fold so a future change cannot silently break the false
+           direction while leaving the true direction (rw4 above) green. A RUNTIME-condition branch-perform
+           stays non-const-foldable and declines cleanly, exactly as for rw4.")
+  (input
+    (do
+      (effect St (op get (-> Unit Int64)))
+      (def (even-w (: n Int64)) (if (= n 0) 0 (+ (if false 0 (St.get)) (odd-w (- n 1)))))
+      (def (odd-w (: n Int64)) (if (= n 0) 0 (+ (if false 0 (St.get)) (even-w (- n 1)))))
+      (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (even-w 3)))
+      (export main)))
+  (output (: 6 Int64)))
+
+(case
   "a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds"
   (doc
     "The `match` companion of the separate-branch mutual case above — the cycle dispatches on a
