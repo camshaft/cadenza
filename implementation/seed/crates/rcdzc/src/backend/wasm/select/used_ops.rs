@@ -57,19 +57,16 @@ pub(super) fn collect_record_field_ops(
                 collect_list_elem_ops(db, &elem, out);
             }
         }
-        // A `tuple<…>` field (flattened inline): the marshal `arr-get`s the tuple handle, then per element a
-        // SCALAR's unbox op OR a `Bytes` element's `bytes-len`/`bytes-get` rope copy.
+        // A `tuple<…>` field: the marshal `arr-get`s the tuple handle, then per element its own ops — a SCALAR's
+        // unbox op, a `Bytes` element's `bytes-len`/`bytes-get` rope copy, or (for a nested record/tuple/list
+        // element, written by `emit_tuple_to_mem` → the product walk) that element's own field ops. RECURSE
+        // `collect_record_field_ops` per element so any nesting depth declares exactly what the emit calls.
         _ if matches!(fty.strip_nominal(), Ty::Tuple(_)) => {
             out.insert(OP_ARR_GET);
             if let Ty::Tuple(elems) = fty.strip_nominal() {
                 let elems: Vec<Ty> = elems.iter().cloned().collect();
                 for ety in &elems {
-                    if matches!(ety.strip_nominal(), Ty::Bytes | Ty::String) {
-                        out.insert(OP_BYTES_LEN);
-                        out.insert(OP_BYTES_GET);
-                    } else if let Ok(Some(read)) = get_op_ty(db, ety) {
-                        out.insert(read);
-                    }
+                    collect_record_field_ops(db, ety, out);
                 }
             }
         }

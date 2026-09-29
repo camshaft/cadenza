@@ -11056,3 +11056,105 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<tuple<record{p:s32, q:s64}, s64>> host-op arg crosses (a record element of a tuple list element)"
+  (doc
+    "SHAPE 311 (v-wit-boundary) — a `list<tuple<record{p:s32, q:s64}, s64>>` host-op ARGUMENT: a tuple list
+           element whose ELEMENT 0 is a RECORD. `emit_tuple_to_mem` wrote a tuple list element POSITIONALLY with
+           NO element WIT, so a record element declined CDZ0903 (a record needs its WIT to order its fields). Now
+           `emit_tuple_to_mem` takes a per-element WIT slice and threads it from the tuple's `WitType::Tuple(…)`
+           (the list element's WIT, available at `emit_list_arg_marshal`'s tuple-element path); a record element
+           then fires `emit_product_to_mem`'s record-field arm, WIT-ordered. `list_elem_marshalable`'s Tuple arm
+           admits it (`product_field_marshalable(e, wit = true)` — the tuple element WITs are threaded);
+           `used_ops`' tuple-field arm recurses each element's ops. run() pushes TWO tuple elements
+           [({p:1,q:2}, 3), ({p:4,q:5}, 6)]; a VALID running component (live-objects=0) pins the record element of
+           a tuple list element across elements.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (tuple (record (= p (s32)) (= q (s64))) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Tuple (Record (: p Int32) (: q Int64)) Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #list(#tuple(#record((= p (: 1 Int32)) (= q 2)) 3) #tuple(#record((= p (: 4 Int32)) (= q 5)) 6)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<tuple<record{a:s32, c:s64, b:s32} divergent, s64>> host-op arg crosses (WIT-order tuple-element record)"
+  (doc
+    "SHAPE 312 (v-wit-boundary) — the DIVERGENT-order twin of SHAPE 311: the tuple's element-0 record WIT declares
+           (a, c, b) — diverging from the guest name-lex order (a, b, c), 16 vs 24 padded bytes. The record element
+           is sized + written WIT-order by the same `canonical_layout_wit` machinery (SHAPE 297/307) now that
+           `emit_tuple_to_mem` threads the element WIT; the enclosing tuple list-element stride is likewise sized
+           WIT-order. run() pushes TWO tuple elements [({a:1,b:2,c:3}, 7), ({a:4,b:5,c:6}, 8)]; a VALID running
+           component (live-objects=0) pins the divergent-order record element of a tuple list element.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (tuple (record (= a (s32)) (= c (s64)) (= b (s32))) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Tuple (Record (: a Int32) (: b Int32) (: c Int64)) Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #list(#tuple(#record((= a (: 1 Int32)) (= b (: 2 Int32)) (= c 3)) 7) #tuple(#record((= a (: 4 Int32)) (= b (: 5 Int32)) (= c 6)) 8)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{t: tuple<record{p:s32, q:s64}, s64>}> host-op arg crosses (a record element of a tuple FIELD)"
+  (doc
+    "SHAPE 313 (v-wit-boundary) — a `list<record{t: tuple<record{p:s32, q:s64}, s64>}>` host-op ARGUMENT: a record
+           list element whose `t` FIELD is a tuple whose ELEMENT 0 is a RECORD. `emit_product_to_mem`'s tuple-field
+           arm now threads the field's tuple-element WITs (from `fwit == Some(WitType::Tuple(…))`) to
+           `emit_tuple_to_mem`, so the nested record element is WIT-ordered; `product_field_marshalable`'s
+           `tuple_field_marshalable` propagates `wit` to the tuple's elements (a record element crosses when the
+           tuple field's WIT is available). `used_ops`' record-field-tuple arm recurses each tuple element's ops
+           (was scalar/Bytes-only, now `collect_record_field_ops` per element). run() pushes [{t: ({p:1,q:2}, 3)}];
+           a VALID running component (live-objects=0) pins the record element of a tuple field.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= t (tuple (record (= p (s32)) (= q (s64))) (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: t (Tuple (Record (: p Int32) (: q Int64)) Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= t #tuple(#record((= p (: 1 Int32)) (= q 2)) 3)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<option<tuple<record{p:s32, q:s64}, s64>>> host-op arg DECLINES CDZ0903 (record under an option<tuple> payload)"
+  (doc
+    "SHAPE 314 (v-wit-boundary) — the SCOPE BOUNDARY of the tuple-element-record slice: a record element nested
+           under an `option<tuple>` LIST element. A record element of a tuple crosses when the tuple is a direct
+           list element (SHAPE 311) or a record field (SHAPE 313), but NOT (yet) when the tuple is an `option`
+           PAYLOAD: `emit_option_to_mem`'s tuple-payload arm writes the tuple POSITIONALLY with NO element WIT
+           (the scratch-memory pre-scan does not yet recognize a record nested under an `option<tuple>` list
+           element — it would emit a store with no memory reserved, an `unknown memory 0` internal defect). So the
+           record element DECLINES CLEANLY (CDZ0903 via the product walk), and `option_payload_product_no_wit`
+           gates the classifier to match (a scalar/`Bytes` tuple element of an `option<tuple>` still crosses).
+           Grades Todo. The idealistic behavior is that it crosses as `option<tuple<record, s64>>`; CROSSING it is
+           a QUEUED unit needing the pre-scan to reserve scratch for a record under an option<tuple> payload.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (tuple (record (= p (s32)) (= q (s64))) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Option (Tuple (Record (: p Int32) (: q Int64)) Int64))) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some #tuple(#record((= p (: 1 Int32)) (= q 2)) 3)) None))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
