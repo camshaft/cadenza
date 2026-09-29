@@ -456,42 +456,45 @@ pub(super) fn emit_recursive_sum_resource(
                  (a scalar/unit host op result-escaping as a resource IS supported)",
             ));
         }
-        // DECLINE-DON'T-MISCOMPILE: a host op with a COMPOUND (`spilled_result`) or payloadless-ENUM
-        // (`enum_result`) result feeding a SUM-escaping resource entrypoint is not yet supported here — this
-        // branch builds the host op's `comp_functype` with NO result declaration (`host_op_comp_functype(…,
-        // None)`), so the host result crosses undeclared: the lowered import returns nothing while the guest
-        // expects the value (an enum's i32 disc / a spilled compound), and the emitted component fails
-        // validation (CDZ0910). Decline CLEANLY until the sum-escape host path declares the result type + lifts
-        // the boundary value into the escape's value-heap rep (the enum-disc → `sum-new` bridge). A scalar/unit
-        // host result feeding a sum escape IS supported.
-        if host_imports
-            .iter()
-            .any(|h| h.spilled_result.is_some() || h.enum_result.is_some())
-        {
+        // A COMPOUND (`spilled_result`) host result feeding a RECURSIVE-sum escape IS supported: the guest
+        // body already LIFTS the host compound into a value-heap node and wraps it (e.g. `Some(probe.spell)`
+        // → a value-heap Option cell — verified), so run() returns a real handle and the recursive-sum
+        // `value-encode` walks it. It needs only the host result's boundary TYPE declared
+        // (`build_host_result_types`) + the SHAPE-95 shared-`"mem"` machinery (a spilled result crosses via a
+        // caller retptr, which needs the Memory + Realloc canon options). A payloadless-ENUM result is NOT
+        // recursive (all-nullary → the flat-sum branch), so it never reaches here — decline it defensively.
+        if host_imports.iter().any(|h| h.enum_result.is_some()) {
             return Err(Reject::unsupported(
-                "a host op with a compound or enum result feeding a sum-escaping resource entrypoint is not \
-                 supported (the sum-escape host path does not declare the host result's boundary type nor \
-                 lift its value-heap rep); a scalar/unit host result-escaping as a resource IS supported",
+                "a payloadless-enum host result feeding a recursive-sum escape is not supported \
+                 (an enum is all-nullary — a flat sum — so it does not reach this recursive-sum branch)",
             ));
         }
+        // Declare the host result type (nominal defined + cref) + decide shared memory (a spilled compound
+        // result crosses via a retptr, needing the shared allocator/memory — SHAPE 95).
+        let (needs_list, result_defs, result_crefs, _arg_list_crefs) =
+            host_imports::build_host_result_types(db, &host_imports);
+        let needs_shared_mem = host_imports.iter().any(|h| h.spilled_result.is_some());
         let h = host_imports.len() as u32;
         let k = imports.len() as u32;
         let host_order: Vec<(String, String)> = host_imports
             .iter()
             .map(|hi| (hi.effect.clone(), hi.op.clone()))
             .collect();
-        let iface = host_imports[0].effect.clone();
-        // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
-        // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
-        if host_imports.iter().any(|hi| hi.effect != iface) {
+        let effect0 = host_imports[0].effect.clone();
+        // SINGLE effect only — the escape assembler imports ONE host interface, so >1 distinct effect would be
+        // conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
+        if host_imports.iter().any(|hi| hi.effect != effect0) {
             return Err(Reject::declined(
                 crate::diag::DeclineId::WasmMultiHostEffectDelegation,
                 "delegating more than one host effect from a resource-escaping entrypoint is not \
                  supported (one interface per envelope)",
             ));
         }
+        // Name the host import by the WORLD's FULL import interface (B1b), else the effect's short segment.
+        let iface = crate::backend::wasm::world_import_iface_for_effect(db, &effect0)
+            .unwrap_or_else(|| effect0.clone());
         let host_layout = layout
-            .with_import_base(h + k + 2)
+            .with_import_base(h + k + 2 + needs_shared_mem as u32)
             .with_host_order(host_order);
         let host_layout = &host_layout;
         let mut funcs: Vec<SelectedFunc> = Vec::new();
@@ -526,7 +529,7 @@ pub(super) fn emit_recursive_sum_resource(
             &escape_lifted_table(host_layout),
             0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
             &[], // no static-compound init
-            false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
+            needs_shared_mem, // SHAPE 95: a spilled-compound host result escapes via the shared `"mem"` module
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -534,9 +537,10 @@ pub(super) fn emit_recursive_sum_resource(
         let import_name = runtime_import_name();
         let host_fns: Vec<envelope::HostFn> = host_imports
             .iter()
-            .map(|hi| envelope::HostFn {
+            .enumerate()
+            .map(|(i, hi)| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0, &[], None),
+                comp_functype: host_op_comp_functype(hi, 0, 0, &[], result_crefs[i].clone()),
                 has_list_param: hi
                     .params
                     .iter()
@@ -544,17 +548,32 @@ pub(super) fn emit_recursive_sum_resource(
                 core_functype: Vec::new(),
             })
             .collect();
-        return Ok(envelope::assemble_host_runtime_resource(
-            &main_core,
-            &dtor_core,
-            &imports,
-            &import_name,
-            &iface,
-            &host_fns,
-            &make_params.boundary_slots(),
-            false, // recursive-sum host escape declines an enum/spilled host result above — no result def here
-            &[],
-        ));
+        let make_slots = make_params.boundary_slots();
+        return Ok(if needs_shared_mem {
+            envelope::assemble_host_runtime_resource_shared_mem(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &iface,
+                &host_fns,
+                &make_slots,
+                needs_list,
+                &result_defs,
+            )
+        } else {
+            envelope::assemble_host_runtime_resource(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &iface,
+                &host_fns,
+                &make_slots,
+                needs_list,
+                &result_defs,
+            )
+        });
     }
     // The fused envelope supports MULTIPLE distinct peer interfaces (grouped into g imported instances).
     let p = extern_imports.len() as u32;
