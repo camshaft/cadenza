@@ -1177,17 +1177,21 @@ pub(super) fn emit_option_to_mem(
         }
         Ty::Tuple(elems) => {
             let elems: Vec<Ty> = elems.iter().cloned().collect();
-            // A tuple payload of an `option` is written POSITIONALLY with NO element WIT: the scratch-memory
-            // pre-scan does not yet recognize a record element nested under an `option<tuple>` list element (it
-            // would emit a store with no memory reserved), so a record element of an `option<tuple>` payload is
-            // NOT enabled here — it declines cleanly in the product walk (matching the classifier's
-            // `option_payload_product_no_wit` gate). A scalar/`Bytes` tuple element crosses as before.
+            // A tuple payload of an `option` is written POSITIONALLY, each element carrying its own WIT (from
+            // the option payload's `WitType::Tuple`) so a nested RECORD element is WIT-ordered by the product
+            // walk (`emit_tuple_to_mem` → `emit_product_to_mem`) — the same per-element WIT the record's own
+            // tuple-field arm threads. A scalar/`Bytes` element writes inline / rope-at-cursor as before; a
+            // record element is SHAPE 314. An element `emit_product_to_mem` cannot place declines cleanly.
+            let elem_wits = match payload_wit {
+                Some(crate::wit_world::WitType::Tuple(ews)) => Some(ews.clone()),
+                _ => None,
+            };
             emit_tuple_to_mem(
                 db,
                 payload_handle,
                 payload_addr,
                 &elems,
-                None,
+                elem_wits.as_deref(),
                 cursor,
                 work_base + 3,
                 high,

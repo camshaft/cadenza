@@ -11138,18 +11138,20 @@ cases
   (live-objects 0))
 
 (case
-  "a list<option<tuple<record{p:s32, q:s64}, s64>>> host-op arg DECLINES CDZ0903 (record under an option<tuple> payload)"
+  "a list<option<tuple<record{p:s32, q:s64}, s64>>> host-op arg crosses (a record element under an option<tuple> payload)"
   (doc
-    "SHAPE 314 (v-wit-boundary) — the SCOPE BOUNDARY of the tuple-element-record slice: a record element nested
-           under an `option<tuple>` LIST element. A record element of a tuple crosses when the tuple is a direct
-           list element (SHAPE 311) or a record field (SHAPE 313), but NOT (yet) when the tuple is an `option`
-           PAYLOAD: `emit_option_to_mem`'s tuple-payload arm writes the tuple POSITIONALLY with NO element WIT
-           (the scratch-memory pre-scan does not yet recognize a record nested under an `option<tuple>` list
-           element — it would emit a store with no memory reserved, an `unknown memory 0` internal defect). So the
-           record element DECLINES CLEANLY (CDZ0903 via the product walk), and `option_payload_product_no_wit`
-           gates the classifier to match (a scalar/`Bytes` tuple element of an `option<tuple>` still crosses).
-           Grades Todo. The idealistic behavior is that it crosses as `option<tuple<record, s64>>`; CROSSING it is
-           a QUEUED unit needing the pre-scan to reserve scratch for a record under an option<tuple> payload.")
+    "SHAPE 314 (v-wit-boundary) — a record element nested under an `option<tuple>` LIST element crosses as
+           `option<tuple<record, s64>>`. A record element of a tuple crosses when the tuple is a direct list
+           element (SHAPE 311) or a record field (SHAPE 313); now also when the tuple is an `option` PAYLOAD:
+           `emit_option_to_mem`'s tuple-payload arm threads the payload tuple's element WITs (from the list
+           element's `WitType::Option(WitType::Tuple(…))`) into `emit_tuple_to_mem` → `emit_product_to_mem`, so a
+           nested RECORD element is WIT-ordered in place — the same per-element WIT the list-element tuple path
+           threads. `option_payload_product_no_wit`'s Tuple arm now checks each element `product_field_marshalable`
+           WITH WIT (`wit = true`), and `field_boundary_abi`'s `option<tuple>` arm admits any element it represents
+           (recursing per element); the two gates match the emit's capability. The register-flatten position (a
+           top-level record with such a field) still DECLINES cleanly — the register option<tuple> field arm's
+           `get_op_ty` yields no unbox op for a record element (decline-don't-miscompile). run() pushes
+           [Some((record{p:1,q:2}, 3)), None]; a VALID running component (live-objects=0).")
   (wit-world
     (world w (import cadenza:platform/probe
       (member push (func (param m (list (option (tuple (record (= p (s32)) (= q (s64))) (s64))))) (result (s64)))))))
@@ -11226,9 +11228,12 @@ cases
            315/316), but a `Bytes` (or other cursor-spilling) field inside the case declines CLEANLY (CDZ0903 at
            the arg level — `variant_mixed_payload_cases` does not classify a cursor-spilling record case as a
            marshalable mixed case here). Grades Todo. The idealistic behavior is that it crosses (the rope spilling
-           at the shared cursor); CROSSING it is a QUEUED unit needing the scratch-memory pre-scan to reserve for a
-           Bytes field nested inside a variant record payload case (the same pre-scan family as the option-payload
-           nesting, SHAPE 314).")
+           at the shared cursor); CROSSING it is a QUEUED unit needing a RICHER field-abi repr for
+           `VariantPayloadKind::Record` (which today carries `(name, scalar-AbiValType)` pairs — `abi_val_type` is
+           `None` for a Bytes field, so the classifier declines the whole variant). The MEM emit half is already
+           ready (`emit_variant_mixed_to_mem`'s record-case arm re-resolves the record from the guest Ty + WIT and
+           calls `emit_record_to_mem`, which spills a Bytes field at the cursor); the block is the classifier +
+           register-flatten (`variant_mixed_join_slots` / the cref) that read the scalar-only `AbiValType` pairs.")
   (wit-world
     (world w (import cadenza:platform/probe (member push (func (param m (list (record (= v (variant (a) (b (record (= d (list (u8))) (= n (s64))))))))) (result (s64)))))))
   (input
@@ -11481,5 +11486,30 @@ cases
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
   (host-arg-received cadenza:platform/probe.push #list(#tuple((Some (stop 7)) 9)))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{o: option<tuple<record{p:s32, q:s64}, s64>>}> host-op arg crosses (a record element under an option<tuple> FIELD)"
+  (doc
+    "SHAPE 328 (v-wit-boundary) — the RECORD-FIELD twin of SHAPE 314: an `option<tuple<record, s64>>` as a record
+           list element's FIELD (rather than the direct list element). `emit_product_to_mem`'s option-field arm
+           threads the field's `WitType::Option(WitType::Tuple(…))` payload WIT to `emit_option_to_mem`, whose
+           tuple arm threads the element WITs into `emit_tuple_to_mem` → `emit_product_to_mem` so the RECORD
+           element is WIT-ordered in place. `field_boundary_abi`'s `option<tuple>` arm admits the record element
+           (recursing per element to build `Option(Tuple([Record, Scalar]))`); `product_field_marshalable` gates
+           the option field on `field_boundary_abi`. run() pushes [{o: Some((record{p:1,q:2}, 3))}]; a VALID
+           running component (live-objects=0) — the same widening as SHAPE 314 at the record-field position.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= o (option (tuple (record (= p (s32)) (= q (s64))) (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: o (Option (Tuple (Record (: p Int32) (: q Int64)) Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= o (Some #tuple(#record((= p (: 1 Int32)) (= q 2)) 3))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
