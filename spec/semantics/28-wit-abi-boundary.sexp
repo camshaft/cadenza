@@ -11327,3 +11327,72 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record{o: option<list<s64>>}> host-op arg crosses (an option<list> FIELD of a record list element)"
+  (doc
+    "SHAPE 322 (v-wit-boundary) — a `list<record{o: option<list<s64>>}>` host-op ARGUMENT: a record list element
+           with an `option<list>` FIELD. The option-field arm (widened in SHAPE 318-321 to any `field_boundary_abi`
+           payload) routes it to `emit_option_to_mem`, whose list-payload arm marshals the payload list's backing
+           into `mem` at the shared cursor and writes `(ptr, count)` at the payload offset on Some.
+           `field_boundary_abi`'s `option<list>` arm (recursing the list element) declares the ABI; the cursor is
+           reserved for the enclosing list arg. Pins the option<list> field coverage the SHAPE 318-321 widening
+           enabled. run() pushes [{o: Some([1,2,3])}]; a VALID running component (live-objects=0).")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (list (record (= o (option (list (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: o (Option (List Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= o (Some #list(1 2 3))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{o: option<option<s64>>}> host-op arg crosses (a nested option<option> FIELD of a record list element)"
+  (doc
+    "SHAPE 323 (v-wit-boundary) — a `list<record{o: option<option<s64>>}>` host-op ARGUMENT: a record list element
+           with a NESTED `option<option<scalar>>` FIELD. The option-field arm routes it to `emit_option_to_mem`,
+           whose nested-option payload arm recurses `emit_option_to_mem` on the inner option at the payload offset
+           (outer disc, then inner disc + scalar). `field_boundary_abi`'s nested-`option<option>` arm declares the
+           ABI. Pins the option<option> field coverage the SHAPE 318-321 widening enabled. run() pushes
+           [{o: Some(Some(7))}]; a VALID running component (live-objects=0).")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (list (record (= o (option (option (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: o (Option (Option Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= o (Some (Some 7))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{o: option<tuple<bytes, s64>>}> host-op arg DECLINES CDZ0903 (option<tuple> with a non-scalar element)"
+  (doc
+    "SHAPE 324 (v-wit-boundary) — the SCOPE BOUNDARY of the option<tuple> FIELD: an `option<tuple<list<u8>, s64>>`
+           whose tuple has a `Bytes` (non-scalar) ELEMENT. An `option<tuple-of-scalars>` field crosses (SHAPE 321),
+           but a Bytes/compound tuple element declines CLEANLY (CDZ0903): `field_boundary_abi`'s `option<tuple>` arm
+           is restricted to an ALL-SCALAR tuple, so the option field is not ABI-representable and the classifier
+           declines it (matching the emit's `field_boundary_abi` gate). Grades Todo. CROSSING it is a QUEUED unit
+           in the SHARED-ABI family: `field_boundary_abi` fans out to THREE marshal positions (register-flatten,
+           record-field-arg, list-element), so widening its `option<tuple>` arm to a non-scalar element requires
+           fixing all three marshals in lockstep (the same coordinated effort as SHAPE 314).")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (list (record (= o (option (tuple (list (u8)) (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: o (Option (Tuple Bytes Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= o (Some #tuple(b"hi" 9))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
