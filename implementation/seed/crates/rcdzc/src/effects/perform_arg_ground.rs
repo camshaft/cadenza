@@ -1,8 +1,11 @@
-//! Perform-ARGUMENT type GROUNDING — `ground_perform_arg_ty` plus its deferred-int-width commit helpers.
-//! Grounds an under-constrained perform / host-op argument (a free-var `(None)` / `#list()` payload or
-//! element, or a DEFERRED-width int literal) against the operation's DECLARED parameter type, so the guest
-//! flatten emits the WIT-authoritative width / shape instead of a CDZ0910 stack imbalance. Extracted from
-//! the effects module to keep each file under the source-size lint; behavior unchanged.
+//! Perform-ARGUMENT type GROUNDING — `ground_perform_arg_ty` plus its under-determined-leaf commit helpers.
+//! Grounds an under-constrained perform / host-op argument against the operation's DECLARED parameter type,
+//! so the guest flatten emits the WIT-authoritative width / shape instead of a CDZ0910 stack imbalance.
+//! THREE axes of under-determination: a free-var payload (a bare `(None)` : `(Option _)` — bound by `unify`),
+//! an `Any`-element empty compound (a bare `(list)` : `(List Any)` — committed to the declared element, since
+//! `Any` is not a `Var` and `unify` leaves it untouched; SHAPE 104), and a DEFERRED-width int literal
+//! (committed to the declared FIXED width; SHAPE 103/104 width). Extracted from the effects module to keep
+//! each file under the source-size lint.
 
 use crate::ast::StructId;
 use crate::db::Db;
@@ -26,9 +29,12 @@ use crate::resolved::Resolved;
 /// SHAPE 104 bare empty-list arg). Diagnosed by v-wit-boundary + v-core-opt; general form of
 /// [`crate::infer::ground_handler_state_ty`].
 pub fn ground_perform_arg_ty(db: &mut Db, id: StructId, t: crate::ty::Ty) -> crate::ty::Ty {
-    // TWO grounding axes, both keyed off the op's DECLARED parameter type at this arg position:
-    //   • a FREE-VAR shape — a bare `(None)` → `(Option _)`, an empty `#list()` → `(List _)` (SHAPE 103/104):
-    //     the `unify` below binds the payload/element var to the declared one.
+    // THREE grounding axes, all keyed off the op's DECLARED parameter type at this arg position:
+    //   • a FREE-VAR shape — a bare `(None)` → `(Option _)` (SHAPE 103): the `unify` below binds the payload
+    //     var to the declared one.
+    //   • an `Any` shape — a bare EMPTY compound, e.g. `(list)` → `(List Any)` (SHAPE 104): the empty compound
+    //     has no element value to ground FROM, and `Any` is NOT a `Var`, so `unify`/`subst.apply` leave it
+    //     untouched — `commit_underdetermined_to_declared` adopts the concrete declared element for it below.
     //   • a DEFERRED-WIDTH int — a bare literal `3` (defaults to `Int64`), or a compound whose element is one
     //     (`#tuple(3 7)` → `(Tuple Int64 Int64)`). A deferred int has NO free var (its width DEFAULTS to
     //     Int64), so the free-var gate alone SKIPPED it — yet a HOST-op param is WIT-authoritative (`s32`), so
@@ -41,7 +47,7 @@ pub fn ground_perform_arg_ty(db: &mut Db, id: StructId, t: crate::ty::Ty) -> cra
     //     changing global unify semantics. Sound: an out-of-range literal still faults CDZ0302 (the perform-arg
     //     range-check `width_fault_against_ty` at application.rs descends compounds), so narrowing the width
     //     cannot silently truncate an over-range value.
-    if !crate::infer::ty_has_free_var(db, &t) && !ty_has_deferred_int(&t) {
+    if !crate::infer::ty_has_free_var(db, &t) && !ty_has_deferred_int(&t) && !ty_has_any(&t) {
         return t;
     }
     let Some(parent) = db.parent_of(id) else {
@@ -91,9 +97,11 @@ pub fn ground_perform_arg_ty(db: &mut Db, id: StructId, t: crate::ty::Ty) -> cra
     let ncx = db.name_ctx();
     let _ = crate::unify::unify(&mut subst, &t, &param_ty, &ncx);
     let grounded = subst.apply(&t);
-    // DEFERRED-WIDTH axis: commit each deferred int width/sign in the (free-var-grounded) type to the
-    // declared param's FIXED width — the unify above left them deferred (its `Width::Deferred` arm is a no-op).
-    commit_deferred_int_widths(&grounded, &param_ty)
+    // ANY + DEFERRED-WIDTH axes: commit each `Any` value leaf (an empty-compound element — a bare `(list)` :
+    // `(List Any)`, which the free-var axis above CANNOT ground because `Any` is not a `Var` and `unify`
+    // leaves it untouched — SHAPE 104) and each deferred int width/sign (left deferred by `unify_width`'s
+    // no-op `Deferred` arm) to the declared param's concrete sub-type / FIXED width.
+    commit_underdetermined_to_declared(&grounded, &param_ty)
 }
 
 /// Whether `t` carries an integer with a DEFERRED width or sign (a bare literal that has not been narrowed),
@@ -114,16 +122,49 @@ fn ty_has_deferred_int(t: &crate::ty::Ty) -> bool {
     }
 }
 
-/// Commit each DEFERRED int width/sign in `value` to the corresponding FIXED width/sign in `declared`,
-/// walking both types in PARALLEL and descending matching compound shapes. A deferred int against a
-/// concrete declared int adopts its width + sign (the perform-arg width grounding — the analogue of an
-/// annotation); an already-fixed width, a non-int, a non-fixed declared leaf, or a shape mismatch is left
-/// as-is (returns the `value` sub-type unchanged). Nominal is intentionally NOT descended (its `inner` is a
-/// derived machine-rep template that must not be rebuilt here) — a nominal-wrapped deferred-width arg stays
-/// ungrounded (v-wit-boundary's coded decline still holds it; never a miscompile).
-fn commit_deferred_int_widths(value: &crate::ty::Ty, declared: &crate::ty::Ty) -> crate::ty::Ty {
+/// Whether `t` carries an `Any` leaf, descending compounds. An `Any` element arises for an EMPTY compound
+/// (a bare `(list)` infers `(List Any)`, an empty map/set likewise) — an unconstrained element with no value
+/// to ground FROM. `Any` is NOT a `Var`, so [`crate::infer::ty_has_free_var`] misses it and the FREE-VAR
+/// axis's `unify`+`subst.apply` leaves it untouched; [`ground_perform_arg_ty`] needs this SEPARATE gate so it
+/// still commits the `Any` to the WIT-authoritative declared element (SHAPE 104). Nominal is NOT descended
+/// (its `inner` is a machine-rep template — matches `commit_underdetermined_to_declared`'s carve-out).
+fn ty_has_any(t: &crate::ty::Ty) -> bool {
+    use crate::ty::Ty;
+    match t {
+        Ty::Any => true,
+        Ty::Tuple(elems) => elems.iter().any(ty_has_any),
+        Ty::List(e) | Ty::Set(e) => ty_has_any(e),
+        Ty::Map(k, v) => ty_has_any(k) || ty_has_any(v),
+        Ty::Record(fields) => fields.values().any(ty_has_any),
+        Ty::Sum { args, .. } => args.iter().any(ty_has_any),
+        Ty::Qty { inner, .. } => ty_has_any(inner),
+        _ => false,
+    }
+}
+
+/// Commit each UNDER-DETERMINED leaf in `value` to the corresponding more-defined leaf in `declared`,
+/// walking both types in PARALLEL and descending matching compound shapes. Two axes:
+///   • an `Any` value leaf (the empty-compound element — a bare `(list)` infers `(List Any)`, no element
+///     value to ground FROM) adopts the whole declared sub-type — SHAPE 104. (A `Var` payload is already
+///     grounded by the caller's `unify`+`subst.apply` FREE-VAR axis before this walk, so it needs no arm
+///     here; `Any` is NOT a `Var` and `unify` leaves it untouched, hence this explicit commit.)
+///   • a DEFERRED int width/sign adopts the declared FIXED width/sign — the perform-arg width grounding
+///     (SHAPE 103/104 width), the analogue of an annotation.
+/// An already-fixed width, a non-`Any`/non-deferred leaf, a non-fixed declared leaf, or a shape mismatch is
+/// left as-is (returns the `value` sub-type unchanged) — so it never FORCES a genuine fixed-width mismatch
+/// (that is rejected earlier at `unify_width`, CDZ0301). Nominal is intentionally NOT descended (its `inner`
+/// is a derived machine-rep template that must not be rebuilt here) — a nominal-wrapped under-determined arg
+/// stays ungrounded (never a miscompile: worst case an invalid-wasm reject).
+fn commit_underdetermined_to_declared(
+    value: &crate::ty::Ty,
+    declared: &crate::ty::Ty,
+) -> crate::ty::Ty {
     use crate::ty::{IntTy, Sign, Ty, Width};
     match (value, declared) {
+        // `Any` VALUE leaf adopts the concrete declared sub-type (the empty-compound element — SHAPE 104).
+        // A concrete value against an `Any` declared leaf keeps the value (falls to the `_` arm below), so a
+        // genuinely `Any`-typed op param never corrupts a determined arg.
+        (Ty::Any, d) => d.clone(),
         (Ty::Int(vit), Ty::Int(dit)) => {
             let width = match (vit.width, dit.width) {
                 (Width::Deferred, Width::Fixed(w)) => Width::Fixed(w),
@@ -138,21 +179,21 @@ fn commit_deferred_int_widths(value: &crate::ty::Ty, declared: &crate::ty::Ty) -
         (Ty::Tuple(ve), Ty::Tuple(de)) if ve.len() == de.len() => Ty::Tuple(
             ve.iter()
                 .zip(de.iter())
-                .map(|(v, d)| commit_deferred_int_widths(v, d))
+                .map(|(v, d)| commit_underdetermined_to_declared(v, d))
                 .collect(),
         ),
-        (Ty::List(v), Ty::List(d)) => Ty::List(Box::new(commit_deferred_int_widths(v, d))),
-        (Ty::Set(v), Ty::Set(d)) => Ty::Set(Box::new(commit_deferred_int_widths(v, d))),
+        (Ty::List(v), Ty::List(d)) => Ty::List(Box::new(commit_underdetermined_to_declared(v, d))),
+        (Ty::Set(v), Ty::Set(d)) => Ty::Set(Box::new(commit_underdetermined_to_declared(v, d))),
         (Ty::Map(vk, vv), Ty::Map(dk, dv)) => Ty::Map(
-            Box::new(commit_deferred_int_widths(vk, dk)),
-            Box::new(commit_deferred_int_widths(vv, dv)),
+            Box::new(commit_underdetermined_to_declared(vk, dk)),
+            Box::new(commit_underdetermined_to_declared(vv, dv)),
         ),
         (Ty::Record(vf), Ty::Record(df)) => {
             let committed: std::collections::BTreeMap<crate::resolved::Symbol, Ty> = vf
                 .iter()
                 .map(|(name, vt)| {
                     let ct = match df.get(name) {
-                        Some(dt) => commit_deferred_int_widths(vt, dt),
+                        Some(dt) => commit_underdetermined_to_declared(vt, dt),
                         None => vt.clone(),
                     };
                     (name.clone(), ct)
@@ -165,11 +206,11 @@ fn commit_deferred_int_widths(value: &crate::ty::Ty, declared: &crate::ty::Ty) -
             args: va
                 .iter()
                 .zip(da.iter())
-                .map(|(v, d)| commit_deferred_int_widths(v, d))
+                .map(|(v, d)| commit_underdetermined_to_declared(v, d))
                 .collect(),
         },
         (Ty::Qty { inner: vi, unit }, Ty::Qty { inner: di, .. }) => Ty::Qty {
-            inner: Box::new(commit_deferred_int_widths(vi, di)),
+            inner: Box::new(commit_underdetermined_to_declared(vi, di)),
             unit: unit.clone(),
         },
         _ => value.clone(),
