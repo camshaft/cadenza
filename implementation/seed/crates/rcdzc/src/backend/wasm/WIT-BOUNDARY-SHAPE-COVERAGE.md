@@ -192,19 +192,19 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
 - REMAINING: the other 4 resource-escape assembler variants (recursive-sum/closure/peer + a compound
   `spilled_result` feeding a sum escape) do not yet carry a spilled host result (no case exercises them), but
   the `needs_shared_mem` core-module mode is ready for them.
-- **[emit] MULTI-INTERFACE host delegation from a resource-escaping entrypoint — ✅ DONE for ALL THREE value-form
-  escapes: flat-sum (SHAPE 341), recursive-sum List (SHAPE 344), AND flat-tuple (SHAPE 345).** Two DISTINCT host
-  effects feeding one resource-escaping entrypoint import EACH effect as its own component instance
-  (`assemble_host_runtime_resource_multi`, which is escape-form-agnostic — the escape form is baked into the core
-  module) and re-export all ops through the one `"host"` core module the program binds. `emit_runtime_sum_resource`
-  (flat-sum, SHAPE 341), `emit_recursive_sum_resource` (recursive-sum List, SHAPE 344), and the flat/product host
-  escape branch in `mod.rs` (flat-tuple, SHAPE 345) all compute `distinct_effects` and route >1 to the multi
-  assembler; a single effect keeps the byte-identical one-interface envelope. SCOPE: scalar/unit ops (a
-  compound-result op across >1 interface routes through the shared-memory multi form — declines cleanly; the
-  flat-tuple branch declines a compound/enum host result before the multi split); two effects sharing an op name
-  decline cleanly (they would collide in the one `"host"` module). REMAINING (a DIFFERENT assembler): the BYTES
-  scalar-methods resource escape (`resource_sig.rs`) still declines >1 distinct host effect — the next multi-host
-  increment.
+- **[emit] MULTI-INTERFACE host delegation from a resource-escaping entrypoint — ✅ DONE for the WHOLE FAMILY:
+  flat-sum (SHAPE 341), recursive-sum List (SHAPE 344), flat-tuple (SHAPE 345), AND the Bytes scalar-methods
+  escape (SHAPE 346).** Two DISTINCT host effects feeding one resource-escaping entrypoint import EACH effect as
+  its own component instance and re-export all ops through the one `"host"` core module the program binds.
+  `emit_runtime_sum_resource` (flat-sum), `emit_recursive_sum_resource` (recursive-sum List), and the flat/product
+  host escape branch in `mod.rs` (flat-tuple) route >1 `distinct_effects` to the escape-form-agnostic
+  `assemble_host_runtime_resource_multi`; the BYTES/String scalar-methods escape (`resource_sig.rs`) routes to the
+  NEW `assemble_host_runtime_resource_with_scalar_methods_multi` (the g-group multi-interface import layer spliced
+  onto the make/encode + len/is-empty/to-bytes scalar-methods tail — component type/instance bases shift by g,
+  `g==1` byte-identical to the single-interface form). A single effect keeps the byte-identical one-interface
+  envelope everywhere. SCOPE: scalar/unit ops — a compound/enum host result across >1 interface declines cleanly
+  (a shared-`"mem"` multi form, a later increment); two effects sharing an op name decline cleanly (they would
+  collide in the one `"host"` module).
 - **[naming, B1b] the PLAIN host-delegating envelope now names the host import by the world's FQ import
   interface — ✅ DONE.** `world_import_iface_for_effect(db, effect)` reverse-maps the guest effect (named
   after the interface's SHORT kebab segment by `synthesize_world_import_effect_decls`) to the world IMPORT

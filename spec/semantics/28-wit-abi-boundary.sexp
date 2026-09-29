@@ -11921,6 +11921,36 @@ cases
   (live-objects 0))
 
 (case
+  "TWO host effects delegated from one Bytes.of resource escape each import their own interface"
+  (doc
+    "SHAPE 346 (v-wit-boundary) — WORKING. run() = Bytes.of(#list(a.f, b.g)) delegating TWO distinct host
+           effects (a, b) from one BYTES scalar-methods resource-escaping entrypoint — the last multi-host escape
+           arm, completing the family across the sum (SHAPE 341), recursive-sum List (SHAPE 344), flat-tuple
+           (SHAPE 345), and now the Bytes-with-methods escape. Unlike the sum/flat branches (which reuse
+           `assemble_host_runtime_resource_multi`), the Bytes escape uses the scalar-METHODS assembler
+           (make/encode + len/is-empty/to-bytes), so a NEW `assemble_host_runtime_resource_with_scalar_methods_multi`
+           splices the g-group multi-interface import layer onto the scalar-methods tail: it imports EACH host
+           effect as its own component instance and re-exports all ops through the ONE `\"host\"` core module the
+           program binds. SCOPE: scalar/unit host ops (a compound host result across >1 interface routes through a
+           shared-memory multi form — declines cleanly). a.f -> 3, b.g -> 4, run() -> b\"\\x03\\x04\"; byte-exact
+           and zero-leak.")
+  (wit-world
+    (world w
+      (import cadenza:platform/a (member f (func (result (u8)))))
+      (import cadenza:platform/b (member g (func (result (u8)))))))
+  (input
+    (do
+      (effect a (op f (-> Unit UInt8)))
+      (effect b (op g (-> Unit UInt8)))
+      (def (run) (Bytes.of #list((host (a) (a.f unit)) (host (b) (b.g unit)))))
+      (export run)))
+  (call run)
+  (host-responses (respond a.f (: 3 UInt8)) (respond b.g (: 4 UInt8)))
+  (host-calls (call cadenza:platform/a.f) (call cadenza:platform/b.g))
+  (output (: b"\x03\x04" Bytes))
+  (live-objects 0))
+
+(case
   "a HOST effect and a PEER effect both feeding a scalar entrypoint compose both import spaces"
   (doc
     "SHAPE 342a (v-wit-boundary) — WORKING, the NON-escape foundation of SHAPE 342. run() = H.h + Math.add 5
