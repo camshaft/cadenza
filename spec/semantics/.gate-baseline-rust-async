@@ -10937,6 +10937,8 @@ todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> hand
 todo	a multi-export record interface guest emits a wrapper per member and runs both (via an imposed WIT world)
 todo	a multi-shot whose host call completed before the perform folds by hoisting the host prefix out of the per-resume splice
 todo	a mutually-recursive group const-folds a DEAD performing branch away — a live literal-if perform is kept while a dead literal-if perform is eliminated with no spurious state advance (adv-69 rw4 sub-face, dead-branch elimination)
+todo	a mutually-recursive group const-folds a dead literal-if branch that wraps the MUTUAL CALL — dropping the recursion arm cuts the cycle after one step (adv-69 rw4 sub-face, dead-branch drops the call)
+todo	a mutually-recursive group const-folds a literal-if that selects between TWO distinct effects' performs — the taken effect advances, the untaken effect is dropped (adv-69 rw4 sub-face, multi-effect discrimination)
 todo	a mutually-recursive group with a CONSTANT-condition branch-perform sharing a strict expr with the mutual call folds via literal-if const-fold (adv-69 rw4 sub-face)
 todo	a mutually-recursive group with a CONSTANT-condition branch-perform whose FALSE literal selects the performing else-branch folds via literal-if const-fold (adv-69 rw4 sub-face, false-direction)
 todo	a named-variant result writer name-matches (not positionally) with a reversed guest decl (via an imposed WIT world)
