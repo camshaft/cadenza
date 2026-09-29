@@ -3800,6 +3800,7 @@ pass	a mutually-recursive group performs in one branch and recurses in the OTHER
 pass	a mutually-recursive group performs through a shared non-recursive helper
 pass	a mutually-recursive group threads two nested handlers' states at once
 pass	a mutually-recursive group with a CONSTANT-condition branch-perform sharing a strict expr with the mutual call folds via literal-if const-fold (adv-69 rw4 sub-face)
+pass	a mutually-recursive group with a CONSTANT-condition branch-perform whose FALSE literal selects the performing else-branch folds via literal-if const-fold (adv-69 rw4 sub-face, false-direction)
 pass	a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds
 pass	a mutually-recursive pair fully named by the export clause resolves
 pass	a mutually-recursive parser projects a return tuple and rebuilds one with a boxed sum across the edge
