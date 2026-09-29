@@ -3065,6 +3065,7 @@ pub fn runtime_resource_core_module_form_ex(
         0,     // no static compounds on this wrapper path (byte-identical to before)
         &[],   // no static-compound init
         false, // this wrapper never shares memory (defines its own) — byte-identical
+        None,  // no host+peer leading split (uniform leading kind)
     )
 }
 
@@ -3118,6 +3119,13 @@ pub fn runtime_resource_core_module_form_ex2(
     // breaking the lower<->instance circularity. `false` (every existing resource-escape shape) is
     // byte-identical: the module defines its own memory (page min 1) + a stub `cabi_realloc`.
     needs_shared_mem: bool,
+    // HOST + PEER FUSION (SHAPE 342): the leading `extern_fns` are normally all-one-kind (all `"host"` when
+    // `leading_is_host`, else all `"peer"`). `Some(split)` instead lays them MIXED: ops `0..split` import
+    // from `"peer"`, ops `split..e` from `"host"` — the peer-then-host order the fused escape assembler and
+    // the `CallHostImport(host_index + peer_count)` select shift both assume. `None` = the uniform
+    // `leading_is_host` behavior (every existing caller), byte-identical. Only the import item's module
+    // STRING per leading op changes; the func-index layout (`0..e`) is unaffected (`e` is still the total).
+    leading_host_start: Option<usize>,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let e = extern_fns.len();
@@ -3199,8 +3207,14 @@ pub fn runtime_resource_core_module_form_ex2(
     let mut import_items = Vec::new();
     for (i, f) in extern_fns.iter().enumerate() {
         // The leading ops import from `"host"` (host-effect fusion) or `"peer"` (cross-component extern) —
-        // same func-index `i`, module string is the only difference (see `leading_is_host`).
-        import_items.extend_from_slice(&if leading_is_host {
+        // same func-index `i`, module string is the only difference. `leading_host_start = Some(split)` lays
+        // them MIXED (peer `0..split`, host `split..e` — the host+peer FUSION); `None` uses the uniform
+        // `leading_is_host` kind (every non-fused caller).
+        let op_is_host = match leading_host_start {
+            Some(split) => i >= split,
+            None => leading_is_host,
+        };
+        import_items.extend_from_slice(&if op_is_host {
             host_import_item(&f.op, i as u32)
         } else {
             extern_import_item(&f.op, i as u32)

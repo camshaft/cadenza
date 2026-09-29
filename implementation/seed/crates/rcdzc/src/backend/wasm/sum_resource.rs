@@ -89,18 +89,149 @@ pub(super) fn emit_runtime_sum_resource(
             }
         });
     }
-    // HOST-DELEGATED effect in a SUM resource escape — the host mirror (increment 2), same as the Flat site.
-    // Scalar/unit host ops compose via `assemble_host_runtime_resource`; a String-param host op or a
-    // host-alongside-peer shape declines.
-    if !host_imports.is_empty() {
-        if !extern_imports.is_empty() {
+    // HOST + PEER FUSION in a sum escape (SHAPE 342): a host effect AND a peer effect both feed a
+    // sum-escaping entrypoint. The escape core module lays leading ops PEER (`"peer"`, `0..p`) then HOST
+    // (`"host"`, `p..p+h`) then runtime (`leading_host_start = Some(p)`), and `assemble_host_extern_runtime_resource`
+    // imports both interface spaces alongside the resource escape. SCOPE: scalar/unit ops (no shared memory) —
+    // a host op needing shared memory (string param / spilled compound result) composed with a peer declines
+    // cleanly (decline-don't-miscompile), since that composes further import spaces this shape omits.
+    if !host_imports.is_empty() && !extern_imports.is_empty() {
+        if host::set_needs_memory(&host_imports)
+            || host_imports.iter().any(|h| h.spilled_result.is_some())
+        {
             return Err(Reject::declined(
                 crate::diag::DeclineId::WasmHostPeerResourceFusion,
-                "the host+peer+resource fusion — a host effect and a peer effect both composed with a \
-                 resource-escaping entrypoint — needs the combined host-and-peer import-space emit \
-                 alongside the resource escape",
+                "a host op needing shared memory (a string parameter or a compound result) composed with a \
+                 peer effect in a sum-escaping entrypoint is not supported; the shared-memory host+peer \
+                 escape composes import spaces this shape omits",
             ));
         }
+        let p = extern_imports.len() as u32;
+        let h = host_imports.len() as u32;
+        let k = imports.len() as u32;
+        let extern_order: Vec<(String, String)> = extern_imports
+            .iter()
+            .map(|e| (e.interface.clone(), e.op.clone()))
+            .collect();
+        let host_order: Vec<(String, String)> = host_imports
+            .iter()
+            .map(|hi| (hi.effect.clone(), hi.op.clone()))
+            .collect();
+        // import_base = peer + host + runtime + resource-new/rep. Both orders on the layout so a peer call
+        // resolves via `extern_index` and a host call via `host_index + extern_order.len()` (the select shift).
+        let fused_layout = layout
+            .with_import_base(p + h + k + 2)
+            .with_extern_order(extern_order)
+            .with_host_order(host_order);
+        let fused_layout = &fused_layout;
+        let mut funcs: Vec<SelectedFunc> = Vec::new();
+        for &def in &fused_layout.order {
+            let body = def_body(db, def)?;
+            let params = match fused_layout.export_plan(def) {
+                Some(e) => e.params.clone(),
+                None => crate::layout::def_params(db, def),
+            };
+            funcs.push(select_function_of(
+                db,
+                body,
+                &params,
+                fused_layout,
+                Some(def),
+            )?);
+        }
+        append_lifted_bodies(db, &mut funcs, fused_layout)?;
+        let export_abs = fused_layout.abs(export_def).ok_or_else(|| {
+            Reject::decline("the escaping sum export is not in the emission order")
+        })?;
+        let (make_param_vts, make_param_bytes) =
+            export_make_params(db, fused_layout, export_def)?.scalars_only()?;
+        let make_core_slots: Vec<serialize::MakeCoreSlot> = make_param_vts
+            .iter()
+            .map(|_| serialize::MakeCoreSlot::Scalar)
+            .collect();
+        // Leading ops for the core module: PEER first (from "peer"), then HOST (from "host") via
+        // `leading_host_start = Some(p)`.
+        let mut leading: Vec<host::ExternImport> = extern_imports.clone();
+        leading.extend(host_as_extern_for(&host_imports));
+        let mut main_core = serialize::runtime_resource_core_module_form_ex2(
+            &funcs,
+            &imports,
+            &leading,
+            false, // leading_is_host is superseded by the split below
+            export_abs,
+            serialize::EscapeForm::Sum {
+                tpl,
+                enum_disc: result_is_enum_disc,
+            },
+            &[],
+            &make_param_vts,
+            &make_core_slots,
+            &escape_lifted_table(fused_layout),
+            0,
+            &[],
+            false,
+            Some(p as usize), // peer ops `0..p`, host ops `p..p+h`
+        )
+        .map_err(Reject::decline)?;
+        append_debug_sections(db, fused_layout, &funcs, &imports, spans, &mut main_core);
+        let dtor_core = serialize::resource_dtor_module_with_drop();
+        let import_name = runtime_import_name();
+        let make_slots: Vec<envelope::ArgSlot> = make_param_bytes
+            .iter()
+            .map(|&b| envelope::ArgSlot::Scalar(b))
+            .collect();
+        let peer_op_ifaces: Vec<&str> = extern_imports
+            .iter()
+            .map(|e| e.interface.as_str())
+            .collect();
+        let peer_fns: Vec<envelope::HostFn> = extern_imports
+            .iter()
+            .map(|e| envelope::HostFn {
+                op: e.op.clone(),
+                comp_functype: extern_op_comp_functype(e),
+                core_functype: Vec::new(),
+                has_list_param: false,
+            })
+            .collect();
+        let (_needs_list, _result_defs, result_crefs, _arg_list_crefs) =
+            host_imports::build_host_result_types(db, &host_imports);
+        let host_op_ifaces_owned: Vec<String> = host_imports
+            .iter()
+            .map(|hi| {
+                crate::backend::wasm::world_import_iface_for_effect(db, &hi.effect)
+                    .unwrap_or_else(|| hi.effect.clone())
+            })
+            .collect();
+        let host_op_ifaces: Vec<&str> = host_op_ifaces_owned.iter().map(String::as_str).collect();
+        let host_fns: Vec<envelope::HostFn> = host_imports
+            .iter()
+            .enumerate()
+            .map(|(i, hi)| envelope::HostFn {
+                op: hi.op.clone(),
+                comp_functype: host_op_comp_functype(hi, 0, 0, &[], result_crefs[i].clone()),
+                has_list_param: hi
+                    .params
+                    .iter()
+                    .any(|pp| matches!(pp, host::HostParam::Bytes)),
+                core_functype: Vec::new(),
+            })
+            .collect();
+        return Ok(envelope::assemble_host_extern_runtime_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &peer_op_ifaces,
+            &peer_fns,
+            &host_op_ifaces,
+            &host_fns,
+            &make_slots,
+        ));
+    }
+    // HOST-DELEGATED effect in a SUM resource escape — the host mirror (increment 2), same as the Flat site.
+    // Scalar/unit host ops compose via `assemble_host_runtime_resource`; a host op with a String parameter
+    // takes the shared-memory variant.
+    if !host_imports.is_empty() {
         // A payloadless-ENUM host RESULT (`enum_result`) feeding a sum-escaping resource entrypoint IS
         // supported: the enum crosses as a BARE i32 disc, its boundary type declared via
         // `build_host_result_types` (the nominal `enum` DEFINED+EXPORTED type in each op's `comp_functype` +
@@ -268,6 +399,7 @@ pub(super) fn emit_runtime_sum_resource(
             0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
             &[], // no static-compound init
             needs_shared_mem, // SHAPE 95: a string/compound host PARAM crosses via the shared `"mem"` module
+            None,             // no host+peer leading split
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -416,6 +548,7 @@ pub(super) fn emit_runtime_sum_resource(
         0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
         &[], // no static-compound init
         false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
+        None,  // no host+peer leading split
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
@@ -662,6 +795,7 @@ pub(super) fn emit_recursive_sum_resource(
             0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
             &[], // no static-compound init
             needs_shared_mem, // SHAPE 95: a spilled-compound host result escapes via the shared `"mem"` module
+            None,             // no host+peer leading split
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -750,6 +884,7 @@ pub(super) fn emit_recursive_sum_resource(
         static_compounds.len(),
         &static_compound_init,
         false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
+        None,  // no host+peer leading split
     )
     .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);

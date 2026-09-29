@@ -11862,24 +11862,21 @@ cases
   (output (: 7 Int64)))
 
 (case
-  "a HOST effect + a PEER effect both feeding one sum-escaping entrypoint decline cleanly (deferral: host+peer fusion emit)"
+  "a HOST effect and a PEER effect both feeding one sum-escaping entrypoint compose both import spaces"
   (doc
-    "SHAPE 342 (v-wit-boundary) — DEFERRAL, corpus-pinned per the 084999 discipline. run() = Some(H.h + Math.add 5)
-           composes a HOST effect (H, a plain host import) AND a PEER effect (Math, bound to the cross-component
-           contract cadenza:math/api) in one SUM-escaping resource entrypoint. Declines cleanly today (CDZ0900).
-           ROOT GAP (verified 2026-09-29): the host+peer import-space FUSION is unimplemented even in the
-           NON-escape path — a component that both delegates a host effect AND binds a peer declines up-front
-           (mod.rs, 'a cross-component extern import composed with a host effect is not supported'), because the
-           core-module emit builds EITHER a `\"host\"` import block OR a `\"peer\"` import block, not both, and the
-           two call kinds (`CallHostImport`/`CallExternImport`) each assume their kind is laid first. The
-           SUM-escape variant here is DOWNSTREAM of that: it needs the general fusion first, then the resource
-           escape on top. This is NOT a spec floor: host imports, peer (cross-component) imports, and
-           resource-escaping results are each individually legitimate, and no contract forbids their combination
-           (host-interface-binding.md admits any manifest capability set; peer contracts are ordinary
-           cross-component imports). So it is a DEFERRAL to fix (implement the general host+peer import-space
-           fusion — a unified leading-block index layout across `\"host\"`+`\"peer\"` — then compose it with the
-           resource escape). Records the IDEALISTIC cross so it auto-flips to PASS when the fused import-space
-           emit lands. Intended value: H.h -> 1, Math.add(5) -> 6, run() -> Some(7).")
+    "SHAPE 342 (v-wit-boundary) — WORKING. run() = Some(H.h + Math.add 5) composes a HOST effect (H, a plain
+           host import) AND a PEER effect (Math, bound to the cross-component contract cadenza:math/api) in one
+           SUM-escaping resource entrypoint. The escape emit imports BOTH interface spaces: the escape core
+           module lays leading ops PEER (from `\"peer\"`) then HOST (from `\"host\"`) then the runtime ops (from
+           `\"heap\"`) via the `leading_host_start` split, and `assemble_host_extern_runtime_resource` imports each
+           peer interface then each host interface alongside the runtime, re-exporting the peer ops through the
+           `\"peer\"` core instance and the host ops through the `\"host\"` core instance. A host op's core-func
+           index is shifted past the peer ops (select adds the peer count to a host call). This composes the
+           general host+peer fusion (SHAPE 342a, the non-escape foundation) with the sum resource escape. It is
+           NOT a spec floor: host imports, peer (cross-component) imports, and resource-escaping results are each
+           individually legitimate, and no contract forbids their combination (host-interface-binding.md admits
+           any manifest capability set; peer contracts are ordinary cross-component imports). H.h -> 1,
+           Math.add(5) -> 6, run() -> Some(7); byte-exact and zero-leak.")
   (peer "cadenza:math/api" (do (def (add (: x Int64)) (+ x 1)) (export add)))
   (input
     (do
@@ -11890,4 +11887,5 @@ cases
       (export run)))
   (call run)
   (host-responses (respond H.h (: 1 Int64)))
-  (output (: (Some 7) (Option Int64))))
+  (output (: (Some 7) (Option Int64)))
+  (live-objects 0))
