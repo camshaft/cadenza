@@ -2964,12 +2964,31 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ty::Map(mk, _) => Some((**mk).clone()),
                 _ => None,
             };
+            // The map's SETTLED VALUE type — for grounding a COMPOUND value literal (a tuple/record/list
+            // value) whose own `type_of` is under-ground relative to the map's declared value slot. See the
+            // compound-value grounding below.
+            let map_val_ty: Option<Ty> = match type_of(db, id).strip_nominal() {
+                Ty::Map(_, mv) => Some((**mv).clone()),
+                _ => None,
+            };
             let mut lines = String::new();
             for (k, v) in entries.iter() {
                 let ke = if let Some(it) = key_it {
                     emit_grounded(db, *k, it, env, ctx)?
                 } else if let Some(fw) = key_fw {
                     emit_grounded_float(db, *k, fw, env, ctx)?
+                } else if let Some(ct) = map_key_ty.as_ref().filter(|t| {
+                    matches!(
+                        t.strip_nominal(),
+                        Ty::Tuple(_) | Ty::Record(_) | Ty::List(_)
+                    )
+                }) {
+                    // A COMPOUND key (a Map keyed by a tuple/record/list): ground each field to the map's
+                    // DECLARED key type via `emit_elem_grounding_empty_list` — the map-KEY twin of the SetOf
+                    // compound-element grounding. A bare narrow-int field of a `#tuple(100)` key of a
+                    // `(Map (Tuple Int8) V)` would otherwise emit `((100 as i64),)` into a `BTreeMap<(i8,), V>`
+                    // → rustc E0308 (its own `type_of` is under-ground `(Tuple Int64)`).
+                    emit_elem_grounding_empty_list(db, *k, Some(ct), env, ctx)?
                 } else {
                     emit(db, *k, env, ctx)?
                 };
@@ -2982,6 +3001,19 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     emit_grounded(db, *v, it, env, ctx)?
                 } else if let Some(fw) = val_fw {
                     emit_grounded_float(db, *v, fw, env, ctx)?
+                } else if let Some(ct) = map_val_ty.as_ref().filter(|t| {
+                    matches!(
+                        t.strip_nominal(),
+                        Ty::Tuple(_) | Ty::Record(_) | Ty::List(_)
+                    )
+                }) {
+                    // A COMPOUND value (a Map to tuples/records/lists): ground each field to the map's
+                    // DECLARED value type via `emit_elem_grounding_empty_list` — the map-VALUE twin of the SetOf
+                    // compound-element grounding (#8481). A bare narrow-int field of a `#tuple(100)` value of a
+                    // `(Map K (Tuple Int8))` would otherwise emit `((100 as i64),)` into a `BTreeMap<K, (i8,)>`
+                    // → rustc E0308 (its own `type_of` is under-ground `(Tuple Int64)`; `container_slot_grounding`
+                    // only grounds a SCALAR value). Mirrors wasm, which grounds the nested field and runs.
+                    emit_elem_grounding_empty_list(db, *v, Some(ct), env, ctx)?
                 } else {
                     emit(db, *v, env, ctx)?
                 };
