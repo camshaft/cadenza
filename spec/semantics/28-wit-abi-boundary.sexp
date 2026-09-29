@@ -11836,3 +11836,29 @@ cases
   (host-responses (respond a.f (: 3 Int64)) (respond b.g (: 4 Int64)))
   (host-calls (call cadenza:platform/a.f) (call cadenza:platform/b.g))
   (output (: (Some 7) (Option Int64))))
+
+(case
+  "a HOST effect + a PEER effect both feeding one sum-escaping entrypoint decline cleanly (deferral: host+peer fusion emit)"
+  (doc
+    "SHAPE 342 (v-wit-boundary) — DEFERRAL, corpus-pinned per the 084999 discipline. run() = Some(H.h + Math.add 5)
+           composes a HOST effect (H, a plain host import) AND a PEER effect (Math, bound to the cross-component
+           contract cadenza:math/api) in one SUM-escaping resource entrypoint. Declines cleanly today (CDZ0900,
+           WasmHostPeerResourceFusion) because the resource-escape emit builds EITHER a host import space OR a peer
+           import space, not both fused. This is NOT a spec floor: host imports, peer (cross-component) imports,
+           and resource-escaping results are each individually legitimate, and no contract forbids their
+           combination in one component (host-interface-binding.md admits any manifest capability set; peer
+           contracts are ordinary cross-component imports). So it is a DEFERRAL to fix (emit the COMBINED
+           host-and-peer import space alongside the resource escape). Records the IDEALISTIC cross so it
+           auto-flips to PASS when the fused import-space emit lands. Intended value: H.h -> 1, Math.add(5) -> 6,
+           run() -> Some(7).")
+  (peer "cadenza:math/api" (do (def (add (: x Int64)) (+ x 1)) (export add)))
+  (input
+    (do
+      (effect H (op h (-> Unit Int64)))
+      (effect Math (op add (-> Int64 Int64)))
+      (bind Math "cadenza:math/api")
+      (def (run) (Some (+ (host (H) (H.h unit)) (host (Math) (Math.add 5)))))
+      (export run)))
+  (call run)
+  (host-responses (respond H.h (: 1 Int64)))
+  (output (: (Some 7) (Option Int64))))
