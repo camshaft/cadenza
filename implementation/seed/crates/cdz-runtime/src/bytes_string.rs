@@ -15,7 +15,7 @@ runtime_local! {
 pub(crate) fn op_bytes_alloc(len: u32) -> Handle {
     // len==0 → the shared IMMORTAL empty-BYTES singleton (the IMM_UNIT analog for bytes): an empty bytes
     // value is CONSTANT, so allocate it ONCE, immortal (census-excluded), reuse. SOUND: an empty bytes is
-    // never mutated in place — bytes-set on it is OOB (traps, 0 slots), concat builds a fresh rope node,
+    // never mutated in place — bytes-set on it is OOB (traps, 0 slots), concat builds a fresh Rope leaf,
     // and bytes_flatten is a no-op on an already-flat empty leaf. So the singleton is read-only.
     if len == 0 {
         return EMPTY_BYTES.with(|slot| {
@@ -468,7 +468,7 @@ runtime_local! {
 pub(crate) fn op_str_new(s: String) -> Handle {
     // Empty string → the shared IMMORTAL empty-STRING singleton (the IMM_UNIT analog for strings): an
     // empty string is CONSTANT, so allocate it ONCE, immortal (census-excluded), reuse. SOUND: an empty
-    // string is never mutated in place — String.concat builds a fresh rope node, and bytes_flatten /
+    // string is never mutated in place — String.concat builds a fresh Rope leaf, and bytes_flatten /
     // str-get are no-ops on an already-flat empty leaf. Read-only singleton.
     if s.is_empty() {
         return EMPTY_STR.with(|slot| {
@@ -487,13 +487,14 @@ pub(crate) fn op_str_get(h: Handle) -> String {
     if is_immediate(h) {
         return String::new(); // cross-kind totality: a string is never itself an immediate
     }
-    // A runtime String IS a bytes rope: `String.concat`/`.at`-slice build concat/slice nodes (a String
-    // shares the Bytes rope representation, `@b77b3ae0`), so `h` may be a rope whose `raw` holds the node's
-    // HEADER bytes (a concat's `[len]`, a slice's `[off, len]`), NOT the content. MATERIALIZE it to a flat
-    // leaf first (iterative `bytes_flatten`, so a deep rope can't overflow the stack; content-preserving,
-    // so unobservable even on a shared value) — exactly as `op_bytes_get` and value-encode's `Shape::Str`
-    // arm do. Without the flatten a rope String read back its raw handle/length bytes as UTF-8 (garbage).
-    // A flat leaf is left untouched (flatten is a no-op there), so a plain `str-new` string is unaffected.
+    // A runtime String IS a bytes value: `String.concat`/`.at`-slice reuse `op_bytes_concat`/
+    // `op_bytes_slice` (a String shares the Bytes representation), which build `Raw::Rope(ByteVec)`
+    // LEAVES that may be MULTI-CHUNK, so `h`'s `raw` may be a chunk rope rather than one contiguous
+    // buffer. COMPACT it to a single chunk first (`bytes_flatten` compacts a multi-chunk `Rope` in place;
+    // content-preserving, so unobservable even on a shared value) — exactly as `op_bytes_get` and
+    // value-encode's `Shape::Str` arm do. Without the compaction `as_slice` on a multi-chunk `Rope`
+    // panics. A single-chunk/inline leaf is left untouched (flatten is a no-op there), so a plain
+    // `str-new` string is unaffected.
     bytes_flatten(h);
     with_node(h, String::new(), |n| {
         String::from_utf8_lossy(&n.raw).into_owned()
@@ -506,8 +507,8 @@ pub(crate) fn op_str_get(h: Handle) -> String {
 /// String IS a byte leaf (`op_str_new` = `alloc(bytes)`, byte-identical to a Bytes leaf), so a VALID
 /// buffer needs no conversion — it is already a valid String; the op is UTF-8 VALIDATION + a re-tag.
 /// CONSUMES `buf`: on success `buf` flows out as the String (its ownership transfers to the result); on
-/// failure the caller drops it. FLATTEN first (`buf` may be a rope — a `Bytes.concat`/`.slice` tree —
-/// whose `raw` holds header bytes, NOT content; strict `from_utf8` must see the actual bytes), exactly as
+/// failure the caller drops it. COMPACT first (`buf` may be a multi-chunk `Raw::Rope` leaf — a
+/// `Bytes.concat`/`.slice` result — and strict `from_utf8` must see one contiguous buffer), exactly as
 /// `op_str_get`/`op_bytes_get`/value-encode's `Shape::Str` arm do. Returns `Handle::NULL` for invalid
 /// UTF-8 so the compiler can build the `(Option String)` sum (`Some buf` / `None`), or wrap directly.
 ///
@@ -541,8 +542,8 @@ pub(crate) fn op_str_from_bytes(buf: Handle) -> Handle {
 /// `List Int64` char-codes). A `Char` codepoint is an ordinary integer, so comparing two of them is a
 /// plain `i32.eq` — no rope, no content-eq hazard: this is the op a real text lexer wants.
 ///
-/// FLATTEN first (`buf` may be a `Bytes.concat`/`.slice` rope whose `raw` holds header bytes, not
-/// content) — iterative, so a deep rope can't overflow; content-preserving, so UNOBSERVABLE on a shared
+/// COMPACT first (`buf` may be a multi-chunk `Raw::Rope` leaf — a `Bytes.concat`/`.slice` result — and
+/// the UTF-8 scan must see one contiguous buffer); content-preserving, so UNOBSERVABLE on a shared
 /// value — exactly as `op_str_get`/`op_bytes_get`/`str-from-bytes` do. BORROWS `buf` (an indexed read,
 /// no consume). Decodes the flat leaf as UTF-8 and takes the Nth `char`; a well-formed String always
 /// decodes, but an ill-formed buffer (defensive) reads as `NO_SCALAR`, never a trap.
