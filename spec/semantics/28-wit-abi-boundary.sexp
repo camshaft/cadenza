@@ -10843,3 +10843,79 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record{t: tuple<s32, s64>}> host-op arg crosses (a nested tuple FIELD of a record list element)"
+  (doc
+    "SHAPE 303 (v-wit-boundary) — a `list<record{t: tuple<s32, s64>}>` host-op ARGUMENT: a record list element
+           with a nested `tuple<s32, s64>` FIELD. A record list element is written IN PLACE by `emit_product_to_mem`,
+           which handled scalar / `Bytes` / `list` / `option<scalar>` / `variant` / `enum` fields but NOT a nested
+           `tuple` field — so it declined CDZ0903. Now `emit_product_to_mem` gains a tuple-field arm: write the
+           tuple product IN PLACE at `dest_addr + foff` via `emit_tuple_to_mem` (POSITIONAL — a tuple's WIT order
+           IS its element order, so NO field WIT is needed; each element recursed at its canonical offset).
+           `product_field_marshalable` admits a nested tuple field via `tuple_field_marshalable` (every element
+           itself marshalable); `used_ops` already declared a tuple field's `arr-get` + per-element ops
+           (`collect_record_field_ops`'s tuple arm). run() pushes TWO elements [{t: (1,2)}, {t: (3,4)}]; a VALID
+           running component (live-objects=0) pins the nested-tuple-field record list element across elements.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= t (tuple (s32) (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: t (Tuple Int32 Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= t #tuple(1 2))) #record((= t #tuple(3 4)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{t: tuple<bytes, s64>, n: s64}> host-op arg crosses (a tuple FIELD with a Bytes element)"
+  (doc
+    "SHAPE 304 (v-wit-boundary) — the BYTES-carrying twin of SHAPE 303: a
+           `list<record{t: tuple<list<u8>, s64>, n: s64}>` whose record element's `t` field is a
+           `tuple<list<u8>, s64>` (a tuple with a `Bytes` element). The tuple-field arm delegates to
+           `emit_tuple_to_mem` → `emit_product_to_mem`, whose Bytes-element arm copies the rope into `mem` at the
+           running cursor and writes `(ptr, len)` at the element offset (WITHIN the tuple, within the record,
+           within the list element) — a load-bearing check that the shared cursor threads correctly through the
+           three nesting levels. A wrong `(ptr, len)` would OOB-trap on the component-model lift. run() pushes
+           [{t: (b\"hi\", 9), n: 5}]; a VALID running component (live-objects=0) pins the Bytes-in-tuple-field-in-
+           record-list-element round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= t (tuple (list (u8)) (s64))) (= n (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: t (Tuple Bytes Int64)) (: n Int64))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= t #tuple(b"hi" 9)) (= n 5))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<tuple<tuple<s32, s64>, s64>> host-op arg crosses (a nested tuple ELEMENT of a tuple list element)"
+  (doc
+    "SHAPE 305 (v-wit-boundary) — a `list<tuple<tuple<s32, s64>, s64>>` host-op ARGUMENT: a tuple list element
+           whose ELEMENT 0 is itself a `tuple<s32, s64>`. A tuple list element is written by the same
+           `emit_product_to_mem` (a tuple is a positional product), so its tuple-field arm recurses
+           `emit_tuple_to_mem` for the inner tuple — no WIT at any level (both tuples are positional). run() pushes
+           [((1, 2), 3)]; a VALID running component (live-objects=0) pins the nested-tuple-in-tuple-list-element
+           round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (tuple (tuple (s32) (s64)) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Tuple (Tuple Int32 Int64) Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #list(#tuple(#tuple(1 2) 3)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

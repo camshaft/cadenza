@@ -674,10 +674,47 @@ pub(super) fn emit_product_to_mem(
                     out,
                 )?;
             }
+            // A nested `tuple<…>` field (`list<record{t: tuple<s32,s64>, …}>`): write the tuple product IN PLACE
+            // at `dest_addr + foff` via `emit_tuple_to_mem` (POSITIONAL — a tuple's WIT order IS its element
+            // order, so NO field WIT is needed). Each tuple element is recursed by `emit_product_to_mem` at its
+            // own canonical offset (a scalar inline, a `Bytes`/`list` element spilled at the shared cursor). A
+            // tuple whose element is itself a record/tuple declines inside (that element hits the `_` arm),
+            // matching `product_field_marshalable`'s `tuple_field_marshalable` gate. A nested RECORD field is a
+            // later slice (it needs the field's WIT threaded to order its name-lex fields).
+            None if matches!(fty.strip_nominal(), Ty::Tuple(_)) => {
+                let Ty::Tuple(elems) = fty.strip_nominal() else {
+                    unreachable!("tuple by the guard")
+                };
+                let elems: Vec<Ty> = elems.iter().cloned().collect();
+                let tup_slot = work_base + 3;
+                let field_addr = work_base + 4;
+                scratch_ty.insert(tup_slot, ValType::I32);
+                scratch_ty.insert(field_addr, ValType::I32);
+                *high = (*high).max(work_base + 5);
+                out.push(Lir::LocalGet(agg_slot));
+                out.push(Lir::ConstI32(cell as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [tuple handle] (borrows agg)
+                out.push(Lir::LocalSet(tup_slot));
+                out.push(Lir::LocalGet(dest_addr));
+                out.push(Lir::ConstI32(foff as i32));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(field_addr)); // field_addr = dest_addr + foff
+                emit_tuple_to_mem(
+                    db,
+                    tup_slot,
+                    field_addr,
+                    &elems,
+                    cursor,
+                    work_base + 5,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+            }
             _ => {
                 return Err(Reject::unsupported(
-                    "a product host-arg element field that is not a scalar, `Bytes`, option<scalar>, or \
-                     variant<scalar> is not supported",
+                    "a product host-arg element field that is not a scalar, `Bytes`, `list`, `tuple`, \
+                     option<scalar>, or variant<scalar> is not supported",
                 ));
             }
         }
