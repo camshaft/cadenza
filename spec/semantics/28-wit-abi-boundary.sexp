@@ -10794,6 +10794,32 @@ cases
   (live-objects 0))
 
 (case
+  "a list<result<list<u8>, record{code, n}>> host-op arg crosses (compound-Err result as a list element)"
+  (doc
+    "SHAPE 347 (v-wit-boundary) — the LIST-ELEMENT companion to SHAPE 299/329: a `list<result<list<u8>,
+           record{code:s32, n:s64}>>` host-op ARGUMENT — each element a `result` whose Err arm is a RECORD, Ok
+           arm a `list<u8>` (Bytes). SHAPE 299/329 crossed the TOP-LEVEL result<bytes,record> arg (register
+           path); at a LIST element the value is written to memory via `emit_variant_mixed_to_mem`, whose Record
+           arm extracted the case WIT only from a `WitType::Variant` — a `WitType::Result` fell through to a
+           codeless `error:`. The mem Record arm now also reads a `result`'s ok/err arm at disc 0/1 (the same
+           Ok=0/Err=1 mapping the register arm + `variant_mixed_payload_cases_wit` use), so the Err-record case
+           orders its fields from the `err` payload WIT. Pushes `#list((Ok b\"z\") (Err {code:1, n:2}))`; the
+           byte-exact `(host-arg-received …)` pin proves both arms cross to the right disc + payload (no swap,
+           no OOB). Companion to SHAPE 294-299/329.")
+  (wit-world (world w (import cadenza:platform/probe
+    (member push (func (param m (list (result (list (u8)) (record (= code (s32)) (= n (s64)))))) (result (s64)))))))
+  (input (do
+    (effect probe (op push (-> (List (Result Bytes (Record (: code Int32) (: n Int64)))) Int64)))
+    (def (run) (host (probe) (probe.push #list((Ok b"z") (Err #record((= code 1) (= n 2)))))))
+    (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list((Ok #list(122)) (Err #record((= code 1) (= n 2)))))
+  (output 55)
+  (live-objects 0))
+
+(case
   "a top-level list<record{xs: list<s64>}> host-op arg crosses (a list<T> FIELD of a record list element)"
   (doc
     "SHAPE 300 (v-wit-boundary) — a top-level `list<record{xs: list<s64>}>` host-op ARGUMENT: a list whose

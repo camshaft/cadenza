@@ -439,6 +439,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   arg's component type is the world's declared `result<list<u8>, record{code, n}>` (world-driven — no guest-built
   variant cref). BYTE-EXACT verified via `(host-arg-received …)`: SHAPE 299 pins `(Ok #list(122))`, SHAPE 329 pins
   `(Err #record((= code 7) (= n 9)))` — proving both arms cross with the right disc + WIT field order (no swap).
+  The `result<bytes, RECORD>` as a LIST ELEMENT (`list<result<list<u8>, record{code, n}>>`) is now ✅ DONE too —
+  SHAPE 347: at a list element the value is written to MEMORY (`emit_variant_mixed_to_mem`), whose Record arm
+  extracted the case WIT only from a `WitType::Variant` — a `WitType::Result` fell through to a CODELESS `error:`.
+  That arm now also reads a `result`'s ok/err arm at disc 0/1 (the same Ok=0/Err=1 mapping the register arm uses),
+  so the Err-record case orders its fields from the `err` payload WIT. Byte-exact `(host-arg-received …)` pins the
+  2-element `#list((Ok #list(122)) (Err #record((= code 1) (= n 2))))` — both arms cross, no disc swap, no OOB.
 - **[emit, register-path] a top-level `result<scalar, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 186/187/188
   int; 209/210 float).** The scalar-Ok sibling of the Bytes-Ok result arg: a `HostParam::ResultScalar(ok-abi,
   err-cases)` (detector `result_scalar_enum`, admitting any scalar Ok + a payloadless-enum Err). It flattens to
