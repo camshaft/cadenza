@@ -11882,7 +11882,7 @@ cases
     (do
       (effect a (op f (-> Unit Int64)))
       (effect b (op g (-> Unit Int64)))
-      (def (run) ((. List push) (list) (+ (host (a) (a.f unit)) (host (b) (b.g unit)))))
+      (def (run) ((. List push) #list() (+ (host (a) (a.f unit)) (host (b) (b.g unit)))))
       (export run)))
   (call run)
   (host-responses (respond a.f (: 3 Int64)) (respond b.g (: 4 Int64)))
