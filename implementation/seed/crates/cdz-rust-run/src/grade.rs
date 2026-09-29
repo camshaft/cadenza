@@ -248,6 +248,7 @@ mod tests {
                 exact_code: false,
             }],
             host_responses: vec![],
+            host_arg_received: vec![],
             host_calls: vec![],
             warns: vec![],
             live_objects: None,

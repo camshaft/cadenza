@@ -260,6 +260,10 @@ pub struct TestRun {
     pub trials: Vec<GTrial>,
     /// The recorded host-call response tape, `(op, value)` in call order.
     pub host_responses: Vec<(String, String)>,
+    /// ARG-ECHO assertions — `(op, expected received value-form)` from `(host-arg-received …)` clauses, in
+    /// corpus order. Graded per-op call order by [`check_host_args_received`] against the args the host
+    /// captured. Empty for a case that asserts no received args.
+    pub host_arg_received: Vec<(String, String)>,
     /// The expected observed host-call op sequence.
     pub host_calls: Vec<String>,
     /// Pinned warnings `(code, optional message-substring)` — a PRESENCE check against the compile diag.
@@ -1725,6 +1729,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut description = String::new();
     let mut trials = Vec::new();
     let mut host_responses = Vec::new();
+    let mut host_arg_received: Vec<(String, String)> = Vec::new();
     let mut host_calls = Vec::new();
     let mut warns = Vec::new();
     let mut live_objects: Option<u32> = None;
@@ -1762,6 +1767,18 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
                         )
                     {
                         host_responses.push((op, v));
+                    }
+                }
+            }
+            Some("host-arg-received") => {
+                for &r in a.as_form(clause, "host-arg-received").unwrap_or(&[]) {
+                    if let Some(pair) = a.as_form(r, "received")
+                        && let (Some(op), Some(v)) = (
+                            pair.first().and_then(|&id| str_leaf(&a, id)),
+                            pair.get(1).and_then(|&id| str_leaf(&a, id)),
+                        )
+                    {
+                        host_arg_received.push((op, v));
                     }
                 }
             }
@@ -1841,6 +1858,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         description,
         trials,
         host_responses,
+        host_arg_received,
         host_calls,
         warns,
         live_objects,
@@ -3288,6 +3306,7 @@ mod tests {
                 exact_code: false,
             }],
             host_responses: vec![],
+            host_arg_received: vec![],
             host_calls: vec![],
             warns: vec![],
             live_objects: None,
@@ -3377,6 +3396,7 @@ mod tests {
                 exact_code: false,
             }],
             host_responses: vec![],
+            host_arg_received: vec![],
             host_calls: vec![],
             warns: vec![],
             live_objects: None,
@@ -3435,6 +3455,7 @@ mod tests {
                 exact_code: false,
             }],
             host_responses: vec![],
+            host_arg_received: vec![],
             host_calls: vec![],
             warns: vec![],
             live_objects: None,
@@ -3508,6 +3529,7 @@ mod tests {
                 exact_code: false,
             }],
             host_responses: vec![],
+            host_arg_received: vec![],
             host_calls: vec![],
             warns: vec![],
             live_objects: None,

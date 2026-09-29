@@ -1453,6 +1453,20 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
         }
         kids.push(b.list(hk));
     }
+    // ARG-ECHO: `(host-arg-received (received <op> <value>) …)` — the values the host must RECEIVE for its
+    // delegated calls (per-op call order). The exec captures the canonically-lifted args and
+    // `check_host_args_received` asserts them (string compare against the canonical value-form), closing the
+    // host-arg byte-layout hole. Value stored as a STRING leaf (like a host-response value), so the grade
+    // decode reads it back verbatim. Absent for a case that asserts no received args.
+    if !rec.host_arg_received.is_empty() {
+        let mut hk = vec![b.name("host-arg-received")];
+        for (op, v) in &rec.host_arg_received {
+            let ol = str_leaf(&mut b, op);
+            let vl = str_leaf(&mut b, v);
+            hk.push(form(&mut b, "received", vec![ol, vl]));
+        }
+        kids.push(b.list(hk));
+    }
     if !rec.warns.is_empty() {
         let mut wk = vec![b.name("warns")];
         for (code, msg) in &rec.warns {
