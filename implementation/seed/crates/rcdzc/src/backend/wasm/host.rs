@@ -2449,6 +2449,16 @@ fn product_field_marshalable(db: &mut Db, f: &Ty, wit: bool) -> bool {
         // writer lays the disc + the payload tuple at the canonical payload offset (its tuple-payload arm).
         // Detected after the scalar-variant arm (that arm declines a tuple payload).
         || variant_tuple_payload_case(db, f).is_some()
+        // A HETEROGENEOUS MIXED `variant` field incl. a RECORD payload case (`list<record{v: variant{a,
+        // b(record{p,q})}, …}>`): written in place by `emit_variant_to_mem` → `emit_variant_mixed_to_mem`, which
+        // orders + sizes a record payload case WIT-order. Every case kind must be one the mixed writer emits
+        // ([`variant_mem_mixed_kind_supported`]). ONLY admitted when the enclosing writer supplies this field's
+        // variant WIT (`wit` — the `emit_record_to_mem`/`emit_tuple_to_mem` path threads `fwit`); without it a
+        // record payload case cannot be WIT-ordered and declines. Detected after the scalar/tuple/single-tuple
+        // arms claim their clean shapes (this is the residual heterogeneous mix, incl. a Bytes/List/Record case).
+        || (wit
+            && variant_mixed_payload_cases(db, f)
+                .is_some_and(|cases| cases.iter().all(|(_, k)| variant_mem_mixed_kind_supported(k))))
         // A payload-less `enum` field of a product element (`list<record{e: enum, …}>`): written in place as
         // its disc at the enum's canonical width. Detected after variant (both are Sums; `enum_cases` requires
         // ALL-nullary variants). The product-element analogue of the top-level record enum FIELD (SHAPE 174).
