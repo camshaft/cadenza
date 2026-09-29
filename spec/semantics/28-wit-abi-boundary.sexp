@@ -11808,3 +11808,31 @@ cases
   (host-responses (respond probe.note (: 7 Int64)))
   (host-calls (call cadenza:platform/probe.note))
   (output (: (Some 7) (Option Int64))))
+
+(case
+  "TWO host effects delegated from one sum-escaping entrypoint decline cleanly (deferral: multi-interface import emit)"
+  (doc
+    "SHAPE 341 (v-wit-boundary) — DEFERRAL, corpus-pinned per the 084999 discipline. run() = Some(a.f + b.g)
+           delegating TWO distinct host effects (a, b) from one sum-escaping resource entrypoint. Declines
+           cleanly today (CDZ0906, WasmMultiHostEffectDelegation) because the resource-escape assembler imports
+           exactly ONE host interface. This is an IMPLEMENTATION limit, NOT a spec floor: host-interface-binding.md
+           fixes that a component's imported host operations MUST EQUAL the set of capabilities its manifest
+           enumerates (a SET — multiple capabilities/interfaces are legitimate), with no 'one interface per
+           envelope' invariant anywhere in the contracts. So delegating >1 host interface is a legitimate
+           component-boundary shape and this is a DEFERRAL to fix (emit the combined multi-interface import space
+           from the escaping entrypoint), not a floor. Records the IDEALISTIC cross so it auto-flips to PASS when
+           the multi-interface emit lands. Intended value: a.f -> 3, b.g -> 4, run() -> Some(7).")
+  (wit-world
+    (world w
+      (import cadenza:platform/a (member f (func (result (s64)))))
+      (import cadenza:platform/b (member g (func (result (s64)))))))
+  (input
+    (do
+      (effect a (op f (-> Unit Int64)))
+      (effect b (op g (-> Unit Int64)))
+      (def (run) (Some (+ (host (a) (a.f unit)) (host (b) (b.g unit)))))
+      (export run)))
+  (call run)
+  (host-responses (respond a.f (: 3 Int64)) (respond b.g (: 4 Int64)))
+  (host-calls (call cadenza:platform/a.f) (call cadenza:platform/b.g))
+  (output (: (Some 7) (Option Int64))))

@@ -11383,6 +11383,7 @@ pass	a dynamic payloadless-enum discriminant escapes as run's resource result
 pass	a literal payloadless-enum value escapes as run's resource result
 todo	a COMPOUND host-import result wrapped in a sum result declines cleanly (deferral: value-heap-rep lift)
 todo	a host op with a STRING PARAMETER in a sum-escaping entrypoint declines cleanly (deferral: shared-mem host param)
+todo	TWO host effects delegated from one sum-escaping entrypoint decline cleanly (deferral: multi-interface import emit)
 todo	a String-typed @param accessor crosses once the world-driven result path lands
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but the bare envelope declines it on wasm
