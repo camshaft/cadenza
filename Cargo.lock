@@ -503,8 +503,7 @@ dependencies = [
 name = "cdz-num"
 version = "0.0.0"
 dependencies = [
- "num-bigint",
- "num-traits",
+ "etude-bigint",
 ]
 
 [[package]]
@@ -1100,6 +1099,11 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "etude-bigint"
+version = "0.1.0"
+source = "git+https://github.com/camshaft/etude.git?rev=05084a792df1eb53bfce30322acc2563b4c05e85#05084a792df1eb53bfce30322acc2563b4c05e85"
 
 [[package]]
 name = "event-listener"
