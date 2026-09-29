@@ -11665,3 +11665,28 @@ cases
   (host-arg-received cadenza:platform/probe.push #list(#tuple((b #record((= d #list(104 105)) (= n 2))) 9)))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record{o: option<tuple<option<s64>, s64>>}> host-op arg crosses (a nested option element under an option<tuple> FIELD)"
+  (doc
+    "SHAPE 335 (v-wit-boundary) — a NESTED option element under an option<tuple> field: an `option<tuple<option<s64>,
+           s64>>` whose outer tuple's first element is itself an `option<s64>`. `field_boundary_abi`'s widened
+           option<tuple> arm recurses per element (the nested option element -> `RecordFieldAbi::Option(Scalar)`);
+           `emit_option_to_mem`'s tuple arm threads the payload tuple's element WITs into `emit_tuple_to_mem` ->
+           `emit_product_to_mem`, whose option-field arm recurses `emit_option_to_mem` on the nested option at the
+           element offset. Pins that the option<tuple> widening covers a nested-OPTION element (the option/tuple/
+           option family composing three deep). run() pushes [{o: Some((Some 7, 9))}]; live-objects=0.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= o (option (tuple (option (s64)) (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: o (Option (Tuple (Option Int64) Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= o (Some #tuple((Some 7) 9))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#record((= o (Some #tuple((Some 7) 9))))))
+  (output 55)
+  (live-objects 0))
