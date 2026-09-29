@@ -11377,7 +11377,7 @@ todo	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, nev
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
-todo	a String host-import result escapes DIRECTLY as the entrypoint result via a pure-IMPORT custom wit-world
+pass	a String host-import result escapes DIRECTLY as the entrypoint result via a pure-IMPORT custom wit-world
 todo	a String-typed @param accessor crosses once the world-driven result path lands
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but the bare envelope declines it on wasm
