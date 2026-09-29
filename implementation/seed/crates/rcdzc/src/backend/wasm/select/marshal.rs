@@ -613,11 +613,17 @@ pub(super) fn emit_product_to_mem(
                 out.push(Lir::LocalGet(lcount));
                 out.push(Lir::I32Store { offset: foff + 4 }); // count
             }
-            // An `option<scalar>` field: write it at `dest_addr + foff` per the canonical option layout (disc
-            // byte + payload) via `emit_option_to_mem`. Its base address is computed into a temp (the writer's
-            // store offsets are relative to that base). Reuses the option memory-writer wholesale.
-            None if crate::backend::wasm::host::option_payload_ty(db, fty)
-                .is_some_and(|p| valtype_of(&p).is_some()) =>
+            // An `option<T>` field (scalar / `Bytes` / `list` / `record` / `tuple` / nested-option / mixed-variant
+            // payload): write it at `dest_addr + foff` per the canonical option layout (disc byte + payload) via
+            // `emit_option_to_mem`, which internally dispatches every payload shape (a scalar inline, a `Bytes`/
+            // `list` payload's backing spilled at the cursor, a record/tuple product at the payload offset). The
+            // field's option-payload WIT (`fwit == Some(WitType::Option(inner))`, present on the
+            // `emit_record_to_mem` path) is threaded so a RECORD payload orders its fields to the host declaration
+            // order. Gated by `field_boundary_abi` (the ABI/needs-memory gate) so what the classifier admits is
+            // exactly what the host param ABI recognizes (memory is declared for the enclosing list). Its base
+            // address is computed into a temp (the writer's store offsets are relative to that base).
+            None if crate::backend::wasm::host::option_payload_ty(db, fty).is_some()
+                && crate::backend::wasm::host::field_boundary_abi(db, fty).is_some() =>
             {
                 let payload = crate::backend::wasm::host::option_payload_ty(db, fty)
                     .expect("option-shaped by the guard");
@@ -629,6 +635,11 @@ pub(super) fn emit_product_to_mem(
                     .and_then(|d| d.variants.iter().position(|v| v.payloads.len() == 1))
                     .ok_or_else(|| Reject::decline("the option field has no payload variant"))?
                     as i32;
+                // The payload's declared WIT, from the field's `option<…>` WIT — orders a RECORD payload's fields.
+                let payload_wit = match fwit {
+                    Some(crate::wit_world::WitType::Option(inner)) => Some(inner.as_ref()),
+                    _ => None,
+                };
                 let opt_slot = work_base + 3;
                 let field_addr = work_base + 4;
                 scratch_ty.insert(opt_slot, ValType::I32);
@@ -649,7 +660,7 @@ pub(super) fn emit_product_to_mem(
                     &payload,
                     some_disc,
                     cursor,
-                    None, // this arm is scalar-payload only (guard above); a record payload WIT is not threaded
+                    payload_wit,
                     work_base + 5,
                     high,
                     scratch_ty,

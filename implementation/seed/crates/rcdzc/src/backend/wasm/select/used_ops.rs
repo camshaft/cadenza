@@ -70,12 +70,13 @@ pub(super) fn collect_record_field_ops(
                 }
             }
         }
-        // An `option<scalar|bytes>` field: the marshal `arr-get`s the Option, reads its `sum-disc`, and on the
-        // Some arm `sum-payload` + the payload's ops (a scalar's unbox op, or a `Bytes` payload's
-        // `bytes-len`/`bytes-get` rope copy) — declare exactly what it calls.
-        _ if crate::backend::wasm::host::option_payload_ty(db, fty).is_some_and(|p| {
-            valtype_of(&p).is_some() || matches!(p.strip_nominal(), Ty::Bytes | Ty::String)
-        }) =>
+        // An `option<T>` field (scalar / `Bytes` / `list` / `record` / `tuple` payload): the marshal `arr-get`s
+        // the Option, reads its `sum-disc`, and on the Some arm `sum-payload` + the payload's ops — declared by
+        // recursing `collect_record_field_ops` on the payload (a scalar's unbox op, a `Bytes` payload's rope copy,
+        // or a record/tuple/list payload's own field/element ops). Guarded by `field_boundary_abi` (matching the
+        // marshal's option-field arm), so any ABI-representable option payload declares exactly what it calls.
+        _ if crate::backend::wasm::host::option_payload_ty(db, fty).is_some()
+            && crate::backend::wasm::host::field_boundary_abi(db, fty).is_some() =>
         {
             out.insert(OP_ARR_GET);
             out.insert(OP_SUM_DISC);
