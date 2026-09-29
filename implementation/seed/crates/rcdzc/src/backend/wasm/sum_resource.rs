@@ -98,6 +98,24 @@ pub(super) fn emit_runtime_sum_resource(
                  (a scalar/unit host op result-escaping as a resource IS supported)",
             ));
         }
+        // DECLINE-DON'T-MISCOMPILE: a host op with a COMPOUND (`spilled_result`) or payloadless-ENUM
+        // (`enum_result`) result feeding a SUM-escaping resource entrypoint is not yet supported here — this
+        // branch builds the host op's `comp_functype` with NO result declaration (`host_op_comp_functype(…,
+        // None)`), so the host result crosses undeclared: the lowered import returns nothing while the guest
+        // expects the value (an enum's i32 disc / a spilled compound), and the emitted component fails
+        // validation (CDZ0910). Decline CLEANLY until the sum-escape host path declares the result type + lifts
+        // the boundary value into the escape's value-heap rep (the enum-disc → `sum-new` bridge). A scalar/unit
+        // host result feeding a sum escape IS supported.
+        if host_imports
+            .iter()
+            .any(|h| h.spilled_result.is_some() || h.enum_result.is_some())
+        {
+            return Err(Reject::unsupported(
+                "a host op with a compound or enum result feeding a sum-escaping resource entrypoint is not \
+                 supported (the sum-escape host path does not yet declare the host result's boundary type nor \
+                 lift its value-heap rep); a scalar/unit host result-escaping as a resource IS supported",
+            ));
+        }
         let h = host_imports.len() as u32;
         let k = imports.len() as u32;
         let host_order: Vec<(String, String)> = host_imports
@@ -408,6 +426,24 @@ pub(super) fn emit_recursive_sum_resource(
             return Err(Reject::unsupported(
                 "a host op with a STRING parameter in a resource-escaping entrypoint is not supported \
                  (a scalar/unit host op result-escaping as a resource IS supported)",
+            ));
+        }
+        // DECLINE-DON'T-MISCOMPILE: a host op with a COMPOUND (`spilled_result`) or payloadless-ENUM
+        // (`enum_result`) result feeding a SUM-escaping resource entrypoint is not yet supported here — this
+        // branch builds the host op's `comp_functype` with NO result declaration (`host_op_comp_functype(…,
+        // None)`), so the host result crosses undeclared: the lowered import returns nothing while the guest
+        // expects the value (an enum's i32 disc / a spilled compound), and the emitted component fails
+        // validation (CDZ0910). Decline CLEANLY until the sum-escape host path declares the result type + lifts
+        // the boundary value into the escape's value-heap rep (the enum-disc → `sum-new` bridge). A scalar/unit
+        // host result feeding a sum escape IS supported.
+        if host_imports
+            .iter()
+            .any(|h| h.spilled_result.is_some() || h.enum_result.is_some())
+        {
+            return Err(Reject::unsupported(
+                "a host op with a compound or enum result feeding a sum-escaping resource entrypoint is not \
+                 supported (the sum-escape host path does not yet declare the host result's boundary type nor \
+                 lift its value-heap rep); a scalar/unit host result-escaping as a resource IS supported",
             ));
         }
         let h = host_imports.len() as u32;
