@@ -11381,16 +11381,19 @@ cases
   (live-objects 0))
 
 (case
-  "a list<record{o: option<tuple<bytes, s64>>}> host-op arg DECLINES CDZ0903 (option<tuple> with a non-scalar element)"
+  "a list<record{o: option<tuple<bytes, s64>>}> host-op arg crosses (an option<tuple<bytes,…>> FIELD of a record list element)"
   (doc
-    "SHAPE 324 (v-wit-boundary) — the SCOPE BOUNDARY of the option<tuple> FIELD: an `option<tuple<list<u8>, s64>>`
-           whose tuple has a `Bytes` (non-scalar) ELEMENT. An `option<tuple-of-scalars>` field crosses (SHAPE 321),
-           but a Bytes/compound tuple element declines CLEANLY (CDZ0903): `field_boundary_abi`'s `option<tuple>` arm
-           is restricted to an ALL-SCALAR tuple, so the option field is not ABI-representable and the classifier
-           declines it (matching the emit's `field_boundary_abi` gate). Grades Todo. CROSSING it is a QUEUED unit
-           in the SHARED-ABI family: `field_boundary_abi` fans out to THREE marshal positions (register-flatten,
-           record-field-arg, list-element), so widening its `option<tuple>` arm to a non-scalar element requires
-           fixing all three marshals in lockstep (the same coordinated effort as SHAPE 314).")
+    "SHAPE 324 (v-wit-boundary) — a `list<record{o: option<tuple<list<u8>, s64>>}>` host-op ARGUMENT: a record list
+           element with an `option<tuple>` FIELD whose tuple has a `Bytes` (byte-leaf) ELEMENT. The option-field arm
+           routes it to `emit_option_to_mem`, whose tuple-payload arm marshals the tuple in place via
+           `emit_tuple_to_mem` at the shared cursor — a scalar element inline, a `Bytes` element as a `(ptr,len)`
+           header with the rope spilled at the cursor (`emit_tuple_to_mem` handles a byte-leaf element directly).
+           `field_boundary_abi`'s `option<tuple>` arm (widened here to admit a scalar OR `Bytes`/`String` element,
+           recursing `field_boundary_abi` per element to build `Option(Tuple([Scalar, Bytes]))`) declares the ABI;
+           the cursor is reserved because `record_field_abi_needs_memory` recurses the `Tuple` abi and sees the
+           byte-leaf. This matches the emit's capability exactly — a RECORD/nested-compound tuple element still
+           declines (it needs the element WIT for name-lex→WIT ordering, which the positional tuple writer cannot
+           supply — SHAPE 314). run() pushes [{o: Some((b\"hi\", 9))}]; a VALID running component (live-objects=0).")
   (wit-world
     (world w (import cadenza:platform/probe (member push (func (param m (list (record (= o (option (tuple (list (u8)) (s64))))))) (result (s64)))))))
   (input
