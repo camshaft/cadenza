@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(54);
+    let shape = c.variant(55);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -1065,10 +1065,26 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      slice is always 2 bytes when in range; the arg is a fixed 4-byte `b"…"` so the slice never goes
         //      out of range). Corpus byp3 (09-functions) pins the LEAK side; THIS pins the VALUE/UAF side. Verified
         //      rust AGREE (b"efgh"/b"abcd"/b"wxyz" -> 2; a 2-byte arg -> out-of-range -> None -> -1).
-        _ => (
+        53 => (
             "(do (def (main (: b Bytes)) (match (Bytes.slice b 1 2) ((Option.Some s) (Bytes.len s)) ((Option.None) -1))) (export main))"
                 .to_string(),
             vec![slice_bytes_arg.clone()],
+        ),
+        // 54 — ckr2 a CONSUMED `String` entry param crosses (the f8382ff506 dup-aware borrow-lift reclaim /
+        //      CDZ0904 decline-lift — byp3's non-Bytes sibling, the GENERAL non-scalar-consume form; was
+        //      wasm-todo until v-core-opt lifted it, the false-Agree-once-lifted class). `main` takes a `String`
+        //      param `s`, CONSUMES it via `(Symbol.of s)` into a 3-element `Set` of Symbols alongside two literal
+        //      Symbols ("hot"/"cold"), and returns `(Set.len st) + (if (Set.contains st (Symbol.of "cold")) 100
+        //      0)`. The risk the fix closes: a mis-fired reclaim double-frees / UAFs the consumed `String` param
+        //      the interned Symbol borrows from -> trap / wrong len. value = 103 (set {hot, s, cold} = 3 distinct
+        //      + contains cold) — the `str_args[0]` arg is `"x"*k` (k>=1) which NEVER equals "hot"/"cold", so the
+        //      set stays 3 distinct and the value is arg-INDEPENDENT (a colliding arg would give 102). Corpus ckr2
+        //      (19-sets) pins the LEAK/cross side; THIS pins the VALUE/UAF side. Verified rust AGREE ("warm"/"xxx"/
+        //      "x" -> 103; "hot"/"cold" -> 102 (collide, set len 2)).
+        _ => (
+            "(do (def (main (: s String)) (let ((st #set((Symbol.of \"hot\") (Symbol.of s) (Symbol.of \"cold\")))) (+ (Set.len st) (if (Set.contains st (Symbol.of \"cold\")) 100 0)))) (export main))"
+                .to_string(),
+            vec![str_args[0].clone()],
         ),
     };
     ExportParam { source, args }
@@ -6508,8 +6524,8 @@ mod tests {
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
         // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` + the mtll1 invariant-Map-param Map.to-list-in-a-self-loop `main`.
-        let mut reached = [false; 54];
-        for seed in 0u64..3240 {
+        let mut reached = [false; 55];
+        for seed in 0u64..3300 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
             // variant(53) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
@@ -6660,11 +6676,13 @@ mod tests {
                 reached[52] = true; // shape 52 = mtll1 invariant-Map-param Map.to-list'd in a self-loop `main` (borrow-gate reclaim #b50180e899, Map twin of 49)
             } else if ep.source.contains("(Bytes.slice b 1 2)") {
                 reached[53] = true; // shape 53 = byp3 consumed Bytes.slice entry param crosses `main` (dup-aware borrow-lift reclaim / CDZ0904 decline-lift #f8382ff506)
+            } else if ep.source.contains("(Symbol.of s)") {
+                reached[54] = true; // shape 54 = ckr2 consumed String entry param crosses `main` (dup-aware borrow-lift reclaim, byp3's non-Bytes sibling #f8382ff506)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all fifty-four export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all fifty-five export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
