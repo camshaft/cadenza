@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(58);
+    let shape = c.variant(59);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -1139,8 +1139,28 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      #tuple(100)`; the fence is the rust-compile-side E0308 + the Int8 field readback). Corpus
         //      (05-compound-types) pins the same witness; THIS reads the grounded value field. Verified rust
         //      AGREE (3->100, 5->100, -4->100).
-        _ => (
+        57 => (
             "(do (def (main (: n Int64)) (match (Map.lookup (: #map((= n #tuple(100))) (Map Int64 (Tuple Int8))) n) ((Some t) (. t 0)) (None (: 0 Int8)))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 58 — trbs1 a `?`-bound Bytes SLICED by Bytes.slice in the Ok arm reclaims the try-shell + slice
+        //      view to zero (the 4726be48e core-opt fix / #10147 — the Bytes.slice sibling of shape 47's trss1
+        //      String.slice-in-a-try). A `?`-bound scalar builds a runtime Bytes under the Ok arm of a
+        //      `(Result Bytes Int64)` boundary in `mk` (INLINED into main); the Ok arm reads the payload via
+        //      `(match (Bytes.slice bs 0 2) ((Some sl) (Bytes.len sl)) …)`. Was a PINNED KNOWN-LEAK (the old
+        //      buffer-sharing view model shared bs's buffer without an independent rc, so admitting the shell
+        //      deep-drop DOUBLE-FREED the buffer the slice still pointed at → v-memory-safety caught the UAF);
+        //      under the ByteVec rope model op_bytes_slice MOVES its operand into an owned rope node that
+        //      retains the source leaf as an rc'd child (independent buffer rc, not a raw alias) + BytesSlice
+        //      is is_allowlisted_builder, so #10147 widens the G5 interior-view relax (consuming ⊆
+        //      builder_children) to reclaim it. THIS pins the VALUE/UAF side — an over-drop that frees the Bytes
+        //      before the slice reads it → wrong len / trap (the corpus pins the LEAK side, live-objects 0).
+        //      DISTINCT from shape 47 (trss1 String.slice) + shapes 53/55 (byp3/eab3 Bytes.slice on an ENTRY
+        //      param, not a try-shell payload). k>0 -> x=5, Bytes.of [5,5,5], slice 0..2 -> len 2; k<=0 ->
+        //      Err 111 (`?` short-circuits). Verified NON-HOLLOW both backends (rust 1->2/5->2/0->111/-4->111).
+        _ => (
+            "(do (def (mk (: r (Result Int64 Int64))) (: (do (def x (try r)) (Ok (Bytes.of #list((UInt8.of x) (UInt8.of x) (UInt8.of x))))) (Result Bytes Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok 5) (Err 111))) ((Ok bs) (match (Bytes.slice bs 0 2) ((Some sl) (Bytes.len sl)) ((None) -9))) ((Err e) e))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6581,9 +6601,9 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` + the mtll1 invariant-Map-param Map.to-list-in-a-self-loop `main` + the mvg1 narrow-width tuple MAP VALUE literal grounded to declared field width `main`.
-        let mut reached = [false; 58];
-        for seed in 0u64..3480 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` + the mtll1 invariant-Map-param Map.to-list-in-a-self-loop `main` + the mvg1 narrow-width tuple MAP VALUE literal grounded to declared field width `main` + the trbs1 `?`-bound Bytes.slice-in-a-try-Ok-arm reclaiming the try-shell + slice view `main`.
+        let mut reached = [false; 59];
+        for seed in 0u64..3540 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
             // variant(53) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
@@ -6742,11 +6762,13 @@ mod tests {
                 reached[56] = true; // shape 56 = nle1 narrow-width tuple LIST element literal grounded to declared field width `main` (rust-backend compound-list-element grounding #d107107d9c / #10105). Marker is the LIST-specific `(List (Tuple Int8))` — shape 57 (mvg1) ALSO contains `#tuple(100)`, so the mutually-exclusive markers are `(List (Tuple Int8))` vs `(Map Int64 (Tuple Int8))` (per the S652/S653 substring-collision discipline)
             } else if ep.source.contains("(Map Int64 (Tuple Int8))") {
                 reached[57] = true; // shape 57 = mvg1 narrow-width tuple MAP VALUE literal grounded to declared field width `main` (rust-backend compound-map-value grounding #3421821f4f / #10098, Map twin of 56)
+            } else if ep.source.contains("(Bytes.slice bs 0 2)") {
+                reached[58] = true; // shape 58 = trbs1 `?`-bound Bytes.slice-in-a-try-Ok-arm reclaims the try-shell + slice view `main` (core-opt G5 rope-owned-builder relax #4726be48e / #10147, Bytes.slice sibling of shape 47's trss1). Marker `(Bytes.slice bs 0 2)` (bs/0/2) is unique — distinct from shape 53's `(match (Bytes.slice b 1 2)` and shape 55's `Option.expect (Bytes.slice` (both `b 1 2`, ENTRY-param slices)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all fifty-eight export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all fifty-nine export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
