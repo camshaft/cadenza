@@ -11758,3 +11758,28 @@ cases
   (call run)
   (output (: (Green unit) Col))
   (live-objects 0))
+
+(case
+  "a COMPOUND host-import result wrapped in a sum result declines cleanly (deferral: value-heap-rep lift)"
+  (doc
+    "SHAPE 339 (v-wit-boundary) — DEFERRAL, corpus-pinned per the 084999 discipline. run() = Some(probe.spell)
+           where probe.spell : () -> String, so run : () -> Option<String> — a COMPOUND (spilled_result) host
+           result wrapped in a sum that escapes as run's resource entrypoint. The payloadless-ENUM twin (SHAPE
+           336) is DONE via the enum-disc→sum-new materialization bridge; this COMPOUND twin still DECLINES
+           cleanly (CDZ0900, decline-don't-miscompile): the sum-escape host path does not yet LIFT the spilled
+           compound host result into the escape's value-heap rep (a String payload routes through the
+           recursive-sum / value-encode escape branch, which needs the SHAPE-95 shared-`\"mem\"` host-result
+           machinery composed with a sum-new over the lifted payload handle). This case records the IDEALISTIC
+           cross so it auto-flips to PASS when the value-heap-rep lift lands and can never silently regress.
+           Intended value when the lift lands: probe.spell -> \"ok\", run() -> Some(\"ok\").")
+  (wit-world
+    (world w (import cadenza:platform/probe (member spell (func (result (string)))))))
+  (input
+    (do
+      (effect probe (op spell (-> Unit String)))
+      (def (run) (host (probe) (Some (probe.spell unit))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.spell (: "ok" String)))
+  (host-calls (call cadenza:platform/probe.spell))
+  (output (: (Some "ok") (Option String))))
