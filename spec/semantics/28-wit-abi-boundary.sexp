@@ -10705,6 +10705,7 @@ cases
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list((Some #record((= a 1) (= c 3) (= b 2))) (None unit) (Some #record((= a 4) (= c 6) (= b 5)))))
   (output 55)
   (live-objects 0))
 
