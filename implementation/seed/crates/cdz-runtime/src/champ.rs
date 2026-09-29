@@ -177,20 +177,6 @@ runtime_local! {
         core::cell::RefCell::new(Vec::new());
 }
 
-runtime_local! {
-    /// REUSED scratch worklist for `fill_rope_bytes` (the `bytes_flatten` materialize walk) — same
-    /// alloc-elision as `HASH_SCRATCH`/`EQ_SCRATCH`. Every `String.at`/`Bytes` read + `bytes-compact`
-    /// flattens a rope, and the walk needs a `(node, dst_off, src_start, count)` task stack; freshly
-    /// allocating it was 1 heap alloc PER FLATTEN (on TOP of the output buffer — which the small path now
-    /// keeps on the stack). Caching it thread-locally lets each flatten `clear()` + reuse: grow once, then
-    /// every subsequent flatten is allocation-FREE steady-state — the lexer's per-char `String.at`-compact
-    /// (the hot text-scan loop) now allocates NOTHING for a ≤12-byte result. Safe: single-threaded, the
-    /// walk is iterative and never re-enters `bytes_flatten` (it only reads nodes + calls the O(1)
-    /// `op_bytes_len`), so the borrow never nests.
-    pub(crate) static FLATTEN_SCRATCH: core::cell::RefCell<Vec<(Handle, usize, usize, usize)>> =
-        core::cell::RefCell::new(Vec::new());
-}
-
 /// A deterministic structural hash of the whole subtree rooted at `root`: FNV-1a over each node's
 /// raw bytes folded with its children's hashes. Because the rep is canonical, structurally-equal
 /// subtrees hash equal; differing raw or structure (very likely) differs.

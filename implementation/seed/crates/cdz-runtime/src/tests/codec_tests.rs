@@ -2782,13 +2782,13 @@ fn hot_op_allocation_ceilings() {
         "bytes_flatten DEPTH={DEPTH} allocs {flatten} exceeds ceiling 320 (O(DEPTH): base + DEPTH×(piece + MOVED concat leaf) + one compacted leaf; a regression to CLONING a unique concat operand — the O(DEPTH²) cascade — climbs back toward ~448 and trips this)"
     );
 
-    // (J3b) SMALL flatten — the hot per-char shape a real STRING LEXER hits: `String.at(s,i)` returns a
-    // 1-byte SLICE which the compiler compacts (= `bytes_flatten`) before comparing to a char literal.
-    // A ≤INLINE_RAW_CAP result is materialized into a STACK buffer + inline `Raw` (no output Vec) and the
-    // walk worklist is REUSED from `FLATTEN_SCRATCH` (thread-local) — so a small flatten is ALLOCATION-
-    // FREE steady-state. Measure ONLY the compact (build the slice outside the timed op is impossible
-    // since compact consumes it, so build+compact and subtract the build baseline). Was 2/flatten (a
-    // transient `dst` Vec + the `work` seed Vec, both freed); now 0. Guards the lexer's per-char cost.
+    // (J3b) SMALL flatten/compact — the hot per-char shape a real STRING LEXER hits: `String.at(s,i)`
+    // returns a 1-byte SLICE which the compiler compacts (= `bytes_flatten`) before comparing to a char
+    // literal. A ≤INLINE_RAW_CAP slice result is materialized INLINE by `bytes_leaf_from_bytevec` (not a
+    // `Raw::Rope`), so `bytes_flatten`/`bytes-compact` on it is a NO-OP (only a multi-chunk `Rope` leaf
+    // compacts) → ALLOCATION-FREE. Measure ONLY the compact (build+compact minus the build baseline, since
+    // compact consumes the slice). Guards the lexer's per-char cost against a regression that made a small
+    // compact allocate (e.g. eager materialization of a ≤cap result).
     let src8 = op_str_new(String::from("abcdefgh"));
     let build_base = measure(&mut || {
         for _ in 0..N {
@@ -2809,7 +2809,7 @@ fn hot_op_allocation_ceilings() {
     );
     assert!(
         per_small_flatten <= 100,
-        "small (≤cap) flatten allocs {per_small_flatten} for x{N} exceeds ceiling 100 (≈0/flatten: stack-buffer output + reused FLATTEN_SCRATCH worklist; a regression to the transient dst Vec + work Vec would be ~2/flatten = ~2000)"
+        "small (≤cap) flatten allocs {per_small_flatten} for x{N} exceeds ceiling 100 (≈0/flatten: a ≤cap slice result is an INLINE leaf so compact is a no-op; a regression to allocating on a small compact would trip this)"
     );
 
     // (K) build a 2-tuple x1000 (`op_arr_alloc(2)` + two slot sets) — the common positional-product
