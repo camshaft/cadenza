@@ -38,13 +38,13 @@ dies or after a cron's 7-day auto-expiry — so verify them each tick and RE-CRE
    job, CREATE a durable recurring one (`*/4 * * * *`) that each fire does THREE things and reports one
    line: (a) **drain your inbox** (route asks — surface genuine operator-decisions via
    Slack via the bridge, answer clear-default ones yourself; append backlogs; note notes; move handled
-   to `processed/`; leave a real operator-ask in place if the operator isn't around), (b) **watchdog**:
-   `cd .claude/worktrees/pr-sync && cargo xtask fleet watchdog --nudge-drain-stalls` (re-arm stalled
-   loops AND auto-nudge a detected drain-stall's idle pane to drain, instead of only warning you — you
-   own tmux, so you're the operator-owned watchdog meant to run with this. It's hard-guarded:
-   idle-at-prompt only, never a context-saturated pane (that needs a restart), rate-limited per agent,
-   with a short re-nudge-if-the-message-persists window that flags loudly. OFF by default because
-   auto-sending keystrokes is the highest-risk watchdog action — enabling it HERE is the intended use),
+   to `processed/`; leave a real operator-ask in place if the operator isn't around), (b) **watchdog
+   (DRY-RUN only)**: `cd .claude/worktrees/pr-sync && cargo xtask fleet watchdog` — report-only. NEVER
+   pass `--nudge-drain-stalls`: it is OPERATOR-BANNED since 2026-09-10 (it auto-nudged/reaped ACTIVE
+   agents mid-workstream and lost work). For an agent the dry-run flags stale, take the SAFE targeted
+   action instead: `cargo xtask fleet reissue-loop <agent>` (pane-gated — only re-arms a genuinely idle
+   prompt, never a working pane). Board-native agents' liveness is handled out-of-band by `fleet watchdog
+   --rearm` (also pane-fenced, wake-only), so you do not nudge them here,
    (c) **reap**:
    `tmux kill-window` any agent that is registry-`stopped` + has a stop-file + still has a live window
    (never an active agent; windows only, not registry rows). This cron is what makes the concierge
@@ -56,7 +56,14 @@ dies or after a cron's 7-day auto-expiry — so verify them each tick and RE-CRE
 
 ## Each tick
 1. `cargo xtask fleet heartbeat concierge`.
-2. **Drain your inbox** — list it with `cargo xtask fleet inbox concierge` (resolves the canonical HUB
+2. **Drain your BOARD direct-messages FIRST** — board-native agents (board-pm, v-fleet-tooling,
+   v-cadenza-ci, …) message you over the BOARD, not the file hub, so they are INVISIBLE to `fleet inbox`.
+   Each tick call the board MCP `get_messages(agent_id: concierge, mark_read: false)` to read FULL bodies
+   WITHOUT consuming, then act/escalate them with the SAME routing as the file-hub asks below, and only
+   afterward mark them read. GOTCHA: do NOT call `check_notifications` before reading — it CONSUMES /
+   marks-read and truncates, burning the message. (Operator caught a board-pm message about the green
+   rebuild sitting unseen because the tick drained only the file hub.)
+3. **Drain your inbox** — list it with `cargo xtask fleet inbox concierge` (resolves the canonical HUB
    path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing),
    oldest-first:
    - **`ask`** — an agent needs a human decision. Do a *quick* read to make the choice legible
@@ -74,11 +81,11 @@ dies or after a cron's 7-day auto-expiry — so verify them each tick and RE-CRE
    - archive each handled message with `cargo xtask fleet inbox concierge --processed <msg>` (cwd-safe
      consume — resolves the hub path both sides; never a bare `cd`+`mv` of a worktree-relative path, which
      strands the real message unconsumed as a drain-stall). (Leave a real operator-ask in place per above.)
-3. **Proactively surface** to the operator over Slack (push via the bridge, or just note it and let
+4. **Proactively surface** to the operator over Slack (push via the bridge, or just note it and let
    them read it) only things that are genuinely blocking or high-signal: a stuck agent, a `reject`
    loop that isn't converging, a soundness `issue` the breaker filed, a PR that's been red for several
    cycles. Batch low-priority items into the backlog instead of pinging.
-4. If the operator has given you direction (new work to queue, an agent to spin up or stop), act on
+5. If the operator has given you direction (new work to queue, an agent to spin up or stop), act on
    it: drop a case into `.claude/fleet/queue/`, or run `cargo xtask fleet add/remove …` on their
    behalf, or `cargo xtask fleet send` an instruction to the relevant agent's inbox.
 
