@@ -355,12 +355,18 @@ pub(super) fn emit_list_arg_marshal(
         // TUPLE element (`list<tuple<…>>`): write the value-heap tuple IN PLACE into the outer slot at
         // `slotaddr` per its canonical (positional) layout — element i at its offset; a Bytes element's rope
         // spills after the array at the shared `cursor`. `eh` is the borrowed element tuple handle. A tuple's
-        // WIT order IS its element order (no name reorder), so `elem_wit` is not needed for ordering.
+        // WIT order IS its element order (no name reorder), but the element WITs (from the tuple's
+        // `WitType::Tuple`) are threaded so a nested RECORD element orders its fields to the host declaration order.
+        let tup_elem_wits = match elem_wit {
+            Some(crate::wit_world::WitType::Tuple(ews)) => Some(ews.as_slice()),
+            _ => None,
+        };
         emit_tuple_to_mem(
             db,
             eh,
             slotaddr,
             tup_elems,
+            tup_elem_wits,
             cursor,
             work_base + 9,
             high,
@@ -686,16 +692,19 @@ pub(super) fn emit_product_to_mem(
             }
             // A nested `tuple<…>` field (`list<record{t: tuple<s32,s64>, …}>`): write the tuple product IN PLACE
             // at `dest_addr + foff` via `emit_tuple_to_mem` (POSITIONAL — a tuple's WIT order IS its element
-            // order, so NO field WIT is needed). Each tuple element is recursed by `emit_product_to_mem` at its
-            // own canonical offset (a scalar inline, a `Bytes`/`list` element spilled at the shared cursor). A
-            // tuple whose element is itself a record/tuple declines inside (that element hits the `_` arm),
-            // matching `product_field_marshalable`'s `tuple_field_marshalable` gate. A nested RECORD field is a
-            // later slice (it needs the field's WIT threaded to order its name-lex fields).
+            // order). Each tuple element is recursed by `emit_product_to_mem` at its own canonical offset (a
+            // scalar inline, a `Bytes`/`list` element spilled at the shared cursor). The field's tuple-element
+            // WITs (from `fwit == Some(WitType::Tuple(…))`) are threaded so a nested RECORD element orders its
+            // fields to the host declaration order; a tuple element lacking a resolvable WIT declines inside.
             None if matches!(fty.strip_nominal(), Ty::Tuple(_)) => {
                 let Ty::Tuple(elems) = fty.strip_nominal() else {
                     unreachable!("tuple by the guard")
                 };
                 let elems: Vec<Ty> = elems.iter().cloned().collect();
+                let elem_wits = match fwit {
+                    Some(crate::wit_world::WitType::Tuple(ews)) => Some(ews.clone()),
+                    _ => None,
+                };
                 let tup_slot = work_base + 3;
                 let field_addr = work_base + 4;
                 scratch_ty.insert(tup_slot, ValType::I32);
@@ -714,6 +723,7 @@ pub(super) fn emit_product_to_mem(
                     tup_slot,
                     field_addr,
                     &elems,
+                    elem_wits.as_deref(),
                     cursor,
                     work_base + 5,
                     high,
@@ -821,24 +831,31 @@ pub(super) fn emit_record_to_mem(
 
 /// Marshal a value-heap TUPLE as a host `list<tuple>` ELEMENT — the POSITIONAL product: cell `i` is element
 /// `i` (a tuple's WIT order IS its element order, no name reorder), then delegates to [`emit_product_to_mem`].
+/// `elem_wits` (present when the caller has the tuple's `WitType::Tuple(…)`) is threaded per element so a nested
+/// RECORD element orders its fields to the host declaration order (and a divergent record sizes WIT-order); when
+/// `None` (the caller lacks the tuple's WIT) every element threads `None` and a record element declines cleanly.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_tuple_to_mem(
     db: &mut Db,
     tup_slot: u32,
     dest_addr: u32,
     elems: &[Ty],
+    elem_wits: Option<&[crate::wit_world::WitType]>,
     cursor: u32,
     work_base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     out: &mut Emit,
 ) -> Result<(), Reject> {
-    // A tuple is POSITIONAL, so no field-name reorder — thread `None` per element (a record element of a tuple
-    // needs the field WIT threaded through `emit_tuple_to_mem`, a later slice, so it declines in the product walk).
+    // POSITIONAL (no field-name reorder), but each element carries its own WIT (from `elem_wits[i]`, when the
+    // caller supplied the tuple's `WitType::Tuple`) so a nested record element is WIT-ordered by the product walk.
     let layout: Vec<(usize, Ty, Option<crate::wit_world::WitType>)> = elems
         .iter()
         .enumerate()
-        .map(|(i, t)| (i, t.clone(), None))
+        .map(|(i, t)| {
+            let ew = elem_wits.and_then(|ews| ews.get(i)).cloned();
+            (i, t.clone(), ew)
+        })
         .collect();
     emit_product_to_mem(
         db, tup_slot, dest_addr, &layout, cursor, work_base, high, scratch_ty, out,
@@ -1135,11 +1152,17 @@ pub(super) fn emit_option_to_mem(
         }
         Ty::Tuple(elems) => {
             let elems: Vec<Ty> = elems.iter().cloned().collect();
+            // A tuple payload of an `option` is written POSITIONALLY with NO element WIT: the scratch-memory
+            // pre-scan does not yet recognize a record element nested under an `option<tuple>` list element (it
+            // would emit a store with no memory reserved), so a record element of an `option<tuple>` payload is
+            // NOT enabled here — it declines cleanly in the product walk (matching the classifier's
+            // `option_payload_product_no_wit` gate). A scalar/`Bytes` tuple element crosses as before.
             emit_tuple_to_mem(
                 db,
                 payload_handle,
                 payload_addr,
                 &elems,
+                None,
                 cursor,
                 work_base + 3,
                 high,
