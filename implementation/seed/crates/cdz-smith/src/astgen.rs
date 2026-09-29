@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(51);
+    let shape = c.variant(52);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -1004,8 +1004,25 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      are all SCALAR-key CHAMP). Wrapped `(if (Set.contains …) n -1)` for an Int64 arg-oracle (xs dead
         //      before the if, so the reclaim is unchanged); Set.contains always true (just inserted) -> value = n.
         //      Arg = a. Verified rust AGREE (4->4, 1->1, 0->0, -4->-4); corpus sci1 bool true every n.
-        _ => (
+        50 => (
             "(do (def (main (: n Int64)) (let ((xs #list(n (+ n 1) (+ n 2)))) (if (Set.contains (Set.insert #set(#list(9 9)) xs) xs) n -1))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 51 — mci1 CANONICALIZING LIST-KEY DOUBLE-USED at Map.insert + Map.lookup (the #a0f501dde5 Map half of the
+        //      borrow-when-canonicalizing reclaim value/UAF fence — the Map TWIN of shape 50's Set). A RUNTIME
+        //      `(List Int64)` `xs = #list(n n+1 n+2)` (from the arg, defeats const-fold) is used as a KEY at TWO
+        //      canonicalizing sites of a `(Map (List Int64) Int64)`: `Map.insert` (value-canonicalize mints a fresh
+        //      owned canonical + BORROWS the input; OP_MAP_INSERT consumes the CANONICAL) AND `Map.lookup` (borrow).
+        //      a0f501dde5 flips BOTH reclaim-balance halves for the Map arms — MapInsert escape (reclaim.rs:1861) +
+        //      dup-emission (:6511) — DISTINCT code from the SetInsert arms (:1973/:6549) shape 50 exercises; a 1:1
+        //      mirror can still miss the Map-key path (op_map_insert stores key+value, its own canonicalize). The
+        //      corpus (elc2/grx2 09-functions) pins the LEAK side; THIS pins the VALUE/UAF side: an under-dup that
+        //      frees `xs` before Map.lookup canonicalizes it -> wrong value / trap. `(match (Map.lookup m xs)
+        //      ((Some v) (+ v n)) …)` -> v=7 (xs was inserted with 7), value = 7+n (arg-oracle, xs dead after
+        //      lookup). Arg = a. Verified rust AGREE (4->11, 1->8, 0->7, -4->3); corpus elc2 value 7.
+        _ => (
+            "(do (def (main (: n Int64)) (let ((xs #list(n (+ n 1) (+ n 2)))) (let ((m (Map.insert (Map.insert Map.empty xs 7) #list(9 9) 5))) (match (Map.lookup m xs) ((Some v) (+ v n)) ((None) -1))))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6446,13 +6463,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main`.
-        let mut reached = [false; 51];
-        for seed in 0u64..3060 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main`.
+        let mut reached = [false; 52];
+        for seed in 0u64..3120 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(51) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-50 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(52) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-51 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6593,11 +6610,13 @@ mod tests {
                 reached[49] = true; // shape 49 = stll1 invariant-Set-param Set.to-list'd in a self-loop `main` (borrow-gate reclaim #b50180e899)
             } else if ep.source.contains("#set(#list(9 9))") {
                 reached[50] = true; // shape 50 = sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` (borrow-when-canonicalizing #a0f501dde5)
+            } else if ep.source.contains("(Map.insert Map.empty xs 7)") {
+                reached[51] = true; // shape 51 = mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` (borrow-when-canonicalizing #a0f501dde5, Map twin of 50)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all fifty-one export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all fifty-two export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
