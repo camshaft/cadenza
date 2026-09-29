@@ -172,10 +172,26 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `import_base += needs_shared_mem`, builds the op's `comp_functype` with the spilled result `CRef`, and names
   the host import by the world's FQ interface. The self-memory assembler is UNTOUCHED, so every non-escaping
   resource shape is byte-identical (native 396/396, ch28 coarse gate GREEN). SHAPE 95 crosses byte-exact
-  (`"ok"` String), live-objects 0. REMAINING: a payloadless ENUM RESULT escaping as a resource still declines
-  cleanly (a distinct nominal-enum lift, not the spilled-compound path) — a small follow-on if a case needs it;
-  the other 4 resource-escape assembler variants (sum/recursive-sum/closure/peer) do not yet carry a spilled
-  host result (no case exercises them), but the `needs_shared_mem` core-module mode is ready for them.
+  (`"ok"` String), live-objects 0.
+- **[emit, RESULT] a payloadless-ENUM host RESULT escaping DIRECTLY as run()'s resource entrypoint — ✅ DONE
+  (SHAPE 336; dynamic non-host twin SHAPE 337; const-fold literal drift-guard SHAPE 338).** A C-style enum
+  crosses at runtime as a BARE i32 disc (`ty_is_enum_disc` — never a value-heap handle), so the sum escape
+  needs BOTH: (1) the host op's result TYPE declared — the SUM host branch (`emit_runtime_sum_resource`) now
+  threads `build_host_result_types` (nominal `enum` DEFINED+EXPORTED type into the op's `comp_functype` + the
+  host effect instance-type via `assemble_host_runtime_resource`'s new `needs_list`/`result_defs`), and
+  `host_as_extern_for` declares the core import's i32 disc result for an `enum_result`; (2) the enum-disc
+  MATERIALIZED into a value-heap sum cell — `EscapeForm::Sum { enum_disc }` drives the escape `make` body to
+  insert `sum-new(disc, IMM_UNIT)` after `call run` (the enum-disc twin of `FlatScalar`'s `box_op`), so
+  `resource-new` gets a real rep and `t-encode`'s `sum-disc(rep)` reads a live cell. `result_is_enum_disc`
+  (`db.is_enum_disc`) is threaded from the mod.rs dispatch (+ the DWARF sidecar, byte-identical). The host
+  import is named by the world's FQ interface (`world_import_iface_for_effect`, B1b). The `#10100` clean-decline
+  guard now declines only a COMPOUND (`spilled_result`) host result feeding a sum escape. Before the bridge, a
+  declaration-only cross SILENTLY MISCOMPILED (rendered variant 0); the dynamic non-host escape (SHAPE 337) was
+  a latent miscompile fixed as a bonus. A CONST enum result (SHAPE 338) const-folds to a baked value-form blob
+  and never reaches the runtime path — byte-identical, the drift guard. All three byte-exact + live-objects 0.
+- REMAINING: the other 4 resource-escape assembler variants (recursive-sum/closure/peer + a compound
+  `spilled_result` feeding a sum escape) do not yet carry a spilled host result (no case exercises them), but
+  the `needs_shared_mem` core-module mode is ready for them.
 - **[naming, B1b] the PLAIN host-delegating envelope now names the host import by the world's FQ import
   interface — ✅ DONE.** `world_import_iface_for_effect(db, effect)` reverse-maps the guest effect (named
   after the interface's SHORT kebab segment by `synthesize_world_import_effect_decls`) to the world IMPORT

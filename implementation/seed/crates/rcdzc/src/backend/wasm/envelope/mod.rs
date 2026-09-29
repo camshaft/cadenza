@@ -4314,6 +4314,14 @@ pub fn assemble_host_runtime_resource(
     iface: &str,
     host_fns: &[HostFn],
     make_slots: &[ArgSlot],
+    // A payloadless-ENUM host RESULT (whose disc materializes into the value-heap sum escape) declares its
+    // nominal `enum` type here — `result_defs` carries the (exported) enum define + `needs_list` its
+    // `(list u8)` slot, the SAME path a spilled compound uses on the plain host / scalar-methods envelopes.
+    // For a scalar/unit host set both are trivial (`result_defs` empty, `needs_list` false) → byte-identical
+    // to the former `&[]` call; the op's `comp_functype` still carries the nominal result CRef the caller
+    // computed.
+    needs_list: bool,
+    result_defs: &[(Vec<u8>, bool)],
 ) -> Vec<u8> {
     let h = host_fns.len();
     let k = imports.len();
@@ -4325,8 +4333,8 @@ pub fn assemble_host_runtime_resource(
     let type_sec = {
         let host_it = host_effect_instance_type(
             host_fns,
-            host_fns.iter().any(|f| f.has_list_param),
-            &[],
+            needs_list || host_fns.iter().any(|f| f.has_list_param),
+            result_defs,
             &[],
         );
         let rt_it = runtime_op_instance_type(imports);

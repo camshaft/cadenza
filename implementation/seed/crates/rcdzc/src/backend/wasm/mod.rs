@@ -360,7 +360,21 @@ pub fn emit(
         // variant with a non-renderable payload — falls through to decline below).
         if let crate::ty::Ty::Sum { .. } = &result {
             if let Some(sum_tpl) = crate::lower::sum_form_template(db, &result) {
-                return emit_runtime_sum_resource(db, layout, e.def, &sum_tpl, spans);
+                // A C-style ENUM result (`is_enum_disc` — ≥2 nullary variants) crosses at runtime as a BARE
+                // i32 disc, so the sum escape's `make` must materialize it (`sum-new(disc, IMM_UNIT)`) before
+                // `resource-new`; a payload/unit-payload sum returns a real handle already (no box).
+                let result_is_enum_disc = matches!(
+                    result.strip_nominal(),
+                    crate::ty::Ty::Sum { decl, .. } if db.is_enum_disc(*decl)
+                );
+                return emit_runtime_sum_resource(
+                    db,
+                    layout,
+                    e.def,
+                    &sum_tpl,
+                    result_is_enum_disc,
+                    spans,
+                );
             }
             // A RECURSIVE sum (a self-referential payload — a linked list, a tree) has no fixed
             // per-variant template (`sum_form_template` returned `None`), so its `encode()` walks the heap
@@ -2164,6 +2178,12 @@ fn resource_escape_dwarf(
                  payload has no value form — matches the embedded path's own decline)",
             ));
         };
+        // Mirror `emit_runtime_sum_resource`: a C-style enum result adds `sum-new` (the `make` disc→cell box)
+        // so the reconstructed core stays byte-identical to the emitted one and the DWARF offsets align.
+        let result_is_enum_disc = matches!(
+            result.strip_nominal(),
+            crate::ty::Ty::Sum { decl, .. } if db.is_enum_disc(*decl)
+        );
         let (imports, funcs, layout) = resource_escape_build(db, layout, |used| {
             used.insert("sum-disc");
             let mut any_payload = false;
@@ -2185,6 +2205,9 @@ fn resource_escape_dwarf(
                 used.insert("arr-get");
             }
             used.insert("drop");
+            if result_is_enum_disc {
+                used.insert("sum-new");
+            }
         })?;
         let export_abs = layout.abs(export_def).ok_or_else(|| {
             Reject::decline("the escaping sum export is not in the emission order")
@@ -2195,7 +2218,10 @@ fn resource_escape_dwarf(
             &funcs,
             &imports,
             export_abs,
-            serialize::EscapeForm::Sum(&tpl),
+            serialize::EscapeForm::Sum {
+                tpl: &tpl,
+                enum_disc: result_is_enum_disc,
+            },
             &[],
             &[],
             &escape_lifted_table(&layout),
@@ -2721,6 +2747,8 @@ fn emit_runtime_resource(
             &iface,
             &host_fns,
             &make_params.boundary_slots(),
+            false, // the Flat escape declines an enum/spilled host result above — no nominal result def here
+            &[],
         ));
     }
     // The fused envelope now supports MULTIPLE distinct peer interfaces (the component groups the peer ops

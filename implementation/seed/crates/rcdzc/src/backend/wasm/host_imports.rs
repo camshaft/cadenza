@@ -1316,11 +1316,22 @@ pub(super) fn host_as_extern_for(host_imports: &[host::HostImport]) -> Vec<host:
             if hi.spilled_result.is_some() {
                 params.push(runtime_abi::AbiValType::U32); // the i32 retptr (u32 pointer → core i32)
             }
+            // A payloadless-ENUM host RESULT crosses BY VALUE as ONE core `i32` (the discriminant) — no retptr,
+            // like a scalar at the core level, but its COMPONENT result type is the nominal `enum` (carried by
+            // `host_op_comp_functype`'s `result_cref`). `hi.result` is `None` for an enum (the disc is tracked
+            // via `enum_result`), so the CORE import functype this `ExternImport` produces must declare the i32
+            // itself — mirroring the plain host path's `host_import_functype` enum-result arm. Else the core
+            // module imports the op as `(func)` while the lowered import is `(func (result i32))` → CDZ0910.
+            let result = hi.result.or_else(|| {
+                hi.enum_result
+                    .as_ref()
+                    .map(|_| runtime_abi::AbiValType::U32)
+            });
             host::ExternImport {
                 interface: hi.effect.clone(),
                 op: hi.op.clone(),
                 params,
-                result: hi.result,
+                result,
             }
         })
         .collect()
