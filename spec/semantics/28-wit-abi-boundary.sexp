@@ -9958,6 +9958,32 @@ cases
   (live-objects 0))
 
 (case
+  "a top-level tuple<record{v: variant{a, b(s64), c(bytes)}, n: s64}, s64> host-op arg crosses (BYTES mixed-variant field of a record nested in a bare tuple)"
+  (doc
+    "SHAPE 343 (v-wit-boundary) — a top-level `tuple<record{ v: variant{a, b(s64), c(bytes)}, n: s64 }, s64>`
+           bare host-op ARGUMENT (probe.push): the outer tuple's ELEMENT 0 is a RECORD whose `v` FIELD is a
+           HETEROGENEOUS MIXED variant with a BYTES payload case (c). This composes the record-FIELD bytes-case
+           mixed variant (SHAPE 268) UNDER a bare `tuple` — the tuple pre-scan's `record_has_mem_mixed_variant_field`
+           recursion reserves the scratch cursor, so the record field's Bytes arm rope-copies into shared `mem` at
+           the cursor and flattens to `(ptr, len)`. run() builds (({v: C(b\"hi\"), n: 2}), 5) and performs
+           probe.push; a VALID running component (live-objects=0) pins the nested round-trip that previously emitted
+           validation-clean but was not corpus-covered.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (record (= v (variant (a) (b (s64)) (c (list (u8))))) (= n (s64))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (Tuple (Record (: v Sig) (: n Int64)) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((#record((= v (Sig.C b"hi")) (= n 2))) 5))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
   "a top-level tuple<variant{a, b(s64), c(list<s64>)}, s64> host-op arg crosses (LIST payload case at a register tuple ELEMENT, cursor-reserved)"
   (doc
     "SHAPE 271 (v-wit-boundary) — a top-level `tuple<variant{a, b(s64), c(list<s64>)}, s64>` bare host-op ARGUMENT

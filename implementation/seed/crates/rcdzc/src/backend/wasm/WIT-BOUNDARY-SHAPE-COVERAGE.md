@@ -244,9 +244,9 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   Bytes/List mixed-variant case at a TUPLE-ELEMENT is ✅ DONE — SHAPE 270/271 (see the tuple-ELEMENT entry below); a
   Bytes/List mixed-variant field nested under `option<record>`/`result<record>` is ✅ DONE — SHAPE 272–275, and the
   Bytes/List mixed-variant ELEMENT of a `tuple` nested under `option`/`result` is ✅ DONE — SHAPE 276–279. A Bytes/List
-  mixed-variant field nested under a BARE `tuple` (`tuple<record{v: variant{…, c(list<u8>)}}, s64>`) also EMITS
-  (validation-clean — the tuple pre-scan's `record_has_mem_mixed_variant_field` recursion reserves the cursor); not
-  yet corpus-pinned (needs a faithful-run pin when the nix gate is reachable).
+  mixed-variant field nested under a BARE `tuple` (`tuple<record{v: variant{…, c(bytes)}}, s64>`) is now ✅ DONE /
+  PINNED — SHAPE 343 (the tuple pre-scan's `record_has_mem_mixed_variant_field` recursion reserves the cursor;
+  faithful-run pinned: 2060-byte component, coarse gate 28 GREEN, live-objects 0).
 - **[emit] a HETEROGENEOUS MIXED `variant` at a REGISTER tuple-ELEMENT position — ✅ DONE / TESTED (SHAPE 265).**
   The tuple-element twin of SHAPE 264 (as SHAPE 257 was the tuple-element twin of the SHAPE 256 record-field
   variant-tuple). A `tuple<variant{a, b(s64), c(tuple<s32,s64>)}, s64>` arg previously DECLINED
