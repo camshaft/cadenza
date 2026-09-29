@@ -399,3 +399,28 @@ async fn a_backend_error_on_post_is_500() {
     assert_eq!(status, 500, "a store failure on POST is 500");
     assert_eq!(location, None, "a failed store assigns no address");
 }
+
+#[tokio::test]
+async fn the_client_surfaces_a_backend_500_as_an_error_not_a_miss() {
+    use crate::CasError;
+    // The CLIENT-side complement of the server 500 tests: a backend error must PROPAGATE as an error, not
+    // be folded into a miss (`Ok(None)`/`Ok(false)`) — else a caller wrongly concludes the blob is absent
+    // when the store is merely unhealthy, and never retries.
+    let addr = spawn_failing_server().await;
+    let store = client(addr);
+    let hash = Hash::of(HashTag::Blob, b"anything");
+
+    match store.fetch(hash).await {
+        Err(CasError::UnexpectedStatus(500)) => {}
+        other => panic!("fetch on a 500 backend should be UnexpectedStatus(500), got {other:?}"),
+    }
+    match store.exists(hash).await {
+        Err(CasError::UnexpectedStatus(500)) => {}
+        other => panic!("exists on a 500 backend should be UnexpectedStatus(500), got {other:?}"),
+    }
+    // And through the `BlobStore` face, the error propagates rather than becoming a miss.
+    assert!(
+        store.get(hash).await.is_err(),
+        "BlobStore::get must propagate a backend 500, not return Ok(None)"
+    );
+}
