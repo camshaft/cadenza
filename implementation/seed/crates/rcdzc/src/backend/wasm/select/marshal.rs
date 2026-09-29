@@ -5611,17 +5611,31 @@ pub(super) fn emit_record_arg_marshal(
             // lockstep. serialize's `VariantMemMixed` flatten + `host_imports`'s variant DEFINED type (incl. a
             // record case's `(record …)` DEFINED type, built by `record_field_cref` from the WIT-ordered
             // `(name, abi)` pairs) agree on this join. Detected AFTER the scalar-/tuple-payload variant arms (they
-            // claim their clean single-kind shapes). One admit condition (decline-don't-miscompile): a `Bytes`/
+            // claim their clean single-kind shapes). Two admit conditions (decline-don't-miscompile): (1) a `Bytes`/
             // `List` payload case rope-copies / marshals into `mem` at the cursor, so it needs the record's scratch
             // cursor RESERVED (`record_has_mem_mixed_variant_field` in the emit.rs pre-scan) — else `cursor` is
-            // `None` and the arm declines cleanly. A `Record` payload case whose guest NAME-LEX field order
-            // DIVERGES from its WIT declaration order is now supported: `reorder_record_fields_to_wit` WIT-orders
-            // the field abi's Record-case `(name, abi)` pairs, so `record_field_cref` builds the component in WIT
-            // order and serialize's flatten agrees; a truly unorderable case declines cleanly below.
+            // `None` and the arm declines cleanly. (2) a `List` case's ELEMENT must be a SCALAR: the ABI-only
+            // component-type builder (`host_imports::record_field_cref`, which lays this variant field's exported
+            // `variant` DEFINED type) can only build a `(list <scalar>)` payload from the element `Ty` — it has no
+            // `Db`/WIT to resolve a COMPOUND element (`list<record>`/`list<tuple>`/…), so it would drop the payload
+            // to a NULLARY case (a 2-slot component type) while serialize's `variant_mixed_join_slots` counts the
+            // list header (2 slots) regardless of element — a mismatch the runtime rejects (CDZ0910). Declining the
+            // compound-element list case here keeps the guest push, serialize's flatten, and the exported type in
+            // lockstep (the register-flatten twin of R1n's cursor-spilling `RecordMem` decline; making a
+            // `list<compound>` variant case CROSS needs `record_field_cref` threaded with the element ABI/WIT — a
+            // later increment). A `Record` payload case whose guest NAME-LEX field order DIVERGES from its WIT
+            // declaration order is supported: `reorder_record_fields_to_wit` WIT-orders the field abi's Record-case
+            // `(name, abi)` pairs, so `record_field_cref` builds the component in WIT order and serialize's flatten
+            // agrees; a truly unorderable case declines cleanly below.
             None if crate::backend::wasm::host::variant_mixed_payload_cases(db, fty)
                 .is_some_and(|cases| {
                     cases.iter().all(|(_, k)| {
                         crate::backend::wasm::host::variant_mem_mixed_kind_supported(k)
+                    }) && cases.iter().all(|(_, k)| match k {
+                        crate::backend::wasm::host::VariantPayloadKind::List(elem) => {
+                            crate::backend::wasm::host::abi_val_type(elem).is_some()
+                        }
+                        _ => true,
                     }) && (cursor.is_some()
                         || !cases.iter().any(|(_, k)| {
                             matches!(

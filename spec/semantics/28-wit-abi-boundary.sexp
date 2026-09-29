@@ -12029,3 +12029,64 @@ cases
   (host-responses (respond H.h (: 1 Int64)))
   (output (: (Some 7) (Option Int64)))
   (live-objects 0))
+
+(case
+  "a record{v: variant{a, b(list<record>)}, n: s64} host-op arg declines coded (register-flatten cannot express a list<compound> variant case)"
+  (doc
+    "SHAPE 348 (v-wit-boundary) — a REGISTER-flattened record ARG whose `variant` FIELD carries a `list<COMPOUND>`
+           (`list<record{x,y}>`) payload case. The register position lays the variant field's exported component
+           type via the ABI-only `record_field_cref` (a record ARG references its EXPORTED nominal record type,
+           whose fields are built field-by-field). That builder's `VariantMemMixed` List arm can only lay a
+           `(list <scalar>)` from the element `Ty` (`abi_val_type`) — it has no `Db`/WIT to resolve a COMPOUND
+           element, so it formerly dropped the case to a NULLARY payload: a 2-slot component type
+           `(disc, n:i64)`, while serialize's `variant_mixed_join_slots` counts the list header (`ptr,count`)
+           regardless of element → a 4-slot core import `(disc, ptr, count, n)`. The mismatch was caught by the
+           compiler's own wasm-validation self-check and surfaced as an INTERNAL CDZ0910 'please report it' defect
+           (no artifact written — no miscompile shipped, but a confusing internal error). Now `is_boundary_record`
+           (the register-representability gate every register position shares, read by `first_unrepresentable_
+           host_op`) rejects a variant field with a `list<compound>` case — and a cursor-spilling `RecordMem` case,
+           the SHAPE 317 sibling that likewise cannot be laid by `record_field_cref` — so the op declines CLEANLY
+           with the coded CDZ0903 BEFORE emit (`emit_variant_mixed_arg_reg_flatten`'s List admit condition also
+           requires a scalar element, as belt-and-suspenders). This shape DOES cross at the MEM position (a list
+           ELEMENT, `emit_product_to_mem` + a WIT-driven type, SHAPE 315-317) — so declining the register-flatten
+           twin is an honest coded boundary, not a lost shape; crossing it at the register position (threading the
+           element ABI/WIT through `record_field_cref`) is a later increment.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (record (= v (variant (a) (b (list (record (= x (s32)) (= y (s64))))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (List (Record (: x Int32) (: y Int64)))))
+      (effect probe (op push (-> (Record (: v Sig) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Sig.B #list(#record((= x (: 1 Int32)) (= y 2))))) (= n 7)))))
+      (export run)))
+  (call run)
+  (error CDZ0903))
+
+(case
+  "a record{v: variant{a, b(list<s64>)}, n: s64} host-op arg crosses (list<scalar> variant case — the register-flatten precision twin of SHAPE 348)"
+  (doc
+    "SHAPE 349 (v-wit-boundary) — the CROSSING precision twin of SHAPE 348: the same register-flattened record ARG
+           with a `variant` FIELD, but the variant's `b` case carries a `list<SCALAR>` (`list<s64>`), not a
+           `list<record>`. `record_field_cref`'s `VariantMemMixed` List arm CAN lay a `(list <scalar>)` component
+           type from the element `Ty` (`abi_val_type` = `Some`), so the exported variant type flattens to
+           `(disc:i32, ptr:i32, count:i32)`, matching serialize's list-header flatten + the guest push
+           (`emit_variant_mixed_arg_reg_flatten`'s List arm marshals the list backing into shared `mem` at the
+           reserved cursor). The `is_boundary_record` register-representability gate ADMITS a scalar-element list
+           case (its guard rejects only a `list<compound>` / `RecordMem` case), so this crosses exactly where
+           SHAPE 348 declines — proving the boundary is PRECISE, not a blanket variant-list-case rejection. run()
+           pushes {v: B[10, 20], n: 7}; the byte-exact `(host-arg-received …)` pin proves the list<scalar> payload
+           + the sibling scalar field cross correctly, and a VALID running component (live-objects=0) confirms it.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (record (= v (variant (a) (b (list (s64))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (List Int64)))
+      (effect probe (op push (-> (Record (: v Sig) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Sig.B #list(10 20))) (= n 7)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #record((= v (b #list(10 20))) (= n 7)))
+  (output 55)
+  (live-objects 0))
