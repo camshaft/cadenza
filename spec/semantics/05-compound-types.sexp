@@ -3358,6 +3358,36 @@
   (output (: 0 Int64))
   (live-objects 0))
 
+; The RECORD-field arm of the compound-container grounding — the List/Map/Set element+value slots are pinned
+; above; a RecordNew field slot must ground too. A bare `100` in a record field's tuple defaults to Int64, but
+; the field is declared `(Tuple Int8)`, so it must ground to Int8 at construction — else the struct field
+; `f: (i8,)` is built from an `(i64,)` literal and the Rust backend rejects the mismatch. The `if` on the
+; runtime `n` keeps the RecordNew from const-folding so the typed construction survives to emit.
+(case
+  "a narrow-width Int8 tuple RECORD field is grounded to its declared field width at runtime emit"
+  (doc
+    "The Record arm of the narrow-width compound-element grounding (the List/Map/Set arms are pinned
+           above): `(: #record((= f #tuple(100))) (Record (: f (Tuple Int8))))` selected behind a runtime `if`
+           (so the RecordNew is emitted, not folded). The field tuple's bare `100` must ground to Int8, not the
+           literal's Int64 default — else the struct field `f: (i8,)` cannot be built from an `(i64,)` literal.
+           `(. r.f 0)` reads the grounded field element: n=3 → 100, n=0 selects the `7` record → 7. Rust emits
+           the field grounded `(100u8 as i8)`.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (let
+          ((r
+             (if (> n 0)
+                 (: #record((= f #tuple(100))) (Record (: f (Tuple Int8))))
+                 (: #record((= f #tuple(7))) (Record (: f (Tuple Int8)))))))
+          (. r.f 0)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 100 Int8))
+  (call main (: 0 Int64))
+  (output (: 7 Int8)))
+
 (case
   "a runtime tuple built behind a recursive call escapes to the host"
   (doc
