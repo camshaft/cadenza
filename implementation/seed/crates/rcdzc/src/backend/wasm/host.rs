@@ -2439,7 +2439,18 @@ fn product_field_marshalable(db: &mut Db, f: &Ty, wit: bool) -> bool {
         // needs the field WIT threaded (a later slice), so it declines. A nested RECORD field also declines
         // (name-lex vs WIT order needs the WIT). Empty tuple excluded (no meaningful boundary form).
         || tuple_field_marshalable(db, f, wit)
-        || option_payload_ty(db, f).is_some_and(|p| abi_val_type(&p).is_some())
+        // An `option<T>` field of a product LIST-ELEMENT written by `emit_product_to_mem`'s option-field arm via
+        // `emit_option_to_mem` (a scalar inline; a `Bytes`/`list` payload's backing spilled at the cursor; a
+        // record/tuple product at the payload offset). Gated by `field_boundary_abi` (the ABI/needs-memory gate)
+        // so the classifier admits exactly what the host param ABI recognizes — memory is then declared for the
+        // enclosing list. A RECORD payload needs the field's option WIT to order its fields
+        // (`emit_option_to_mem` declines a record payload without it), so it is admitted ONLY on the `wit = true`
+        // path; a scalar/`Bytes`/`list`/tuple-of-scalars payload is offset-agnostic and crosses in any position.
+        || (option_payload_ty(db, f).is_some()
+            && field_boundary_abi(db, f).is_some()
+            && (wit
+                || !option_payload_ty(db, f)
+                    .is_some_and(|p| matches!(p.strip_nominal(), Ty::Record(_)))))
         // A general `variant<scalar>` field of a product element (`list<record{v: variant{…}, …}>` /
         // `list<tuple<variant, …>>`): written in place by `select::emit_variant_to_mem`. Detected after
         // option (option takes its own arm); this is the residual general scalar-payload variant.
