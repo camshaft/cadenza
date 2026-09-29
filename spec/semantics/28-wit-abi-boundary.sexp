@@ -11219,19 +11219,18 @@ cases
   (live-objects 0))
 
 (case
-  "a list<record{v: variant{a, b(record{d: bytes, n: s64})}}> host-op arg DECLINES CDZ0903 (Bytes in a variant record case)"
+  "a list<record{v: variant{a, b(record{d: bytes, n: s64})}}> host-op arg crosses (a Bytes field in a variant record case)"
   (doc
-    "SHAPE 317 (v-wit-boundary) — the SCOPE BOUNDARY of the variant-record-case field slice: the variant's record
-           payload case carries a `Bytes` field. A record payload case with only SCALAR fields crosses (SHAPE
-           315/316), but a `Bytes` (or other cursor-spilling) field inside the case declines CLEANLY (CDZ0903 at
-           the arg level — `variant_mixed_payload_cases` does not classify a cursor-spilling record case as a
-           marshalable mixed case here). Grades Todo. The idealistic behavior is that it crosses (the rope spilling
-           at the shared cursor); CROSSING it is a QUEUED unit needing a RICHER field-abi repr for
-           `VariantPayloadKind::Record` (which today carries `(name, scalar-AbiValType)` pairs — `abi_val_type` is
-           `None` for a Bytes field, so the classifier declines the whole variant). The MEM emit half is already
-           ready (`emit_variant_mixed_to_mem`'s record-case arm re-resolves the record from the guest Ty + WIT and
-           calls `emit_record_to_mem`, which spills a Bytes field at the cursor); the block is the classifier +
-           register-flatten (`variant_mixed_join_slots` / the cref) that read the scalar-only `AbiValType` pairs.")
+    "SHAPE 317 (v-wit-boundary) — a variant FIELD one of whose cases carries a RECORD payload with a `Bytes`
+           field crosses. A record payload case with only SCALAR fields is a `VariantPayloadKind::Record` (SHAPE
+           315/316); a case with a cursor-spilling field (Bytes/list/nested-compound) is now a
+           `VariantPayloadKind::RecordMem(Ty)` — a MEM-ONLY kind admitted when every field is
+           `field_boundary_abi`-representable. The MEM emit (`emit_variant_mixed_to_mem`'s record arm) writes it
+           IDENTICALLY to a scalar Record case: it re-resolves the record from the guest Ty + the case's WIT and
+           calls `emit_record_to_mem`, which spills the `Bytes` field's rope at the shared cursor (it never touches
+           the scalar-only `Record` abi pairs). The REGISTER flatten declines a RecordMem cleanly (its positional
+           per-field scalar coercion has no cursor — decline-don't-miscompile). run() pushes [{v: B{d:b\"hi\", n:2}}];
+           the byte-exact `(host-arg-received …)` pin proves the Bytes field + WIT field order cross correctly.")
   (wit-world
     (world w (import cadenza:platform/probe (member push (func (param m (list (record (= v (variant (a) (b (record (= d (list (u8))) (= n (s64))))))))) (result (s64)))))))
   (input
@@ -11243,6 +11242,7 @@ cases
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#record((= v (b #record((= d #list(104 105)) (= n 2)))))))
   (output 55)
   (live-objects 0))
 

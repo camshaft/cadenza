@@ -1792,6 +1792,23 @@ pub(super) fn collect_used_ops_into_seen(
                                         }
                                     }
                                     VariantPayloadKind::Bytes => {} // bytes-len/bytes-get declared above
+                                    VariantPayloadKind::RecordMem(record_ty) => {
+                                        // A cursor-spilling record case (mem-only): `emit_record_to_mem` indexes
+                                        // the record handle's fields (`arr-get`) + reads each field (a scalar's
+                                        // unbox op; a Bytes field's rope ops are declared above). The register
+                                        // arg path declines a RecordMem at emit, so these are belt-and-braces;
+                                        // the list-element/field mem path declares its ops via its own walk.
+                                        out.insert(OP_ARR_GET);
+                                        if let crate::ty::Ty::Record(fields) =
+                                            record_ty.strip_nominal()
+                                        {
+                                            for fty in fields.values() {
+                                                if let Ok(Some(read)) = get_op_ty(db, fty) {
+                                                    out.insert(read);
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
