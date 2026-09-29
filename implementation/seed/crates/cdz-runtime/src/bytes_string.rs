@@ -75,37 +75,34 @@ pub(crate) fn op_bytes_set(buf: Handle, index: u32, value: u32) -> Handle {
     }
     buf
 }
-/// `bytes-get` — the logical byte at `index`. A leaf reads `raw` directly (O(1)); a rope node
-/// (slice/concat) is FLATTENED to a leaf in place on this first full-read, then read (see
-/// `bytes_flatten` — this is what keeps the compiler's `0..len` emit loop O(n) instead of O(n²) on a
-/// deep concat chain). OOB into a valid buffer traps; null is benign.
+/// `bytes-get` — the logical byte at `index`. A single-chunk/inline leaf reads `raw` directly (O(1)); a
+/// MULTI-CHUNK `Raw::Rope` leaf (a `bytes-concat`/`bytes-slice` result) is COMPACTED to one chunk in
+/// place on this first full-read, then read (see `bytes_flatten` — this keeps the compiler's `0..len`
+/// emit loop O(n) not O(n²) on a deep concat chain). OOB into a valid buffer traps; null is benign.
 pub(crate) fn op_bytes_get(buf: Handle, index: u32) -> u32 {
     if is_immediate(buf) {
         return 0; // cross-kind totality: a bytes buffer is never itself an immediate
     }
-    // Leaf fast path (and null-benign): today's behavior, unchanged.
-    let is_leaf = match unsafe { buf.node_ref() } {
+    // Null-benign; then: a MULTI-CHUNK Rope leaf needs one compaction so `raw.get` sees contiguous
+    // bytes (bounds-check first so a stray OOB doesn't force it). A single-chunk/inline leaf skips
+    // straight to the O(1) direct read — the hot per-char path, unchanged.
+    let multichunk = match unsafe { buf.node_ref() } {
         None => return 0,
-        Some(n) => n.handles.is_empty(),
+        Some(n) => matches!(&n.raw, Raw::Rope(bv) if bv.as_contiguous().is_none()),
     };
-    if is_leaf {
-        return match unsafe { buf.node_ref() } {
-            None => 0,
-            Some(n) => match n.raw.get(index as usize) {
-                Some(&b) => b as u32,
-                None => trap_oob(),
-            },
-        };
+    if multichunk {
+        if index >= op_bytes_len(buf) {
+            trap_oob();
+        }
+        bytes_flatten(buf); // compacts the multi-chunk Rope leaf in place → single contiguous chunk
     }
-    // Rope node: bounds-check against the logical length (so a stray OOB doesn't force a flatten),
-    // then materialize once. After flatten, `buf` is a leaf; re-read it.
-    if index >= op_bytes_len(buf) {
-        trap_oob();
+    match unsafe { buf.node_ref() } {
+        None => 0,
+        Some(n) => match n.raw.get(index as usize) {
+            Some(&b) => b as u32,
+            None => trap_oob(),
+        },
     }
-    bytes_flatten(buf);
-    with_node(buf, 0, |n| {
-        n.raw.get(index as usize).map(|&b| b as u32).unwrap_or(0)
-    })
 }
 
 /// `bytes-len` — the logical byte length. O(1): a leaf's is its physical `raw` length; a rope node
@@ -180,7 +177,18 @@ pub(crate) fn op_bytes_read(buf: Handle) -> Vec<u8> {
 pub(crate) fn bytes_flatten(h: Handle) {
     let arity = with_node(h, 0usize, |n| n.handles.len());
     if arity == 0 {
-        return; // already a leaf
+        // A LEAF. `bytes-concat`/`bytes-slice` build MULTI-CHUNK `Raw::Rope` leaves (a ByteVec rope);
+        // COMPACT such a leaf to a single contiguous chunk here, so every content reader (`as_slice`,
+        // `bytes-get`/`-read`, the champ key hash/eq/cmp) sees one `&[u8]`. Content-preserving, so
+        // unobservable even when shared. No-op on an inline/heap or already-single-chunk leaf.
+        if let Some(n) = unsafe { h.node_mut() } {
+            if let Raw::Rope(bv) = &mut n.raw {
+                if bv.as_contiguous().is_none() {
+                    bv.compact();
+                }
+            }
+        }
+        return;
     }
     let len = op_bytes_len(h) as usize;
     // SMALL fast path (the dominant per-char case: `String.at` → a 1-byte slice → compact): the flattened
@@ -283,9 +291,43 @@ pub(crate) fn fill_rope_bytes(h: Handle, dst: &mut [u8], len: usize) {
     });
 }
 
-/// `bytes-concat(a, b)` — a new Bytes = the bytes of `a` then `b`. O(1): allocates one concat node,
-/// copies nothing. CONSUMES `a` and `b`. Empty operand is the identity (returns the other, dropping
-/// the empty one to honor consume-semantics), matching the corpus identity law.
+/// A bytes/string value's content as an owned `ByteVec`, sharing rather than copying where possible:
+/// a `Rope` leaf's `ByteVec` clones by REFCOUNT (a bump on its shared `Bytes` chunks, no byte copy);
+/// an inline/heap leaf copies its short bytes into a fresh `ByteVec`. BORROWS `h` (rc unchanged) — the
+/// caller consumes `h` (via `op_drop`) after. A null/immediate reads as empty.
+fn content_bytevec(h: Handle) -> etude_bytevec::ByteVec {
+    if is_immediate(h) {
+        return etude_bytevec::ByteVec::default();
+    }
+    with_node(h, etude_bytevec::ByteVec::default(), |n| match &n.raw {
+        Raw::Rope(bv) => (**bv).clone(), // refcount bump — shares the Bytes chunks, no byte copy
+        other => etude_bytevec::ByteVec::from(other.as_slice().to_vec()),
+    })
+}
+
+/// Allocate a fresh bytes/string LEAF (empty `handles`) holding `bv`'s content: INLINE when it fits the
+/// cap (a short contiguous copy — preserves the no-heap short-leaf rep and the inline-small invariant
+/// the reuse/rep tests pin), else a `Raw::Rope` that KEEPS the `ByteVec` (its chunks stay shared by
+/// refcount — no byte copy). Reads/champ compact a multi-chunk `Rope` to a single chunk on demand
+/// (see `bytes_flatten`).
+fn bytes_leaf_from_bytevec(bv: etude_bytevec::ByteVec) -> Handle {
+    if bv.len() <= INLINE_RAW_CAP {
+        let bytes = bv.copy_to_bytes(); // ≤cap: one small contiguous copy into the inline buffer
+        alloc_raw(alloc::vec::Vec::new(), Raw::inline(&bytes))
+    } else {
+        alloc_raw(
+            alloc::vec::Vec::new(),
+            Raw::Rope(alloc::boxed::Box::new(bv)),
+        )
+    }
+}
+
+/// `bytes-concat(a, b)` — a new Bytes = the bytes of `a` then `b`. Builds one `ByteVec` = a's chunks
+/// then b's, appended by REFCOUNT (`ByteVec::append` moves the chunks — O(chunks), no byte copy), so a
+/// concat cascade stays linear (the chunk rope defers the copy to the single compact-on-read, the same
+/// O(n)-not-O(n²) property the old node-rope had). CONSUMES `a` and `b`: `content_bytevec` clones-to-
+/// share then `op_drop` releases our operand reference (a unique operand's node is freed and its Bytes
+/// transferred into the result; a shared one keeps its Bytes shared). Empty operand is the identity.
 pub(crate) fn op_bytes_concat(a: Handle, b: Handle) -> Handle {
     let la = op_bytes_len(a);
     let lb = op_bytes_len(b);
@@ -299,29 +341,57 @@ pub(crate) fn op_bytes_concat(a: Handle, b: Handle) -> Handle {
     }
     // Logical length is u32 across the ABI (`bytes-len -> u32`); a > 4 GiB Bytes is unrepresentable
     // on wasm32, so an overflow here is a compiler-invariant violation → trap.
-    let total = match la.checked_add(lb) {
-        Some(t) => t,
-        None => trap_oob(),
-    };
-    // Concat rope node: [left, right] handles + inline 4-byte `[len]` raw. Build the 2-element handles
-    // INLINE (`inline_from`) rather than `vec![a, b]` — a concat is arity-2 = exactly INLINE_HANDLES_CAP,
-    // so a heap Vec would be allocated then immediately re-inlined + freed by `From<Vec>` (the transient-
-    // Vec smell). Direct inline construction = the node Box only, one fewer alloc per concat.
-    alloc_raw(
-        Handles::inline_from(&[a, b]),
-        Raw::inline(&total.to_le_bytes()),
-    )
+    if la.checked_add(lb).is_none() {
+        trap_oob();
+    }
+    // Promote `Heap` operands to shareable `Rope` first so `content_bytevec` RC-shares their chunks
+    // instead of copying them: the result is `a`'s chunk then `b`'s chunk with NO byte copy (the true
+    // O(1) concat), and a retained operand re-concatenated later shares rather than re-copies.
+    promote_leaf_to_rope(a);
+    promote_leaf_to_rope(b);
+    let mut r = content_bytevec(a);
+    let mut rb = content_bytevec(b);
+    r.append(&mut rb);
+    op_drop(a);
+    op_drop(b);
+    bytes_leaf_from_bytevec(r)
 }
 
-/// `bytes-slice(buf, start, len)` — a new Bytes = `len` bytes of `buf` from `start`. O(1): one slice
-/// node, no copy. Total-or-trap: `start + len > bytes-len(buf)` traps (checked in `u64`); `len == 0`
-/// is the empty Bytes (never a trap, even at `start == len`). CONSUMES `buf`. A slice OF a slice is
-/// collapsed into the grandparent (`slice(p, off1+start, len)`) to bound rope depth.
+/// PROMOTE a `Heap` bytes leaf to a `Rope` leaf IN PLACE, reusing the `Vec`'s buffer as the single
+/// `Bytes` chunk (zero-copy — `Bytes::from(Vec)` reuses the allocation). Content-preserving, so
+/// UNOBSERVABLE even when `h` is shared (rc>1) — every sharer sees identical bytes, exactly like
+/// `bytes_flatten`'s compaction (memory model #Sharing Is Not Observable). A no-op on an inline/Rope
+/// leaf or a null/immediate. Why: a `Heap` leaf is eagerly-materialized and NOT shareable, so slicing
+/// it copies the WHOLE parent every time; promoting it once lets this slice AND every later slice
+/// RC-SHARE the parent's chunk — turning a lexer's repeated `String.at` from O(parent)/char into O(1)
+/// without taxing plain construction (which stays cheap `Heap`, so a transient value never pays a `Box`).
+fn promote_leaf_to_rope(h: Handle) {
+    if let Some(n) = unsafe { h.node_mut() } {
+        if matches!(n.raw, Raw::Heap(_)) {
+            // Move the `Vec` out (replace with a trivial inline) then install the `Rope` — no byte copy.
+            if let Raw::Heap(v) = core::mem::replace(
+                &mut n.raw,
+                Raw::Inline {
+                    len: 0,
+                    buf: [0u8; INLINE_RAW_CAP],
+                },
+            ) {
+                n.raw = Raw::Rope(alloc::boxed::Box::new(etude_bytevec::ByteVec::from(v)));
+            }
+        }
+    }
+}
+
+/// `bytes-slice(buf, start, len)` — a new Bytes = `len` bytes of `buf` from `start`, a single leaf with
+/// no byte copy: `ByteVec::slice` narrows the parent's chunk view structurally (O(log n)). Total-or-trap:
+/// `start + len > bytes-len(buf)` traps (checked in `u64`); `len == 0` is the empty Bytes (never a trap,
+/// even at `start == len`). CONSUMES `buf`. A ≤cap result is materialized inline; a wider one stays a
+/// `Raw::Rope` leaf sharing `buf`'s chunks (so a slice-of-a-slice just narrows the same chunk view).
 ///
-/// The slice SHARES the parent's storage — its representation holds the parent handle live (`op_dup`),
-/// so the parent buffer is genuinely RETAINED (its rc reflects the slice), not hidden: the storage the
-/// slice value retains is exactly the storage it holds live, and `op_drop` of the slice releases the
-/// parent reference.
+/// The slice SHARES the parent's storage — `ByteVec::slice` structurally reuses the parent's `Bytes`
+/// chunks (a refcount bump, no byte copy), so those chunks are genuinely RETAINED in the slice value's
+/// own representation (its `ByteVec` holds them live), not hidden: the storage the slice retains is
+/// exactly the storage it holds live, and dropping the slice releases its chunk references.
 //= spec/capabilities/memory-and-resource-model.md#retained-storage-is-what-a-value-s-representation-holds-live
 //# The storage a value retains MUST be the storage its representation actually holds live, so that a value that shares another value's storage keeps the shared storage retained rather than hidden.
 pub(crate) fn op_bytes_slice(buf: Handle, start: u32, len: u32) -> Handle {
@@ -333,36 +403,14 @@ pub(crate) fn op_bytes_slice(buf: Handle, start: u32, len: u32) -> Handle {
         op_drop(buf); // consume the operand; the empty result is independent
         return op_bytes_alloc(0);
     }
-    // Collapse slice-of-slice: if `buf` is itself a slice into `parent` at `off1`, point the new
-    // slice straight at `parent` (dup it — the new node owns a reference; dropping `buf` releases
-    // buf's, net parent rc unchanged). Bounds slice-chain depth at 1.
-    let collapse = with_node(buf, None, |n| {
-        if n.handles.len() == 1 {
-            Some((n.handles[0], read_u32_at(&n.raw, 0)))
-        } else {
-            None
-        }
-    });
-    if let Some((parent, off1)) = collapse {
-        op_dup(parent);
-        op_drop(buf);
-        // slice-of-slice: 1 handle + inline [off,len]. Build the handle INLINE (arity-1 ≤ cap) — a
-        // `vec![parent]` would allocate a heap Vec then get re-inlined + freed by `From<Vec>`.
-        return alloc_raw(
-            Handles::inline_from(&[parent]),
-            slice_raw(off1 + start, len),
-        );
-    }
-    // slice node: 1 handle + inline [off,len]. Inline the single handle (no transient heap Vec).
-    alloc_raw(Handles::inline_from(&[buf]), slice_raw(start, len))
-}
-
-/// The 8-byte `[off][len]` raw header of a bytes SLICE node, built INLINE (no transient heap Vec).
-pub(crate) fn slice_raw(off: u32, len: u32) -> Raw {
-    let mut buf = [0u8; INLINE_RAW_CAP];
-    buf[0..4].copy_from_slice(&off.to_le_bytes());
-    buf[4..8].copy_from_slice(&len.to_le_bytes());
-    Raw::Inline { len: 8, buf }
+    // Promote a `Heap` parent to a shareable `Rope` first, so THIS slice and every later slice of the
+    // same parent RC-share its chunk instead of each copying the whole parent (the repeated-`String.at`
+    // lexer path). Then `ByteVec::slice` structurally shares the parent's chunks (O(log n), no byte copy);
+    // CONSUME `buf` (content_bytevec shares its chunks by refcount, op_drop releases our operand ref).
+    promote_leaf_to_rope(buf);
+    let r = content_bytevec(buf).slice((start as usize)..((start + len) as usize));
+    op_drop(buf);
+    bytes_leaf_from_bytevec(r)
 }
 
 /// `bytes-compact(buf)` — a Bytes equal to `buf` by content whose storage is INDEPENDENT of any

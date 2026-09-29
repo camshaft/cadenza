@@ -1329,17 +1329,20 @@ fn ast_encode_decode_non_finite_floats_round_trip() {
 }
 
 #[test]
-fn rope_concat_allocates_one_node_no_copy() {
+fn rope_concat_consumes_operands_into_one_bytevec_leaf_no_copy() {
     reset();
-    // O(1): concatenation adds exactly one concat node, copies no bytes into new leaves.
+    // Concat builds ONE ByteVec-rope leaf that SHARES both operands' chunks by refcount (no byte copy),
+    // CONSUMING both operands — their nodes are freed and their `Bytes` transferred into the result. So
+    // the net live-node count drops by one (two 50-byte operand leaves freed, one 100-byte result leaf
+    // created), and no 100-byte copy happens.
     let x = bytes_leaf(&[0; 50]);
     let y = bytes_leaf(&[1; 50]);
     let before = live_nodes();
     let c = op_bytes_concat(x, y);
     assert_eq!(
         live_nodes(),
-        before + 1,
-        "concat = one node, not 100 byte copies"
+        before - 1,
+        "concat consumes both operands (2 freed) and yields one leaf (+1) — a chunk-share, not 100 byte copies"
     );
     assert_eq!(op_bytes_len(c), 100);
     op_drop(c);
@@ -1421,51 +1424,54 @@ fn rope_slice_out_of_range_traps() {
 }
 
 #[test]
-fn rope_slice_of_slice_collapses() {
+fn rope_slice_of_slice_is_a_leaf_with_correct_content() {
     reset();
-    // A slice of a slice collapses onto the grandparent — the inner slice node is not retained,
-    // so the chain depth stays 1 (bounded). Verify by content and that only the parent is pinned.
+    // A slice of a slice: `ByteVec::slice` structurally shares the parent's chunks, so the result is a
+    // single LEAF (empty handles) holding the sub-range — there is no runtime slice-NODE chain to bound
+    // (etude's rope manages its own internal depth). No explicit slice-of-slice collapse is needed; the
+    // runtime invariant is just "slice yields a leaf holding the doubly-narrowed content."
     let parent = bytes_leaf(&[10, 11, 12, 13, 14, 15]);
     let s1 = op_bytes_slice(parent, 1, 4); // [11,12,13,14], consumes parent
-    let s2 = op_bytes_slice(s1, 1, 2); // [12,13] — collapses to slice(parent, 2, 2)
-    // Inspect structure BEFORE any full read (a read would flatten s2 to a leaf). s2 must be a
-    // slice (arity 1) whose single child is the ORIGINAL parent leaf, not the intermediate s1 —
-    // proving the slice-of-slice collapsed. Also check the recomputed offset (1 + 1 = 2).
-    assert_eq!(vec_arity(s2), 1, "s2 is still a slice before reading");
-    let child = with_node(s2, Handle::NULL, |n| n.handles[0]);
+    let s2 = op_bytes_slice(s1, 1, 2); // [12,13], consumes s1
     assert_eq!(
-        vec_arity(child),
+        vec_arity(s2),
         0,
-        "collapsed slice points straight at the leaf parent"
+        "slice result is a leaf (its ByteVec holds the shared chunks — no slice-node chain)"
     );
-    assert_eq!(
-        with_node(s2, 99, |n| read_u32_at(&n.raw, 0)),
-        2,
-        "offset collapsed to 1+1"
-    );
-    // Now read: content is correct.
     assert_eq!(bytes_to_vec(s2), vec![12, 13]);
     op_drop(s2);
 }
 
 #[test]
-fn rope_get_flattens_in_place_and_is_unobservable() {
+fn rope_get_compacts_a_multichunk_leaf_in_place_and_is_unobservable() {
     reset();
-    // The O(n²) guard: a right-leaning concat chain of depth ~N must
-    // read out correctly, and after the first full read the node is a LEAF (flattened), so a
-    // second pass reads the same bytes. Flatten is content-preserving ⇒ unobservable.
+    // The O(n²) guard: a right-leaning concat chain of depth ~N must read out correctly, and after the
+    // first full read the leaf is COMPACTED to a single chunk (in place), so a second pass is O(1)/byte.
+    // Compaction is content-preserving ⇒ unobservable. (A concat result is always a LEAF now — the
+    // ByteVec rope lives inside it — so the "rope-ness" is a MULTI-CHUNK ByteVec, not a child-node tree.)
     let mut rope = bytes_leaf(&[0]);
     for k in 1..300u32 {
         rope = op_bytes_concat(rope, bytes_leaf(&[(k & 0xff) as u8]));
     }
     assert_eq!(op_bytes_len(rope), 300);
-    // Before the first full read this is a concat node (arity 2).
-    assert_eq!(vec_arity(rope), 2, "still a rope before first full read");
+    // Before the first full read it is a LEAF (empty handles) holding a MULTI-CHUNK ByteVec.
+    assert_eq!(
+        vec_arity(rope),
+        0,
+        "concat result is a leaf (empty handles)"
+    );
+    assert!(
+        !raw_is_contiguous(rope),
+        "still a multi-chunk rope before the first full read"
+    );
     let first: Vec<u8> = bytes_to_vec(rope);
-    // After a full read it has flattened to a leaf (arity 0).
-    assert_eq!(vec_arity(rope), 0, "flattened to a leaf on first full read");
+    // After a full read it has compacted to a single contiguous chunk.
+    assert!(
+        raw_is_contiguous(rope),
+        "compacted to a single chunk on the first full read"
+    );
     let second: Vec<u8> = bytes_to_vec(rope); // now O(1)/byte
-    assert_eq!(first, second, "flatten is unobservable — same bytes");
+    assert_eq!(first, second, "compaction is unobservable — same bytes");
     assert_eq!(first.len(), 300);
     assert_eq!(first[0], 0);
     assert_eq!(first[299], (299u32 & 0xff) as u8);
@@ -1542,29 +1548,33 @@ fn rope_dup_retained_operand_survives_being_consumed_by_concat() {
 }
 
 #[test]
-fn rope_compact_materializes_and_releases_parent() {
+fn rope_slice_consumes_parent_node_into_an_independent_leaf() {
     reset();
-    // #Retained Storage: a small slice of a large parent pins the whole parent; compact
-    // materializes the sub-range into an independent leaf and drops the parent, freeing it.
+    // A slice now CONSUMES its parent node (op-drop) and yields an INDEPENDENT bytes leaf — there is no
+    // separate slice-view node, and no retained parent node. Any storage sharing with the parent's
+    // chunk lives at the Bytes-refcount level, which is CENSUS-INVISIBLE (live_nodes counts nodes, not
+    // Bytes allocations). compact is content-preserving and leak-balanced on the leaf.
     let before = live_nodes();
-    let parent = bytes_leaf(&[0u8; 1000]); // one large leaf
-    let s = op_bytes_slice(parent, 10, 3); // pins the 1000-byte parent
-    assert_eq!(
-        live_nodes(),
-        before + 2,
-        "large parent + slice node both live"
-    );
-    let c = op_bytes_compact(s); // flatten → independent 3-byte leaf, parent released
-    assert_eq!(c, s, "compact returns the same handle, now a leaf");
-    assert_eq!(vec_arity(c), 0, "compacted to a leaf");
-    assert_eq!(op_bytes_len(c), 3);
+    let parent = bytes_leaf(&[7u8; 1000]); // one large leaf
+    assert_eq!(live_nodes(), before + 1, "the large parent leaf is live");
+    let s = op_bytes_slice(parent, 10, 3); // consumes `parent`; yields an independent 3-byte leaf
     assert_eq!(
         live_nodes(),
         before + 1,
-        "the 1000-byte parent was released by compact"
+        "slice consumed the parent NODE and produced ONE leaf — no slice-view node, no retained parent node"
     );
+    assert_eq!(
+        vec_arity(s),
+        0,
+        "the slice result is a leaf (arity 0), not a slice-view node"
+    );
+    let c = op_bytes_compact(s); // no-op on an already-inline (≤cap) leaf
+    assert_eq!(c, s, "compact returns the same handle");
+    assert_eq!(vec_arity(c), 0, "still a leaf");
+    assert_eq!(op_bytes_len(c), 3);
+    assert_eq!(live_nodes(), before + 1, "compact changed no node count");
     op_drop(c);
-    assert_eq!(live_nodes(), before);
+    assert_eq!(live_nodes(), before, "no leak");
 }
 
 #[test]
@@ -1575,12 +1585,11 @@ fn compact_makes_a_rope_key_canonical_champ_eq_and_hash_match_the_flat_twin() {
     let flat = bytes_leaf(content);
     // A rope of the SAME content, split across a seam mid-word.
     let rope = op_bytes_concat(bytes_leaf(&content[..7]), bytes_leaf(&content[7..]));
-    // (1) TRIPWIRE: before compaction the rope is a DIFFERENT physical shape → NOT champ_eq to the flat
-    // twin (this is WHY the compiler must compact a rope key; a raw rope key would mis-key).
-    assert!(
-        !champ_eq(rope, flat),
-        "a rope is champ_eq-DISTINCT from its flat twin (physical-bytes compare — the reason keys are compacted)"
-    );
+    // (1) The contract (v-compiler-primitives): raw champ_hash/eq REQUIRES a compacted single-chunk
+    // operand — the compiler emits op-bytes-compact before every map/set key + value-eq. So we do NOT
+    // probe raw champ on the still-uncompacted (>cap → multi-chunk) rope here; that is a compiler-
+    // invariant violation, not a supported call (the old graceful physical-distinct behavior is gone
+    // with the node-rope). The runtime's job is the GUARANTEE below: compaction canonicalizes the key.
     // (2) THE GUARANTEE: compact the rope → now champ_eq AND champ_hash-identical to the flat twin, so
     // the compiler's compact-before-insert genuinely canonicalizes a String/Bytes key.
     let compacted = op_bytes_compact(rope);
@@ -1616,15 +1625,20 @@ fn compact_makes_a_slice_rope_canonical_the_string_at_shape() {
     let flat_a = bytes_leaf(b"a");
     // (1) TRIPWIRE — raw slices are champ_eq-DISTINCT from each other AND the flat "a" (physical `[off,
     // len]` compare, NOT content). This IS the miscompile the compiler must compact away.
+    // (1) Under the ByteVec rep a ≤cap slice is EAGERLY materialized to a canonical inline leaf (the
+    // `String.at` 1-char shape), so the two slices are ALREADY champ_eq to each other and to the flat
+    // char — no compaction needed for small text. (This retires the old non-canonical `[off,len]` slice
+    // node that made count-a mis-key; small slices are now canonical by construction.)
     assert!(
-        !champ_eq(sl1, sl2),
-        "two slices of the same char at different offsets are champ_eq-distinct (physical [off,len])"
+        champ_eq(sl1, sl2),
+        "two ≤cap slices of the same char are eagerly canonical (inline) → champ_eq"
     );
     assert!(
-        !champ_eq(sl1, flat_a),
-        "a raw slice is champ_eq-distinct from a flat leaf of the same content"
+        champ_eq(sl1, flat_a),
+        "a ≤cap slice is eagerly an inline leaf champ_eq to the flat char"
     );
-    // (2) THE GUARANTEE — compact each slice → all champ_eq + hash-identical to the flat twin.
+    // (2) THE GUARANTEE — compact each slice (a no-op on an already-inline leaf) → still champ_eq +
+    // hash-identical to the flat twin.
     let c1 = op_bytes_compact(sl1);
     let c2 = op_bytes_compact(sl2);
     assert!(
@@ -1727,12 +1741,11 @@ fn value_eq_is_physical_bytes_a_rope_operand_needs_compiler_compaction() {
     let content = b"map-insert"; // > INLINE_RAW_CAP so the flat twin is a Heap leaf too
     let flat = op_str_new(String::from_utf8(content.to_vec()).unwrap());
     let rope = op_bytes_concat(bytes_leaf(&content[..4]), bytes_leaf(&content[4..])); // "map-" + "insert"
-    // value-eq (op 61) = champ_eq: a rope vs its flat twin is DISTINCT (physical-byte compare) — this is
-    // exactly the compiler contract boundary. A COMPACTED rope, however, IS value-eq to the flat twin.
-    assert!(
-        !champ_eq(rope, flat),
-        "value-eq is physical-byte (champ_eq): an UNcompacted rope ≠ its flat twin — the compiler must compact before value-eq"
-    );
+    // value-eq (op 61) = champ_eq is a PHYSICAL-byte compare that REQUIRES a compacted (single-chunk)
+    // operand — the compiler emits op-bytes-compact before value-eq (v-compiler-primitives contract). We
+    // do NOT probe raw champ on a still-uncompacted >cap rope (that would be a compiler-invariant
+    // violation; the old node-rope's graceful physical-distinct behavior is gone). A ≤cap concat is
+    // eagerly an inline leaf, so a COMPACTED rope IS value-eq to its flat twin — the runtime guarantee.
     let compacted = op_bytes_compact(rope);
     assert!(
         champ_eq(compacted, flat),
