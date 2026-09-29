@@ -3288,6 +3288,45 @@
   (call main (: 3 Int64))
   (output (: 3 Int64)))
 
+; The FLOAT twins of the two narrow-INT compound cases above — the same container-slot grounding must
+; carry a narrow Float32 field, not just a narrow int. A bare `1.5` in a compound value/element defaults
+; its own type to Float64, but the container slot is `(f32,)`, so the field must ground to Float32 at
+; construction (`f32::from_bits(..)`) — otherwise an `(f64,)` is inserted into a `BTreeMap<_, (f32,)>` /
+; extended into a `Vec<(f32,)>` and the backend rejects the mismatch. (A bare Float element in a Set
+; declines on the Rust backend — no total float order — so these pin Map value + List element only.)
+(case
+  "a narrow-width Float32 tuple map VALUE is grounded to its declared field width at runtime emit"
+  (doc
+    "The Float32 twin of the narrow-tuple map-value case above: `(: #map((= n #tuple(1.5)))
+           (Map Int64 (Tuple Float32)))` keyed by a RUNTIME `n` (keeps the map from const-folding). The
+           value tuple's bare `1.5` must ground to Float32, not the literal's Float64 default, else it is
+           inserted into a `BTreeMap<i64, (f32,)>` as `(f64,)` — a slot mismatch. `Map.len` = 1.")
+  (input
+    (do
+      (def (main (: n Int64))
+        (Map.len (: #map((= n #tuple(1.5))) (Map Int64 (Tuple Float32)))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 1 Int64)))
+
+(case
+  "a narrow-width Float32 tuple LIST element is grounded to its declared field width at runtime emit"
+  (doc
+    "The Float32 twin of the narrow-tuple list-element case above: a recursive builder concatenates an
+           annotated `(: #list(#tuple(1.5)) (List (Tuple Float32)))` operand that survives to emit. The
+           element tuple's bare `1.5` must ground to Float32, not Float64, else `Vec<(f32,)>` cannot be
+           extended with an `(f64,)` element. `grow 3` builds a 3-element list; `List.len` = 3.")
+  (input
+    (do
+      (def (grow (: n Int64))
+        (if (> n 0)
+            (List.concat (grow (- n 1)) (: #list(#tuple(1.5)) (List (Tuple Float32))))
+            (: #list() (List (Tuple Float32)))))
+      (def (main (: n Int64)) (List.len (grow n)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 3 Int64)))
+
 (case
   "a runtime tuple built behind a recursive call escapes to the host"
   (doc
