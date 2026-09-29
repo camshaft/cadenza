@@ -553,6 +553,50 @@ pub(super) fn emit_product_to_mem(
                 out.push(Lir::I32Add);
                 out.push(Lir::LocalSet(cursor)); // cursor += len
             }
+            // A `list<T>` field (list<scalar>/list<Bytes>/nested list of those): marshal the list backing into
+            // `mem` at the running `cursor` via `emit_list_arg_marshal` (which leaves `(outer-ptr, count)`), then
+            // write its `(ptr@foff, count@foff+4)` header — the list analogue of the `Bytes` field above (a header
+            // at the field offset + the backing spilled at the cursor; `emit_list_arg_marshal` advances the cursor
+            // itself). SCOPED to a NO-WIT element (`product_field_marshalable`'s list arm admits only a scalar /
+            // `Bytes` / nested-list-of-those element): a `record`/`tuple` list element needs the field's WIT
+            // threaded through `emit_product_to_mem` to order its fields — a later slice — so `elem_wit` is `None`
+            // here (and `emit_list_arg_marshal` would itself decline a record element lacking its WIT).
+            None if matches!(fty.strip_nominal(), Ty::List(_)) => {
+                let Ty::List(elem) = fty.strip_nominal() else {
+                    unreachable!("list by the guard")
+                };
+                let elem = (**elem).clone();
+                let list_slot = work_base + 3;
+                let lptr = work_base + 4;
+                let lcount = work_base + 5;
+                for s in [list_slot, lptr, lcount] {
+                    scratch_ty.insert(s, ValType::I32);
+                }
+                *high = (*high).max(work_base + 6);
+                out.push(Lir::LocalGet(agg_slot));
+                out.push(Lir::ConstI32(cell as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [list handle] (borrows agg)
+                out.push(Lir::LocalSet(list_slot));
+                emit_list_arg_marshal(
+                    db,
+                    &elem,
+                    None,
+                    list_slot,
+                    cursor,
+                    work_base + 6,
+                    high,
+                    scratch_ty,
+                    out,
+                )?; // leaves [outer-ptr, count]
+                out.push(Lir::LocalSet(lcount));
+                out.push(Lir::LocalSet(lptr));
+                out.push(Lir::LocalGet(dest_addr));
+                out.push(Lir::LocalGet(lptr));
+                out.push(Lir::I32Store { offset: foff }); // ptr
+                out.push(Lir::LocalGet(dest_addr));
+                out.push(Lir::LocalGet(lcount));
+                out.push(Lir::I32Store { offset: foff + 4 }); // count
+            }
             // An `option<scalar>` field: write it at `dest_addr + foff` per the canonical option layout (disc
             // byte + payload) via `emit_option_to_mem`. Its base address is computed into a temp (the writer's
             // store offsets are relative to that base). Reuses the option memory-writer wholesale.
