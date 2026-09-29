@@ -1496,25 +1496,21 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                 if matches!(payload.strip_nominal(), Ty::Bytes | Ty::String) {
                     return Some(RecordFieldAbi::Option(Box::new(RecordFieldAbi::Bytes)));
                 }
-                // An `option<tuple-of-scalars>` payload crosses as `option<tuple<…>>` — a POSITIONAL tuple has
-                // no name-lex/WIT field-order ambiguity, so the payload's flattened slots (disc + one core slot
-                // per element) line up with the marshal's positional push. Recurse the payload's abi (a
-                // `RecordFieldAbi::Tuple` of scalars); its marshal is `emit_record_arg_marshal`'s
-                // option<tuple> arm (scratch-flatten). Each element is a SCALAR (inline slot) or a `Bytes`/
-                // `String` leaf (a `(ptr,len)` header + the rope spilled at the cursor) — exactly the element set
-                // `emit_option_to_mem`'s tuple arm → `emit_tuple_to_mem` (with the cursor) marshals in place, and
-                // the pre-scan reserves the cursor for a byte-leaf element (`record_field_abi_needs_memory`
-                // recurses the `Tuple` abi). A RECORD / nested-compound / list element is EXCLUDED here (it needs
-                // the element WIT for name-lex→WIT ordering, which the positional `None`-WIT tuple writer cannot
-                // supply — `emit_option_to_mem`'s tuple arm passes `None`), so it declines cleanly (SHAPE 314) —
-                // this MUST agree with that marshal arm's capability (decline-don't-miscompile). A Bytes element
-                // is SHAPE 324.
+                // An `option<tuple>` payload crosses as `option<tuple<…>>` — recurse the payload's abi (a
+                // `RecordFieldAbi::Tuple`), admitting a non-empty tuple whose EVERY element `field_boundary_abi`
+                // itself represents (the `Ty::Tuple` arm above already recurses per element and returns `None`
+                // when any element is not boundary-representable). Both marshal positions can place that element
+                // set: the register arm (`emit_record_arg_marshal`'s option<tuple> arm) flattens each element's
+                // `field_boundary_abi` via `flatten_record_field_abi` (a scalar → 1 slot, a `Bytes` → `(ptr,len)`,
+                // a nested record/tuple → its inline flatten) and pushes it with `emit_tuple_reg_flatten`; the mem
+                // arm (`emit_option_to_mem`'s tuple arm) threads the payload tuple's element WITs into
+                // `emit_tuple_to_mem` → `emit_product_to_mem`, so a nested RECORD element is WIT-ordered in place
+                // (a scalar element inline, a `Bytes` element a `(ptr,len)` header + rope at the cursor). The
+                // pre-scan reserves the cursor because `record_field_abi_needs_memory` recurses the `Tuple` abi.
+                // A scalar element is SHAPE 321; a `Bytes` element SHAPE 324; a RECORD element SHAPE 314. An
+                // element neither marshal can place declines cleanly at the emit (decline-don't-miscompile).
                 if let Ty::Tuple(elems) = payload.strip_nominal()
                     && !elems.is_empty()
-                    && elems.iter().all(|e| {
-                        abi_val_type(e).is_some()
-                            || matches!(e.strip_nominal(), Ty::Bytes | Ty::String)
-                    })
                 {
                     let inner = field_boundary_abi(db, &payload)?;
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
@@ -2391,12 +2387,14 @@ fn tuple_field_marshalable(db: &mut Db, f: &Ty, wit: bool) -> bool {
     !elems.is_empty() && elems.iter().all(|e| product_field_marshalable(db, e, wit))
 }
 
-/// Whether a RECORD/TUPLE `p` is marshalable as an `option<…>` PAYLOAD of a list element — its fields/elements
-/// are each [`product_field_marshalable`] in the NO-WIT sense (`wit = false`). `emit_option_to_mem` writes the
-/// payload product POSITIONALLY (it threads no field/element WIT to the payload record/tuple), and the scratch-
-/// memory pre-scan does not yet recognize a record nested under an `option` list element — so a nested-record /
-/// record-in-tuple payload is EXCLUDED here (it declines cleanly), matching the emit. The pre-existing
-/// `option<record{scalar/bytes/list/tuple-of-scalars}>` / `option<tuple<scalar/bytes>>` shapes still admit.
+/// Whether a RECORD/TUPLE `p` is marshalable as an `option<…>` PAYLOAD of a list element. A RECORD payload's
+/// fields are checked in the NO-WIT sense (`wit = false`) — `emit_option_to_mem`'s record arm orders the record's
+/// OWN fields WIT, but a nested-record field within it would need its own field WIT threaded, a later slice. A
+/// TUPLE payload's elements are checked WITH WIT (`wit = true`): `emit_option_to_mem`'s tuple arm threads the
+/// payload tuple's element WITs (from the element's `WitType::Option(WitType::Tuple(…))`) into `emit_tuple_to_mem`
+/// → `emit_product_to_mem`, so a nested RECORD element is WIT-ordered in place (SHAPE 314) — the same per-element
+/// WIT the list-element tuple path threads. The pre-existing `option<tuple<scalar/bytes>>` shapes still admit
+/// (a scalar/`Bytes` element is `product_field_marshalable` on either path).
 fn option_payload_product_no_wit(db: &mut Db, p: &Ty) -> bool {
     match p.strip_nominal() {
         Ty::Record(fields) => {
@@ -2405,7 +2403,7 @@ fn option_payload_product_no_wit(db: &mut Db, p: &Ty) -> bool {
         }
         Ty::Tuple(elems) => {
             let es = elems.to_vec();
-            !es.is_empty() && es.iter().all(|e| product_field_marshalable(db, e, false))
+            !es.is_empty() && es.iter().all(|e| product_field_marshalable(db, e, true))
         }
         _ => false,
     }
