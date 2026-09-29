@@ -148,8 +148,29 @@ pub(super) fn canonical_layout_wit(
             let payload_off = align_up_u32(ds, case_align);
             (align_up_u32(payload_off + case_size, align), align)
         }
-        // List / Bytes / scalar / option-shaped Sum / any mismatch: order-agnostic or the writer still sizes
-        // guest-order → the guest-order layout (kept in lockstep with that writer).
+        // An OPTION-shaped `Sum` (`option<T>`) carrying `WitType::Option(inner)`: disc(1) + payload_off + the
+        // WIT-ORDER payload size. `emit_option_to_mem` writes the payload at `payload_off` via the payload's OWN
+        // WIT-order writer (`emit_record_to_mem` / `emit_variant_mixed_to_mem` / `emit_tuple_to_mem`), so a
+        // `list<option<T>>` element STRIDE must be sized WIT-order or a DIVERGENT-order record / variant-record
+        // payload under-reserves the slot and element N+1's write clobbers element N — a
+        // `list<option<record{divergent}>>` / `list<option<variant{record-case}>>` miscompile `wasm-tools
+        // validate` cannot catch. The payload ALIGNMENT is order-agnostic, so `payload_off` matches
+        // `emit_option_to_mem`'s guest-order `payload_off` exactly; only the total size grows to cover the WIT
+        // write extent. A structurally mismatched WIT (`option_payload_ty` `None`) falls back to guest order.
+        (Ty::Sum { .. }, Some(WitType::Option(inner))) => {
+            match crate::backend::wasm::host::option_payload_ty(db, ty) {
+                Some(p) => {
+                    let (ps, pa) = canonical_layout_wit(db, &p, Some(inner));
+                    let ds = disc_size_for(2);
+                    let align = ds.max(pa);
+                    let payload_off = align_up_u32(ds, pa);
+                    (align_up_u32(payload_off + ps, align), align)
+                }
+                None => canonical_layout(db, ty),
+            }
+        }
+        // List / Bytes / scalar / any mismatch: order-agnostic or the writer still sizes guest-order → the
+        // guest-order layout (kept in lockstep with that writer).
         _ => canonical_layout(db, ty),
     }
 }
