@@ -10475,3 +10475,150 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a RECORD host-op arg with an option<variant{a, b(s64), c(list<u8>)}> FIELD (Some, Bytes case → mem) crosses"
+  (doc
+    "SHAPE 290 (v-wit-boundary) — a RECORD host-op ARGUMENT `record{ o: option<variant{a, b(s64), c(list<u8>)}>,
+           n: s64 }` (probe.push) whose `o` FIELD is an option wrapping a HETEROGENEOUS MIXED variant, at the
+           REGISTER record-FIELD position, Some arm carrying the Bytes payload case. The top-level
+           option<mixed-variant> arg landed in SHAPE 284-287 (the shared `emit_option_reg_flatten` mixed-variant
+           branch), but the record-FIELD twin still DECLINED CODELESSLY: `emit_record_arg_marshal`'s option-field
+           dispatch had only a nested-option arm and an option<scalar> fallthrough, and a variant handle's
+           `valtype_of` is `Some(I32)`, so the mixed-variant payload fell into the scalar arm and hit
+           `get_op_ty(…).ok_or_else(|| decline(\"an option payload scalar has no unbox op\"))` — a CODELESS decline.
+           Fixed: `emit_record_arg_marshal` gains an option<mixed-variant> field arm (guarded by
+           `variant_mixed_payload_cases` + `variant_mem_mixed_kind_supported`), placed BEFORE the option<scalar>
+           fallthrough, that reads the field's option handle (arr-get, borrows the record) and DELEGATES to the same
+           `emit_option_reg_flatten` the top-level arg uses (SHAPE 284) — so field + arg stay in lockstep. The
+           emit.rs cursor pre-scan already reserves the scratch cursor for such a field (a Bytes/List payload case
+           needs mem, via `record_has_option_field_needing_mem` → `record_field_abi_needs_memory`). The record
+           flattens to `(o-opt-disc:i32, o-var-disc:i32, ptr:i32, len:i32, n:i64)`; on Some(C) the Bytes rope is
+           copied into `mem` at the reserved cursor. run() builds { o: Some(C(b\"z\")), n: 7 } and performs
+           probe.push; a VALID running component (live-objects=0) pins the record-FIELD option<mixed-variant>
+           Bytes-case round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= o (option (variant (a) (b (s64)) (c (list (u8)))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (Record (: o (Option Sig)) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= o (Some (Sig.C b"z"))) (= n 7)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a RECORD host-op arg with an option<variant{a, b(s64), c(record{p, q})}> FIELD (Some, Record case, no mem) crosses"
+  (doc
+    "SHAPE 291 (v-wit-boundary) — the RECORD-PAYLOAD-CASE twin of SHAPE 290: a RECORD host-op ARGUMENT
+           `record{ o: option<variant{a, b(s64), c(record{p:s32, q:s64})}>, n: s64 }` (probe.push) whose `o` FIELD is
+           an option wrapping a mixed variant whose Some arm carries a record-of-scalars payload case (NO mem — no
+           cursor spill for this arm). Same record-FIELD option<mixed-variant> arm as SHAPE 290, delegating to
+           `emit_option_reg_flatten`; the payload record case flattens POSITIONALLY in WIT declaration order (the
+           classifier WIT-orders it via `wit_order_mem_mixed_record_cases`, the emit re-derives via
+           `variant_mixed_payload_cases_wit`), so the record flattens to `(o-opt-disc, o-var-disc, p:i64, q:i64,
+           n:i64)` (p's s32 joins into an i64 slot). run() builds { o: Some(C({p:1, q:2})), n: 7 } and performs
+           probe.push; a VALID running component (live-objects=0) pins the record-FIELD option<mixed-variant>
+           Record-case round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= o (option (variant (a) (b (s64)) (c (record (= p (s32)) (= q (s64))))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (Record (: p Int32) (: q Int64))))
+      (effect probe (op push (-> (Record (: o (Option Sig)) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= o (Some (Sig.C #record((= p (: 1 Int32)) (= q 2))))) (= n 7)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a RECORD host-op arg with an option<variant{a, b(s64), c(list<u8>)}> FIELD passed as None crosses (zero-filled)"
+  (doc
+    "SHAPE 292 (v-wit-boundary) — the None arm of SHAPE 290: a RECORD host-op ARGUMENT
+           `record{ o: option<variant{a, b(s64), c(list<u8>)}>, n: s64 }` whose `o` FIELD is passed as `None`.
+           Same record-FIELD option<mixed-variant> arm delegating to `emit_option_reg_flatten`, whose mixed-variant
+           branch zero-fills every payload slot on None → the record flattens to `(o-opt-disc=0, 0, 0, 0, n:i64)`;
+           the host reads the None option. run() builds { o: None, n: 7 } and performs probe.push; a VALID running
+           component (live-objects=0) pins the None arm of the record-FIELD option<mixed-variant>.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (record (= o (option (variant (a) (b (s64)) (c (list (u8)))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (Record (: o (Option Sig)) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= o None) (= n 7)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level tuple<option<variant{a, b(s64), c(list<u8>)}>, s64> host-op arg (option<mixed-variant> tuple ELEMENT) crosses"
+  (doc
+    "SHAPE 293 (v-wit-boundary) — the tuple-ELEMENT twin of SHAPE 290: a top-level
+           `tuple<option<variant{a, b(s64), c(list<u8>)}>, s64>` bare host-op ARGUMENT (probe.push) whose ELEMENT 0
+           is an option wrapping a mixed variant at the REGISTER tuple-ELEMENT position. The tuple-arg element
+           dispatch already delegates an option element to the shared `emit_option_reg_flatten`, so this element
+           crosses on the SHAPE 284-287 machinery (its mixed-variant branch) with NO new code — this case PINS the
+           tuple-ELEMENT position so a future refactor cannot silently regress it. The tuple flattens to
+           `(opt-disc, var-disc, ptr, len, n:i64)`; on Some(C) the Bytes rope is copied to the reserved cursor.
+           run() builds (Some(C(b\"z\")), 7) and performs probe.push; a VALID running component (live-objects=0)
+           pins the tuple-ELEMENT option<mixed-variant> round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (option (variant (a) (b (s64)) (c (list (u8))))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (Tuple (Option Sig) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Some (Sig.C b"z")) 7))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level list<option<variant{a, b(s64), c(list<u8>)}>> host-op arg (option<mixed-variant> list ELEMENT — corpus TODO, coded decline)"
+  (doc
+    "SHAPE 294 (v-wit-boundary corpus TODO) — a top-level `list<option<variant{a, b(s64), c(list<u8>)}>>` bare
+           host-op ARGUMENT (probe.push): an option-wrapped mixed variant at the MEM-path list-ELEMENT position.
+           The REGISTER positions (bare arg SHAPE 284-287, record-FIELD SHAPE 290-292, tuple-ELEMENT SHAPE 293) all
+           cross by flattening the option to core slots via `emit_option_reg_flatten`, but a LIST element is
+           serialized into `mem` (each element written at a stride), and the mem-write path `emit_variant_mixed_to_mem`
+           has no OPTION wrapper — an option<mixed-variant> element has no mem serialize form yet, so the classifier
+           DECLINES cleanly with CDZ0903 (arg has no component boundary form). This is a CODED decline, not a
+           miscompile (decline-don't-miscompile). The idealistic behavior is that the element crosses as WIT
+           `list<option<variant{…}>>` with each option-discriminant + variant payload written into the element's mem
+           layout and the host returns its scalar (assert 55). Grades Todo now (CDZ0903 is a coded decline). This is
+           a DISTINCT, larger unit — a mem-path option<mixed-variant> serialize (the option layer over the existing
+           `emit_variant_mixed_to_mem`) — owned by v-wit-boundary as the queued next unit; auto-locks to Pass when
+           that lands. Companion to SHAPE 290-293: pins that the still-uncovered MEM position DECLINES cleanly
+           rather than emitting an invalid module.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (variant (a) (b (s64)) (c (list (u8))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (List (Option Sig)) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some (Sig.C b"z"))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

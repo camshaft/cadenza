@@ -2114,6 +2114,15 @@ pub fn record_has_option_field_needing_mem(db: &mut Db, ty: &Ty) -> bool {
                 // (a Bytes/list leaf anywhere in `X`) — in lockstep with the delegating nested-option field marshal.
                 || (option_payload_ty(db, &p).is_some()
                     && field_boundary_abi(db, &p).is_some_and(|abi| record_field_abi_needs_memory(&abi)))
+                // An option<MIXED-VARIANT> field (`option<variant{…, c(list<u8>)/c(list<T>)}>`): reserve iff the
+                // payload variant has a Bytes/List case, which `emit_option_reg_flatten`'s mixed-variant branch
+                // spills into `mem` at the cursor on Some (via `emit_variant_mixed_arg_reg_flatten`). Without this
+                // the record's cursor stays unreserved and that branch's `cursor.unwrap_or(pay_slot)` fallback
+                // writes the rope to a SCRATCH-LOCAL index misused as a mem offset → an out-of-bounds trap that
+                // `wasm-tools validate` does NOT catch (SHAPE 290). The option guard above skips this (a mixed
+                // variant is not option-shaped, so `option_payload_ty(&p)` is None).
+                || (variant_mixed_payload_cases(db, &p).is_some()
+                    && field_boundary_abi(db, &p).is_some_and(|abi| record_field_abi_needs_memory(&abi)))
         }) || record_has_option_field_needing_mem(db, f)
     })
 }

@@ -5161,6 +5161,48 @@ pub(super) fn emit_record_arg_marshal(
                     out,
                 )?;
             }
+            None if crate::backend::wasm::host::option_payload_ty(db, fty).is_some_and(|p| {
+                crate::backend::wasm::host::variant_mixed_payload_cases(db, &p).is_some_and(
+                    |cases| {
+                        cases.iter().all(|(_, k)| {
+                            crate::backend::wasm::host::variant_mem_mixed_kind_supported(k)
+                        })
+                    },
+                )
+            }) =>
+            {
+                // An option<mixed-variant> FIELD flattens to `(opt-disc, var-disc, joined-slots…)`. Read the
+                // field's option handle (arr-get, borrows the record) into a slot, then delegate to the shared
+                // `emit_option_reg_flatten` (whose mixed-variant branch WIT-orders a record payload case + spills a
+                // Bytes/List payload case into `mem` at the threaded cursor) — the SAME helper the top-level
+                // option<mixed-variant> arg uses (SHAPE 284-287), so field + arg stay in lockstep. MUST precede the
+                // option<scalar> fallthrough (a variant handle's `valtype_of` is `Some(I32)`, so that arm's guard
+                // would else match + miscompile it).
+                let opt_slot = work_base;
+                scratch_ty.insert(opt_slot, ValType::I32);
+                *high = (*high).max(work_base + 1);
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [option handle] (borrows rec)
+                out.push(Lir::LocalSet(opt_slot));
+                // `fwit` is the field's `option<variant>` WIT; `emit_option_reg_flatten` wants the OPTION's
+                // inner-payload WIT (the `variant`), so unwrap one `Option` layer.
+                let payload_wit = match fwit {
+                    crate::wit_world::WitType::Option(inner) => Some(inner.as_ref()),
+                    _ => None,
+                };
+                emit_option_reg_flatten(
+                    db,
+                    opt_slot,
+                    fty,
+                    payload_wit,
+                    cursor,
+                    work_base + 1,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+            }
             None if crate::backend::wasm::host::option_payload_ty(db, fty)
                 .is_some_and(|p| valtype_of(&p).is_some()) =>
             {
