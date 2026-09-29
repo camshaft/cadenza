@@ -116,9 +116,11 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
     (`tuple<s32,s64>` bare literals) + SHAPE 289 (`option<record{s32,s64}>` bare literals) now CROSS, and a
     genuinely fixed `Int64` value into a WIT s32 slot is REJECTED at type-check (CDZ0203) BEFORE the marshal — so
     retiring the guards never miscompiles (the guards were dead post-#10029). SHAPE 103 (const-None option) also
-    crosses now; SHAPE 104 (bare empty `(list)`) STILL declines — a DISTINCT remaining infer:: gap (an empty
-    compound has no element to ground from), still owned by v-compiler-primitives. NB the direct-record path was
-    always exempt (component built from the guest abi, self-consistent) — no change there.
+    crosses now; SHAPE 104 (bare empty `(list)`) now crosses too — #10037 (8f7ac64258) gave
+    `ground_perform_arg_ty` a third `Any` axis (an empty compound infers `(List Any)`, committed to the declared
+    element via `commit_underdetermined_to_declared`'s `(Ty::Any, declared)` arm), so a bare `(list)` grounds to
+    `(List Int64)` and crosses as `list<s64>` count 0. NB the direct-record path was always exempt (component built
+    from the guest abi, self-consistent) — no change there.
 - **[emit, ARG] a NOMINAL/compound host-op ARGUMENT (record/enum/bare-variant param) on the PLAIN
   host-delegating envelope — ✅ DONE (B3, SHAPE 92).** The world-imposed plain path now routes through
   `build_host_group` (the SAME per-interface computation the reducer/bytes-provider path uses), which
@@ -385,7 +387,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   reference + `has_list_param` + `host_param_abi` decline), and — the load-bearing fix — `set_needs_memory` (a
   result arg copies a rope into `mem`, so the host set routes to the `_mem` assembler; without it the host op lower
   was emitted memoryless → CDZ0910 "canonical option `memory` is required"). REMAINING: a `result<record,enum>` /
-  `result<_, variant>` (`result_bytes_enum` requires a `list<u8>` Ok + a payloadless-enum Err).
+  `result<_, variant>` (`result_bytes_enum` requires a `list<u8>` Ok + a payloadless-enum Err). A
+  `result<bytes, RECORD>` (a structured/record Err arm) now DECLINES CLEANLY with a CODED CDZ0903 — SHAPE 299:
+  `result_bytes_enum` declines a record Err, so the arg falls to the generic mixed-variant arm, whose
+  `variant_mixed_payload_cases_wit` cannot WIT-order the Err-record case (the arg's WIT is `WitType::Result`, not
+  `WitType::Variant`). Previously that was a CODELESS emit `error:` (a classifier-admitted arg the emit refused
+  wordlessly); now `Reject::coded(HostOpNoBoundaryForm, …)`. CROSSING a compound-Err result is a QUEUED unit —
+  it needs Ok/Err-disc-aware WIT ordering (map the `result`'s arms to their payload WITs) + BYTE-EXACT
+  verification via the forthcoming `(host-arg-received …)` harness (a silent Ok/Err disc-swap is unobservable
+  through the fixed-response mock today).
 - **[emit, register-path] a top-level `result<scalar, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 186/187/188
   int; 209/210 float).** The scalar-Ok sibling of the Bytes-Ok result arg: a `HostParam::ResultScalar(ok-abi,
   err-cases)` (detector `result_scalar_enum`, admitting any scalar Ok + a payloadless-enum Err). It flattens to
