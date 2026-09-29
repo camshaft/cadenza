@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(56);
+    let shape = c.variant(57);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -1098,10 +1098,29 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      make Bytes.slice None -> Option.expect PANIC/trap, so we always feed 4 bytes). Corpus eab3
         //      (09-functions:12497) pins the reclaim/cross side; THIS pins the VALUE/UAF side. Verified rust AGREE
         //      (b"efgh"/b"abcd"/b"wxyz" -> 2).
-        _ => (
+        55 => (
             "(do (def (main (: b Bytes)) (Bytes.len (Option.expect (Bytes.slice b 1 2) \"in bounds\"))) (export main))"
                 .to_string(),
             vec![slice_bytes_arg.clone()],
+        ),
+        // 56 — nle1 a NARROW-WIDTH tuple LIST ELEMENT literal is grounded to its declared field width at emit
+        //      (the d107107d9c rust-backend fix / #10105). A recursive `grow` `List.concat`s an annotated
+        //      `(: #list(#tuple(100)) (List (Tuple Int8)))` operand — the recursion keeps the concat from
+        //      const-folding so the annotated literal SURVIVES to the backend emit; its narrow field `100` must
+        //      be grounded to the list's DECLARED element `(Tuple Int8)`, NOT the literal's own defaulted Int64.
+        //      PRE-fix the rust backend spelled the element `((100 as i64),)` and extended it into the
+        //      accumulator's `Vec<(i8,)>` -> rustc E0277/E0308 (rust DECLINED / failed to compile while wasm's
+        //      untyped list handle compiled fine) — a FALSE-Agree-once-lifted on the RUST side (the differential
+        //      silently Agree'd on the wasm-value-vs-rust-decline). POST-fix both cross. `main` reads the narrow
+        //      field back: `(match (List.at (grow (if (> n 0) n 1)) 0) ((Some t) (match t ((tuple x) (+ (Int64.of
+        //      x) n)))) …)` — so a REGRESSION reintroducing the width bug reds rust-compile (unavailable) AND a
+        //      silent field-truncation would red the VALUE. value = 100 + a (a in -40..40 -> 60..140; grow always
+        //      >= 1 elem so List.at 0 is Some). Corpus (05-compound-types) pins the LEN side; THIS reads the
+        //      grounded field. Verified rust AGREE (3->103, 5->105, 1->101).
+        _ => (
+            "(do (def (grow (: n Int64)) (if (> n 0) (List.concat (grow (- n 1)) (: #list(#tuple(100)) (List (Tuple Int8)))) (: #list() (List (Tuple Int8))))) (def (main (: n Int64)) (match (List.at (grow (if (> n 0) n 1)) 0) ((Option.Some t) (match t ((tuple x) (+ (Int64.of x) n)))) ((Option.None) -1))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
         ),
     };
     ExportParam { source, args }
@@ -6541,8 +6560,8 @@ mod tests {
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
         // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` + the mtll1 invariant-Map-param Map.to-list-in-a-self-loop `main`.
-        let mut reached = [false; 56];
-        for seed in 0u64..3360 {
+        let mut reached = [false; 57];
+        for seed in 0u64..3420 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
             // variant(53) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
@@ -6697,11 +6716,13 @@ mod tests {
                 reached[54] = true; // shape 54 = ckr2 consumed String entry param crosses `main` (dup-aware borrow-lift reclaim, byp3's non-Bytes sibling #f8382ff506)
             } else if ep.source.contains("Option.expect (Bytes.slice") {
                 reached[55] = true; // shape 55 = eab3 consumed sliced Bytes entry param crosses through Option.expect `main` (consume-sink whitelist / CDZ0904 decline-lift #e05f838d9a)
+            } else if ep.source.contains("#tuple(100)") {
+                reached[56] = true; // shape 56 = nle1 narrow-width tuple LIST element literal grounded to declared field width `main` (rust-backend compound-list-element grounding #d107107d9c / #10105)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all fifty-six export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all fifty-seven export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
