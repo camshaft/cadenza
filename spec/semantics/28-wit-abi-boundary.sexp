@@ -11427,3 +11427,35 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record{o: option<variant{go, stop(s64)}>}> host-op arg DECLINES CDZ0903 (option<variant> field of a record list element — mem path has no scalar-variant option-payload arm)"
+  (doc
+    "SHAPE 326 (v-wit-boundary) — the SCOPE BOUNDARY of the option-FIELD widening for a record LIST ELEMENT: a
+           `list<record{o: option<variant{go, stop(s64)}>}>` host-op ARGUMENT (an `option<variant>` FIELD of a record
+           list element, the MEM-write path via `emit_product_to_mem` → `emit_option_to_mem`) DECLINES CLEANLY
+           (CDZ0903). `field_boundary_abi`'s `option<variant>` arm DOES recognize the payload (returning
+           `Option(Variant(cases))`), so the classifier admits it — but that abi's marshal is wired only at the
+           REGISTER-flatten positions (`emit_record_arg_marshal`'s option<variant> field arm, `emit_option_reg_flatten`'s
+           variant branch); the MEM writer `emit_option_to_mem` has a mixed-variant payload arm (SHAPE 294-296) but no
+           SCALAR-payload `Option(Variant)` arm, so a scalar-payload variant under an option FIELD of a list element
+           finds no in-place mem writer and declines. Grades Todo. CROSSING it is a QUEUED emit unit: either give
+           `emit_option_to_mem` a scalar-variant payload arm (writing `(opt-disc, var-disc, join)` in place), or have
+           `field_boundary_abi` route the option-payload scalar-variant through `VariantMemMixed` (all-scalar cases are
+           `variant_mem_mixed_kind_supported`) so it reuses the existing mixed arm — either kept in dual-gate lockstep
+           with `product_field_marshalable` + `used_ops`. The variant twin of SHAPE 325 (option<record>, which CROSSES
+           via the record-payload mem arm); contrast SHAPE 284-287 where option<variant> crosses at the REGISTER
+           positions. run() would push [{o: Some(stop(7))}].")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (list (record (= o (option (variant (go) (stop (s64)))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (List (Record (: o (Option Sig)))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= o (Some (Sig.Stop 7))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
