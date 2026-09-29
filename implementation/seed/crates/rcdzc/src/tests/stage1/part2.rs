@@ -197,22 +197,15 @@ fn a_marshalled_host_arg_before_a_scalar_arg_keeps_distinct_slots_valid_module()
     // wasm-validation failure — a compile-artifact the corpus cannot assert).
 }
 
-#[test]
-fn two_distinct_host_effects_in_a_bytes_resource_escape_decline_cleanly() {
-    // `assemble_host_runtime_resource_with_scalar_methods` imports ONE host interface, so two DISTINCT
-    // host effects delegated from a Bytes-resource-escaping entrypoint would be conflated + mis-serialized.
-    // The bytes-site host arm carries the same single-effect guard as the Flat/Sum/RecursiveSum arms.
-    let src = "(do (effect A (op a (-> Int64 UInt8))) (effect B (op b (-> Int64 UInt8))) \
-                   (def (main (: x Int64)) (host (A) (host (B) (Bytes.of (list (A.a x) (B.b x)))))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-        "two distinct host effects in a Bytes resource escape must decline, not mis-serialize",
-    );
-    assert!(
-        err.message.contains("more than one host effect"),
-        "the multi-host-effect bytes-resource decline must name the cause: {}",
-        err.message
-    );
-}
+// NOTE (2026-09-29): the multi-host-effect BYTES-resource-escape decline test that lived here is RETIRED —
+// the bytes scalar-methods escape now CROSSES a multi-effect shape via
+// `assemble_host_runtime_resource_with_scalar_methods_multi` (SHAPE 346), which imports each distinct host
+// effect as its own component instance and re-exports all ops through the one `"host"` core module. With
+// SHAPE 346 the WHOLE multi-host resource-escape family crosses (sum 341 / recursive-sum-List 344 / flat-tuple
+// 345 / Bytes-with-methods 346). The behavior is pinned in the corpus (the source of truth per the operator
+// directive) — spec/semantics/28-wit-abi-boundary.sexp, "TWO host effects delegated from one Bytes.of resource
+// escape each import their own interface" (`pass`, runs to b"\x03\x04", live-objects 0). A compound host
+// result across >1 interface (the shared-`"mem"` multi form) still declines cleanly (a later increment).
 
 #[test]
 fn a_host_effecting_entrypoint_returning_a_constant_compound_hoists_build_once() {

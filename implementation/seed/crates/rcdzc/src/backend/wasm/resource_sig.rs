@@ -1652,12 +1652,44 @@ pub(super) fn emit_runtime_bytes_resource(
         // resource-escape sites previously named by effect, the B1b residue). Falls back to the effect name
         // with no imposed world (byte-identical).
         let iface = world_import_iface_for_effect(db, &effect0).unwrap_or(effect0.clone());
-        if host_imports.iter().any(|hi| hi.effect != effect0) {
+        // The DISTINCT host effects delegated here, in first-appearance order — one imported interface each,
+        // mirroring the sum / recursive-sum / flat-tuple branches (SHAPE 341/344/345). More than one routes to
+        // `assemble_host_runtime_resource_with_scalar_methods_multi` below; a single effect keeps the
+        // byte-identical one-interface envelope.
+        let distinct_effects: Vec<String> = {
+            let mut v: Vec<String> = Vec::new();
+            for hi in &host_imports {
+                if !v.iter().any(|e| e == &hi.effect) {
+                    v.push(hi.effect.clone());
+                }
+            }
+            v
+        };
+        // SCOPE: the multi-interface bytes escape is scalar/unit only — a SPILLED-COMPOUND host result across
+        // >1 interface needs the shared-`"mem"` multi form (a later increment), so decline it cleanly
+        // (decline-don't-miscompile) — a single-interface escape handles the compound-result shape (SHAPE 95).
+        if distinct_effects.len() > 1 && needs_shared_mem {
             return Err(Reject::declined(
                 crate::diag::DeclineId::WasmMultiHostEffectDelegation,
-                "delegating more than one host effect from a resource-escaping entrypoint is not \
-                 supported (one interface per envelope)",
+                "delegating more than one host effect with a compound result from a resource-escaping \
+                 entrypoint is not supported; a scalar/unit multi-interface bytes escape IS supported",
             ));
+        }
+        // Two distinct effects sharing an op NAME would collide in the ONE `"host"` core module the program
+        // binds (ops are re-exported by name), so decline that cleanly rather than conflate them.
+        if distinct_effects.len() > 1 {
+            let mut seen: Vec<&str> = Vec::new();
+            for hi in &host_imports {
+                if seen.contains(&hi.op.as_str()) {
+                    return Err(Reject::declined(
+                        crate::diag::DeclineId::WasmMultiHostEffectDelegation,
+                        "delegating more than one host effect that share an operation name from a \
+                         resource-escaping entrypoint is not supported (the ops collide in the single \
+                         `host` core module)",
+                    ));
+                }
+                seen.push(hi.op.as_str());
+            }
         }
         let h = host_imports.len() as u32;
         let k = imports.len() as u32;
@@ -1764,6 +1796,49 @@ pub(super) fn emit_runtime_bytes_resource(
                 core_functype: Vec::new(),
             })
             .collect();
+        // MULTI-INTERFACE (SHAPE 346): >1 distinct host effect → import each as its own component instance and
+        // re-export all through the ONE `"host"` core module (the escape-form-agnostic multi assembler carries
+        // the scalar methods). Scalar/unit only here (a compound result across >1 interface declined above), so
+        // each group's compound-result fields are empty.
+        if distinct_effects.len() > 1 {
+            let groups: Vec<envelope::HostGroup> = distinct_effects
+                .iter()
+                .map(|e| {
+                    let g_iface = world_import_iface_for_effect(db, e).unwrap_or_else(|| e.clone());
+                    let g_fns: Vec<envelope::HostFn> = host_imports
+                        .iter()
+                        .filter(|hi| &hi.effect == e)
+                        .map(|hi| envelope::HostFn {
+                            op: hi.op.clone(),
+                            comp_functype: host_op_comp_functype(hi, 0, 0, &[], None),
+                            has_list_param: hi
+                                .params
+                                .iter()
+                                .any(|p| matches!(p, host::HostParam::Bytes)),
+                            core_functype: Vec::new(),
+                        })
+                        .collect();
+                    envelope::HostGroup {
+                        effect_iface: g_iface,
+                        host_fns: g_fns,
+                        needs_list: false,
+                        result_defs: Vec::new(),
+                        record_defs: Vec::new(),
+                    }
+                })
+                .collect();
+            return Ok(
+                envelope::assemble_host_runtime_resource_with_scalar_methods_multi(
+                    &main_core,
+                    &dtor_core,
+                    &imports,
+                    &import_name,
+                    &groups,
+                    &make_param_bytes,
+                    &scalar_methods,
+                ),
+            );
+        }
         return Ok(if needs_shared_mem {
             envelope::assemble_host_runtime_resource_with_scalar_methods_shared_mem(
                 &main_core,
