@@ -3352,13 +3352,20 @@ fn collect_consuming_payload_sites_expr_inner(
             collect_consuming_payload_sites_expr(db, end, scrut, false, out);
         }
         // NB — `Core::BytesSlice` is DELIBERATELY NOT borrow-classified here (falls to the `_ =>` CONSUMING
-        // fallback below). Unlike `StrSlice` (a String slice-view the runtime manages such that the shell
-        // deep-drop is safe), `Bytes.slice` returns a raw sub-slice VIEW that ALIASES the source buffer, so
-        // marking `bytes` a borrow would empty the consuming set → admit the inlined-MatchSum shell deep-drop →
-        // the cascade frees the buffer the live slice-view aliases → DOUBLE-FREE (corpus-10-bytes:0028 trap +
-        // node6nonlen-bytesslice Ok-path, v-mem-safety censused). Keeping it CONSUMING declines the reclaim
-        // (a safe LEAK, leak-over-UAF) — the intentional asymmetry with StrSlice. (A prior v-core-opt edit
-        // borrow-classified it as a "StrSlice twin"; REVERTED — Bytes-slice aliasing is not String-slice's.)
+        // fallback below), and CORRECTLY so under the ByteVec rope model: `op_bytes_slice` MOVES its `bytes`
+        // operand into an owned rope node that retains the source leaf as an rc'd child in `handles` (an
+        // independent buffer rc — NOT a raw alias), so `bytes` is genuinely consumed and must stay in the
+        // consuming set (borrow-classifying it would misaccount the move). The inlined-MatchSum try-shell
+        // deep-drop is now ADMITTED (not declined) NOT by emptying this set but by the G5 relax in
+        // `nontail_param_compound_extra_ok`: `BytesSlice` is in `is_allowlisted_builder`, so a `?`-bound
+        // payload consumed by the slice is a clean single-owned-ref builder child (consuming ⊆ builder_children)
+        // whose `owned_compound_boxed` dup balances the shell deep-drop 1:1 → reclaim to zero
+        // (23-try-operator:trbs1/trbs2). An ESCAPING slice-view (returned as the arm result) is STILL safe: the
+        // rope node owns its leaf, so the escaped node reclaims host-side while the husk deep-drop drops only
+        // the dup — no double-free (23-try-operator:trbsesc, faithful guarded-all census). (A pre-rope
+        // v-core-opt edit borrow-classified this as a "StrSlice twin" and was REVERTED for double-freeing a
+        // then-aliasing view; the rope model made that aliasing premise stale — the classification stays
+        // CONSUMING, the reclaim now lands via the allowlist, not a borrow flip.)
         // BORROWING compares/ops (mirror `binding_escapes` arm-for-arm): each reads both operands in place
         // (dropping only an OWNED temporary), so a scrutinee-child reached DIRECTLY as an operand is BORROWED,
         // never moved out — descend with `consuming=false` so it is NOT marked a consumed-child dup site.
@@ -7325,13 +7332,18 @@ pub(super) fn nontail_param_compound_extra_ok(
         //       EXCLUDES the self-recursive PARAM path (reclaim.rs:5441 also reaches here with
         //       bare_payload_result_ok=true, but its param may alias a spine the CALLER still holds — the chor
         //       render Ast.List UAF — which the intra-arm consuming-set test below CANNOT see).
-        //   (2) EMPTY CONSUMING SET — `collect_consuming_payload_sites_cont(...).is_empty()`, the SAME
-        //       single-source classifier the dup pass uses (so empty ⟺ no payload child was dup'd-and-moved ⟺
-        //       the deep-drop is a COMPLETE balanced reclaim, dup ⊇ drop, the #9540/#9544 invariant). Complete
-        //       over ALL payload uses: a dup-backed Map.lookup/List.at BORROW is NOT consuming (→ admit), but a
-        //       thread-into-recursion (term-eq `(Comb x y)`) OR an escaping Bytes.slice view IS consuming
-        //       (#4917) → non-empty → declines (leak beats UAF). Closes the LIST/MAP codec round-trips
-        //       (22-property:1872/2055) that Part-1's ValueDecode-in-set left leaking behind this fence.
+        //   (2) BALANCED CONSUMING SET — `collect_consuming_payload_sites_cont(...)` is EMPTY, OR every site
+        //       is an ALLOWLISTED-BUILDER consume (consuming ⊆ builder_children). The SAME single-source
+        //       classifier the dup pass uses, so empty ⟺ no payload child dup'd-and-moved, and the builder
+        //       subset ⟺ each consumed child is dup'd by `owned_compound_boxed` before a clean single-owned-ref
+        //       builder moves it — either way the deep-drop is a COMPLETE balanced reclaim (dup ⊇ drop, the
+        //       #9540/#9544 invariant). A dup-backed Map.lookup/List.at BORROW is NOT consuming (→ admit);
+        //       a thread-into-recursion (term-eq `(Comb x y)`) is a NON-builder consume → non-empty, not a
+        //       builder subset → declines (leak beats UAF). A Bytes.slice consume MOVES its operand into an
+        //       owned rope node (independent buffer rc under the ByteVec rope model), so it IS an allowlisted
+        //       builder → admitted (23-try-operator:trbs1); the escaping-view sub-case (the slice returned as
+        //       the arm result) is adjudicated by the faithful guarded-all census. Closes the LIST/MAP codec
+        //       round-trips (22-property:1872/2055) that Part-1's ValueDecode-in-set left leaking here.
         && (!sum_cont_arm_interior_view_on_scrutinee(db, root, scrutinee)
             || (matches!(
                 core_of(db, scrutinee),
@@ -7351,7 +7363,21 @@ pub(super) fn nontail_param_compound_extra_ok(
             ) && {
                 let mut consuming = HashSet::new();
                 collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
-                consuming.is_empty()
+                // ROPE-MODEL widen (v-core-opt + v-mem, trbs1): an EMPTY consuming set (borrow-only, the
+                // original #9540/#9544 balance) OR every consuming site is a clean single-owned-ref
+                // ALLOWLISTED-BUILDER consume. Under the ByteVec rope model `op_bytes_slice` MOVES its Bytes
+                // operand into an owned rope node whose own `op_drop` reclaims the retained leaf (an independent
+                // buffer rc, not a raw alias), and `BytesSlice` is in `is_allowlisted_builder` + the dup pass
+                // (`owned_compound_boxed`) dups the consumed child — so the husk deep-drop nets 1:1 against that
+                // dup (dup ⊇ drop). SAME subset shape as payload_ok disjunct-5
+                // (`sum_cont_owned_call_consume_allowlisted`): consuming ⊆ builder_children. Admits the
+                // `?`-bound-Bytes-sliced-in-Ok-arm try shell (23-try-operator:trbs1).
+                consuming.is_empty() || {
+                    let mut seen = HashSet::new();
+                    let mut builder_children = HashSet::new();
+                    collect_allowlisted_builder_children_cont(db, root, &mut seen, &mut builder_children);
+                    consuming.iter().all(|s| builder_children.contains(s))
+                }
             }))
         // 05:9972: exclude a persistent-structure fold whose dedup arm returns the SCRUTINEE unchanged (`… t`)
         // — the shell-drop would free a returned node (the 13589→589 UAF). Leak beats UAF.

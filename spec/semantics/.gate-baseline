@@ -10954,7 +10954,9 @@ pass	tr2 TWO string fields in the tuple with only one phi-grown — the sibling 
 pass	trae1 a `?`-bound heap Result returned BARE as the try-boundary result equalizes the alias-husk (no leak on the failure short-circuit)
 pass	trae2 a `?`-bound bare-alias Result with a HEAP Err payload — KNOWN-LEAK (the S2 fence declines the equalize; must never TRAP)
 pass	trb1 the TRIBONACCI recurrence with a window readout — step rolls (a,b,c) to (b,c,a+b+c) answering the new term, peek answers the live window sum without advancing, and the seed shapes the leading term so the whole orbit shifts while fib1's two-term twin stays covered separately
-pass	trbs1 a `?`-bound Bytes sliced by Bytes.slice in the Ok arm — KNOWN-LEAK (queue (e) Bytes.slice buffer-share)
+pass	trbs1 a `?`-bound Bytes sliced by Bytes.slice in the Ok arm reclaims the try shell + slice view to zero on both paths
+pass	trbs2 a slice-of-slice over a `?`-bound Bytes under the Ok arm reclaims the try shell + both view leaves to zero
+pass	trbsesc an ESCAPING Bytes.slice-view returned as the Ok-arm result stays safe (rope-owned slice node crosses to host, never traps)
 pass	trc1 two `?`s as CALL ARGUMENTS hoist left-to-right and short-circuit at the FIRST failure
 pass	trct1 a `?`-bound COMPOUND (tuple carrying a Set) Ok-arm payload reclaims the try shell + nested heap on both paths
 pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape

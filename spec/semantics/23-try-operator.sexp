@@ -1836,18 +1836,20 @@
   (live-objects 0))
 
 (case
-  "trbs1 a `?`-bound Bytes sliced by Bytes.slice in the Ok arm — KNOWN-LEAK (queue (e) Bytes.slice buffer-share)"
+  "trbs1 a `?`-bound Bytes sliced by Bytes.slice in the Ok arm reclaims the try shell + slice view to zero on both paths"
   (doc
-    "The Bytes.slice sibling of the node#6-nonlen family — DELIBERATELY a KNOWN-LEAK, not live-objects 0. A
-     `?`-bound scalar builds a runtime Bytes under the Ok arm of a `(Result Bytes Int64)` boundary, read via
-     `(match (Bytes.slice bs 0 2) ((Some sl) (Bytes.len sl)) ((None) -9))`. UNLIKE the other fallible-
-     extractions (Map.lookup/List.at/String.at/String.slice — all admitted to the try-shell reclaim, live-
-     objects 0), Bytes.slice is EXCLUDED from the node#6-nonlen admit: op_bytes_slice returns a view SHARING
-     bs's buffer without an independent buffer rc, so admitting the shell deep-drop DOUBLE-FREES the buffer the
-     slice view still points at (traps even view-unused — v-memory-safety caught this UAF on the pre-push fix,
-     tick #197/#198). Leak-over-UAF: BytesSlice stays consuming/declines, so the shell + payload safe-LEAK
-     rather than trap. Pinned known-leak to LOCK the exclusion (it must never silently start trapping again);
-     flips to live-objects 0 when queue (e) gives op_bytes_slice a clean independent buffer rc.")
+    "The Bytes.slice sibling of the node#6-nonlen family, now live-objects 0. A `?`-bound scalar builds a
+     runtime Bytes under the Ok arm of a `(Result Bytes Int64)` boundary, read via
+     `(match (Bytes.slice bs 0 2) ((Some sl) (Bytes.len sl)) ((None) -9))`. Like the other fallible
+     extractions (Map.lookup/List.at/String.at/String.slice), Bytes.slice is admitted to the try-shell
+     reclaim: under the ByteVec rope model a slice is a rope node that OWNS its source leaf as an rc'd child
+     in `handles` (concat/slice/compact CONSUME their operands — an independent buffer rc, not a raw alias),
+     and Bytes.slice is in `is_allowlisted_builder`, so the `?`-bound payload consumed by the slice is a clean
+     single-owned-ref builder child (consuming ⊆ builder_children) whose one dup-on-escape balances the
+     try-shell deep-drop 1:1. The view dies in-arm (read by the scalar Bytes.len), so it does not escape.
+     Both paths reclaim to zero (Ok k=1 -> 2; Err k=0 -> 111 via the short-circuit re-wrap). Was a pinned
+     known-leak under the old buffer-sharing view model; the trbsesc negative below is the escape boundary
+     this widen must not over-admit.")
   (input
     (do
       (def (mk (: r (Result Int64 Int64)))
@@ -1859,7 +1861,62 @@
       (export main)))
   (call main (: 1 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak))
+  (call main (: 0 Int64))
+  (output (: 111 Int64))
+  (live-objects 0))
+
+(case
+  "trbs2 a slice-of-slice over a `?`-bound Bytes under the Ok arm reclaims the try shell + both view leaves to zero"
+  (doc
+    "The view-of-view sibling of trbs1 under the try-shell: a `?`-bound scalar builds a runtime 5-byte Bytes
+     under the Ok arm of a `(Result Bytes Int64)` boundary; the Ok arm slices it (outer = Bytes.slice bs 1 4)
+     then slices THAT (inner = Bytes.slice outer 1 3) and reads Bytes.len inner. Composes the 10-bytes
+     view-of-view rope-leaf reclaim with the node#6-nonlen try-shell deep-drop — both owned slice-shells + the
+     try husk balance to zero on both paths. Note Bytes.slice is start+LENGTH. Verified live-objects 0 (was the
+     trbs1 known-leak class; the rope model + BytesSlice allowlist reclaim it).")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok (Bytes.of #list((UInt8.of x) (UInt8.of x) (UInt8.of x) (UInt8.of x) (UInt8.of x))))) (Result Bytes Int64)))
+      (def (main (: k Int64))
+        (match (mk (if (> k 0) (Ok 7) (Err 55)))
+          ((Ok bs)
+            (match (Bytes.slice bs 1 4)
+              ((Some outer) (match (Bytes.slice outer 1 3) ((Some inner) (Bytes.len inner)) ((None) -8)))
+              ((None) -9)))
+          ((Err e) e)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: 3 Int64))
+  (call main (: 0 Int64))
+  (output (: 55 Int64))
+  (live-objects 0))
+
+(case
+  "trbsesc an ESCAPING Bytes.slice-view returned as the Ok-arm result stays safe (rope-owned slice node crosses to host, never traps)"
+  (doc
+    "The SAFETY-LOCK escape boundary for the trbs1 tighten: unlike trbs1 (which reads a scalar Bytes.len, so
+     the view dies in-arm), here the Ok arm RETURNS the slice-view whole as main's (Option Bytes) result — the
+     view ESCAPES. Under the ByteVec rope model the returned Bytes.slice node OWNS its source leaf (independent
+     rc), and owned_compound_boxed dups the consumed payload, so the try-shell husk deep-drop drops the DUP
+     while the escaped slice node carries the remaining leaf ref out to the host, reclaimed guest-side — no
+     double-free. Verified faithful live-objects 0 + no trap. Locks the escape boundary the widen must reclaim
+     safely, never crash; precedent 10-bytes:1766 is the non-try escaping form.")
+  (input
+    (do
+      (def (mk (: r (Result Int64 Int64)))
+        (: (do (def x (try r)) (Ok (Bytes.of #list((UInt8.of x) (UInt8.of x) (UInt8.of x))))) (Result Bytes Int64)))
+      (def (main (: k Int64))
+        (: (match (mk (if (> k 0) (Ok 5) (Err 111)))
+             ((Ok bs) (Bytes.slice bs 0 2))
+             ((Err _e) (None)))
+           (Option Bytes)))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: (Some b"\x05\x05") (Option Bytes)))
+  (call main (: 0 Int64))
+  (output (: (None unit) (Option Bytes)))
+  (live-objects 0))
 
 (case
   "trct1 a `?`-bound COMPOUND (tuple carrying a Set) Ok-arm payload reclaims the try shell + nested heap on both paths"
