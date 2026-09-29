@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(57);
+    let shape = c.variant(58);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -1117,8 +1117,30 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      silent field-truncation would red the VALUE. value = 100 + a (a in -40..40 -> 60..140; grow always
         //      >= 1 elem so List.at 0 is Some). Corpus (05-compound-types) pins the LEN side; THIS reads the
         //      grounded field. Verified rust AGREE (3->103, 5->105, 1->101).
-        _ => (
+        56 => (
             "(do (def (grow (: n Int64)) (if (> n 0) (List.concat (grow (- n 1)) (: #list(#tuple(100)) (List (Tuple Int8)))) (: #list() (List (Tuple Int8))))) (def (main (: n Int64)) (match (List.at (grow (if (> n 0) n 1)) 0) ((Option.Some t) (match t ((tuple x) (+ (Int64.of x) n)))) ((Option.None) -1))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 57 — mvg1 a NARROW-WIDTH tuple MAP VALUE literal is grounded to its declared field width at emit
+        //      (the 3421821f4f rust-backend fix / #10098 — the Map twin of shape 56's nle1 LIST-element case).
+        //      A `#map((= n #tuple(100)))` at `(Map Int64 (Tuple Int8))` keyed by the RUNTIME entry param `n`
+        //      keeps the map from const-folding so the value tuple `#tuple(100)` SURVIVES to the backend emit;
+        //      its narrow field `100` must be grounded to the map's DECLARED value slot `(Tuple Int8)`, NOT the
+        //      literal's own defaulted Int64. PRE-fix `MapNew`'s key/value grounding used
+        //      `container_slot_grounding` (SCALAR slots only), so the compound value fell to the plain emit
+        //      `((100 as i64),)` inserted into a `BTreeMap<i64,(i8,)>` -> rustc E0308 (rust DECLINED / failed to
+        //      compile while wasm's untyped map value compiled fine) — a FALSE-Agree-once-lifted on the RUST
+        //      side. POST-fix (routes the compound key/value through `emit_elem_grounding_empty_list` with the
+        //      declared type, the Map twin of the SetOf #8481 element grounding) both cross. `main` reads the
+        //      narrow field back via `(Map.lookup … n)` -> `((Some t) (. t 0))`, so a REGRESSION reintroducing
+        //      the width bug reds rust-compile (unavailable) AND a silent field-truncation reds the VALUE.
+        //      value = 100 (arg-INDEPENDENT — the lookup key IS the inserted key `n`, so it is always `Some
+        //      #tuple(100)`; the fence is the rust-compile-side E0308 + the Int8 field readback). Corpus
+        //      (05-compound-types) pins the same witness; THIS reads the grounded value field. Verified rust
+        //      AGREE (3->100, 5->100, -4->100).
+        _ => (
+            "(do (def (main (: n Int64)) (match (Map.lookup (: #map((= n #tuple(100))) (Map Int64 (Tuple Int8))) n) ((Some t) (. t 0)) (None (: 0 Int8)))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6559,9 +6581,9 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` + the mtll1 invariant-Map-param Map.to-list-in-a-self-loop `main`.
-        let mut reached = [false; 57];
-        for seed in 0u64..3420 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` + the mtll1 invariant-Map-param Map.to-list-in-a-self-loop `main` + the mvg1 narrow-width tuple MAP VALUE literal grounded to declared field width `main`.
+        let mut reached = [false; 58];
+        for seed in 0u64..3480 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
             // variant(53) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
@@ -6716,13 +6738,15 @@ mod tests {
                 reached[54] = true; // shape 54 = ckr2 consumed String entry param crosses `main` (dup-aware borrow-lift reclaim, byp3's non-Bytes sibling #f8382ff506)
             } else if ep.source.contains("Option.expect (Bytes.slice") {
                 reached[55] = true; // shape 55 = eab3 consumed sliced Bytes entry param crosses through Option.expect `main` (consume-sink whitelist / CDZ0904 decline-lift #e05f838d9a)
-            } else if ep.source.contains("#tuple(100)") {
-                reached[56] = true; // shape 56 = nle1 narrow-width tuple LIST element literal grounded to declared field width `main` (rust-backend compound-list-element grounding #d107107d9c / #10105)
+            } else if ep.source.contains("(List (Tuple Int8))") {
+                reached[56] = true; // shape 56 = nle1 narrow-width tuple LIST element literal grounded to declared field width `main` (rust-backend compound-list-element grounding #d107107d9c / #10105). Marker is the LIST-specific `(List (Tuple Int8))` — shape 57 (mvg1) ALSO contains `#tuple(100)`, so the mutually-exclusive markers are `(List (Tuple Int8))` vs `(Map Int64 (Tuple Int8))` (per the S652/S653 substring-collision discipline)
+            } else if ep.source.contains("(Map Int64 (Tuple Int8))") {
+                reached[57] = true; // shape 57 = mvg1 narrow-width tuple MAP VALUE literal grounded to declared field width `main` (rust-backend compound-map-value grounding #3421821f4f / #10098, Map twin of 56)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all fifty-seven export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all fifty-eight export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
