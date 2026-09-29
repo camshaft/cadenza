@@ -3327,6 +3327,37 @@
   (call main (: 3 Int64))
   (output (: 3 Int64)))
 
+; The SET-element arm of the compound-container grounding — the cases above ground the ListNew element and
+; MapNew value slots; a SetNew element slot must ground too. A bare `100` in a set element defaults to Int64,
+; but the container slot is `(Tuple Int8)`, so the element must ground to Int8 at construction — else a
+; `(i64,)` element is inserted into a `BTreeSet<(i8,)>` and the Rust backend rejects the mismatch. (Only the
+; INT arm is viable here: a bare FLOAT set element declines on the Rust backend — no total float order — so
+; the Float32 twins above pin Map value + List element only.) The `if` on the runtime `n` keeps the SetNew
+; from const-folding so the typed construction survives to emit.
+(case
+  "a narrow-width Int8 tuple SET element is grounded to its declared field width at runtime emit"
+  (doc
+    "The Set arm of the narrow-width compound-element grounding (the ListNew/MapNew arms are pinned
+           above): `(: #set(#tuple(100)) (Set (Tuple Int8)))` selected behind a runtime `if` (so the SetNew
+           is emitted, not folded). The element tuple's bare `100` must ground to Int8, not the literal's
+           Int64 default — else a `(i64,)` element cannot be inserted into a `BTreeSet<(i8,)>`. n=3 builds the
+           1-element set → Set.len 1; n=0 selects the empty set → 0. Rust emits `BTreeSet<(i8,)>` with the
+           element grounded `(100u8 as i8)`.")
+  (input
+    (do
+      (def
+        (main (: n Int64))
+        (Set.len
+          (if (> n 0)
+              (: #set(#tuple(100)) (Set (Tuple Int8)))
+              (: #set() (Set (Tuple Int8))))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 1 Int64))
+  (call main (: 0 Int64))
+  (output (: 0 Int64))
+  (live-objects 0))
+
 (case
   "a runtime tuple built behind a recursive call escapes to the host"
   (doc
