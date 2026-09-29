@@ -193,25 +193,22 @@ schedules nothing): /loop $INTERVAL $TICK"
 # Overridable: a per-agent AUTOCOMPACT from `describe`, else the env CDZ_AUTOCOMPACT_WINDOW, else 600K.
 : "${AUTOCOMPACT:=${CDZ_AUTOCOMPACT_WINDOW:-600000}}"
 
-# ── OPERATOR-AWAY non-interactive override (fleet-tooling 2026-09-19) ──────────────────────────────
-# `describe` derives DISALLOW_ASK from the ROLE, so the on-demand `design` role normally relaunches WITH
-# AskUserQuestion (DISALLOW_ASK=0). When the operator is AWAY, they directed that ALL agents run
-# non-interactive — a `design` agent that re-arms interactive just re-blocks on a terminal AskUserQuestion
-# modal that no one will answer (the exact wedge that stalls a design agent for hours). A hub SENTINEL file
-# `<hub>/.claude/fleet/non-interactive` (or env CDZ_FORCE_DISALLOW_ASK=1) forces DISALLOW_ASK=1 for EVERY
-# relaunch, INCLUDING design — so a restart during an operator-away window structurally CANNOT come back
-# interactive. Durable across relaunches (survives in the hub, unlike an exported env that tmux won't carry
-# into a fresh window). REMOVE the sentinel when the operator returns to restore per-role interactivity:
-#   touch   <hub>/.claude/fleet/non-interactive   # force all relaunches non-interactive
-#   rm -f   <hub>/.claude/fleet/non-interactive   # restore design's terminal AskUserQuestion
+# ── Belt-and-suspenders non-interactive override ──────────────────────────────────────────────────
+# `describe` derives DISALLOW_ASK from the ROLE. As of operator directive seq-1360 NO role is
+# terminal-interactive (`role_is_terminal_interactive` returns false for every role — `design` became
+# non-interactive + board-driven, `concierge` is Slack-first), so `describe` sets DISALLOW_ASK=1 for
+# EVERY agent and this override is normally redundant. It is kept as a durable structural guard: the hub
+# SENTINEL file `<hub>/.claude/fleet/non-interactive` (or env CDZ_FORCE_DISALLOW_ASK=1) forces
+# DISALLOW_ASK=1 unconditionally, so even if a future role were made interactive again, a restart can be
+# pinned non-interactive fleet-wide (survives relaunches via the hub, unlike a tmux-dropped env).
 if [ -e "$HUB/.claude/fleet/non-interactive" ] || [ "${CDZ_FORCE_DISALLOW_ASK:-0}" = "1" ]; then
   DISALLOW_ASK=1
 fi
 
 CLAUDE_ARGS=()
-# Structural guard: every window EXCEPT the interactive roles (concierge, design) is denied the
-# human-question tool, so no unattended agent can pop an interactive prompt in its window. The
-# describe output sets DISALLOW_ASK=0 for the interactive roles. (Independent of the approval bypass.)
+# Structural guard: every window is denied the human-question tool (no role is interactive anymore —
+# seq-1360 made `design` board-driven; `concierge` is Slack-first), so no unattended agent can pop an
+# interactive prompt in its window and block forever. (Independent of the approval bypass.)
 if [ "${DISALLOW_ASK:-1}" = "1" ]; then
   CLAUDE_ARGS+=(--disallowedTools AskUserQuestion)
 fi

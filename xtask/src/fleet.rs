@@ -3691,17 +3691,18 @@ fn baseline_driver_command() -> &'static str {
 /// `AskUserQuestion` (NOT launched with `--disallowedTools AskUserQuestion`, so `disallow_ask` is
 /// false), and an ordinary peer wake leaves it alone (a keystroke would clobber the human's input).
 ///
-/// Only `design` qualifies now. `design` is the on-demand session the operator explicitly switches to
-/// and iterates with at the terminal. The `concierge` USED to be here too, but per the operator
-/// directive of 2026-08-01 it is now SLACK-FIRST: it stays the single human interface but surfaces
-/// asks/status to the operator through the Slack bridge (which watches its inbox and threads replies
-/// back as `answer`), not via a terminal `AskUserQuestion`. The reason is a hard hazard, not taste:
-/// `AskUserQuestion` BLOCKS the turn, so a blocked concierge can't drain its inbox and goes DEAF to
-/// operator messages arriving over Slack until the terminal prompt is answered. Denying it keeps the
-/// concierge looping/draining like every unattended role, and it is woken normally on operator
-/// messages — it is no longer terminal-interactive. Pure, so the policy is unit-tested in one place.
-fn role_is_terminal_interactive(role: &str) -> bool {
-    role == "design"
+/// NO role qualifies anymore — the whole fleet is unattended. `design` USED to be the one exception
+/// (the operator switched to its window and iterated at the terminal), but per operator directive
+/// seq-1360 the `design` role is now NON-INTERACTIVE + board-driven: it writes its design doc as a
+/// board document and the operator iterates asynchronously via board comments, so it never uses
+/// `AskUserQuestion` and never waits on a terminal. `concierge` left earlier (2026-08-01, Slack-first)
+/// for the same hazard: `AskUserQuestion` BLOCKS the turn, so a blocked agent can't drain its inbox and
+/// goes DEAF to messages until the prompt is answered. So `design` is now launched WITH
+/// `--disallowedTools AskUserQuestion` (disallow_ask=true) and is restarted/nudged like any unattended
+/// agent. Kept as a named predicate (rather than inlining `false`) so the policy — and the reason no
+/// role is interactive — lives in one documented place; pure + unit-tested.
+fn role_is_terminal_interactive(_role: &str) -> bool {
+    false
 }
 
 /// Build a runtime [`Agent`] from a tracked [`RosterEntry`], deriving the runtime-only fields (branch,
@@ -11542,12 +11543,14 @@ fn pane_busy_means_working(pane_busy: bool) -> bool {
 /// ACTIONABLE messages in its (hub) inbox AND its pane is idle (not mid-tick). Pure so the signal's gate
 /// is unit-testable. This is orthogonal to the heartbeat/stale check — a drain-stalled agent typically
 /// has a FRESH heartbeat (the loop runs; it just doesn't drain), so the normal staleness path would wave
-/// it through as healthy. `concierge` and `design` are exempt — but for DIFFERENT reasons than the
-/// terminal-interactive set (`role_is_terminal_interactive` is design-only now): `design` sits idle with
-/// mail a human reads on their own cadence, and the `concierge`'s actionable inbox (asks/answers) is
-/// surfaced to the operator OUT OF BAND by the Slack bridge that watches it — so idle-with-mail there is
-/// the bridge doing its job, not a stall. A genuine concierge WEDGE is caught separately by the
-/// saturation path (`concierge_wedge_needs_operator`), not this drain signal.
+/// it through as healthy. Only `concierge` is exempt now: its actionable inbox (asks/answers) is surfaced
+/// to the operator OUT OF BAND by the Slack bridge that watches it — so idle-with-mail there is the bridge
+/// doing its job, not a stall (a genuine concierge WEDGE is caught separately by the saturation path,
+/// `concierge_wedge_needs_operator`). `design` USED to be exempt too (it idled while a human read its
+/// window), but per operator directive seq-1360 `design` is now non-interactive + board-driven — an
+/// ordinary unattended agent — so it IS drain-stall-checked like any worker (idle with actionable file-hub
+/// mail = a real stall worth a nudge; its async operator conversation lives in board comments, not the
+/// file-hub inbox, so it doesn't false-trip).
 ///
 /// 🔑 `actionable_depth` counts only queued messages of an ACTIONABLE kind (assign/reject/ask/issue/
 /// request/answer/…), NOT informational mail (note/merged/backlog/…) — see `message_kind_is_actionable`.
@@ -11556,7 +11559,7 @@ fn pane_busy_means_working(pane_busy: bool) -> bool {
 /// should already fold in "has ever heartbeated" (an un-booted agent's idle pane is a cold start, not a
 /// drain-stall).
 fn is_probable_drain_stall(role: &str, actionable_depth: usize, pane_idle: bool) -> bool {
-    if matches!(role, "concierge" | "design") {
+    if role == "concierge" {
         return false;
     }
     actionable_depth > 0 && pane_idle
@@ -13729,8 +13732,9 @@ fn sync(fleet: &Fleet, force: bool) {
 ///
 /// The tracked `roster.json` is the STANDING fleet that reproduces on any machine, so only agents
 /// worth reviving belong in it: an agent that is `active` AND whose role is not ephemeral. `fix` and
-/// `design` are ephemeral (a fix agent is minted per bug and removed when done; design is interactive
-/// and hand-started), so persisting them would make `fleet up` try to recreate dead/transient agents.
+/// `design` are ephemeral (a fix agent is minted per bug and removed when done; a design agent is spun up
+/// on-demand per operator idea and removed once its design is approved + queued), so persisting them would
+/// make `fleet up` try to recreate dead/transient agents.
 /// Optional fields (`vertical`/`area`) are omitted when empty so the tracked file stays minimal +
 /// diff-stable. Pure (no I/O) so the exclusion + field-omission rules are unit-testable.
 fn roster_entry_json(a: &Agent) -> Option<String> {
@@ -23265,7 +23269,7 @@ mod tests {
             mk("v-beta", "vertical", "active"),  // active but NO live window → skip
             mk("v-gamma", "vertical", "stopped"), // stopped → skip (picks up config on next launch)
             mk("concierge", "concierge", "active"), // concierge → skip (already has the MCP)
-            mk("design-x", "design", "active"), // terminal-interactive → skip (human may be typing)
+            mk("design-x", "design", "active"), // board-driven (non-interactive) now → RESTART like any worker
             mk("pr-sync", "pr-sync", "active"), // pr-sync → skip by name (even if it looked active)
         ];
         // v-beta is NOT in the live set; everyone else live.
@@ -23280,20 +23284,29 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        // Only the live + active + non-interactive workers, sorted+deduped.
+        // Live + active workers, sorted+deduped — now INCLUDING design (board-driven, no longer skipped);
+        // still skipping concierge (by role+name), pr-sync (by name), stopped, and the windowless v-beta.
         assert_eq!(
             restart_all_targets(&agents, &live, None),
-            vec!["breaker".to_string(), "v-alpha".to_string()]
+            vec![
+                "breaker".to_string(),
+                "design-x".to_string(),
+                "v-alpha".to_string()
+            ]
         );
         // SELF-window exclusion: the runner never restarts its own window (would abort the loop mid-run).
         assert_eq!(
             restart_all_targets(&agents, &live, Some("v-alpha")),
-            vec!["breaker".to_string()]
+            vec!["breaker".to_string(), "design-x".to_string()]
         );
         // A self_window that isn't a target anyway (e.g. the concierge runner) changes nothing.
         assert_eq!(
             restart_all_targets(&agents, &live, Some("concierge")),
-            vec!["breaker".to_string(), "v-alpha".to_string()]
+            vec![
+                "breaker".to_string(),
+                "design-x".to_string(),
+                "v-alpha".to_string()
+            ]
         );
         // Empty live set → nothing to restart.
         assert!(restart_all_targets(&agents, &[], None).is_empty());
@@ -23803,13 +23816,16 @@ mod tests {
         let ps = agent_from_roster(&fleet, &entry("pr-sync", "pr-sync"));
         assert_eq!(ps.branch, "trunk");
 
-        // SAFETY INVARIANT: disallow_ask is FALSE only for the TERMINAL-INTERACTIVE role (`design`) —
-        // the on-demand session a human types into at the terminal, which may pop an AskUserQuestion.
-        // The `concierge` is Slack-first now (operator directive 2026-08-01): it surfaces asks through
-        // the bridge, so it too is DENIED the terminal prompt like every unattended role. EVERY role but
-        // `design` MUST be denied that tool (window.sh passes --disallowedTools AskUserQuestion), else an
-        // unattended agent could block its window forever on a human prompt.
-        assert!(!agent_from_roster(&fleet, &entry("design", "design")).disallow_ask);
+        // SAFETY INVARIANT: disallow_ask is TRUE for EVERY role now — no role is terminal-interactive.
+        // `design` was the last exception, but per operator directive seq-1360 it is non-interactive +
+        // board-driven (writes a board doc, iterates via comments), so it too is DENIED the terminal
+        // AskUserQuestion (window.sh passes --disallowedTools AskUserQuestion). The `concierge` is
+        // Slack-first (2026-08-01) and likewise denied. Pin design=true so a future edit can't hand it
+        // back a terminal prompt that would block its unattended window forever.
+        assert!(
+            agent_from_roster(&fleet, &entry("design", "design")).disallow_ask,
+            "design is board-driven now (seq-1360) — it MUST be denied the terminal AskUserQuestion"
+        );
         assert!(
             agent_from_roster(&fleet, &entry("concierge", "concierge")).disallow_ask,
             "concierge is Slack-first — it MUST be denied the terminal AskUserQuestion"
@@ -27480,12 +27496,14 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(!is_probable_drain_stall("vertical", 0, true));
         // Pane busy (mid-tick) → it may be about to drain → not flagged.
         assert!(!is_probable_drain_stall("vertical", 2, false));
-        // `design` (a human reads its mail on their own cadence) and `concierge` (its actionable mail is
-        // surfaced out-of-band by the Slack bridge that watches its inbox) both legitimately sit idle
-        // with mail → never flagged. NB this exemption is broader than terminal-interactivity, which is
-        // design-only now; a concierge WEDGE is caught by the saturation path, not this drain signal.
+        // Only `concierge` is exempt: its actionable mail is surfaced out-of-band by the Slack bridge that
+        // watches its inbox, so idle-with-mail is the bridge doing its job (a concierge WEDGE is caught by
+        // the saturation path, not this drain signal).
         assert!(!is_probable_drain_stall("concierge", 5, true));
-        assert!(!is_probable_drain_stall("design", 5, true));
+        // `design` is NO LONGER exempt (seq-1360: board-driven, unattended) — idle with actionable file-hub
+        // mail IS a stall worth a nudge, exactly like any worker (its operator conversation is on the board,
+        // not the file-hub inbox, so this doesn't false-trip on a design legitimately awaiting comments).
+        assert!(is_probable_drain_stall("design", 5, true));
         // A non-interactive role with actionable mail + idle IS flagged even if it's pr-sync (it should
         // be draining merge-requests; idle-with-queued-MRs is worth surfacing).
         assert!(is_probable_drain_stall("pr-sync", 4, true));
@@ -28353,32 +28371,29 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
-    fn interactive_role_wake_skip_relaxes_only_for_an_operator_message() {
-        // Default (peer wake, include_interactive = false): only the TERMINAL-INTERACTIVE role
-        // (`design`) is LEFT for the human — a keystroke would clobber the human's terminal input.
-        assert!(interactive_role_skips_wake("design", false));
-        // The `concierge` is Slack-first now (operator directive 2026-08-01): it wakes NORMALLY on any
-        // delivery like every looping agent, so it is NOT skipped even on a peer wake.
+    fn interactive_role_wake_skip_no_longer_skips_any_role() {
+        // No role is terminal-interactive anymore (seq-1360: `design` is board-driven now), so NOTHING is
+        // left-for-the-human on a peer wake — every role, including `design`, wakes NORMALLY.
+        assert!(!interactive_role_skips_wake("design", false));
+        // The `concierge` is Slack-first (operator directive 2026-08-01): also wakes normally.
         assert!(!interactive_role_skips_wake("concierge", false));
         // A non-interactive role is never skipped on this axis (it wakes on any delivery).
         assert!(!interactive_role_skips_wake("vertical", false));
         assert!(!interactive_role_skips_wake("pr-sync", false));
-        // An OPERATOR message (include_interactive = true) relaxes the skip for the terminal-interactive
-        // role. (The mid-tick guard still shields an active conversation; this only governs the role
-        // axis.) The concierge is unaffected — it already wakes regardless of the flag.
+        // The operator-message flag changes nothing now — there is no interactive role left to relax for.
         assert!(!interactive_role_skips_wake("design", true));
         assert!(!interactive_role_skips_wake("concierge", true));
-        // And a non-interactive role is likewise not skipped with the flag (nothing to relax).
         assert!(!interactive_role_skips_wake("vertical", true));
     }
 
     #[test]
-    fn only_design_is_terminal_interactive_concierge_is_slack_first() {
-        // The single predicate that gates BOTH keeping AskUserQuestion and the peer-wake skip. Only
-        // `design` (the on-demand terminal session) qualifies; the Slack-first concierge and every
-        // unattended role do not. Pin this so a future edit can't silently re-add the concierge and
-        // hand it back a terminal prompt / stop waking it (the exact regression this directive fixes).
-        assert!(role_is_terminal_interactive("design"));
+    fn no_role_is_terminal_interactive_design_is_board_driven_now() {
+        // The single predicate that gates BOTH keeping AskUserQuestion and the peer-wake skip. NO role
+        // qualifies anymore: `design` was the last terminal-interactive role, but per operator directive
+        // seq-1360 it is now non-interactive + board-driven (writes a board doc, iterates via comments),
+        // and the concierge left earlier (Slack-first). Pin this so a future edit can't silently hand
+        // `design` (or concierge) back a terminal AskUserQuestion — the exact regression this fixes.
+        assert!(!role_is_terminal_interactive("design"));
         assert!(!role_is_terminal_interactive("concierge"));
         for r in [
             "vertical",
