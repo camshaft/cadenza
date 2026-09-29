@@ -5272,25 +5272,24 @@ cases
   (live-objects 0))
 
 (case
-  "a bare empty-list literal passed as a top-level list<s64> host-op ARGUMENT (corpus TODO — same ungrounded-arg root as the const-None case)"
+  "a bare empty-list literal passed as a top-level list<s64> host-op ARGUMENT (crosses via #10037 empty-compound grounding)"
   (doc
-    "SHAPE 104 (v-wit-boundary corpus TODO) — a bare EMPTY-list literal `(list)` passed as a top-level
-           `list<s64>` host-op ARGUMENT. SAME ungrounded-perform-arg root as SHAPE 103 (the const-None option arg):
-           a bare `(list)` infers as `(List Any)` — an ungrounded ELEMENT type, because a perform/host-call
+    "SHAPE 104 (v-wit-boundary) — a bare EMPTY-list literal `(list)` passed as a top-level `list<s64>` host-op
+           ARGUMENT. A bare `(list)` infers as `(List Any)` — an ungrounded ELEMENT type, because a perform/host-call
            argument is NOT checked against the operation's DECLARED parameter type (capabilities-and-effects.md
-           #Performing An Operation Is Typed) — so nothing grounds the element to `s64`, the boundary guard sees
-           `List Any` (which has no element boundary ABI), and the op DECLINES with CDZ0903. NARROW: a NON-empty
-           list literal `(list 1 2)` grounds the element from its elements and crosses fine, and annotating
-           `(: (list) (List Int64))` also crosses — ONLY a bare empty list literal in a top-level list host-arg
-           position (where the element is otherwise unconstrained) trips it. The idealistic behavior is that the
-           empty list crosses as WIT `list<s64>` with count 0 and the host returns its scalar (assert 7). Grades
-           Todo now (CDZ0903 is a coded decline). NB the perform-arg grounding fix #10029 (66b3209a07) that
-           RESOLVED the sibling SHAPE 103 (const-None option) did NOT cover this case — it still DECLINES: #10029
-           commits a deferred int WIDTH and a free payload var walked from a present value, but a bare EMPTY `(list)`
-           has NO element to ground from, so its `List Any` element type stays ungrounded against the WIT `list<s64>`.
-           Remains a DISTINCT infer:: gap (empty-compound element grounding against the declared param element type),
-           still owned by v-compiler-primitives; auto-locks to Pass when that lands. Companion to SHAPE 103: pins
-           that the empty-element case DECLINES cleanly (CDZ0903) rather than emitting an invalid module.")
+           #Performing An Operation Is Typed). Previously nothing grounded the element to `s64`, so the boundary
+           guard saw `List Any` (no element boundary ABI) and the op DECLINED with CDZ0903. NARROW: a NON-empty
+           list literal `(list 1 2)` grounds the element from its elements, and annotating `(: (list) (List Int64))`
+           also crosses — ONLY a bare empty list literal in a top-level list host-arg position (where the element is
+           otherwise unconstrained) tripped it. Now #10037 (8f7ac64258) grounds it: `ground_perform_arg_ty` gained a
+           third Any axis — an empty compound infers `(List Any)` (`Any`, not a `Var`, so #10029's free-var +
+           deferred-int axes both missed it), now committed to the declared element via
+           `commit_underdetermined_to_declared`'s `(Ty::Any, declared)` arm. The bare `(list)` grounds to
+           `(List Int64)` and crosses as WIT `list<s64>` with count 0; the host returns its scalar (assert 7). Grades
+           Pass. The companion SHAPE 103 (const-None option) crossed earlier via #10029; this empty-compound axis was
+           the distinct remaining infer:: gap, now closed. Reject-don't-miscompile preserved (the arm fires only for
+           an `Any` value leaf vs a concrete declared leaf; a fixed mismatch still CDZ0301 at unify; `Nominal` not
+           descended).")
   (wit-world
     (world w (import cadenza:platform/probe (member g (func (param xs (list (s64))) (result (s64)))))))
   (input
