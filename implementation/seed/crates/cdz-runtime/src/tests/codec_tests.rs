@@ -2701,16 +2701,18 @@ fn hot_op_allocation_ceilings() {
     println!("ALLOC bytes_slice x{N}: {slice}");
     assert!(
         slice <= 1100,
-        "bytes_slice x{N} allocs {slice} exceeds ceiling 1100 (JUST the node Box = 1/op; both the [off,len] raw and the single handle are inline — was 2/op with a heap vec![buf] handles Vec)"
+        "bytes_slice x{N} allocs {slice} exceeds ceiling 1100 (~1/op: an ≤inline-cap slice result is materialized INLINE — just the node Box, no boxed ByteVec, empty handles; the parent's one-time Heap→Rope promote amortizes. ByteVec::slice shares the parent's chunk with no byte copy — a regression to eager per-slice parent-copy would scale with parent length)"
     );
     op_drop(leaf);
 
-    // (J2) bytes CONCAT x1000 — a rope concat node over two shared leaves: 2 handles (left, right) +
-    // the inline 4-byte `[len]` raw = ONE allocation of the node Box + its 2-elem handles (INLINE,
-    // no heap Vec — a concat is arity-2, exactly INLINE_HANDLES_CAP). O(1), copies NOTHING (the two
-    // operands are shared subtrees, not copied). Guards the O(1)-no-copy concat: a regression to
-    // eager materialization (copying the operands' bytes into a fresh leaf) would scale with the
-    // operand lengths, not stay constant. Both operands built + retained OUTSIDE the loop.
+    // (J2) bytes CONCAT x1000 — a ByteVec-rope concat LEAF over two shared operands: ~3 allocs/op =
+    // the node Box + the boxed ByteVec (Raw::Rope) + the ByteVec's chunk deque holding a's chunk then
+    // b's. Copies NO bytes (append moves the shared Bytes chunks by refcount, O(chunks); the operands
+    // are RC-shared, not byte-copied). This is the ACCEPTED cost of `bytevec everywhere` (operator
+    // seq-1876: fine to increase allocs to use bytevec, improve efficiency later) — the deferred
+    // multi-chunk rope is the price of the O(1)-no-copy concat. Guards against a regression to eager
+    // materialization (copying the operands' bytes into a fresh leaf → scales with operand LENGTH, not
+    // constant) and against a chunk-count blowup. Both operands built + retained OUTSIDE the loop.
     let la = {
         let b = op_bytes_alloc(16);
         for i in 0..16u32 {
@@ -2734,8 +2736,8 @@ fn hot_op_allocation_ceilings() {
     });
     println!("ALLOC bytes_concat x{N}: {concat}");
     assert!(
-        concat <= 1100,
-        "bytes_concat x{N} allocs {concat} exceeds ceiling 1100 (ONE node Box + inline 2-elem handles + inline [len] raw = 1 alloc/op; a regression to eager byte-copy would scale with operand length, or to a heap handles Vec would ~2x)"
+        concat <= 3100,
+        "bytes_concat x{N} allocs {concat} exceeds ceiling 3100 (~3/op: a ByteVec-rope concat leaf = the node Box + the boxed ByteVec (Raw::Rope) + the ByteVec's chunk deque holding a's chunk then b's. This is the ACCEPTED cost of `bytevec everywhere` (operator seq-1876: increase allocs to use bytevec, improve efficiency later) — the concat still copies NO bytes (append moves the shared Bytes chunks by refcount, O(chunks)); the deferred multi-chunk rep is the price of that. A regression to eager byte-copy would scale with operand LENGTH (≫), and a chunk-count blowup would climb further — that is what this still guards)"
     );
     op_drop(la);
     op_drop(lb);
@@ -2769,11 +2771,14 @@ fn hot_op_allocation_ceilings() {
         op_drop(rope);
     });
     println!("ALLOC bytes_flatten x{DEPTH}: {flatten}");
-    // Build allocs: 1 base leaf + DEPTH×(piece leaf + concat node) then flatten adds the leaf's Heap
-    // raw. All bounded by O(DEPTH), NOT O(DEPTH²). Ceiling = generous headroom over the linear count.
+    // Build allocs: 1 base leaf + DEPTH×(piece leaf + ByteVec-rope concat leaf ≈ node Box + boxed
+    // ByteVec + chunk deque) then flatten/compact adds the flattened leaf. All bounded by O(DEPTH),
+    // NOT O(DEPTH²). The per-step concat cost rose with `bytevec everywhere` (operator seq-1876,
+    // accepted), so the linear count climbed from the old node-rope build — ceiling raised to match,
+    // still guarding the O(DEPTH) shape.
     assert!(
-        flatten <= 400,
-        "bytes_flatten DEPTH={DEPTH} allocs {flatten} exceeds ceiling 400 (linear in DEPTH: base + DEPTH×(piece+concat) + one flattened leaf; a regression to O(DEPTH²) re-flatten/re-walk would blow up)"
+        flatten <= 500,
+        "bytes_flatten DEPTH={DEPTH} allocs {flatten} exceeds ceiling 500 (linear in DEPTH: base + DEPTH×(piece + ByteVec-rope concat leaf) + one flattened/compacted leaf; a regression to O(DEPTH²) re-flatten/re-walk would blow up)"
     );
 
     // (J3b) SMALL flatten — the hot per-char shape a real STRING LEXER hits: `String.at(s,i)` returns a
