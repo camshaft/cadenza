@@ -11379,7 +11379,7 @@ todo	a String host-import result escapes DIRECTLY as the entrypoint result via a
 todo	a String-typed @param accessor crosses once the world-driven result path lands
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but the bare envelope declines it on wasm
-todo	a bare empty-list literal passed as a top-level list<s64> host-op ARGUMENT (corpus TODO — same ungrounded-arg root as the const-None case)
+pass	a bare empty-list literal passed as a top-level list<s64> host-op ARGUMENT (crosses via #10037 empty-compound grounding)
 todo	a bin pattern over a Bytes scrutinee is NOT a type error (declines only on the non-scalar param boundary)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a closure returning Unit crosses the boundary — unit is a zero-result (should-work)

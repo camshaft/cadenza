@@ -5272,25 +5272,24 @@ cases
   (live-objects 0))
 
 (case
-  "a bare empty-list literal passed as a top-level list<s64> host-op ARGUMENT (corpus TODO — same ungrounded-arg root as the const-None case)"
+  "a bare empty-list literal passed as a top-level list<s64> host-op ARGUMENT (crosses via #10037 empty-compound grounding)"
   (doc
-    "SHAPE 104 (v-wit-boundary corpus TODO) — a bare EMPTY-list literal `(list)` passed as a top-level
-           `list<s64>` host-op ARGUMENT. SAME ungrounded-perform-arg root as SHAPE 103 (the const-None option arg):
-           a bare `(list)` infers as `(List Any)` — an ungrounded ELEMENT type, because a perform/host-call
+    "SHAPE 104 (v-wit-boundary) — a bare EMPTY-list literal `(list)` passed as a top-level `list<s64>` host-op
+           ARGUMENT. A bare `(list)` infers as `(List Any)` — an ungrounded ELEMENT type, because a perform/host-call
            argument is NOT checked against the operation's DECLARED parameter type (capabilities-and-effects.md
-           #Performing An Operation Is Typed) — so nothing grounds the element to `s64`, the boundary guard sees
-           `List Any` (which has no element boundary ABI), and the op DECLINES with CDZ0903. NARROW: a NON-empty
-           list literal `(list 1 2)` grounds the element from its elements and crosses fine, and annotating
-           `(: (list) (List Int64))` also crosses — ONLY a bare empty list literal in a top-level list host-arg
-           position (where the element is otherwise unconstrained) trips it. The idealistic behavior is that the
-           empty list crosses as WIT `list<s64>` with count 0 and the host returns its scalar (assert 7). Grades
-           Todo now (CDZ0903 is a coded decline). NB the perform-arg grounding fix #10029 (66b3209a07) that
-           RESOLVED the sibling SHAPE 103 (const-None option) did NOT cover this case — it still DECLINES: #10029
-           commits a deferred int WIDTH and a free payload var walked from a present value, but a bare EMPTY `(list)`
-           has NO element to ground from, so its `List Any` element type stays ungrounded against the WIT `list<s64>`.
-           Remains a DISTINCT infer:: gap (empty-compound element grounding against the declared param element type),
-           still owned by v-compiler-primitives; auto-locks to Pass when that lands. Companion to SHAPE 103: pins
-           that the empty-element case DECLINES cleanly (CDZ0903) rather than emitting an invalid module.")
+           #Performing An Operation Is Typed). Previously nothing grounded the element to `s64`, so the boundary
+           guard saw `List Any` (no element boundary ABI) and the op DECLINED with CDZ0903. NARROW: a NON-empty
+           list literal `(list 1 2)` grounds the element from its elements, and annotating `(: (list) (List Int64))`
+           also crosses — ONLY a bare empty list literal in a top-level list host-arg position (where the element is
+           otherwise unconstrained) tripped it. Now #10037 (8f7ac64258) grounds it: `ground_perform_arg_ty` gained a
+           third Any axis — an empty compound infers `(List Any)` (`Any`, not a `Var`, so #10029's free-var +
+           deferred-int axes both missed it), now committed to the declared element via
+           `commit_underdetermined_to_declared`'s `(Ty::Any, declared)` arm. The bare `(list)` grounds to
+           `(List Int64)` and crosses as WIT `list<s64>` with count 0; the host returns its scalar (assert 7). Grades
+           Pass. The companion SHAPE 103 (const-None option) crossed earlier via #10029; this empty-compound axis was
+           the distinct remaining infer:: gap, now closed. Reject-don't-miscompile preserved (the arm fires only for
+           an `Any` value leaf vs a concrete declared leaf; a fixed mismatch still CDZ0301 at unify; `Nominal` not
+           descended).")
   (wit-world
     (world w (import cadenza:platform/probe (member g (func (param xs (list (s64))) (result (s64)))))))
   (input
@@ -10654,19 +10653,19 @@ cases
   (live-objects 0))
 
 (case
-  "a top-level list<option<variant{a, b(s64), c(record{p, q})}>> host-op arg DECLINES (record payload case, WIT-order-sizing slice)"
+  "a top-level list<option<variant{a, b(s64), c(record{p, q})}>> host-op arg crosses (record payload case, WIT-order stride)"
   (doc
-    "SHAPE 296 (v-wit-boundary) — the RECORD-payload-case sibling of SHAPE 294, DECLINED on purpose. A
-           `list<option<variant{a, b(s64), c(record{p:s32, q:s64})}>>` host-op ARGUMENT: the payload variant's `c`
-           case is a RECORD. Unlike the Bytes/List/Scalar/Tuple cases (SHAPE 294/295), a record's mem size is
-           FIELD-ORDER-dependent under alignment padding, but the option-element per-element STRIDE sizes guest
-           name-lex order (`canonical_layout_wit` falls back to guest order for an option-shaped Sum), so a WIT
-           declaration order that DIVERGES from the guest order could write past the reserved element slot. Rather
-           than risk that (decline-don't-miscompile), `host::option_mixed_variant_list_elem_ok` gates OUT a Record
-           payload case, so this shape DECLINES cleanly with CDZ0903. The idealistic behavior is that it crosses
-           (with a WIT-order-aware option-element stride); this is a DISTINCT WIT-order-sizing slice, the same class
-           as the still-open `list<option<record{divergent}>>` follow-on. Grades Todo now (CDZ0903 is a coded
-           decline). Pins that the scoped-out record case DECLINES cleanly rather than emitting an invalid module.")
+    "SHAPE 296 (v-wit-boundary) — the RECORD-payload-case sibling of SHAPE 294: a
+           `list<option<variant{a, b(s64), c(record{p:s32, q:s64})}>>` host-op ARGUMENT whose payload variant's `c`
+           case is a RECORD. Previously DECLINED CDZ0903 because a record's mem size is FIELD-ORDER-dependent and
+           the option-element per-element STRIDE sized guest name-lex order (`canonical_layout_wit` fell back to
+           guest order for an option-shaped Sum), so a divergent WIT order could write past the reserved slot. Now
+           `canonical_layout_wit` THREADS the WIT through an option-shaped `Sum` into its payload (a `WitType::Option`
+           over a variant/record), sizing the option-element stride WIT-order to MATCH `emit_option_to_mem`'s
+           WIT-order write extent (the payload written at `payload_off` via `emit_variant_mixed_to_mem` /
+           `emit_record_to_mem`). So `host::option_mixed_variant_list_elem_ok` now admits a Record payload case
+           (the whole `variant_mem_mixed_kind_supported` set). run() pushes [Some(C({p:1, q:2}))]; a VALID running
+           component (live-objects=0) pins the record-payload-case variant under an option in a list.")
   (wit-world
     (world w (import cadenza:platform/probe
       (member push (func (param m (list (option (variant (a) (b (s64)) (c (record (= p (s32)) (= q (s64)))))))) (result (s64)))))))
@@ -10675,6 +10674,59 @@ cases
       (type Sig (A) (B Int64) (C (Record (: p Int32) (: q Int64))))
       (effect probe (op push (-> (List (Option Sig)) Int64)))
       (def (run) (host (probe) (probe.push #list((Some (Sig.C #record((= p (: 1 Int32)) (= q 2))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<option<record{a:s32, b:s32, c:s64}>> host-op arg whose WIT field order (a, c, b) DIVERGES crosses (WIT-order option-element stride)"
+  (doc
+    "SHAPE 297 (v-wit-boundary) — a `list<option<record{a:s32, b:s32, c:s64}>>` host-op ARGUMENT whose WIT
+           declares the record fields (a, c, b) — DIVERGING from the guest name-lex order (a, b, c). The two orders
+           size DIFFERENTLY under alignment padding: guest name-lex {a, b, c} = 16 bytes (a@0, b@4, c@8), but WIT
+           {a, c, b} = 24 (a@0, c@8, b@16). The option-element stride is sized WIT-order by the new
+           `canonical_layout_wit` option-shaped-Sum arm (disc + payload_off + WIT-order payload size), MATCHING
+           `emit_option_to_mem`'s WIT-order write via `emit_record_to_mem`. Before the fix the stride sized guest
+           order (16-byte payload), so with 2+ elements element N+1's write clobbered element N's tail — a
+           miscompile `wasm-tools validate` cannot catch (a valid module with overlapping in-memory writes).
+           run() pushes TWO Some elements + a None; a VALID running component (live-objects=0) pins the divergent-
+           order record under an option in a list across multiple elements.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (record (= a (s32)) (= c (s64)) (= b (s32)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Option (Record (: a Int32) (: b Int32) (: c Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some #record((= a (: 1 Int32)) (= b (: 2 Int32)) (= c 3))) None (Some #record((= a (: 4 Int32)) (= b (: 5 Int32)) (= c 6)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<option<variant{a, b(s64), c(record{q, p} divergent)}>> host-op arg crosses (divergent record payload case, WIT-order stride)"
+  (doc
+    "SHAPE 298 (v-wit-boundary) — the DIVERGENT-order twin of SHAPE 296: a
+           `list<option<variant{a, b(s64), c(record{p:s32, q:s64})}>>` whose WIT declares the payload record fields
+           (q, p) — diverging from the guest name-lex order (p, q). Composes the option-element WIT-order stride
+           (SHAPE 296) with the divergent-record WIT-ordering machinery inside `emit_variant_mixed_to_mem`
+           (`variant_mixed_payload_cases_wit` + `canonical_layout_wit`, SHAPE 283): the stride is sized for the
+           WIT-order variant payload region, and the record case's fields are written (q, p). run() pushes
+           [Some(C({p:1, q:2})), None]; a VALID running component (live-objects=0) pins the divergent record payload
+           case under an option in a list.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (variant (a) (b (s64)) (c (record (= q (s64)) (= p (s32)))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (Record (: p Int32) (: q Int64))))
+      (effect probe (op push (-> (List (Option Sig)) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some (Sig.C #record((= p (: 1 Int32)) (= q 2)))) None))))
       (export run)))
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))

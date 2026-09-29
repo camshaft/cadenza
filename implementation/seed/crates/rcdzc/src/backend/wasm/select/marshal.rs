@@ -81,21 +81,9 @@ pub(super) fn emit_list_arg_marshal(
             )
             || crate::backend::wasm::host::option_payload_ty(db, &payload).is_some()
             // A MIXED-VARIANT payload (`option<variant{a, b(s64), c(list<u8>)}>`) — written by
-            // `emit_option_to_mem`'s mixed-variant arm. Scoped to order-agnostic cases (matches
-            // `host::option_mixed_variant_list_elem_ok`, the `list_elem_marshalable` gate).
-            || crate::backend::wasm::host::variant_mixed_payload_cases(db, &payload).is_some_and(
-                |cases| {
-                    cases.iter().all(|(_, k)| {
-                        matches!(
-                            k,
-                            crate::backend::wasm::host::VariantPayloadKind::Scalar(_)
-                                | crate::backend::wasm::host::VariantPayloadKind::Bytes
-                                | crate::backend::wasm::host::VariantPayloadKind::List(_)
-                                | crate::backend::wasm::host::VariantPayloadKind::Tuple(_)
-                        )
-                    })
-                },
-            );
+            // `emit_option_to_mem`'s mixed-variant arm. Same gate as `list_elem_marshalable`
+            // (`host::option_mixed_variant_list_elem_ok`, evaluated on the OPTION element `elem`).
+            || crate::backend::wasm::host::option_mixed_variant_list_elem_ok(db, elem);
         if admit {
             let crate::ty::Ty::Sum { decl, .. } = elem.strip_nominal() else {
                 unreachable!("option is a Sum")

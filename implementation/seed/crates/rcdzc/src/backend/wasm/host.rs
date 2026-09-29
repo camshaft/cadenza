@@ -1122,27 +1122,18 @@ pub fn variant_mem_mixed_kind_supported(k: &VariantPayloadKind) -> bool {
     }
 }
 
-/// Whether `ty` is an `option<mixed-variant>` whose payload variant's cases are all ORDER-AGNOSTIC kinds
-/// (`Scalar`/`Bytes`/`List`/`Tuple`) — the shape `select::emit_option_to_mem` can write as a LIST ELEMENT in
-/// place (disc byte + the variant's mem layout at the payload offset via `emit_variant_mixed_to_mem`). A
-/// `Record` payload case is EXCLUDED: its mem size is field-order-dependent, but the option-element stride sizes
-/// GUEST order (`canonical_layout_wit` falls back to guest order for an option-shaped `Sum`), so a case whose
-/// WIT field order DIVERGES from the guest name-lex order could overflow the reserved element slot. A `Record`
-/// case therefore stays a clean CDZ0903 decline — a further WIT-order-sizing slice, the same class as the
-/// still-open `list<option<record{divergent}>>` follow-on. Scalar/Bytes/List/Tuple cases carry no order-
-/// dependent padding, so the guest-order stride cannot under-reserve them.
+/// Whether `ty` is an `option<mixed-variant>` whose payload variant's cases are all kinds
+/// `select::emit_option_to_mem` can write as a LIST ELEMENT in place (disc byte + the variant's mem layout at
+/// the payload offset via `emit_variant_mixed_to_mem`) — the same `variant_mem_mixed_kind_supported` set the
+/// bare / record-FIELD / tuple-ELEMENT positions admit. A `Record` payload case is now included: the
+/// option-element STRIDE is sized WIT-order (`canonical_layout_wit` threads the WIT through the option-shaped
+/// `Sum` into its payload), so a divergent WIT field order no longer under-reserves the element slot.
 pub fn option_mixed_variant_list_elem_ok(db: &mut Db, ty: &Ty) -> bool {
     option_payload_ty(db, ty).is_some_and(|p| {
         variant_mixed_payload_cases(db, &p).is_some_and(|cases| {
-            cases.iter().all(|(_, k)| {
-                matches!(
-                    k,
-                    VariantPayloadKind::Scalar(_)
-                        | VariantPayloadKind::Bytes
-                        | VariantPayloadKind::List(_)
-                        | VariantPayloadKind::Tuple(_)
-                )
-            })
+            cases
+                .iter()
+                .all(|(_, k)| variant_mem_mixed_kind_supported(k))
         })
     })
 }
