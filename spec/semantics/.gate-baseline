@@ -4543,6 +4543,7 @@ pass	a rational's denominator reads the reduced pair's positive denominator, fol
 pass	a rational's numerator and denominator are read as BigInt from the normalized pair
 pass	a rational's sign is normalized onto the numerator
 pass	a rational-magnitude quantity erases to its exact rational value
+pass	a raw cross-chunk slice-view of a concat rope is compacted at the CHAMP key site and hits its flat twin
 pass	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
 pass	a re-masked UInt8 wrapping-add result compares EQUAL to its modular value at the narrow width
 pass	a re-performing escaping continuation over a `do`-sequenced body re-installs its handler at apply
@@ -5645,6 +5646,7 @@ pass	a slice of a runtime Bytes rope equals the directly-built window
 pass	a slice of a runtime rope equals the flat literal of its window
 pass	a slice of a runtime-start SLICE composes both offsets
 pass	a slice of a slice composes scalar offsets against the VIEW, not the base string
+pass	a slice of a slice over a multi-chunk CONCAT rope composes both offsets across the chunk seam
 pass	a slice reads correctly after its parent binding's last direct use
 pass	a slice returned from a helper OUTLIVES the helper's local parent
 pass	a slice spanning a concatenation sees the logical bytes
