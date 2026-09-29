@@ -12531,8 +12531,9 @@ fn should_clear_nudge_streak(
 }
 
 /// Build the recurring tick prompt the watchdog passes when it re-issues `/loop` for a stalled agent.
-/// Mirrors `window.sh`'s kickoff TICK recipe (heartbeat → drain inbox → one gated unit of work) so a
-/// watchdog-armed loop runs the SAME contract as a freshly-launched one — the point of the fix is that
+/// Mirrors `window.sh`'s kickoff TICK recipe (heartbeat + board presence → drain the file-hub AND board
+/// inboxes → one gated unit of work) so a watchdog-armed loop runs the SAME contract as a freshly-launched
+/// one — the point of the fix is that
 /// a never-looped mint ends up with a real recurring loop, not a degraded one. Paths resolve against
 /// the hub-anchored fleet state + the agent's own worktree, exactly like the launcher.
 fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
@@ -12549,16 +12550,23 @@ fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
     };
     format!(
         "Run one tick of your role ({role}){vnote}: (1) `fleet heartbeat` (stop cleanly if a stop-file \
-         exists); (2) drain your inbox by listing it with `fleet inbox` (auto-targets THIS agent + is \
-         the RESOLVER — prints the canonical HUB inbox path; NEVER ls a worktree-relative \
-         `.claude/fleet/inbox/...` glob, which silently matches an empty shadow dir and stalls you), \
-         oldest-first, acting on each message then moving it to processed/ (`fleet inbox --processed \
-         <msg>`); (3) `fleet sync` (the safe base-sync — resets onto trunk + replays only your \
-         not-yet-upstream commits by patch-id, so it never orphans a queued merge-request's --ref), \
-         then do ONE well-scoped unit of work per {role_body}, gating it green before sending pr-sync a \
-         merge-request. Coordinate with peers only via `fleet send`; if you need a human decision, send \
-         the concierge an 'ask' and keep working — never wait for a reply.",
+         exists), AND — coexisting with the file hub, per the board-backed migration — refresh your BOARD \
+         presence with the task-board MCP set_status (agent_id '{name}') to a one-line note of what this \
+         tick did; the board MCP tools are in your session, but this is best-effort: if the board is \
+         unreachable, note it and continue — NEVER block or stall a tick on the board; (2) drain BOTH \
+         inboxes oldest-first, acting on each message: your FILE-HUB inbox via `fleet inbox` (the \
+         load-bearing transport + RESOLVER — prints the canonical HUB inbox path; NEVER ls a \
+         worktree-relative `.claude/fleet/inbox/...` glob, which silently matches an empty shadow dir and \
+         stalls you), moving each to processed/ (`fleet inbox --processed <msg>`), AND your BOARD inbox via \
+         the task-board MCP check_notifications (agent_id '{name}'); (3) `fleet sync` (the safe base-sync — \
+         resets onto trunk + replays only your not-yet-upstream commits by patch-id, so it never orphans a \
+         queued merge-request's --ref), then do ONE well-scoped unit of work per {role_body}, gating it \
+         green before sending pr-sync a merge-request; mirror progress on the board (comment_task / \
+         set_status) — the board is the tracking mirror, the file hub stays the load-bearing transport. \
+         Coordinate with peers via `fleet send` (or board send_message for a board-native peer); if you \
+         need a human decision, send the concierge an 'ask' and keep working — never wait for a reply.",
         role = a.role,
+        name = a.name,
     )
 }
 
@@ -14581,7 +14589,10 @@ fn apply_restart_only(targets: Vec<String>, only: &[String]) -> Vec<String> {
     if only.is_empty() {
         return targets;
     }
-    targets.into_iter().filter(|t| only.iter().any(|o| o == t)).collect()
+    targets
+        .into_iter()
+        .filter(|t| only.iter().any(|o| o == t))
+        .collect()
 }
 
 /// The `--only` names that did NOT match any eligible target (a typo, a stopped/windowless agent, or a
@@ -23347,7 +23358,10 @@ mod tests {
         assert!(restart_only_unmatched(&targets, &["v-effects".into()]).is_empty());
         // A typo / stopped / skipped name → reported, in request order, de-duplicated.
         assert_eq!(
-            restart_only_unmatched(&targets, &["v-effects".into(), "concierge".into(), "concierge".into()]),
+            restart_only_unmatched(
+                &targets,
+                &["v-effects".into(), "concierge".into(), "concierge".into()]
+            ),
             vec!["concierge".to_string()]
         );
         // Empty --only → nothing to warn about (no filter requested).
@@ -23640,8 +23654,9 @@ mod tests {
 
     #[test]
     fn watchdog_tick_prompt_mirrors_the_kickoff_contract() {
-        // The re-issued loop must run the SAME contract as a freshly-launched window (heartbeat → drain
-        // inbox → one gated unit of work), addressed to THIS agent's name/role/worktree/inbox.
+        // The re-issued loop must run the SAME contract as a freshly-launched window (heartbeat + board
+        // presence → drain the file-hub AND board inboxes → one gated unit of work), addressed to THIS
+        // agent's name/role/worktree/inbox.
         let fleet = Fleet {
             root: PathBuf::from("/hub/.claude/fleet"),
             worktrees: PathBuf::from("/hub/.claude/worktrees"),
@@ -23666,7 +23681,14 @@ mod tests {
         // from the calling window — so heartbeat/inbox take no name (impossible to target the wrong agent).
         assert!(p.contains("`fleet heartbeat`"));
         assert!(!p.contains("cargo xtask fleet"));
-        assert!(p.contains("drain your inbox"));
+        assert!(p.contains("drain BOTH inboxes"));
+        // Board-coexistence step (board-backed migration): each tick also refreshes board presence
+        // (set_status) + drains the board inbox (check_notifications), addressed to THIS agent's board id,
+        // best-effort so it never blocks the tick. This is what makes a relaunched/re-armed agent actually
+        // board-active (the file-hub-only tick left it stale — task #200).
+        assert!(p.contains("set_status (agent_id 'fix-float-compare')"));
+        assert!(p.contains("check_notifications (agent_id 'fix-float-compare')"));
+        assert!(p.contains("NEVER block or stall a tick on the board"));
         // Step-2 must name the RESOLVER (`fleet inbox`), NOT a bare inbox path — handing a path invites a
         // worktree-relative glob that hits an empty shadow dir and silently stalls the drain (the v-syntax
         // report). And it must carry the anti-glob warning so the agent can't regress to it.
