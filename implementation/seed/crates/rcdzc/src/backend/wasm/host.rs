@@ -1272,18 +1272,36 @@ pub fn variant_mixed_payload_cases_wit(
     if !has_record {
         return Some(cases); // no record case → the name-lex order is already the flatten order
     }
-    let wit_cases = match variant_wit {
-        Some(crate::wit_world::WitType::Variant(c)) => c,
-        // A record case needs the WIT to order its fields — no WIT means we cannot lay a well-defined flatten.
-        _ => return None,
+    // The per-disc payload WIT: a `variant`'s case payloads in declaration order, OR a `result<T,E>`'s (ok, err)
+    // arms mapped to disc 0 / disc 1 — the component `result<T,E>` IS a `variant{ok(T), err(E)}` flatten (ok=0 /
+    // err=1), matching the guest `Result` sum's variant order, so a `result<bytes, record>` ARG reaching this
+    // detector (its Ok=Bytes case + Err=record case) orders the Err record's fields from the `err` payload WIT.
+    // A record case needs its WIT to order its fields — a WIT that is neither a variant nor a result means we
+    // cannot lay a well-defined flatten.
+    let payload_wit_at = |disc: i32| -> Option<&crate::wit_world::WitType> {
+        match variant_wit {
+            Some(crate::wit_world::WitType::Variant(c)) => {
+                c.get(disc as usize).and_then(|(_, p)| p.as_ref())
+            }
+            Some(crate::wit_world::WitType::Result { ok, err }) => match disc {
+                0 => ok.as_deref(),
+                1 => err.as_deref(),
+                _ => None,
+            },
+            _ => None,
+        }
     };
+    if !matches!(
+        variant_wit,
+        Some(crate::wit_world::WitType::Variant(_) | crate::wit_world::WitType::Result { .. })
+    ) {
+        return None;
+    }
     for (disc, kind) in cases.iter_mut() {
         let VariantPayloadKind::Record(abis, _) = kind else {
             continue;
         };
-        let rec_wit = wit_cases
-            .get(*disc as usize)
-            .and_then(|(_, p)| p.as_ref())?;
+        let rec_wit = payload_wit_at(*disc)?;
         let crate::wit_world::WitType::Record(wit_fields) = rec_wit else {
             return None;
         };

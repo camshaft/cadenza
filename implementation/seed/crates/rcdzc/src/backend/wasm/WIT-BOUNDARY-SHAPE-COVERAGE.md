@@ -388,14 +388,15 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   result arg copies a rope into `mem`, so the host set routes to the `_mem` assembler; without it the host op lower
   was emitted memoryless → CDZ0910 "canonical option `memory` is required"). REMAINING: a `result<record,enum>` /
   `result<_, variant>` (`result_bytes_enum` requires a `list<u8>` Ok + a payloadless-enum Err). A
-  `result<bytes, RECORD>` (a structured/record Err arm) now DECLINES CLEANLY with a CODED CDZ0903 — SHAPE 299:
-  `result_bytes_enum` declines a record Err, so the arg falls to the generic mixed-variant arm, whose
-  `variant_mixed_payload_cases_wit` cannot WIT-order the Err-record case (the arg's WIT is `WitType::Result`, not
-  `WitType::Variant`). Previously that was a CODELESS emit `error:` (a classifier-admitted arg the emit refused
-  wordlessly); now `Reject::coded(HostOpNoBoundaryForm, …)`. CROSSING a compound-Err result is a QUEUED unit —
-  it needs Ok/Err-disc-aware WIT ordering (map the `result`'s arms to their payload WITs) + BYTE-EXACT
-  verification via the forthcoming `(host-arg-received …)` harness (a silent Ok/Err disc-swap is unobservable
-  through the fixed-response mock today).
+  `result<bytes, RECORD>` (a structured/record Err arm) now CROSSES — SHAPE 299 (Ok arm) + SHAPE 329 (Err arm):
+  `result_bytes_enum` declines a record Err, so the arg falls to the generic mixed-variant arm (a `result` is a
+  2-variant sum: Ok(bytes) a Bytes case, Err(record) a Record case). `variant_mixed_payload_cases_wit` +
+  `emit_variant_mixed_arg_reg_flatten`'s Record arm now accept a `WitType::Result` (not only `WitType::Variant`):
+  the component `result<T,E>` IS a `variant{ok(T), err(E)}` flatten with ok=disc 0 / err=disc 1, matching the
+  guest `Result` sum's variant order, so the Err-record case orders its fields from the `err` payload WIT. The
+  arg's component type is the world's declared `result<list<u8>, record{code, n}>` (world-driven — no guest-built
+  variant cref). BYTE-EXACT verified via `(host-arg-received …)`: SHAPE 299 pins `(Ok #list(122))`, SHAPE 329 pins
+  `(Err #record((= code 7) (= n 9)))` — proving both arms cross with the right disc + WIT field order (no swap).
 - **[emit, register-path] a top-level `result<scalar, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 186/187/188
   int; 209/210 float).** The scalar-Ok sibling of the Bytes-Ok result arg: a `HostParam::ResultScalar(ok-abi,
   err-cases)` (detector `result_scalar_enum`, admitting any scalar Ok + a payloadless-enum Err). It flattens to

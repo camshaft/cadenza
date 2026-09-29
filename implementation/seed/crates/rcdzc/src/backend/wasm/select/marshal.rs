@@ -3018,10 +3018,18 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                     ));
                 };
                 let fields = fields.clone();
+                // The case's payload WIT: a `variant`'s case payloads in declaration order, OR a `result<T,E>`'s
+                // ok/err arms at disc 0/1 (a `result<bytes, record>` ARG's Err-record case orders from `err`) —
+                // the same Ok=0/Err=1 mapping `variant_mixed_payload_cases_wit` uses.
                 let record_wit = match variant_wit {
                     Some(crate::wit_world::WitType::Variant(wcases)) => {
                         wcases.get(*case_disc as usize).and_then(|(_, p)| p.clone())
                     }
+                    Some(crate::wit_world::WitType::Result { ok, err }) => match *case_disc {
+                        0 => ok.as_ref().map(|b| (**b).clone()),
+                        1 => err.as_ref().map(|b| (**b).clone()),
+                        _ => None,
+                    },
                     _ => None,
                 };
                 let Some(record_wit) = record_wit else {
