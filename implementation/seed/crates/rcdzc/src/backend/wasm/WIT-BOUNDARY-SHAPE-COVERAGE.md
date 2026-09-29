@@ -92,7 +92,7 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   cannot self-declare (rolls into the nominal-decl increment).
 
 **Emit side — v-wit-boundary (custom import-only wit-world, plain host-delegating envelope):**
-- **[emit, guest-width vs WIT-width divergence — ROOT DIAGNOSED 2026-09-28, same root as SHAPE 103/104] a
+- **[emit, guest-width vs WIT-width divergence — ✅ RESOLVED 2026-09-29 via #10029 + guard retirement] a
   host-op arg whose GUEST value width is WIDER than the WIT-declared width (e.g. an `Int64` literal element
   crossing a WIT `s32` slot) diverges.** Symptom: a `tuple<s32, s64>` arg with a bare `#tuple(3 7)` (literals
   default to `Int64`) CDZ0910s — "type mismatch for export `push`": guest flatten `(i64, i64)` vs the canonical
@@ -105,28 +105,20 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `record` path MASKS it (its component type is built from the guest abi, not the WIT — so it's self-consistent
   at s64, but LATENTLY wrong vs a real s32 host). So this is NOT a `flatten_record_field_abi` bug — the flatten
   is correct; the guest TYPE is ungrounded.
-  - **wit-boundary role = decline-don't-miscompile:** the compiler must DECLINE CLEANLY, not CDZ0910. DONE for
-    the bare-`tuple` scalar-element facet: `emit_tuple_reg_flatten`'s scalar arm now declines when a scalar
-    element's `valtype_of` (guest width) ≠ `wit_scalar_core_valtype(elem_wits[i])` (WIT width). No passing case
-    regresses (a divergent bare-tuple scalar element currently CDZ0910s, so none is a passing corpus case). The
-    idealistic behavior is that it CROSSES once the infer:: grounding fix lands (guest `Int32` == WIT s32).
-  - **record-under-WRAPPER facet — DONE (clean decline):** a divergent scalar under a `record` element of a
-    tuple/option/result/variant WRAPPER (`emit_record_arg_marshal`, whose component type is WIT-derived there)
-    now declines cleanly instead of CDZ0910. `emit_record_arg_marshal` takes a `wit_widths_authoritative: bool`
-    (true from the wrapper callsites — option/result/tuple-element/variant-record/mixed-variant-record; nested
-    record fields inherit it; FALSE from the DIRECT record arg callsite in emit.rs whose component is guest-abi-
-    derived), and its scalar-field arm declines when the flag is set and a field's `valtype_of` (guest width) ≠
-    `wit_scalar_core_valtype(fwit)` (WIT width). The direct record arg is exempt → NO regression (verified:
-    `tuple/option/result<record{s32,…}>` decline cleanly; direct `record{s32,s64}` + matched
-    `tuple<record{s64,s64}>` still cross).
-  - **NOTE — declines are UNCODED** (`Reject::decline` from emit, not a classifier `CDZ0903`), so these shapes
-    are NOT yet pinned as corpus TODOs (an uncoded decline's grade is unconfirmed). Making them a coded
-    classifier decline (to pin as SHAPE 103/104-style TODOs) needs the width check in the admit predicates — a
-    follow-up, largely mooted by the grounding fix.
-  - **The real "make it cross" fix is the infer:: perform-arg grounding** (ground each perform arg against the
-    op's declared param type — the SHAPE 103/104 root, s32→i32 WIT-authoritative width): OWNED by
-    v-compiler-primitives (concierge-routed), coordinates with this vertical before landing. Once it lands,
-    guest width == WIT width everywhere and ALL these decline facets become crossings.
+  - **RESOLVED via #10029 (66b3209a07, v-compiler-primitives) + guard retirement (this vertical):**
+    `infer::ground_perform_arg_ty` now commits each deferred int width in a perform-arg type to the op's declared
+    FIXED param width, walking matching compound shapes (tuple/list/set/map/record/sum/qty) in parallel — so a
+    bare literal element narrows to the WIT width (e.g. s32→i32), the guest flatten matches the WIT-authoritative
+    component functype, and the value CROSSES. The two decline-don't-miscompile guards this vertical had added to
+    HOLD the CDZ0910 for this width class are now RETIRED: the `emit_tuple_reg_flatten` scalar-element width guard,
+    the `emit_record_arg_marshal` `wit_widths_authoritative` scalar-field width guard (and that param, threaded
+    through 8 callsites), and the `wit_scalar_core_valtype` helper are all removed. VERIFIED safe: SHAPE 288
+    (`tuple<s32,s64>` bare literals) + SHAPE 289 (`option<record{s32,s64}>` bare literals) now CROSS, and a
+    genuinely fixed `Int64` value into a WIT s32 slot is REJECTED at type-check (CDZ0203) BEFORE the marshal — so
+    retiring the guards never miscompiles (the guards were dead post-#10029). SHAPE 103 (const-None option) also
+    crosses now; SHAPE 104 (bare empty `(list)`) STILL declines — a DISTINCT remaining infer:: gap (an empty
+    compound has no element to ground from), still owned by v-compiler-primitives. NB the direct-record path was
+    always exempt (component built from the guest abi, self-consistent) — no change there.
 - **[emit, ARG] a NOMINAL/compound host-op ARGUMENT (record/enum/bare-variant param) on the PLAIN
   host-delegating envelope — ✅ DONE (B3, SHAPE 92).** The world-imposed plain path now routes through
   `build_host_group` (the SAME per-interface computation the reducer/bytes-provider path uses), which

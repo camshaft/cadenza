@@ -5230,7 +5230,7 @@ cases
   (live-objects 0))
 
 (case
-  "a compile-time-constant None passed as a top-level option host-op ARGUMENT (corpus TODO — pre-existing bug)"
+  "a compile-time-constant None passed as a top-level option host-op ARGUMENT (crosses via #10029 perform-arg grounding)"
   (doc
     "SHAPE 103 (v-wit-boundary corpus TODO) — a COMPILE-TIME-CONSTANT `(None)` passed as a top-level
            `option<s64>` host-op ARGUMENT. This exposes a PRE-EXISTING defect in the option<scalar>-arg emit
@@ -5254,7 +5254,10 @@ cases
            arg `(: (None) (Option Int64))` grounds the payload and compiles clean. Same defect class as the
            handler-state func-12 fix (`infer::ground_handler_state_ty`): an ungrounded `Option(_)` read at a
            width-dependent site. Correct fix is at the perform-argument check — ground the arg against the op's
-           declared param type; routed to the inference owner. Blast-radius-scoped, so not landed with this pin.")
+           declared param type; routed to the inference owner. Blast-radius-scoped, so not landed with this pin.
+           RESOLVED (#10029, 66b3209a07 — v-compiler-primitives): `infer::ground_perform_arg_ty` now grounds the
+           const-None's `Option(Var)` payload to the declared `s64`, so the functype builder and the arg marshal
+           agree (1 core slot each), the const None crosses as WIT `option none`, and this case now PASSES.")
   (wit-world
     (world w (import cadenza:platform/probe (member f (func (param x (option (s64))) (result (s64)))))))
   (input
@@ -5281,11 +5284,13 @@ cases
            `(: (list) (List Int64))` also crosses — ONLY a bare empty list literal in a top-level list host-arg
            position (where the element is otherwise unconstrained) trips it. The idealistic behavior is that the
            empty list crosses as WIT `list<s64>` with count 0 and the host returns its scalar (assert 7). Grades
-           Todo now (CDZ0903 is a coded decline) and auto-locks to Pass when the perform-argument grounding fix
-           lands — the SAME infer:: fix as SHAPE 103 (ground each perform arg against the op's declared param
-           type). Companion regression gate to SHAPE 103: proving the fix generalizes from the option family to
-           the list family, and that the empty-element case DECLINES cleanly (CDZ0903) rather than emitting an
-           invalid module.")
+           Todo now (CDZ0903 is a coded decline). NB the perform-arg grounding fix #10029 (66b3209a07) that
+           RESOLVED the sibling SHAPE 103 (const-None option) did NOT cover this case — it still DECLINES: #10029
+           commits a deferred int WIDTH and a free payload var walked from a present value, but a bare EMPTY `(list)`
+           has NO element to ground from, so its `List Any` element type stays ungrounded against the WIT `list<s64>`.
+           Remains a DISTINCT infer:: gap (empty-compound element grounding against the declared param element type),
+           still owned by v-compiler-primitives; auto-locks to Pass when that lands. Companion to SHAPE 103: pins
+           that the empty-element case DECLINES cleanly (CDZ0903) rather than emitting an invalid module.")
   (wit-world
     (world w (import cadenza:platform/probe (member g (func (param xs (list (s64))) (result (s64)))))))
   (input
@@ -10411,6 +10416,59 @@ cases
       (type Sig (A) (B Int64) (C Bytes))
       (effect probe (op push (-> (Option Sig) Int64)))
       (def (run) (host (probe) (probe.push None)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level tuple<s32, s64> host-op arg with bare int literals crosses (perform-arg width grounding, #10014 decline retired)"
+  (doc
+    "SHAPE 288 (v-wit-boundary) — a top-level `tuple<s32, s64>` bare host-op ARGUMENT (probe.push) whose elements
+           are BARE int literals `(3, 4)`. Before the perform-arg int-width grounding (#10029), a bare literal
+           defaulted to `Int64`, so the s32 element's guest width (i64) diverged from its WIT-declared width (i32)
+           and the guest flatten disagreed with the WIT-authoritative component functype — `emit_tuple_reg_flatten`
+           declined cleanly (the #10014 guard, decline-don't-miscompile). Now `infer::ground_perform_arg_ty`
+           commits each deferred int width to the op's declared param width (s32), so the literal `3` narrows to
+           Int32, the guest flatten emits an i32 slot, and the tuple CROSSES as WIT `tuple<s32, s64>` — the #10014
+           width guard is RETIRED. A genuinely fixed-width mismatch (an `Int64` value into an s32 slot) is still
+           rejected at type-check (CDZ0203) before the marshal, so retiring the guard never miscompiles. run()
+           pushes (3, 4); a VALID running component (live-objects=0) pins the grounded narrow-int tuple element.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (tuple (s32) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple Int32 Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple(3 4))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level option<record{p: s32, q: s64}> host-op arg with bare int literals crosses (perform-arg width grounding, #10016 decline retired)"
+  (doc
+    "SHAPE 289 (v-wit-boundary) — a top-level `option<record{p: s32, q: s64}>` bare host-op ARGUMENT (probe.push),
+           the Some arm with BARE int literals `{p: 3, q: 4}`. The record is under an option WRAPPER, so its
+           component type is WIT-authoritative (`add_wit_type_deduped`); before #10029 the bare `p` literal defaulted
+           to `Int64` and its guest width (i64) diverged from the WIT s32 field → `emit_record_arg_marshal` declined
+           cleanly (the #10016 `wit_widths_authoritative` guard). Now the perform-arg grounding narrows `p` to Int32
+           (walking the option/record compound shape in parallel), so the field flatten emits an i32 slot and the
+           option<record> CROSSES — the #10016 guard + its `wit_widths_authoritative` param are RETIRED (a fixed
+           Int64 field still CDZ0203-rejects at type-check). run() builds Some({p:3, q:4}); a VALID running component
+           (live-objects=0) pins the grounded narrow-int record field under an option wrapper.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (record (= p (s32)) (= q (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: p Int32) (: q Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= p 3) (= q 4))))))
       (export run)))
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
