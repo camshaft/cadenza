@@ -1009,13 +1009,15 @@ pub(crate) fn rc_of(h: Handle) -> u32 {
     unsafe { (*h.0).rc }
 }
 
-/// Test-only: is the node's raw payload HEAP-backed (spilled) rather than inline? Used to assert the
-/// reuse constructors normalize a reused shell's raw back to inline (a fresh constructor's rep).
+/// Test-only: is the node's raw payload HEAP-backed (spilled past the inline cap) rather than inline?
+/// Two spilled forms count: a `Heap` `Vec` (a header spill) and a `Rope` `ByteVec` (a >cap bytes/string
+/// leaf — refcounted `Bytes` backing, operator seq-1382). Used to assert the reuse constructors
+/// normalize a reused shell's raw back to inline (a fresh constructor's rep).
 pub(crate) fn raw_is_heap(h: Handle) -> bool {
     if is_immediate(h) {
         return false;
     }
-    matches!(unsafe { &(*h.0).raw }, Raw::Heap(_))
+    matches!(unsafe { &(*h.0).raw }, Raw::Heap(_) | Raw::Rope(_))
 }
 
 /// Test-only: is the node's handle vector HEAP-backed (spilled past the inline cap) rather than

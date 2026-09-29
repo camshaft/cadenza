@@ -58,9 +58,19 @@ pub(crate) fn op_bytes_set(buf: Handle, index: u32, value: u32) -> Handle {
     }
     match unsafe { buf.node_mut() } {
         None => {}
-        Some(n) => match n.raw.as_mut_slice().get_mut(index as usize) {
-            Some(slot) => *slot = value as u8,
-            None => trap_oob(),
+        // A `Rope` leaf (a >inline-cap buffer, e.g. from `bytes-alloc` then this per-byte fill) writes
+        // in place via `ByteVec::set_byte` (copy-on-write on the backing `Bytes`), keeping it a `Rope`
+        // rather than materializing it to a plain `Vec` — so the alloc+set build path stays refcounted.
+        Some(n) => match &mut n.raw {
+            Raw::Rope(bv) => {
+                if bv.set_byte(index as usize, value as u8).is_err() {
+                    trap_oob();
+                }
+            }
+            raw => match raw.as_mut_slice().get_mut(index as usize) {
+                Some(slot) => *slot = value as u8,
+                None => trap_oob(),
+            },
         },
     }
     buf

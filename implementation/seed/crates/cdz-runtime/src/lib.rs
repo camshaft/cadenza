@@ -292,14 +292,28 @@ fn assert_node_live(ptr: *const Node, guard: u32, ctx: &str) {
 const INLINE_RAW_CAP: usize = 12;
 
 /// A node's raw payload: inline for the common ≤`INLINE_RAW_CAP`-byte case (no heap allocation),
-/// heap-backed for longer bytes/strings. Reads go through `Deref<Target = [u8]>` so it is a drop-in
-/// for `&[u8]` everywhere the old `Vec<u8>` was borrowed — the byte-hash, comparisons, and every
-/// `read_*`/`champ_*` accessor are storage-transparent. Writes use the explicit methods below, which
-/// mirror the `Vec` surface the runtime used (`clear`/`extend_from_slice`/`resize` + in-place patches
-/// via `as_mut_slice`), transparently promoting inline→heap if a write would exceed the inline cap.
+/// `Rope` for a longer bytes/string LEAF's content (an `etude_bytevec::ByteVec` — a rope over
+/// reference-counted `bytes::Bytes`), and `Heap` as the plain-`Vec` fallback for any other spill
+/// (header growth). Reads go through `Deref<Target = [u8]>` so it is a drop-in for `&[u8]` everywhere
+/// the old `Vec<u8>` was borrowed — the byte-hash, comparisons, and every `read_*`/`champ_*` accessor
+/// are storage-transparent. Writes use the explicit methods below, which mirror the `Vec` surface the
+/// runtime used (`clear`/`extend_from_slice`/`resize` + in-place patches via `as_mut_slice`),
+/// transparently materializing a `Rope` back to a `Heap` `Vec` if a `Vec`-style write reaches it (a
+/// bytes leaf mutates via `bytes-set`, routed to `ByteVec::set_byte`, not through these).
+///
+/// The `Rope` arm holds the bytes/string leaf content so a node `dup` shares the `ByteVec` (a refcount
+/// bump on the shared `Bytes`, not a copy) and a host crossing hands the `Bytes` off by reference-count
+/// — the zero-cost host binary passing this migration targets (operator seq-1382). A bytes/string LEAF
+/// is single-chunk by construction (every constructor builds it from one contiguous `Vec`/`Bytes`, and
+/// a slice of a single chunk stays single-chunk), so `as_slice` can borrow it contiguously; a concat
+/// rope stays a node-rope (children in `handles`) and never reaches this arm.
 enum Raw {
     Inline { len: u8, buf: [u8; INLINE_RAW_CAP] },
     Heap(Vec<u8>),
+    // BOXED so the (relatively large) `ByteVec` does not inflate `Raw` — and thus every `Node`, most of
+    // which are scalars/compounds using the `Inline` arm. The box is one indirection paid only by a
+    // >inline-cap bytes/string leaf; its `ByteVec` (and the refcounted `Bytes` inside) lives behind it.
+    Rope(alloc::boxed::Box<etude_bytevec::ByteVec>),
 }
 
 impl Raw {
@@ -330,6 +344,12 @@ impl Raw {
         match self {
             Raw::Inline { len, buf } => &buf[..*len as usize],
             Raw::Heap(v) => v,
+            // A bytes/string leaf is single-chunk by construction, so its `ByteVec` is contiguous and
+            // borrows as one `&[u8]` — byte-identical to the old `Heap` slice, so `champ_*`/codec/reads
+            // are unchanged. (A multi-chunk rope never reaches this arm; see the `Raw::Rope` doc.)
+            Raw::Rope(bv) => bv
+                .as_contiguous()
+                .expect("bytes/str leaf must be single-chunk"),
         }
     }
     /// Empty the payload. Mirrors `Vec::clear` — a HEAP buffer is emptied but KEEPS its capacity (so a
@@ -341,6 +361,15 @@ impl Raw {
         match self {
             Raw::Inline { len, .. } => *len = 0,
             Raw::Heap(v) => v.clear(),
+            // Reset to empty, which DROPS the `ByteVec` (releasing its `Bytes` refcount). Reached by the
+            // debug free path (`rc.rs` retains a freed cell but releases its backings); the shipped free
+            // just drops the `Node`, which drops the `ByteVec` the same way.
+            Raw::Rope(_) => {
+                *self = Raw::Inline {
+                    len: 0,
+                    buf: [0u8; INLINE_RAW_CAP],
+                }
+            }
         }
     }
     /// Append `bytes`, promoting inline→heap if the total would exceed the inline cap. Mirrors
@@ -361,6 +390,16 @@ impl Raw {
                 }
             }
             Raw::Heap(v) => v.extend_from_slice(bytes),
+            // A `Vec`-style append reaches a `Rope` only via a header-growth path (never a bytes leaf,
+            // which appends via `bytes-concat`/`ByteVec`): materialize to a `Vec` and re-route (COW).
+            Raw::Rope(bv) => {
+                let mut v = bv
+                    .as_contiguous()
+                    .expect("bytes/str leaf must be single-chunk")
+                    .to_vec();
+                v.extend_from_slice(bytes);
+                *self = Raw::from(v);
+            }
         }
     }
     /// Resize to `new_len`, filling new bytes with `fill` (only ever grows a short/absent header to
@@ -386,23 +425,35 @@ impl Raw {
     /// A mutable slice of the payload, for the in-place `raw[a..b].copy_from_slice(...)` header patches.
     /// The length is unchanged (the patches only overwrite existing bytes), so no inline↔heap flip.
     fn as_mut_slice(&mut self) -> &mut [u8] {
+        // A `Rope` leaf holds an immutable `ByteVec`; an in-place `Vec`-style patch is a header-only path
+        // (a bytes leaf writes via `bytes-set` → `ByteVec::set_byte`), so materialize to a `Heap` `Vec`
+        // first (COW) rather than exposing a cross-chunk mutable view.
+        if matches!(self, Raw::Rope(_)) {
+            let v = self.as_slice().to_vec();
+            *self = Raw::Heap(v);
+        }
         match self {
             Raw::Inline { len, buf } => &mut buf[..*len as usize],
             Raw::Heap(v) => v,
+            Raw::Rope(_) => unreachable!("Rope was materialized to Heap above"),
         }
     }
     fn len(&self) -> usize {
         match self {
             Raw::Inline { len, .. } => *len as usize,
             Raw::Heap(v) => v.len(),
+            Raw::Rope(bv) => bv.len(),
         }
     }
 }
 
 impl From<Vec<u8>> for Raw {
     /// Build a `Raw` from a freshly-constructed byte vector (the `alloc` boundary): inline it when it
-    /// fits the cap (the common case — the Vec is then dropped, unallocated-away), else keep the heap
-    /// buffer verbatim (no copy).
+    /// fits the cap (the common case — the Vec is then dropped, unallocated-away), else move the bytes
+    /// into a `Rope` (`ByteVec`). A raw longer than the inline cap is only ever a bytes/string LEAF's
+    /// content (scalars ≤8, sum discs 4, CHAMP/vec headers ≤12 all inline), so holding it in a `ByteVec`
+    /// gives that leaf refcounted `Bytes` backing — shared on `dup`, handed off by refcount across the
+    /// host boundary (operator seq-1382). The `ByteVec` is single-chunk (built from one `Vec`).
     fn from(v: Vec<u8>) -> Raw {
         if v.len() <= INLINE_RAW_CAP {
             let mut buf = [0u8; INLINE_RAW_CAP];
@@ -412,16 +463,21 @@ impl From<Vec<u8>> for Raw {
                 buf,
             }
         } else {
-            Raw::Heap(v)
+            Raw::Rope(alloc::boxed::Box::new(etude_bytevec::ByteVec::from(v)))
         }
     }
 }
 
 impl Clone for Raw {
     fn clone(&self) -> Raw {
-        // `.raw.clone()` sites want an owned copy of the bytes — re-derive via `From` so a small heap
-        // buffer clones back to inline (and a large one stays heap). Keeps clones inline when possible.
-        Raw::from(self.as_slice().to_vec())
+        match self {
+            // Share the `ByteVec` — an O(1) refcount bump on the underlying `Bytes`, not a byte copy.
+            // This is the `dup` win: cloning a bytes/string leaf's payload shares its backing store.
+            Raw::Rope(bv) => Raw::Rope(bv.clone()),
+            // Inline/Heap: re-derive via `From` so a small heap buffer clones back to inline (and a
+            // large one moves into a `Rope`). Keeps clones inline when possible.
+            other => Raw::from(other.as_slice().to_vec()),
+        }
     }
 }
 

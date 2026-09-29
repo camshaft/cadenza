@@ -76,6 +76,15 @@ cadenza-ast = { path = "../cadenza-ast", default-features = false }
 # hash) moves. See src/bigint.rs (now a thin re-export).
 etude-bigint = { git = "https://github.com/camshaft/etude.git", rev = "d5ef70bf662bd46c5a504fb234ef4d8c15c37f45" }
 
+# The shared byte rope — `etude-bytevec` (operator seq-1382: bytes/string value data structures onto the
+# etude crates; north star = zero-cost host binary passing). A bytes/string leaf's content is held in a
+# `ByteVec` (a tiered rope over reference-counted `bytes::Bytes`), so a Handle dup shares it (RC bump) and
+# a host crossing hands off the `Bytes` by reference-count rather than copying. Pinned to the SAME rev as
+# etude-bigint (cargo resolves ONE rev per git source); this rev already carries etude-bytevec's `no_std`
+# support + the full seam API (set_byte COW, slice, push_back, as_contiguous). `default-features = false`
+# drops its default-on `std` feature so it builds for the `no_std` wasm target.
+etude-bytevec = { git = "https://github.com/camshaft/etude.git", rev = "d5ef70bf662bd46c5a504fb234ef4d8c15c37f45", default-features = false }
+
 # The embedded wasm allocator (see src/allocator.rs) — the runtime ships its own allocator. Gated to
 # wasm only: native `cargo test` uses the system allocator, so the Handle-typed core stays testable
 # natively without pulling talc in. Swappable in one file — the heap core never references it.
