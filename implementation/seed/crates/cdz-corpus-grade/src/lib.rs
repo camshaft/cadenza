@@ -516,9 +516,29 @@ pub fn check_host_args_received(
         let calls = by_op.get(op.as_str()).map(Vec::as_slice).unwrap_or(&[]);
         match calls.get(*k) {
             None => {
+                // When the asserted op was NEVER observed, the overwhelmingly common cause is an OP-NAME-FORM
+                // mismatch: the clause named the op by its SHORT form (`probe.push`) while `received_args`
+                // (like `host-calls`) keys by the FULL `<iface>.<op>` label (`cadenza:platform/probe.push`).
+                // List the observed op-labels so the author sees the exact form to use — this is the fix for
+                // the confusing "0 calls" that cost a multi-tick debugging cycle (v-wit-boundary, 2026-09-29).
+                let hint = if calls.is_empty() {
+                    let mut seen: Vec<&str> = by_op.keys().copied().collect();
+                    seen.sort_unstable();
+                    if seen.is_empty() {
+                        " (the host made NO calls at all — does the case actually perform this op?)"
+                            .to_string()
+                    } else {
+                        format!(
+                            " — the host observed these op(s): {seen:?}. A (host-arg-received …) op must use \
+                             the FULL <iface>.<op> label (as `host-calls` does), not the short op name."
+                        )
+                    }
+                } else {
+                    String::new()
+                };
                 return Some(format!(
                     "host-arg-received: op {op:?} call {} was asserted (arg {want:?}) but the host \
-                     observed only {} call(s) of {op:?}",
+                     observed only {} call(s) of {op:?}{hint}",
                     *k + 1,
                     calls.len()
                 ));
@@ -4444,6 +4464,20 @@ mod tests {
         );
         // No assertions ⇒ always pass (empty expected).
         assert_eq!(check_host_args_received(&[], &two_recd), None);
+
+        // OP-NAME-FORM mismatch (the v-wit-boundary trap): asserting the SHORT op form when the host keyed
+        // the FULL <iface>.<op> label → the "0 calls" error must LIST the observed labels + tell the author
+        // to use the full form, so the mismatch is instantly obvious (not a silent confusing 0).
+        let full = vec![pair("cadenza:platform/probe.push", "#record((= a 1))")];
+        let short_assert = vec![pair("probe.push", "#record((= a 1))")];
+        let msg = check_host_args_received(&short_assert, &full).unwrap();
+        assert!(
+            msg.contains("cadenza:platform/probe.push") && msg.contains("FULL"),
+            "form-mismatch error must show the observed full label + hint the full form: {msg}"
+        );
+        // When the host made NO calls at all, the hint says so rather than dangling.
+        let none_made = check_host_args_received(&short_assert, &[]).unwrap();
+        assert!(none_made.contains("NO calls"), "{none_made}");
     }
 
     #[test]
