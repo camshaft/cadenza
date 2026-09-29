@@ -560,6 +560,12 @@ pub enum FleetCmd {
         /// Restart only the first N targets (deterministic canary; the list is sorted). Omitted = all.
         #[arg(long)]
         limit: Option<usize>,
+        /// Restart ONLY these named agents (comma-separated), intersected with the live/eligible target
+        /// set — for a TARGETED board-adoption wave that bounces a specific subset (e.g. the sessions
+        /// predating the board MCP) instead of the whole fleet. A name that isn't a live eligible target
+        /// is reported and skipped. Omitted = every eligible target (the fleet-wide bounce).
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
     },
     /// Stop every agent (mark `stopped`, drop each a stop-file the loop checks) but LEAVE the tmux
     /// windows open, so their scrollback survives for inspection.
@@ -1562,10 +1568,11 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
     match cmd {
         FleetCmd::Up { crons_only } => up(&fleet, crons_only),
         FleetCmd::RestartAll {
+            only,
             apply,
             pause_secs,
             limit,
-        } => restart_all(&fleet, apply, pause_secs, limit),
+        } => restart_all(&fleet, apply, pause_secs, limit, &only),
         FleetCmd::Down => down(&fleet),
         FleetCmd::Status => status(&fleet),
         FleetCmd::Hub => hub(&fleet),
@@ -14566,11 +14573,35 @@ fn apply_restart_limit(mut targets: Vec<String>, limit: Option<usize>) -> Vec<St
     targets
 }
 
+/// Apply the optional `--only` name filter: keep only the targets named in `only` (order preserved from
+/// the sorted target list). An empty `only` means "no filter" — return every target (the fleet-wide
+/// bounce). Kept pure + separate from selection so it's unit-testable without tmux/registry; the caller
+/// separately reports any `only` name that matched no eligible target (see [`restart_only_unmatched`]).
+fn apply_restart_only(targets: Vec<String>, only: &[String]) -> Vec<String> {
+    if only.is_empty() {
+        return targets;
+    }
+    targets.into_iter().filter(|t| only.iter().any(|o| o == t)).collect()
+}
+
+/// The `--only` names that did NOT match any eligible target (a typo, a stopped/windowless agent, or a
+/// skipped interactive/concierge/pr-sync/self window) — so the caller can warn instead of silently doing
+/// less than asked. Preserves the caller's `only` order, de-duplicated. Pure — unit-tested.
+fn restart_only_unmatched(targets: &[String], only: &[String]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    only.iter()
+        .filter(|o| !targets.iter().any(|t| &t == o))
+        .filter(|o| seen.insert((*o).clone()))
+        .cloned()
+        .collect()
+}
+
 /// Rolling-restart every live worker/vertical window (see the `RestartAll` CLI doc + [`restart_all_targets`]).
-/// DEFAULT is a dry-run preview; `apply` actually restarts. `limit` restarts only the first N targets (a
+/// DEFAULT is a dry-run preview; `apply` actually restarts. `only` (non-empty) narrows to a named subset —
+/// a targeted board-adoption wave — and `limit` then restarts only the first N of what remains (a
 /// deterministic canary). Server-direct: resolves the session from `$CDZ_FLEET_SESSION`, else the current
 /// tmux session, else `main`.
-fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64, limit: Option<usize>) {
+fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64, limit: Option<usize>, only: &[String]) {
     let session = std::env::var("CDZ_FLEET_SESSION")
         .ok()
         .filter(|s| !s.is_empty())
@@ -14579,17 +14610,28 @@ fn restart_all(fleet: &Fleet, apply: bool, pause_secs: u64, limit: Option<usize>
     let live_windows = tmux_windows(&session);
     let self_window = current_window_agent(); // never restart the window the loop runs in
     let reg = fleet.load();
-    let selected = restart_all_targets(&reg.agents, &live_windows, self_window.as_deref());
-    // Surface what is SKIPPED-though-live (interactive/concierge/pr-sync) so the preview is self-explaining.
-    // Computed against the FULL selected set (before the canary --limit) so a limit-deferred worker is
-    // reported as deferred below, not miscounted here as an interactive/concierge skip.
+    let eligible = restart_all_targets(&reg.agents, &live_windows, self_window.as_deref());
+    // `--only` narrows the eligible set to a named subset (a targeted board-adoption wave). Warn about any
+    // requested name that isn't a live eligible target so we never silently do less than asked.
+    let unmatched = restart_only_unmatched(&eligible, only);
+    if !unmatched.is_empty() {
+        eprintln!(
+            "  ⚠ --only: {} not a live eligible target (typo, stopped/windowless, or a skipped interactive/concierge/pr-sync/self window) — skipping: {}",
+            unmatched.len(),
+            unmatched.join(", ")
+        );
+    }
+    // Surface what is SKIPPED-though-live (interactive/concierge/pr-sync/self) so the preview is
+    // self-explaining. Computed against the pre-`--only` ELIGIBLE set (a structural skip), so an agent
+    // merely excluded by `--only` is NOT miscounted here as an interactive/concierge skip.
     let skipped: Vec<String> = reg
         .agents
         .iter()
         .filter(|a| a.status == "active" && live_windows.iter().any(|w| w == &a.name))
-        .filter(|a| !selected.contains(&a.name))
+        .filter(|a| !eligible.contains(&a.name))
         .map(|a| format!("{} ({})", a.name, a.role))
         .collect();
+    let selected = apply_restart_only(eligible, only);
     let full_count = selected.len();
     let targets = apply_restart_limit(selected, limit);
     let deferred_by_limit = full_count - targets.len();
@@ -23271,6 +23313,45 @@ mod tests {
         assert_eq!(apply_restart_limit(targets(), Some(9)), targets());
         // Some(0) → restart nothing (an honest no-op the caller reports as "nothing to restart").
         assert!(apply_restart_limit(targets(), Some(0)).is_empty());
+    }
+
+    #[test]
+    fn apply_restart_only_narrows_to_a_named_subset_or_passes_through_when_empty() {
+        let targets = || {
+            vec![
+                "breaker".to_string(),
+                "v-effects".to_string(),
+                "v-rust-backend".to_string(),
+            ]
+        };
+        // Empty --only = no filter: the whole eligible set (the fleet-wide bounce), order preserved.
+        assert_eq!(apply_restart_only(targets(), &[]), targets());
+        // A named subset: keep only those, in the sorted target order (a targeted board-adoption wave).
+        assert_eq!(
+            apply_restart_only(targets(), &["v-rust-backend".into(), "v-effects".into()]),
+            vec!["v-effects".to_string(), "v-rust-backend".to_string()]
+        );
+        // A name not among the eligible targets is simply absent from the result (the caller warns).
+        assert_eq!(
+            apply_restart_only(targets(), &["v-effects".into(), "v-nope".into()]),
+            vec!["v-effects".to_string()]
+        );
+        // No overlap → empty (caller reports "nothing to restart").
+        assert!(apply_restart_only(targets(), &["v-nope".into()]).is_empty());
+    }
+
+    #[test]
+    fn restart_only_unmatched_reports_requested_names_absent_from_the_eligible_set() {
+        let targets = vec!["breaker".to_string(), "v-effects".to_string()];
+        // All requested names present → nothing unmatched.
+        assert!(restart_only_unmatched(&targets, &["v-effects".into()]).is_empty());
+        // A typo / stopped / skipped name → reported, in request order, de-duplicated.
+        assert_eq!(
+            restart_only_unmatched(&targets, &["v-effects".into(), "concierge".into(), "concierge".into()]),
+            vec!["concierge".to_string()]
+        );
+        // Empty --only → nothing to warn about (no filter requested).
+        assert!(restart_only_unmatched(&targets, &[]).is_empty());
     }
 
     #[test]
