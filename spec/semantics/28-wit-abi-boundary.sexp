@@ -10737,23 +10737,20 @@ cases
   (live-objects 0))
 
 (case
-  "a top-level result<list<u8>, record{code, n}> host-op arg DECLINES CDZ0903 (compound-Err result, codeless->coded)"
+  "a top-level result<list<u8>, record{code, n}> host-op arg crosses on its Ok(bytes) arm (compound-Err result)"
   (doc
     "SHAPE 299 (v-wit-boundary) — a top-level `result<list<u8>, record{code:s32, n:s64}>` host-op ARGUMENT: a
            `result` whose Err arm is a RECORD (structured error), Ok arm a `list<u8>` (Bytes). The `result<bytes,
-           enum>` arg path (`result_bytes_enum`) handles an ENUM (payloadless) Err; a RECORD Err declines it, so the
-           arg falls through to the generic MIXED-VARIANT arm (a `result` is a 2-variant sum: Ok(bytes) is a Bytes
-           case, Err(record) a Record case). That arm WIT-orders a record case via `variant_mixed_payload_cases_wit`,
-           which needs the arg's WIT to be a `variant` — but a `result` arg's WIT is `WitType::Result`, so the
-           Err-record case cannot be WIT-ordered and the op DECLINES. Previously this was a CODELESS `error:` (a
-           classifier-admitted arg the emit then refused wordlessly); now it is a CODED CDZ0903 (`HostOpNoBoundaryForm`)
-           — decline-don't-miscompile + codeless->coded. The idealistic behavior is that it crosses as WIT
-           `result<list<u8>, record{code, n}>` (disc + the selected arm's payload). Grades Todo now (CDZ0903 is a
-           coded decline). CROSSING it is a QUEUED unit: it needs the Ok/Err-disc-aware WIT ordering (map the
-           `result`'s Ok/Err arms to their payload WITs) + BYTE-EXACT verification via the forthcoming
-           `(host-arg-received …)` harness (a silent Ok/Err disc-swap is not observable through the fixed-response
-           mock today). Companion to SHAPE 294-298: pins that the compound-Err result arg DECLINES CLEANLY (coded)
-           rather than emitting a codeless refusal or an invalid module.")
+           enum>` arg path (`result_bytes_enum`) handles an ENUM (payloadless) Err; a RECORD Err falls through to
+           the generic MIXED-VARIANT arm (a `result` is a 2-variant sum: Ok(bytes) is a Bytes case, Err(record) a
+           Record case). That arm WIT-orders a record case via `variant_mixed_payload_cases_wit`, which now accepts
+           a `WitType::Result` (not only `WitType::Variant`): the component `result<T,E>` IS a `variant{ok(T),
+           err(E)}` flatten with ok=disc 0 / err=disc 1, matching the guest `Result` sum's variant order, so the
+           Err-record case orders its fields from the `err` payload WIT (the register emit's Record arm extracts
+           the case WIT from the `Result`'s ok/err arm the same way). The arg crosses as WIT `result<list<u8>,
+           record{code, n}>` (disc + the selected arm's payload). This case pushes `(Ok b\"z\")`; the byte-exact
+           `(host-arg-received … (Ok #list(122)))` pin proves the Ok arm crosses as Ok (no disc swap). SHAPE 329
+           exercises the Err(record) arm. Companion to SHAPE 294-298.")
   (wit-world
     (world w (import cadenza:platform/probe
       (member push (func (param m (result (list (u8)) (record (= code (s32)) (= n (s64))))) (result (s64)))))))
@@ -10765,6 +10762,7 @@ cases
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push (Ok #list(122)))
   (output 55)
   (live-objects 0))
 
@@ -11511,5 +11509,31 @@ cases
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level result<list<u8>, record{code, n}> host-op arg crosses on its Err(record) arm (compound-Err result)"
+  (doc
+    "SHAPE 329 (v-wit-boundary) — the Err(record) companion to SHAPE 299: the same `result<list<u8>,
+           record{code:s32, n:s64}>` host-op ARGUMENT, but run() pushes `(Err record{code:7, n:9})`, exercising the
+           RECORD payload case (disc 1). `variant_mixed_payload_cases_wit` orders the Err record's fields from the
+           `Result` WIT's `err` arm (disc 1), and the register emit's Record arm marshals them WIT-order via
+           `emit_record_arg_marshal`. The byte-exact `(host-arg-received … (Err #record((= code 7) (= n 9))))` pin
+           proves the Err arm crosses as Err with its record fields in WIT order (no Ok/Err disc swap, no field
+           mis-order) — the verification the fixed-response mock alone cannot give. A VALID running component
+           (live-objects=0).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (u8)) (record (= code (s32)) (= n (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Result Bytes (Record (: code Int32) (: n Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Err #record((= code (: 7 Int32)) (= n 9))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push (Err #record((= code 7) (= n 9))))
   (output 55)
   (live-objects 0))
