@@ -1984,7 +1984,12 @@ fn emit_variant_mixed_to_mem(
             // per-element stride and this variant's payload region are both sized WIT-order
             // (`canonical_layout_wit`, above + in the stride site), matching the WIT-order write extent — so the
             // write no longer risks overflowing the reserved slot (record padding is field-order-dependent).
-            VariantPayloadKind::Record(..) => {
+            // A RecordMem case (a cursor-spilling record, SHAPE 317) writes IDENTICALLY to an all-scalar Record
+            // case here: this arm re-resolves the record from the guest `Ty` (via `variant_payload_ty_at`) + the
+            // case's WIT and writes it in place via `emit_record_to_mem`, which spills a `Bytes` field's rope at
+            // the shared cursor — it never touches the (scalar-only) `Record` abi pairs, so a RecordMem's absent
+            // pairs are irrelevant. The register flatten is the only place the two differ (RecordMem declines).
+            VariantPayloadKind::Record(..) | VariantPayloadKind::RecordMem(_) => {
                 let pty = variant_payload_ty_at(db, variant_ty, *pd as u32).ok_or_else(|| {
                     Reject::decline("a mixed variant record payload type could not be resolved")
                 })?;
@@ -3005,6 +3010,16 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                     out.push(Lir::LocalSet(base_slot + k));
                 }
                 cnt
+            }
+            // A RecordMem case (a cursor-spilling record, SHAPE 317) is MEM-ONLY: the register flatten's
+            // positional per-field scalar coercion has no cursor for a `Bytes` field's rope, so it DECLINES
+            // cleanly (decline-don't-miscompile) — a register-flattened variant arg with a cursor-spilling record
+            // case is a later increment. The MEM path (`emit_variant_mixed_to_mem`) is where a RecordMem crosses.
+            VariantPayloadKind::RecordMem(_) => {
+                return Err(Reject::decline(
+                    "a mixed variant record payload case with a cursor-spilling field does not cross a \
+                     register-flattened variant arg (mem-only)",
+                ));
             }
             VariantPayloadKind::Record(abis, record_ty) => {
                 // A RECORD payload case: marshal the payload record's scalar fields POSITIONALLY inline via the

@@ -539,6 +539,12 @@ pub(super) fn record_field_cref(
                         table.push(emit_cdef(&CDef::Record(rec_fields)));
                         Some(CRef::Idx(rec_def + 1))
                     }
+                    // A `RecordMem` case (a cursor-spilling record) has no scalar-abi pairs to lay a `(record …)`
+                    // from, and this abi-based builder has no `Db` to resolve the guest `Ty`'s fields. It is only
+                    // reached on the REGISTER record-FIELD path (a LIST element's variant field is WIT-driven,
+                    // built elsewhere from the world's declared type), and that path DECLINES a RecordMem case at
+                    // emit — so this type is discarded. Emit a well-formed nullary placeholder payload.
+                    Some(host::VariantPayloadKind::RecordMem(_)) => None,
                     None => None,
                 };
                 vcases.push((name.clone(), payload));

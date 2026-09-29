@@ -272,7 +272,11 @@ pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::VariantMemMixed(cases) => cases.iter().any(|(_, k)| {
             matches!(
                 k,
-                Some(VariantPayloadKind::Bytes | VariantPayloadKind::List(_))
+                Some(
+                    VariantPayloadKind::Bytes
+                        | VariantPayloadKind::List(_)
+                        | VariantPayloadKind::RecordMem(_)
+                )
             )
         }),
         // A payload-less `enum` is a bare disc — never reaches `(list u8)`.
@@ -315,7 +319,9 @@ pub fn record_field_abi_needs_memory(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::VariantMemMixed(cases) => cases.iter().any(|(_, k)| {
             matches!(
                 k,
-                Some(VariantPayloadKind::Bytes) | Some(VariantPayloadKind::List(_))
+                Some(VariantPayloadKind::Bytes)
+                    | Some(VariantPayloadKind::List(_))
+                    | Some(VariantPayloadKind::RecordMem(_))
             )
         }),
         // A payload-less `enum` flattens to a single `i32` disc — no memory.
@@ -1097,6 +1103,16 @@ pub enum VariantPayloadKind {
     // `(name, abi)` pairs are the single WIT-orderable source: `record_field_cref` builds the `(record …)`
     // component type from them (name AND order), and `variant_mixed_join_slots` reads their ABIs for the flatten.
     Record(Vec<(String, AbiValType)>, Ty),
+    // A RECORD payload case with at least one NON-scalar (cursor-spilling) field — a `Bytes`/`String`, a `list`,
+    // a nested record/tuple — that the all-scalar `Record` kind cannot represent (its `(name, AbiValType)` pairs
+    // hold only scalar widths). Marshalable ONLY at a MEM position: `emit_variant_mixed_to_mem`'s record arm
+    // re-resolves the record from the guest `Ty` + the case's WIT and writes it in place via `emit_record_to_mem`
+    // (which spills a `Bytes` field's rope at the cursor), so no scalar-abi pairs are needed. Carries just the
+    // guest record `Ty` (the emit + `record_field_cref` + `used_ops` re-derive everything from it + the WIT).
+    // The REGISTER flatten CANNOT place it (its positional per-field scalar coercion has no cursor), so
+    // `emit_variant_mixed_arg_reg_flatten` DECLINES a `RecordMem` case cleanly (decline-don't-miscompile) — a
+    // register-flattened variant arg with a cursor-spilling record case is a later increment. SHAPE 317.
+    RecordMem(Ty),
 }
 
 /// Whether a heterogeneous mem variant's payload-case KIND is one `select::emit_variant_mixed_to_mem` writes
@@ -1117,6 +1133,7 @@ pub fn variant_mem_mixed_kind_supported(k: &VariantPayloadKind) -> bool {
         VariantPayloadKind::Scalar(_)
         | VariantPayloadKind::Tuple(_)
         | VariantPayloadKind::Record(..)
+        | VariantPayloadKind::RecordMem(_)
         | VariantPayloadKind::List(_)
         | VariantPayloadKind::Bytes => true,
     }
@@ -1220,18 +1237,40 @@ pub fn variant_mixed_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(i32, Var
             // one core slot per field — but the slot ORDER follows the WIT record's field DECLARATION order. Here
             // (no WIT) the ABIs are collected in guest name-lex order; `variant_mixed_payload_cases_wit` reorders
             // them to WIT order at the two sites that CONSUME the slot order (the classifier → serialize, and the
-            // emit). A Bytes/list/nested-compound field would need the cursor + a richer flatten — a later increment.
-            let mut abis = Vec::with_capacity(fields.len());
-            for (sym, fty) in fields.iter() {
-                let name =
-                    crate::backend::common::export_name::kebab_extern_name(sym.name.as_ref());
-                abis.push((name, abi_val_type(fty)?));
-            }
-            if abis.is_empty() {
+            // emit). A record with a NON-scalar (cursor-spilling) field cannot be an all-scalar `Record` (the
+            // pairs hold only scalar widths) — it becomes a `RecordMem` (mem-only) IF every field is
+            // boundary-representable (`field_boundary_abi`), else the whole variant declines. SHAPE 317.
+            let fields_v: Vec<(String, crate::ty::Ty)> = fields
+                .iter()
+                .map(|(sym, fty)| {
+                    (
+                        crate::backend::common::export_name::kebab_extern_name(sym.name.as_ref()),
+                        fty.clone(),
+                    )
+                })
+                .collect();
+            if fields_v.is_empty() {
                 return None;
             }
-            any_record = true;
-            cases.push((disc as i32, VariantPayloadKind::Record(abis, pty.clone())));
+            if fields_v.iter().all(|(_, fty)| abi_val_type(fty).is_some()) {
+                let abis = fields_v
+                    .iter()
+                    .map(|(name, fty)| (name.clone(), abi_val_type(fty).unwrap()))
+                    .collect();
+                any_record = true;
+                cases.push((disc as i32, VariantPayloadKind::Record(abis, pty.clone())));
+            } else if fields_v
+                .iter()
+                .all(|(_, fty)| field_boundary_abi(db, fty).is_some())
+            {
+                // A cursor-spilling record case (a Bytes/list/nested-compound field): mem-only. The MEM emit
+                // re-resolves the record from `pty` + the WIT and writes it via `emit_record_to_mem`; the
+                // register flatten declines it (decline-don't-miscompile). SHAPE 317.
+                any_mem = true;
+                cases.push((disc as i32, VariantPayloadKind::RecordMem(pty.clone())));
+            } else {
+                return None;
+            }
         } else {
             return None; // an option/result-shaped or otherwise non-representable payload → a later increment
         }
@@ -1388,6 +1427,11 @@ pub fn variant_mixed_join_slots(cases: &[(i32, VariantPayloadKind)]) -> Vec<u8> 
             VariantPayloadKind::Record(abis, _) => {
                 abis.iter().map(|(_, a)| a.core_byte()).collect()
             }
+            // A RecordMem case is MEM-ONLY (a cursor-spilling record): the REGISTER flatten never places it —
+            // `emit_variant_mixed_arg_reg_flatten` declines a RecordMem case, so a variant carrying one never
+            // completes a register marshal and this flatten is discarded. Contribute no slots (the case is not
+            // register-flattenable); any register caller that reaches it declines before the flatten is used.
+            VariantPayloadKind::RecordMem(_) => vec![],
         };
         for (i, cb) in case_flat.into_iter().enumerate() {
             if i < flat.len() {
