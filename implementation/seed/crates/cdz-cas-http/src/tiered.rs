@@ -202,6 +202,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_put_succeeds_when_only_an_upper_cache_layer_fails() {
+        // Warming the shallower cache is BEST-EFFORT: the bytes are already durable in the deepest
+        // layer, so an upper-layer put failure must NOT fail the write. (The complement of
+        // `a_put_fails_if_the_durable_floor_fails` — a healthy floor + a broken cache is a success.)
+        let deep = Arc::new(InMemoryBlobStore::new());
+        let tiered = TieredBlobStore::new(vec![Arc::new(FailingStore), deep.clone()]);
+
+        let bytes = Bytes::from_static(b"durable despite a broken cache");
+        let hash = tiered
+            .put(bytes.clone())
+            .await
+            .expect("put succeeds via the durable floor");
+        assert_eq!(hash, blob_hash(&bytes));
+        // The durable floor holds it, and it is readable back through the tier despite the broken cache.
+        assert_eq!(deep.get(hash).await.unwrap(), Some(bytes.clone()));
+        assert_eq!(tiered.get(hash).await.unwrap(), Some(bytes));
+    }
+
+    #[tokio::test]
     async fn get_falls_through_an_erroring_upper_layer_to_a_deeper_hit() {
         // Upper layer errors, but the deep layer holds the blob — the read still succeeds (the upper error
         // doesn't hide the deeper hit).
