@@ -10980,3 +10980,79 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record{xs: list<record{p:s32, q:s64}>}> host-op arg crosses (a record element of a list FIELD)"
+  (doc
+    "SHAPE 308 (v-wit-boundary) — a `list<record{xs: list<record{p:s32, q:s64}>}>` host-op ARGUMENT: a record
+           list element whose `xs` FIELD is itself a `list<record>`. `emit_product_to_mem`'s list-field arm
+           marshals a field list's backing at the cursor + a `(ptr,count)` header at the field offset; it
+           previously threaded `elem_wit = None` to `emit_list_arg_marshal`, so only a NO-WIT element (scalar /
+           `Bytes` / nested list of those, `list_field_no_wit`) crossed — a RECORD element declined CDZ0903 (the
+           element needs its WIT to order its fields). Now the arm threads the field's list-element WIT (from
+           `fwit == Some(WitType::List(inner))`, present on the `emit_record_to_mem` path) to `emit_list_arg_marshal`,
+           whose record-element writer (`emit_record_to_mem`) orders the element's fields WIT-order.
+           `product_field_marshalable` admits it via `list_field_with_wit` ONLY on the `wit = true` path (a
+           positional tuple element still threads `None` and declines a record element). run() pushes TWO outer
+           records, the first with a 2-record inner list [{xs:[{p:1,q:2},{p:3,q:4}]}, {xs:[{p:5,q:6}]}]; a VALID
+           running component (live-objects=0) pins the record element of a list field across nested lists.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= xs (list (record (= p (s32)) (= q (s64)))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: xs (List (Record (: p Int32) (: q Int64)))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= xs #list(#record((= p (: 1 Int32)) (= q 2)) #record((= p (: 3 Int32)) (= q 4))))) #record((= xs #list(#record((= p (: 5 Int32)) (= q 6)))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{xs: list<record{a:s32, c:s64, b:s32} divergent>}> host-op arg crosses (WIT-order list-field record element)"
+  (doc
+    "SHAPE 309 (v-wit-boundary) — the DIVERGENT-order twin of SHAPE 308: the `xs` list field's record element WIT
+           declares (a, c, b) — diverging from the guest name-lex order (a, b, c), 16 vs 24 padded bytes. The list
+           backing's per-element stride is sized WIT-order by `emit_list_arg_marshal`'s `canonical_layout_wit(elem,
+           elem_wit)` (the same machinery SHAPE 297/307 pin) now that the field's element WIT is threaded, so a
+           multi-element inner list does not clobber. run() pushes one outer record whose `xs` is a 2-element inner
+           list of the divergent record [{xs:[{a:1,b:2,c:3},{a:4,b:5,c:6}]}]; a VALID running component
+           (live-objects=0) pins the divergent-order record element of a list field across inner elements.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= xs (list (record (= a (s32)) (= c (s64)) (= b (s32)))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: xs (List (Record (: a Int32) (: b Int32) (: c Int64)))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= xs #list(#record((= a (: 1 Int32)) (= b (: 2 Int32)) (= c 3)) #record((= a (: 4 Int32)) (= b (: 5 Int32)) (= c 6)))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{xs: list<record{d: bytes, n: s64}>}> host-op arg crosses (a Bytes field in a list-field record element)"
+  (doc
+    "SHAPE 310 (v-wit-boundary) — the BYTES-carrying twin of SHAPE 308: the `xs` list field's record element has a
+           `d: list<u8>` (Bytes) field. The rope copies into `mem` at the shared cursor through THREE nesting levels
+           (outer list element → `xs` list field → inner record element's Bytes field) — a load-bearing check that
+           `emit_list_arg_marshal` → `emit_record_to_mem` threads the SAME cursor correctly across levels. A wrong
+           `(ptr, len)` would OOB-trap on the component-model lift. run() pushes [{xs:[{d:b\"hi\", n:9}]}]; a VALID
+           running component (live-objects=0) pins the Bytes-in-record-element-of-list-field round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= xs (list (record (= d (list (u8))) (= n (s64)))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: xs (List (Record (: d Bytes) (: n Int64)))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= xs #list(#record((= d b"hi") (= n 9)))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
