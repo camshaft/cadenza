@@ -10314,3 +10314,106 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level option<variant{a, b(s64), c(bytes)}> host-op arg crosses (mixed-variant option payload, Bytes case → mem)"
+  (doc
+    "SHAPE 284 (v-wit-boundary) — a top-level `option<variant{a, b(s64), c(list<u8>)}>` bare host-op ARGUMENT
+           (probe.push), the Some arm carrying the Bytes payload case. A mixed variant DIRECTLY under an option
+           previously DECLINED (CDZ0903): `option_arg_crosses` admitted a scalar-payload variant payload but not a
+           HETEROGENEOUS MIXED one, and `emit_option_reg_flatten` had no mixed-variant branch. Now the option
+           family gains a mixed-variant payload arm across all lockstep sites: `option_arg_crosses` +
+           `field_boundary_abi`'s option arm (→ `Option(VariantMemMixed)`, WIT-ordering a record case) + the
+           classifier + `emit_option_reg_flatten`'s mixed-variant branch (Some → `emit_variant_mixed_arg_reg_flatten`
+           on the SUM_PAYLOAD variant handle, its `(var-disc, joined-slots…)` captured; None → zero) + the emit.rs
+           cursor pre-scan (reserves the scratch cursor when the payload mixed variant has a Bytes/List case, via
+           `record_field_abi_needs_memory`) + `used_ops` (the mixed variant's ops via `collect_record_field_ops`).
+           The option flattens to `(opt-disc:i32, var-disc:i32, ptr:i32, len:i32)`: on Some(C) the Bytes rope is
+           copied into `mem` at the reserved cursor and `(ptr,len)` written; the b/a cases join into the same slots.
+           run() builds Some(C(b\"z\")) and performs probe.push; a VALID running component (live-objects=0) with
+           `push: func(option<variant{a, b(s64), c(list<u8>)}>)` pins the mixed-variant option-payload round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (variant (a) (b (s64)) (c (list (u8)))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (Option Sig) Int64)))
+      (def (run) (host (probe) (probe.push (Some (Sig.C b"z")))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level option<variant{a, b(s64), c(list<s64>)}> host-op arg crosses (mixed-variant option payload, List case → mem)"
+  (doc
+    "SHAPE 285 (v-wit-boundary) — the LIST twin of SHAPE 284: a top-level `option<variant{a, b(s64), c(list<s64>)}>`
+           bare host-op ARGUMENT (probe.push), the Some arm carrying the `list<s64>` payload case. Same
+           mixed-variant option-payload machinery as SHAPE 284; the List case marshals its backing array into `mem`
+           at the reserved cursor → `(opt-disc, var-disc, ptr, count)`. run() builds Some(C([1, 2])) and performs
+           probe.push; a VALID running component (live-objects=0) pins the List-case variant under an option.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (variant (a) (b (s64)) (c (list (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (List Int64)))
+      (effect probe (op push (-> (Option Sig) Int64)))
+      (def (run) (host (probe) (probe.push (Some (Sig.C #list(1 2))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level option<variant{a, b(s64), c(record{p,q})}> host-op arg crosses (mixed-variant option payload, Record case, no mem)"
+  (doc
+    "SHAPE 286 (v-wit-boundary) — the RECORD twin of SHAPE 284: a top-level
+           `option<variant{a, b(s64), c(record{p:s32, q:s64})}>` bare host-op ARGUMENT (probe.push), the Some arm
+           carrying a record-of-scalars payload case (NO mem — no cursor reserved). The record case flattens
+           POSITIONALLY in WIT declaration order (the classifier WIT-orders the payload variant's Record case via
+           `wit_order_mem_mixed_record_cases`, and the emit re-derives it via `variant_mixed_payload_cases_wit`), so
+           the option flattens to `(opt-disc, var-disc, p:i64, q:i64)` (p's s32 joins into the i64 slot). run()
+           builds Some(C({p:1, q:2})) and performs probe.push; a VALID running component (live-objects=0) pins the
+           Record-case variant under an option.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (variant (a) (b (s64)) (c (record (= p (s32)) (= q (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (Record (: p Int32) (: q Int64))))
+      (effect probe (op push (-> (Option Sig) Int64)))
+      (def (run) (host (probe) (probe.push (Some (Sig.C #record((= p (: 1 Int32)) (= q 2)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level option<variant{a, b(s64), c(bytes)}> host-op arg NONE arm crosses (mixed-variant option payload, zero-filled)"
+  (doc
+    "SHAPE 287 (v-wit-boundary) — the None arm of SHAPE 284: a top-level `option<variant{a, b(s64), c(list<u8>)}>`
+           passed as `None`. `emit_option_reg_flatten`'s mixed-variant branch zero-fills every payload slot on None
+           → `(opt-disc=0, 0, 0, 0)`; the host reads the None option. run() performs probe.push with None; a VALID
+           running component (live-objects=0) pins the None arm of the mixed-variant option payload.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (option (variant (a) (b (s64)) (c (list (u8)))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (Option Sig) Int64)))
+      (def (run) (host (probe) (probe.push None)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

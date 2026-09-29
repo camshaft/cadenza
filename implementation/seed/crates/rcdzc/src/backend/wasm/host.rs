@@ -1529,6 +1529,21 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                     let inner = field_boundary_abi(db, &payload)?; // `Variant(cases)`
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
                 }
+                // An `option<variant>` payload that is a HETEROGENEOUS MIXED variant (a scalar case beside a
+                // tuple / record / Bytes / List case) crosses as `option<variant<…>>` — recurse the payload's
+                // `VariantMemMixed` abi. Marshalled by `emit_option_reg_flatten`'s mixed-variant branch: on Some
+                // it flattens the payload variant via `emit_variant_mixed_arg_reg_flatten` (the SAME helper the
+                // bare-ARG / record-FIELD / tuple-ELEMENT mixed variant uses, which WIT-orders a record case and
+                // spills a Bytes/List case into `mem` at the option's reserved cursor), on None it zero-fills.
+                // Checked AFTER the scalar-variant arm (disjoint: that one excludes a mem/tuple/record case).
+                if variant_mixed_payload_cases(db, &payload).is_some_and(|cases| {
+                    cases
+                        .iter()
+                        .all(|(_, k)| variant_mem_mixed_kind_supported(k))
+                }) {
+                    let inner = field_boundary_abi(db, &payload)?; // `VariantMemMixed(cases)`
+                    return Some(RecordFieldAbi::Option(Box::new(inner)));
+                }
                 // A nested `option<option<T>>` payload crosses iff the INNER option itself crosses — recurse its
                 // abi (`Option(T-abi)`) for ANY inner `T` (scalar → `(disc, scalar)`, bytes/list → `(disc, ptr,
                 // len/count)`, tuple/record → `(disc, <fields…>)`). Marshalled by `emit_option_reg_flatten`'s
@@ -1816,6 +1831,19 @@ pub fn is_boundary_record(db: &mut Db, ty: &Ty) -> bool {
 /// [`emit_option_reg_flatten`] handles: a SCALAR (`abi_val_type`), a `Bytes` leaf, a `tuple` of scalars/`Bytes`,
 /// or a `record` of scalars/`Bytes`. A non-option `ty` yields `false` (no payload). Shared by the top-level
 /// option-ARG gate + the option-ELEMENT-of-a-tuple gate, so they stay in lockstep with the marshal.
+/// Whether a top-level `option<variant>` ARG's payload is a HETEROGENEOUS MIXED variant with a `Bytes`/`List`
+/// payload case — which `emit_option_reg_flatten`'s mixed-variant branch spills into `mem` at the scratch
+/// cursor, so the emit.rs pre-scan MUST reserve it (else the branch's `cursor.unwrap_or(pay_slot)` copies the
+/// rope to a bogus slot — a latent corruption `wasm-tools validate` does NOT catch, only a runtime read would).
+/// True iff the payload's boundary abi needs `mem` (its `VariantMemMixed` arm is true for a Bytes/List case); a
+/// no-mem mixed variant (scalar/tuple/record cases) needs no cursor.
+pub(crate) fn option_mixed_variant_needs_cursor(db: &mut Db, ty: &Ty) -> bool {
+    option_payload_ty(db, ty).is_some_and(|p| {
+        variant_mixed_payload_cases(db, &p).is_some()
+            && field_boundary_abi(db, &p).is_some_and(|abi| record_field_abi_needs_memory(&abi))
+    })
+}
+
 pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
     let Some(p) = option_payload_ty(db, ty) else {
         return false;
@@ -1856,6 +1884,14 @@ pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
         // variant FIELD uses) and pushes `(opt-disc, var-disc, payload-join)`, the register analogue of the
         // `option<scalar>` branch with the variant's own `(disc, join)` flatten in the payload position.
         || variant_scalar_payload_cases(db, &p).is_some()
+        // a HETEROGENEOUS MIXED `variant` payload (a scalar case beside a tuple / record / Bytes / List case)
+        // crosses — `emit_option_reg_flatten`'s mixed-variant branch flattens it via
+        // `emit_variant_mixed_arg_reg_flatten` (WIT-ordering a record case, spilling a Bytes/List case into `mem`
+        // at the option's reserved cursor). MUST agree with that marshal arm's admit
+        // (`variant_mem_mixed_kind_supported`) + the `field_boundary_abi` option arm. Checked after the
+        // scalar-variant admit (disjoint: that returns None once a mem/tuple/record case is present).
+        || variant_mixed_payload_cases(db, &p)
+            .is_some_and(|cases| cases.iter().all(|(_, k)| variant_mem_mixed_kind_supported(k)))
         // a payload-less `enum` payload crosses — its disc reads inline as one i32 (the scalar-unbox path), so
         // `option<enum>` flattens to `(opt-disc, enum-disc)` exactly like `option<scalar>`; the abi is
         // `Option(Enum)` (so the component type is `(option (enum …))`, matching the world). Checked after the
@@ -3044,6 +3080,30 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             // before the record `else` (an option is a Sum, NOT a record).
                             field_boundary_abi(db, &payload)
                                 .expect("option<option<T>> inner crosses by the arm guard")
+                        } else if variant_mixed_payload_cases(db, &payload)
+                            .is_some_and(|cases| {
+                                cases.iter().all(|(_, k)| variant_mem_mixed_kind_supported(k))
+                            })
+                        {
+                            // option<mixed-variant> → `RecordFieldAbi::Option(VariantMemMixed(cases))` via the
+                            // shared `field_boundary_abi`. WIT-order each Record payload case's `(name, abi)`
+                            // pairs to the payload variant's WIT declaration order
+                            // (`wit_order_mem_mixed_record_cases`), so serialize's flatten + the `(option
+                            // (variant …))` component type agree with `emit_option_reg_flatten`'s mixed-variant
+                            // branch (which WIT-orders the emit via `variant_mixed_payload_cases_wit`). A Bytes/
+                            // List payload case spills into `mem` at the option's reserved cursor. Checked before
+                            // the record `else` (a variant is a Sum, NOT a `Ty::Record`, so the `else`'s
+                            // `unreachable!` would fire).
+                            let mut abi = field_boundary_abi(db, &payload)
+                                .expect("option<mixed-variant> payload crosses by the arm guard");
+                            let var_wit = match wit_params.as_ref().and_then(|ps| ps.get(arg_i)) {
+                                Some(crate::wit_world::WitType::Option(pw)) => Some(pw.as_ref()),
+                                _ => None,
+                            };
+                            if let RecordFieldAbi::VariantMemMixed(cases) = &mut abi {
+                                wit_order_mem_mixed_record_cases(cases, var_wit);
+                            }
+                            abi
                         } else {
                             // option<record> → the payload's `RecordFieldAbi::Record(…)`, each field's abi from
                             // the shared recursive `field_boundary_abi` (scalar / Bytes / nested record / list /

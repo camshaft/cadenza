@@ -3717,6 +3717,101 @@ pub(super) fn emit_option_reg_flatten(
         }
         return Ok(());
     }
+    // A top-level `option<variant>` arg where the payload is a HETEROGENEOUS MIXED variant (a scalar case beside
+    // a tuple / record / Bytes / List case): flattens to `(opt-disc:i32, var-disc:i32, joined-slots…)`. The
+    // slot widths are derived from the payload's `VariantMemMixed` boundary abi (`field_boundary_abi` →
+    // `flatten_record_field_abi` = the canonical `(disc, join)`), the SAME derivation serialize + the component
+    // type use, so the capture stays in lockstep. On Some: `emit_variant_mixed_arg_reg_flatten` on the
+    // SUM_PAYLOAD variant handle (WIT-ordering a record case, spilling a Bytes/List case into `mem` at the
+    // reserved cursor), its N pushes captured in REVERSE; None: each slot's width zero. Push `opt-disc` + the N
+    // slots AFTER the single-value `if`. MUST precede the scalar fallthrough (a variant handle's `valtype_of` is
+    // `Some(I32)`) and follows the scalar-variant arm above (disjoint — `variant_scalar_payload_cases` returns
+    // None once a mem/tuple/record case is present).
+    if crate::backend::wasm::host::variant_mixed_payload_cases(db, &payload_ty).is_some_and(
+        |cases| {
+            cases
+                .iter()
+                .all(|(_, k)| crate::backend::wasm::host::variant_mem_mixed_kind_supported(k))
+        },
+    ) {
+        let abi = crate::backend::wasm::host::field_boundary_abi(db, &payload_ty)
+            .ok_or_else(|| Reject::decline("an option<mixed-variant> payload does not cross"))?;
+        let mut bytes = Vec::new();
+        crate::backend::wasm::serialize::flatten_record_field_abi(&abi, &mut bytes);
+        let mut slot_vts: Vec<ValType> = Vec::new();
+        for b in bytes {
+            slot_vts.push(ValType::from_byte(b).ok_or_else(|| {
+                Reject::decline("a flattened option<mixed-variant> slot is not a numeric core type")
+            })?);
+        }
+        // WIT-order the payload variant's cases (a record case's fields to WIT declaration order) — the emit
+        // pushes in this order; a case the WIT cannot order declines cleanly (decline-don't-miscompile).
+        let cases = crate::backend::wasm::host::variant_mixed_payload_cases_wit(
+            db,
+            &payload_ty,
+            payload_wit,
+        )
+        .ok_or_else(|| {
+            Reject::decline("an option<mixed-variant> payload could not be WIT-ordered")
+        })?;
+        let n = slot_vts.len() as u32;
+        let disc_out = work_base;
+        let base_slot = work_base + 1;
+        scratch_ty.insert(disc_out, ValType::I32);
+        for (k, vt) in slot_vts.iter().enumerate() {
+            scratch_ty.insert(base_slot + k as u32, *vt);
+        }
+        *high = (*high).max(base_slot + n);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_DISC)); // [guest opt disc]
+        out.push(Lir::ConstI32(some_disc));
+        out.push(Lir::I32Eq);
+        out.push(Lir::If(BlockType::Empty)); // Some: flatten the payload variant into the N scratch slots
+        out.push(Lir::ConstI32(1)); // WIT `option` some = 1
+        out.push(Lir::LocalSet(disc_out));
+        let pay_slot = base_slot + n;
+        scratch_ty.insert(pay_slot, ValType::I32);
+        *high = (*high).max(pay_slot + 1);
+        out.push(Lir::LocalGet(var_slot));
+        out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [variant handle] (borrow — caller reclaims the option)
+        out.push(Lir::LocalSet(pay_slot));
+        emit_variant_mixed_arg_reg_flatten(
+            db,
+            pay_slot,
+            &payload_ty,
+            &cases,
+            payload_wit,
+            // A Bytes/List case spills at this cursor (reserved by the emit.rs pre-scan for an
+            // option<mixed-variant-with-mem-case>); a no-mem case set never touches the fallback.
+            cursor.unwrap_or(pay_slot),
+            pay_slot + 1,
+            high,
+            scratch_ty,
+            out,
+        )?;
+        // Capture the N pushed values into scratch in REVERSE (stack top = last joined slot).
+        for k in (0..n).rev() {
+            out.push(Lir::LocalSet(base_slot + k));
+        }
+        out.push(Lir::Else); // None: zero-fill every slot
+        out.push(Lir::ConstI32(0)); // WIT `option` none = 0
+        out.push(Lir::LocalSet(disc_out));
+        for (k, vt) in slot_vts.iter().enumerate() {
+            out.push(match vt {
+                ValType::I64 => Lir::ConstI64(0),
+                ValType::F64 => Lir::F64ConstBits(0),
+                ValType::F32 => Lir::F32ConstBits(0),
+                _ => Lir::ConstI32(0),
+            });
+            out.push(Lir::LocalSet(base_slot + k as u32));
+        }
+        out.push(Lir::End);
+        out.push(Lir::LocalGet(disc_out)); // push (opt-disc, var-disc, joined-slots…)
+        for k in 0..n {
+            out.push(Lir::LocalGet(base_slot + k));
+        }
+        return Ok(());
+    }
     // A nested `option<option<T>>` arg flattens to `(outer-disc:i32, <inner option flatten>)` = the outer disc
     // + the inner option's own flatten (RECURSED via `emit_option_reg_flatten`). On outer Some: read the inner
     // option handle (SUM_PAYLOAD, a borrow of the outer option) and flatten it recursively, its N pushed slots
