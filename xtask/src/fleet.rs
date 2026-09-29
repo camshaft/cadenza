@@ -637,6 +637,20 @@ pub enum FleetCmd {
         #[arg(long)]
         force: bool,
     },
+    /// FULLY remove an agent's file-hub registry row (not just mark it `stopped`) — the clean retirement
+    /// for an agent that has MIGRATED to the board (its board record is now its source of truth, like the
+    /// born-board-native agents that never had a file-hub row). Drops the row + its stop-file and LEAVES
+    /// the tmux window alone (that window is the migrated, board-native agent — killing it is exactly the
+    /// bug this prevents). Without this, a cut-over agent sits as `stopped`+stop-file+live-window forever,
+    /// which is precisely the reap watchdog's zombie-window signature → a maintenance reap would kill the
+    /// live board-native agent. Deregistering removes the row so it is never a reap candidate.
+    Deregister {
+        /// The migrated agent whose file-hub registry row to remove.
+        name: String,
+        /// Required to deregister a PROTECTED role (guards the concierge against accidental removal).
+        #[arg(long)]
+        force: bool,
+    },
     /// Reactivate a `stopped` agent (the inverse of `remove`): flip its registry status back to
     /// `active`, clear its stop-file, then ensure its worktree + inbox + a live tmux window (re-arming
     /// the loop). This is the sanctioned way to bring back an agent a `remove` (or `down`) paused —
@@ -1570,6 +1584,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             &fleet, name, role, vertical, area, interval, model, effort, seed,
         ),
         FleetCmd::Remove { name, close, force } => remove(&fleet, &name, close, force),
+        FleetCmd::Deregister { name, force } => deregister(&fleet, &name, force),
         FleetCmd::Resume { name } => resume(&fleet, &name),
         FleetCmd::WithLease { command } => with_lease(&fleet, &command),
         FleetCmd::Send {
@@ -5131,6 +5146,37 @@ fn remove(fleet: &Fleet, name: &str, close: bool, force: bool) {
              Its tmux window is left OPEN for scrollback."
         );
     }
+}
+
+/// FULLY remove an agent's file-hub registry row — the clean retirement for an agent that has migrated to
+/// the board. Unlike `remove` (which keeps the row at status `stopped`), this drops the row entirely and
+/// removes its stop-file, so the agent no longer appears as a file-hub row at all (matching the
+/// born-board-native agents). The tmux WINDOW is deliberately left alone: after a cutover that window is
+/// the live board-native agent, and a stopped-row + stop-file + live-window is exactly the reap watchdog's
+/// zombie signature — removing the row is what keeps a maintenance reap from killing the migrated agent.
+fn deregister(fleet: &Fleet, name: &str, force: bool) {
+    let mut reg = fleet.load();
+    let Some(a) = reg.agents.iter().find(|a| a.name == name) else {
+        eprintln!(
+            "fleet deregister: no agent named '{name}' in the registry (already deregistered?)"
+        );
+        std::process::exit(1);
+    };
+    if is_protected_role(&a.role) && !force {
+        eprintln!(
+            "fleet deregister: REFUSING to deregister protected role '{name}' (role={}) without `--force`.",
+            a.role
+        );
+        std::process::exit(1);
+    }
+    reg.agents.retain(|a| a.name != name);
+    fleet.save(&reg);
+    let _ = std::fs::remove_file(fleet.stopfile(name));
+    println!(
+        "fleet deregister: '{name}' removed from the file-hub registry (+ stop-file cleared). Its tmux \
+         window is left ALONE (it is the migrated board-native agent). The board record is now its \
+         source of truth; it will no longer be a reap/dead-letter candidate here."
+    );
 }
 
 /// Reactivate a `stopped` agent — the inverse of `remove`. Flips its registry status to `active`,
