@@ -2730,14 +2730,35 @@ fn emit_runtime_resource(
             .map(|hi| (hi.effect.clone(), hi.op.clone()))
             .collect();
         let iface = host_imports[0].effect.clone();
-        // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
-        // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
-        if host_imports.iter().any(|hi| hi.effect != iface) {
-            return Err(Reject::declined(
-                crate::diag::DeclineId::WasmMultiHostEffectDelegation,
-                "delegating more than one host effect from a resource-escaping entrypoint is not \
-                 supported (one interface per envelope)",
-            ));
+        // The DISTINCT host effects delegated here, in first-appearance order — one imported interface each,
+        // mirroring the sum / recursive-sum branches (SHAPE 341/344). More than one routes to
+        // `assemble_host_runtime_resource_multi` below; a single effect keeps the byte-identical
+        // one-interface envelope. (A compound/enum host result already declined above, so every op here is
+        // scalar/unit — the multi form needs no shared-memory/list machinery.)
+        let distinct_effects: Vec<String> = {
+            let mut v: Vec<String> = Vec::new();
+            for hi in &host_imports {
+                if !v.iter().any(|e| e == &hi.effect) {
+                    v.push(hi.effect.clone());
+                }
+            }
+            v
+        };
+        // Two distinct effects sharing an op NAME would collide in the ONE `"host"` core module the program
+        // binds (ops are re-exported by name), so decline that cleanly rather than conflate them.
+        if distinct_effects.len() > 1 {
+            let mut seen: Vec<&str> = Vec::new();
+            for hi in &host_imports {
+                if seen.contains(&hi.op.as_str()) {
+                    return Err(Reject::declined(
+                        crate::diag::DeclineId::WasmMultiHostEffectDelegation,
+                        "delegating more than one host effect that share an operation name from a \
+                         resource-escaping entrypoint is not supported (the ops collide in the single \
+                         `host` core module)",
+                    ));
+                }
+                seen.push(hi.op.as_str());
+            }
         }
         let host_layout = layout
             .with_import_base(h + k + 2)
@@ -2810,6 +2831,47 @@ fn emit_runtime_resource(
                 core_functype: Vec::new(),
             })
             .collect();
+        // MULTI-INTERFACE (SHAPE 341/344): >1 distinct host effect → import each as its own component
+        // instance (its FQ interface's instance-type) and alias each op out of it, re-exporting all through
+        // the ONE `"host"` core module. Scalar/unit only here (a spilled/enum host result declined above), so
+        // each group's compound-result fields are empty. `assemble_host_runtime_resource_multi` is
+        // escape-form-agnostic — the Flat/FlatScalar form is already baked into `main_core`.
+        if distinct_effects.len() > 1 {
+            let groups: Vec<envelope::HostGroup> = distinct_effects
+                .iter()
+                .map(|e| {
+                    let g_iface = world_import_iface_for_effect(db, e).unwrap_or_else(|| e.clone());
+                    let g_fns: Vec<envelope::HostFn> = host_imports
+                        .iter()
+                        .filter(|hi| &hi.effect == e)
+                        .map(|hi| envelope::HostFn {
+                            op: hi.op.clone(),
+                            comp_functype: host_op_comp_functype(hi, 0, 0, &[], None),
+                            has_list_param: hi
+                                .params
+                                .iter()
+                                .any(|p| matches!(p, host::HostParam::Bytes)),
+                            core_functype: Vec::new(),
+                        })
+                        .collect();
+                    envelope::HostGroup {
+                        effect_iface: g_iface,
+                        host_fns: g_fns,
+                        needs_list: false,
+                        result_defs: Vec::new(),
+                        record_defs: Vec::new(),
+                    }
+                })
+                .collect();
+            return Ok(envelope::assemble_host_runtime_resource_multi(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &groups,
+                &make_params.boundary_slots(),
+            ));
+        }
         return Ok(envelope::assemble_host_runtime_resource(
             &main_core,
             &dtor_core,

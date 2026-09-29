@@ -66,36 +66,16 @@ fn a_scalar_host_op_result_escaping_as_a_resource_emits_a_valid_component() {
         .expect("the composed host-resource-escape component must be valid");
 }
 
-#[test]
-fn two_distinct_host_effects_in_a_flat_tuple_resource_escape_decline_cleanly() {
-    // The flat-tuple resource-escape emit imports exactly ONE host interface instance, so host ops from >1
-    // DISTINCT effect delegated from a `#tuple(…)`-escaping entrypoint would be conflated into that single
-    // interface and MIS-SERIALIZED (silent, not a clean decline) — the host arm took `iface =
-    // host_imports[0].effect` with no single-effect guard (PR #481, Copilot). The guard declines the
-    // multi-effect FLAT-TUPLE shape cleanly, mirroring the non-resource host-envelope path.
-    //
-    // NOTE (2026-09-29): the SUM (Option) and recursive-sum (List) escape arms NO LONGER decline —
-    // v-wit-boundary's SHAPE 341 (#10114/#10118/#10119) implemented the multi-interface host import space
-    // for the sum escape, and SHAPE 344 mirrored it into the recursive-sum branch, so two distinct host
-    // effects feeding a `Some(…)` OR a `List.push(…)` resource entrypoint now import EACH host effect as its
-    // own interface and serialize a valid, running component. That behavior is the source of truth in the
-    // corpus — spec/semantics/28-wit-abi-boundary.sexp, cases "TWO host effects delegated from one
-    // sum-escaping entrypoint each import their own interface" (SHAPE 341) and "TWO host effects delegated
-    // from one recursive-sum (List) escaping entrypoint each import their own interface" (SHAPE 344), both
-    // `pass`, live-objects 0 — so those arms were removed from this decline assertion. The FLAT-TUPLE escape
-    // shape remains a later wit-boundary increment and still declines CDZ0906; this guard pins that it
-    // declines cleanly rather than silently mis-serialize.
-    let src = "(do (effect A (op a (-> Int64 Int64))) (effect B (op b (-> Int64 Int64))) \
-             (def (main (: x Int64)) (host (A) (host (B) #tuple((A.a x) (B.b x))))) (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-        "two distinct host effects in a flat-tuple resource escape must decline, not mis-serialize",
-    );
-    assert!(
-        err.message.contains("more than one host effect"),
-        "the multi-host-effect resource-escape decline must name the cause: {}",
-        err.message
-    );
-}
+// NOTE (2026-09-29): the multi-host-effect RESOURCE-ESCAPE decline test that lived here is RETIRED. All
+// three value-form escape arms — the SUM (Option, SHAPE 341), recursive-sum (List, SHAPE 344), and
+// FLAT-tuple (SHAPE 345) — now CROSS: two distinct host effects feeding one resource-escaping entrypoint
+// import EACH effect as its own component instance (`assemble_host_runtime_resource_multi`) and serialize a
+// valid, running component instead of declining CDZ0906. The behavior is pinned in the corpus (the source
+// of truth per the operator directive) — spec/semantics/28-wit-abi-boundary.sexp, the three "TWO host
+// effects delegated from one … escaping entrypoint each import their own interface" cases, all `pass`,
+// live-objects 0. The BYTES scalar-methods resource escape (a different assembler, `resource_sig.rs`) still
+// declines a multi-effect shape cleanly — pinned by `two_distinct_host_effects_in_a_bytes_resource_escape_decline_cleanly`
+// below.
 
 #[test]
 fn a_scalar_host_op_result_escaping_as_a_sum_or_list_resource_emits() {
