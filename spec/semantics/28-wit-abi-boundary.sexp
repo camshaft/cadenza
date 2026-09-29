@@ -11537,3 +11537,29 @@ cases
   (host-arg-received cadenza:platform/probe.push (Err #record((= code 7) (= n 9))))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record{o: option<tuple<list<s64>, s64>>}> host-op arg crosses (a list element under an option<tuple> FIELD)"
+  (doc
+    "SHAPE 330 (v-wit-boundary) — the list-element sibling of SHAPE 314/328: an `option<tuple<list<s64>, s64>>`
+           record field whose tuple's first element is a `list<s64>`. `field_boundary_abi`'s widened `option<tuple>`
+           arm recurses per element (a `list<s64>` element → `RecordFieldAbi::List(Scalar)`); `emit_option_to_mem`'s
+           tuple arm threads the payload tuple's element WITs into `emit_tuple_to_mem` → `emit_product_to_mem`,
+           whose list-element arm marshals the element list's backing at the shared cursor + a `(ptr,count)` header
+           at the element offset (the same list-in-product path SHAPE 302 uses). Pins that the option<tuple>
+           widening covers a nested-LIST tuple element, not just a scalar/Bytes/record one. run() pushes
+           [{o: Some(([1,2,3], 9))}]; a VALID running component (live-objects=0).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= o (option (tuple (list (s64)) (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: o (Option (Tuple (List Int64) Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= o (Some #tuple(#list(1 2 3) 9))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#record((= o (Some #tuple(#list(1 2 3) 9))))))
+  (output 55)
+  (live-objects 0))
