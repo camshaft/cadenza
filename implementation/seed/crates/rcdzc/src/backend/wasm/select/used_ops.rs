@@ -214,6 +214,12 @@ pub(super) fn collect_list_elem_ops(
         ) || crate::backend::wasm::host::option_payload_ty(db, &payload).is_some()
         {
             collect_list_elem_ops(db, &payload, out);
+        } else if crate::backend::wasm::host::variant_mixed_payload_cases(db, &payload).is_some() {
+            // An `option<mixed-variant>` payload (`list<option<variant{a, b(s64), c(list<u8>)}>>`):
+            // `emit_option_to_mem`'s mixed-variant arm recurses `emit_variant_mixed_to_mem` on Some — declare
+            // its `sum-disc`/`sum-payload` + per-case ops via the shared collector (else the payload variant's
+            // ops resolve to an out-of-range func index).
+            collect_mixed_variant_ops(db, &payload, out);
         } else if let Ok(Some(read)) = get_op_ty(db, &payload) {
             out.insert(read);
         }
@@ -239,44 +245,56 @@ pub(super) fn collect_list_elem_ops(
         if let Some(tuple_ty) = variant_payload_ty_at(db, elem, tuple_disc as u32) {
             collect_list_elem_ops(db, &tuple_ty, out);
         }
-    } else if let Some(mixed) = crate::backend::wasm::host::variant_mixed_payload_cases(db, elem) {
+    } else if crate::backend::wasm::host::variant_mixed_payload_cases(db, elem).is_some() {
         // A HETEROGENEOUS `variant` element (`emit_variant_mixed_to_mem`): reads `sum-disc`/`sum-payload`, and
-        // per payload case a Scalar's unbox op OR a Tuple's `arr-get` + element unboxes (via the shared
-        // `collect_list_elem_ops` Tuple arm). Scoped to Scalar/Tuple cases (matching the marshal).
-        out.insert(OP_SUM_DISC);
-        out.insert(OP_SUM_PAYLOAD);
-        for (pd, kind) in &mixed {
-            let Some(pty) = variant_payload_ty_at(db, elem, *pd as u32) else {
-                continue;
-            };
-            match kind {
-                crate::backend::wasm::host::VariantPayloadKind::Tuple(_) => {
-                    collect_list_elem_ops(db, &pty, out); // Tuple arm: arr-get + per-element ops
-                }
-                crate::backend::wasm::host::VariantPayloadKind::List(_) => {
-                    // A List<scalar> case marshals its backing array into `mem` (`vec-len`/`vec-get` + the
-                    // element's unbox) — `collect_list_elem_ops`'s List arm on the payload list type.
-                    collect_list_elem_ops(db, &pty, out);
-                }
-                crate::backend::wasm::host::VariantPayloadKind::Record(..) => {
-                    // A Record<scalar> case writes the product at the payload offset (`arr-get` per field +
-                    // each field's unbox) — `collect_list_elem_ops`'s Record arm on the payload record type.
-                    collect_list_elem_ops(db, &pty, out);
-                }
-                crate::backend::wasm::host::VariantPayloadKind::Bytes => {
-                    // A Bytes case copies its rope into `mem` at the cursor (`bytes-len`/`bytes-get`).
-                    out.insert(OP_BYTES_LEN);
-                    out.insert(OP_BYTES_GET);
-                }
-                _ => {
-                    if let Ok(Some(read)) = get_op_ty(db, &pty) {
-                        out.insert(read);
-                    }
+        // per payload case a Scalar's unbox op OR a Tuple/List/Record's `arr-get`/`vec-*` + inner ops OR a
+        // Bytes case's rope copy — the shared per-case collector.
+        collect_mixed_variant_ops(db, elem, out);
+    } else if let Ok(Some(read)) = get_op_ty(db, elem) {
+        out.insert(read);
+    }
+}
+
+/// Collect the runtime ops `select::emit_variant_mixed_to_mem` calls to write a HETEROGENEOUS MIXED `variant`
+/// value (`variant_ty`) in place: `sum-disc`/`sum-payload` (read the tag + the selected case's payload), then
+/// per payload case a Scalar's unbox op, a Tuple/List/Record's `arr-get`/`vec-*` + inner ops (via
+/// `collect_list_elem_ops`), or a Bytes case's `bytes-len`/`bytes-get` rope copy. Shared by the mixed-variant
+/// LIST ELEMENT arm and the `option<mixed-variant>` list-element payload branch (`emit_option_to_mem` recurses
+/// this writer on the option's Some arm), so both declare exactly the ops the marshal emits.
+pub(super) fn collect_mixed_variant_ops(
+    db: &mut Db,
+    variant_ty: &Ty,
+    out: &mut std::collections::BTreeSet<&'static str>,
+) {
+    let Some(mixed) = crate::backend::wasm::host::variant_mixed_payload_cases(db, variant_ty)
+    else {
+        return;
+    };
+    out.insert(OP_SUM_DISC);
+    out.insert(OP_SUM_PAYLOAD);
+    for (pd, kind) in &mixed {
+        let Some(pty) = variant_payload_ty_at(db, variant_ty, *pd as u32) else {
+            continue;
+        };
+        match kind {
+            crate::backend::wasm::host::VariantPayloadKind::Tuple(_)
+            | crate::backend::wasm::host::VariantPayloadKind::List(_)
+            | crate::backend::wasm::host::VariantPayloadKind::Record(..) => {
+                // Tuple → `arr-get` + per-element ops; List<scalar> → `vec-len`/`vec-get` + element unbox;
+                // Record<scalar> → `arr-get` per field + each field's unbox — all via the shared collector.
+                collect_list_elem_ops(db, &pty, out);
+            }
+            crate::backend::wasm::host::VariantPayloadKind::Bytes => {
+                // A Bytes case copies its rope into `mem` at the cursor (`bytes-len`/`bytes-get`).
+                out.insert(OP_BYTES_LEN);
+                out.insert(OP_BYTES_GET);
+            }
+            _ => {
+                if let Ok(Some(read)) = get_op_ty(db, &pty) {
+                    out.insert(read);
                 }
             }
         }
-    } else if let Ok(Some(read)) = get_op_ty(db, elem) {
-        out.insert(read);
     }
 }
 

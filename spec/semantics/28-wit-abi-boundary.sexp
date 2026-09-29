@@ -10592,22 +10592,26 @@ cases
   (live-objects 0))
 
 (case
-  "a top-level list<option<variant{a, b(s64), c(list<u8>)}>> host-op arg (option<mixed-variant> list ELEMENT — corpus TODO, coded decline)"
+  "a top-level list<option<variant{a, b(s64), c(list<u8>)}>> host-op arg crosses (option<mixed-variant> MEM list ELEMENT)"
   (doc
-    "SHAPE 294 (v-wit-boundary corpus TODO) — a top-level `list<option<variant{a, b(s64), c(list<u8>)}>>` bare
-           host-op ARGUMENT (probe.push): an option-wrapped mixed variant at the MEM-path list-ELEMENT position.
-           The REGISTER positions (bare arg SHAPE 284-287, record-FIELD SHAPE 290-292, tuple-ELEMENT SHAPE 293) all
-           cross by flattening the option to core slots via `emit_option_reg_flatten`, but a LIST element is
-           serialized into `mem` (each element written at a stride), and the mem-write path `emit_variant_mixed_to_mem`
-           has no OPTION wrapper — an option<mixed-variant> element has no mem serialize form yet, so the classifier
-           DECLINES cleanly with CDZ0903 (arg has no component boundary form). This is a CODED decline, not a
-           miscompile (decline-don't-miscompile). The idealistic behavior is that the element crosses as WIT
-           `list<option<variant{…}>>` with each option-discriminant + variant payload written into the element's mem
-           layout and the host returns its scalar (assert 55). Grades Todo now (CDZ0903 is a coded decline). This is
-           a DISTINCT, larger unit — a mem-path option<mixed-variant> serialize (the option layer over the existing
-           `emit_variant_mixed_to_mem`) — owned by v-wit-boundary as the queued next unit; auto-locks to Pass when
-           that lands. Companion to SHAPE 290-293: pins that the still-uncovered MEM position DECLINES cleanly
-           rather than emitting an invalid module.")
+    "SHAPE 294 (v-wit-boundary) — a top-level `list<option<variant{a, b(s64), c(list<u8>)}>>` bare host-op
+           ARGUMENT (probe.push): an option-wrapped mixed variant at the MEM-path list-ELEMENT position. The REGISTER
+           positions (bare arg SHAPE 284-287, record-FIELD SHAPE 290-292, tuple-ELEMENT SHAPE 293) cross by
+           flattening the option to core slots via `emit_option_reg_flatten`, but a LIST element is serialized into
+           `mem` (each element written at a per-element stride). Previously the mem-write path had no
+           option<mixed-variant> form, so it DECLINED CDZ0903. Now `emit_option_to_mem` gains a mixed-variant payload
+           arm: on the option's Some, it writes the payload variant IN PLACE at the option's payload offset via
+           `emit_variant_mixed_to_mem` (the SAME writer a bare mixed-variant list element uses, SHAPE 283) — disc +
+           the selected case's payload, a Bytes/List case's backing spilled at the shared cursor; on None the payload
+           area is left unwritten. The three lockstep sites were widened: `list_elem_marshalable`'s option arm +
+           `emit_list_arg_marshal`'s `option_elem` admit (both via `host::option_mixed_variant_list_elem_ok`) +
+           `used_ops` (the payload variant's `sum-disc`/`sum-payload` + per-case ops via the shared
+           `collect_mixed_variant_ops`). SCOPED to ORDER-AGNOSTIC payload cases (Scalar/Bytes/List/Tuple): a Record
+           payload case is EXCLUDED because the option-element STRIDE sizes guest-order (`canonical_layout_wit` falls
+           back for an option-shaped Sum) and a divergent WIT field order could overflow the reserved slot — a Record
+           case stays a clean CDZ0903 decline (SHAPE 296), the same WIT-order-sizing class as the still-open
+           `list<option<record{divergent}>>` follow-on. run() pushes [Some(C(b\"z\"))]; a VALID running component
+           (live-objects=0) pins the option<mixed-variant> MEM list-element Bytes-case round-trip.")
   (wit-world
     (world w (import cadenza:platform/probe
       (member push (func (param m (list (option (variant (a) (b (s64)) (c (list (u8))))))) (result (s64)))))))
@@ -10616,6 +10620,61 @@ cases
       (type Sig (A) (B Int64) (C Bytes))
       (effect probe (op push (-> (List (Option Sig)) Int64)))
       (def (run) (host (probe) (probe.push #list((Some (Sig.C b"z"))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<option<variant{a, b(s64), c(list<u8>)}>> host-op arg with mixed Some/None/nullary elements crosses"
+  (doc
+    "SHAPE 295 (v-wit-boundary) — the MULTI-ELEMENT twin of SHAPE 294: a `list<option<variant{a, b(s64),
+           c(list<u8>)}>>` host-op ARGUMENT whose elements exercise EVERY arm — Some(C(bytes)) (the Bytes case →
+           mem at the cursor), None (`emit_option_to_mem` leaves the payload area unwritten, disc 0), Some(B(9))
+           (a scalar case joined into the payload slot), and Some(A) (a nullary case). Each element is written at
+           the same per-element stride into the outer array; the running cursor advances only for the Bytes case.
+           Confirms the option-disc + variant-disc + payload are laid out consistently across heterogeneous
+           elements. run() pushes [Some(C(b\"hi\")), None, Some(B(9)), Some(A)]; a VALID running component
+           (live-objects=0) pins the multi-element option<mixed-variant> mem round-trip across all case arms.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (variant (a) (b (s64)) (c (list (u8))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C Bytes))
+      (effect probe (op push (-> (List (Option Sig)) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some (Sig.C b"hi")) None (Some (Sig.B 9)) (Some (Sig.A))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level list<option<variant{a, b(s64), c(record{p, q})}>> host-op arg DECLINES (record payload case, WIT-order-sizing slice)"
+  (doc
+    "SHAPE 296 (v-wit-boundary) — the RECORD-payload-case sibling of SHAPE 294, DECLINED on purpose. A
+           `list<option<variant{a, b(s64), c(record{p:s32, q:s64})}>>` host-op ARGUMENT: the payload variant's `c`
+           case is a RECORD. Unlike the Bytes/List/Scalar/Tuple cases (SHAPE 294/295), a record's mem size is
+           FIELD-ORDER-dependent under alignment padding, but the option-element per-element STRIDE sizes guest
+           name-lex order (`canonical_layout_wit` falls back to guest order for an option-shaped Sum), so a WIT
+           declaration order that DIVERGES from the guest order could write past the reserved element slot. Rather
+           than risk that (decline-don't-miscompile), `host::option_mixed_variant_list_elem_ok` gates OUT a Record
+           payload case, so this shape DECLINES cleanly with CDZ0903. The idealistic behavior is that it crosses
+           (with a WIT-order-aware option-element stride); this is a DISTINCT WIT-order-sizing slice, the same class
+           as the still-open `list<option<record{divergent}>>` follow-on. Grades Todo now (CDZ0903 is a coded
+           decline). Pins that the scoped-out record case DECLINES cleanly rather than emitting an invalid module.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (option (variant (a) (b (s64)) (c (record (= p (s32)) (= q (s64)))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B Int64) (C (Record (: p Int32) (: q Int64))))
+      (effect probe (op push (-> (List (Option Sig)) Int64)))
+      (def (run) (host (probe) (probe.push #list((Some (Sig.C #record((= p (: 1 Int32)) (= q 2))))))))
       (export run)))
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
