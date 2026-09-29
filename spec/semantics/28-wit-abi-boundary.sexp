@@ -11396,3 +11396,27 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record{o: option<record{a, b}>}> host-op arg crosses (an option<record> FIELD of a record list element)"
+  (doc
+    "SHAPE 325 (v-wit-boundary) — a `list<record{o: option<record{a:s32, b:s64}>}>` host-op ARGUMENT: a record
+           list element with an `option<record>` FIELD. The option-field arm (widened in SHAPE 318-321 to any
+           `field_boundary_abi` payload) routes it to `emit_option_to_mem`, whose record-payload arm writes the
+           payload record IN PLACE at the payload offset via `emit_record_to_mem` on Some (outer disc, then the
+           WIT-order record fields). `field_boundary_abi`'s `option<record>` arm (recursing the payload record's
+           fields) declares the ABI; the cursor is reserved for the enclosing list arg. Pins the option<record>
+           field coverage the SHAPE 318-321 widening enabled — the record twin of SHAPE 322 (option<list>) / 323
+           (option<option>). run() pushes [{o: Some({a: 1, b: 2})}]; a VALID running component (live-objects=0).")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (list (record (= o (option (record (= a (s32)) (= b (s64)))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: o (Option (Record (: a Int32) (: b Int64)))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= o (Some #record((= a (: 1 Int32)) (= b 2)))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
