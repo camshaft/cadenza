@@ -3266,6 +3266,29 @@
   (output (: 100 Int8)))
 
 (case
+  "a narrow-width tuple LIST element is grounded to its declared field width at runtime emit"
+  (doc
+    "`(List.concat (grow (- n 1)) (: #list(#tuple(100)) (List (Tuple Int8))))` — a recursive builder
+           whose recursion keeps the concat from const-folding, so the annotated `#list(#tuple(100))`
+           operand SURVIVES to the backend emit. Its narrow field `100` must be grounded to the list's
+           DECLARED element `(Tuple Int8)`, NOT the literal's own defaulted Int64: otherwise the element
+           renders `((100 as i64),)` and is extended into the accumulator's `Vec<(i8,)>` — a slot mismatch
+           the backend rejects. The LIST twin of the narrow tuple/record projection + Map-value cases above
+           — a compound list element carries the same narrow field through the value heap, so its literal
+           field is grounded from the list's declared element type at construction. `grow 3` builds a
+           3-element list; `List.len` = 3.")
+  (input
+    (do
+      (def (grow (: n Int64))
+        (if (> n 0)
+            (List.concat (grow (- n 1)) (: #list(#tuple(100)) (List (Tuple Int8))))
+            (: #list() (List (Tuple Int8)))))
+      (def (main (: n Int64)) (List.len (grow n)))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 3 Int64)))
+
+(case
   "a runtime tuple built behind a recursive call escapes to the host"
   (doc
     "A tuple returned from a RECURSIVE function that threads a runtime value into it —

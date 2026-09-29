@@ -2787,12 +2787,40 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ty::List(elem) => container_slot_grounding(elem),
                 _ => (None, None),
             };
+            // A COMPOUND element whose OWN `type_of` is the DEFAULTED one relative to the list's DECLARED
+            // element: a `#tuple(100)` element of a `(List (Tuple Int8))` reads its own type as `(Tuple
+            // Int64)` (the literal defaulted), so the plain Tuple emit grounds `100` to the i64 DEFAULT →
+            // `vec![((100 as i64),)]` extended into a `Vec<(i8,)>` → rustc E0277/E0308 (a `List.concat` with
+            // a compound-element literal operand is the witness; wasm's untyped list handle needs no element
+            // type). PREFER the concat/slot element type threaded via `expected_ty` (the node's own element
+            // is the under-ground/defaulted one); ground each element's fields to it via the compound
+            // recursion in `emit_elem_grounding_empty_list` — the List twin of the SetOf/MapNew
+            // compound-element grounding (#8481). Only a matching compound LITERAL is intercepted; a
+            // non-literal element (a binder / call result) carries its own concrete type and falls through.
+            let compound_elem_ty: Option<Ty> = {
+                let pick = |t: &Ty| -> Option<Ty> {
+                    match t.strip_nominal() {
+                        Ty::List(elem)
+                            if matches!(elem.strip_nominal(), Ty::Tuple(_) | Ty::Record(_)) =>
+                        {
+                            Some((**elem).clone())
+                        }
+                        _ => None,
+                    }
+                };
+                ctx.expected_ty
+                    .as_ref()
+                    .and_then(&pick)
+                    .or_else(|| pick(&type_of(db, id)))
+            };
             let mut parts = Vec::with_capacity(elems.len());
             for &e in elems.iter() {
                 let part = if let Some(it) = elem_it {
                     emit_grounded(db, e, it, env, use_ctx)?
                 } else if let Some(fw) = elem_fw {
                     emit_grounded_float(db, e, fw, env, use_ctx)?
+                } else if let Some(ct) = compound_elem_ty.as_ref() {
+                    emit_elem_grounding_empty_list(db, e, Some(ct), env, use_ctx)?
                 } else {
                     emit(db, e, env, use_ctx)?
                 };
