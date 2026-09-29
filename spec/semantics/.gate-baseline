@@ -11402,7 +11402,7 @@ todo	a closure returning Unit crosses the boundary — unit is a zero-result (sh
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a delegated perform with no recorded host response traps
 todo	a dependent utf8 size from an arithmetic expression over a byte binder decodes
-todo	a host op with a STRING PARAMETER in a sum-escaping entrypoint declines cleanly (deferral: shared-mem host param)
+pass	a host op with a STRING PARAMETER in a sum-escaping entrypoint marshals the param through shared memory
 todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)
 todo	a macro splices its quote-param list into an expansion via active unquote-splicing (deferred: macro-side active ,@)
 todo	a macro-internal type is intra-expansion visible to a sibling def's body (type analog of gf6b)

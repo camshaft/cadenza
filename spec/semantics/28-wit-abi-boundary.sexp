@@ -11781,21 +11781,20 @@ cases
   (call run)
   (host-responses (respond probe.spell (: "ok" String)))
   (host-calls (call cadenza:platform/probe.spell))
-  (output (: (Some "ok") (Option String))))
+  (output (: (Some "ok") (Option String)))
+  (live-objects 0))
 
 (case
-  "a host op with a STRING PARAMETER in a sum-escaping entrypoint declines cleanly (deferral: shared-mem host param)"
+  "a host op with a STRING PARAMETER in a sum-escaping entrypoint marshals the param through shared memory"
   (doc
-    "SHAPE 340 (v-wit-boundary) — DEFERRAL, corpus-pinned per the 084999 discipline. run() = Some(probe.note \"hi\")
-           where probe.note : (String) -> s64, so run : () -> Option<s64> — a host op with a STRING PARAMETER
-           delegated from a sum-escaping resource entrypoint. A string param crosses as a (ptr, len) pair the
-           host reads out of linear memory, which needs the SHAPE-95 shared-`\"mem\"` machinery (a `\"mem\"` core
-           module instantiated first + the host-op canon-lower carrying the Memory option) composed into the
-           sum-escape host branch — not yet built there, so it DECLINES cleanly (CDZ0900, decline-don't-
-           miscompile; scalar/unit host params in a sum escape ARE supported). Strings are a legitimate boundary
-           value shape, so this is a DEFERRAL to fix, not a floor. This case records the IDEALISTIC cross so it
-           auto-flips to PASS when the shared-mem host-param path lands. Intended value: probe.note(\"hi\") -> 7,
-           run() -> Some(7).")
+    "SHAPE 340 (v-wit-boundary) — WORKING. run() = Some(probe.note \"hi\") where probe.note : (String) -> s64,
+           so run : () -> Option<s64> — a host op with a STRING PARAMETER delegated from a sum-escaping resource
+           entrypoint. The string param crosses as a (ptr, len) pair the host reads out of linear memory: the
+           sum-escape host branch now routes through the SHAPE-95 shared-`\"mem\"` machinery (the `\"mem\"` core
+           module instantiated first, the const string laid in its data segment, the host-op canon-lower carrying
+           Memory 0 + the shared Realloc, and the `import_base += needs_shared_mem` core-func shift) and declares
+           the host op's core import as the `(ptr,len)` pair (`host_as_extern_for` expands a Str param to two
+           i32s to match the lowered adapter). probe.note(\"hi\") -> 7, run() -> Some(7); byte-exact and zero-leak.")
   (wit-world
     (world w (import cadenza:platform/probe (member note (func (param s (string)) (result (s64)))))))
   (input
@@ -11806,7 +11805,8 @@ cases
   (call run)
   (host-responses (respond probe.note (: 7 Int64)))
   (host-calls (call cadenza:platform/probe.note))
-  (output (: (Some 7) (Option Int64))))
+  (output (: (Some 7) (Option Int64)))
+  (live-objects 0))
 
 (case
   "TWO host effects delegated from one sum-escaping entrypoint decline cleanly (deferral: multi-interface import emit)"

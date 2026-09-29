@@ -1303,8 +1303,25 @@ pub(super) fn host_as_extern_for(host_imports: &[host::HostImport]) -> Vec<host:
     host_imports
         .iter()
         .map(|hi| {
-            let mut params: Vec<runtime_abi::AbiValType> =
-                hi.params.iter().filter_map(host_param_abi).collect();
+            // A SCALAR param maps to its one core valtype; a STRING/`list<u8>` (Bytes) param crosses as the
+            // `(ptr, len)` shared-memory pair — TWO core i32s the guest pushes after marshalling the bytes into
+            // the shared `"mem"` (SHAPE 340). This `ExternImport` feeds ONLY the core import type on the
+            // resource-escape host path (the component-level host op type comes from `host_op_comp_functype`,
+            // which encodes the `string`/`list<u8>`), so the two i32s must match the canon-lowered adapter's
+            // `(param i32 i32)`; a scalar-only op stays byte-identical (no Str/Bytes → no expansion). Other
+            // compound-in-memory params (record/list<T>/option/…) have no `(ptr,len)` core form here and are
+            // declined up-front by the sum-escape host branch's non-string-compound-param guard, so none reach
+            // this map on that path.
+            let mut params: Vec<runtime_abi::AbiValType> = hi
+                .params
+                .iter()
+                .flat_map(|p| match p {
+                    host::HostParam::Str | host::HostParam::Bytes => {
+                        vec![runtime_abi::AbiValType::U32, runtime_abi::AbiValType::U32]
+                    }
+                    other => host_param_abi(other).into_iter().collect(),
+                })
+                .collect();
             // A SPILLED compound host RESULT (SHAPE 95: e.g. `string`) is returned through a caller-provided
             // RETPTR: the canonical ABI lowers a >1-flat result to a TRAILING i32 return-pointer param and the
             // core func returns nothing. The guest body pushes `(args…, retptr)` and `call`s the import, so the
