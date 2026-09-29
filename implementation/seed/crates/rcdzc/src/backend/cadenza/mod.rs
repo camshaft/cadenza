@@ -790,6 +790,11 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     // the prune on the type name ALONE would wrongly drop a decl whose ctor is still live (→ CDZ0101
     // unbound ctor on recompile). Keeping any of these names live keeps the decl.
     let mut type_decl_nodes: Vec<(StructId, Vec<String>)> = Vec::new();
+    // Type NAMES whose `(type …)` we re-emitted WITH a reconstructed `(@ (invariant …) …)` wrapper (single-
+    // payload `@invariant` newtypes) — their synthesized `__invariant_construct_<T>`/`__invariant_check_<T>`
+    // defs are SUPPRESSED below (a recompile re-synthesizes them from the wrapper), and their constructions
+    // re-emit as raw `(<Ctor> payload)` at the `Core::Call` arm. See [`invariant_pred_for_reconstruct`].
+    let mut reconstructed_inv: std::collections::HashSet<String> = std::collections::HashSet::new();
     for i in 0..db.type_decls.len() {
         let decl = db.type_decls[i].clone();
         if db.is_user_node(decl.occ)
@@ -797,6 +802,9 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
         {
             root_children.push(node);
             emitted.insert(decl.occ);
+            if invariant_pred_for_reconstruct(db, &decl).is_some() {
+                reconstructed_inv.insert(decl.name.to_string());
+            }
             let mut keys = vec![decl.name.to_string()];
             keys.extend(decl.variants.iter().map(|v| v.name.to_string()));
             type_decl_nodes.push((node, keys));
@@ -838,6 +846,18 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let mut emitted_def_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for &def in &layout.order {
         let dn = db.defs[def].name.clone();
+        // SUPPRESS the synthesized checked-constructor / checker def of a single-payload `@invariant`
+        // newtype whose `(@ (invariant …) (type …))` wrapper we reconstructed above — a recompile
+        // re-synthesizes it, and its call sites re-emit as raw `(<Ctor> payload)` (the `Core::Call` arm).
+        // A def named `__invariant_construct_<T>__d<disc>` (multi-variant/nullary shape) is NOT in the set
+        // (its `<T>__d<disc>` suffix never matches a bare type name), so it is still emitted — no dangling.
+        if let Some(t) = dn
+            .strip_prefix("__invariant_construct_")
+            .or_else(|| dn.strip_prefix("__invariant_check_"))
+            && reconstructed_inv.contains(t)
+        {
+            continue;
+        }
         if !emitted_def_names.insert(dn.to_string()) {
             continue;
         }
@@ -1168,7 +1188,20 @@ fn emit_type_decl(db: &mut Db, b: &mut Builder, decl: &crate::db::TypeDecl) -> O
         children.push(b.name(".."));
         children.push(b.name(rowvar.as_str()));
     }
-    Some(b.list(children))
+    let base = b.list(children);
+    // PRE-DIVERT re-emit of a single-payload `@invariant` newtype: re-attach the ORIGINAL
+    // `(@ (invariant P) (type T …))` wrapper (copying the predicate over `self` from `db.ast`) so a
+    // recompile re-synthesizes the checked constructor itself — see [`invariant_pred_for_reconstruct`].
+    // The construction sites re-emit as raw `(<Ctor> payload)` and the synthesized construct/check defs are
+    // suppressed (both in `emit`), so this is the sole carrier of the invariant across the round-trip.
+    if let Some(pred_occ) = invariant_pred_for_reconstruct(db, decl) {
+        let at = b.name("@");
+        let inv_head = b.name("invariant");
+        let pred_node = copy_ast_subtree(db, b, pred_occ);
+        let inv = b.list(vec![inv_head, pred_node]);
+        return Some(b.list(vec![at, inv, base]));
+    }
+    Some(base)
 }
 
 /// Re-emit a TYPE SURFACE (a variant payload's declared type) by structurally copying the source AST at
@@ -1192,6 +1225,65 @@ fn emit_type_surface(db: &Db, b: &mut Builder, occ: StructId) -> Option<StructId
             Some(b.list(out))
         }
         crate::ast::Struct::Atom(_) => None,
+    }
+}
+
+/// Deep-copy an arbitrary AST subtree from `db.ast` into the fresh builder `b`, returning the new root
+/// id. Unlike [`emit_type_surface`] (which only copies name atoms + applications, declining literal
+/// leaves), this copies EVERY leaf kind faithfully — needed to re-emit an `@invariant` PREDICATE, an
+/// ordinary expression `(< 0 (List.len self))` carrying int literals / member accesses / the `self`
+/// binder. Iterative (explicit post-order stack, the standing arena-walk rule — an arena a walk might see
+/// can be arbitrarily deep), mirroring `cadenza_syntax::repl::copy_subtree`.
+fn copy_ast_subtree(db: &Db, b: &mut Builder, root: StructId) -> StructId {
+    enum Job {
+        Visit(StructId),
+        Emit(usize),
+    }
+    let mut jobs: Vec<Job> = vec![Job::Visit(root)];
+    let mut results: Vec<StructId> = Vec::new();
+    while let Some(job) = jobs.pop() {
+        match job {
+            Job::Visit(id) => match db.ast.get(id) {
+                crate::ast::Struct::Atom(leaf_id) => {
+                    results.push(b.atom_leaf(db.ast.leaf(*leaf_id).clone()))
+                }
+                crate::ast::Struct::List(kids) => {
+                    jobs.push(Job::Emit(kids.len()));
+                    // Reverse so children pop left-to-right → their new ids land in source order.
+                    for &k in kids.iter().rev() {
+                        jobs.push(Job::Visit(k));
+                    }
+                }
+            },
+            Job::Emit(n) => {
+                let copied = results.split_off(results.len() - n);
+                results.push(b.list(copied));
+            }
+        }
+    }
+    results
+        .pop()
+        .expect("copy_ast_subtree leaves the root's new id")
+}
+
+/// If `decl` is a SINGLE-PAYLOAD `@invariant` NEWTYPE — the shape whose construction `lower_sum_new`
+/// diverts through the bare `__invariant_construct_<T>` checked constructor (`lower.rs`, `establish_divert`)
+/// — return its `@invariant` predicate occurrence (over the `self` value binder), else `None`. This is the
+/// gate for the PRE-DIVERT re-emit: for such a type the backend re-emits the ORIGINAL source form —
+/// `(@ (invariant P) (type T …))` + raw `(<Ctor> payload)` constructions, SUPPRESSING the synthesized
+/// `__invariant_construct_<T>`/`__invariant_check_<T>` defs — so a recompile (HOP2) re-synthesizes +
+/// re-diverts IDENTICALLY to a direct compile (rather than compiling the post-synth explicit-constructor
+/// form, which HOP2 cannot re-establish → an inline/reclaim divergence). Multi-variant / multi-payload /
+/// nullary `@invariant` shapes (the per-disc `__invariant_construct_<T>__d<disc>` divert) are NOT
+/// reconstructed here — they fall through to the current post-synth emit (no regression).
+fn invariant_pred_for_reconstruct(db: &Db, decl: &crate::db::TypeDecl) -> Option<StructId> {
+    if db.newtype_inner.contains_key(&decl.occ)
+        && decl.variants.len() == 1
+        && decl.variants[0].payloads.len() == 1
+    {
+        db.invariant_of(decl.occ)
+    } else {
+        None
     }
 }
 
@@ -2700,13 +2792,42 @@ fn emit_expr_viewed(
             // `fn_ident` canonicalization; the wasm backend does the same via the `order_pos` func-index redirect.
             let callee = env.spec_merge.get(&callee).copied().unwrap_or(callee);
             let callee_name = db.defs[callee].name.clone();
-            let head = b.name(callee_name.as_str());
-            let mut children = Vec::with_capacity(1 + args.len());
-            children.push(head);
-            for &arg in args.iter() {
-                children.push(emit_expr(db, b, arg, None, env, emitted)?);
-            }
-            let call = b.list(children);
+            // PRE-DIVERT re-emit: an `@invariant` single-payload newtype construction was diverted at
+            // `lower_sum_new` into a `Core::Call` to the synthesized `__invariant_construct_<T>` (see
+            // `establish_divert`). We re-attached the `(@ (invariant …) (type T …))` wrapper on the type decl
+            // + SUPPRESSED that construct/check def, so re-emit the ORIGINAL raw construction `(<Ctor> payload)`
+            // as the call value — a recompile re-diverts it (re-establishing the checked constructor from the
+            // `@invariant`), and the shared erased-return peel below wraps `(match … ((<Ctor> x) x))` at a
+            // consumer whose solved type is the INNER (the optimizer folded that unwrap), so the inner value is
+            // yielded while the establish is preserved. Gated to the reconstructed shape: a single-payload
+            // newtype (Nominal return, one variant/payload) whose decl was emitted and carries an `@invariant`.
+            // Other shapes (the per-disc `__invariant_construct_<T>__d<disc>`) are NOT reconstructed → their
+            // Nominal is not a single-payload newtype, so the gate fails and the call re-emits normally.
+            let call = if callee_name.starts_with("__invariant_construct_")
+                && args.len() == 1
+                && let Some(Ty::Nominal { decl, inner, .. }) = callee_return_ty(db, callee)
+                && is_emitted_single_payload_newtype(db, decl, emitted)
+                && db.newtype_inner.contains_key(&decl)
+                && db.invariant_of(decl).is_some()
+            {
+                let ctor = crate::lower::variant_head_ast(db, b, decl, 0).ok_or_else(|| {
+                    Reject::decline(
+                        "the Cadenza backend could not recover the newtype ctor for an @invariant \
+                         construct rewrite"
+                            .to_string(),
+                    )
+                })?;
+                let arg_node = emit_expr(db, b, args[0], Some((*inner).clone()), env, emitted)?;
+                b.list(vec![ctor, arg_node])
+            } else {
+                let head = b.name(callee_name.as_str());
+                let mut children = Vec::with_capacity(1 + args.len());
+                children.push(head);
+                for &arg in args.iter() {
+                    children.push(emit_expr(db, b, arg, None, env, emitted)?);
+                }
+                b.list(children)
+            };
             // PEEL an erased-newtype RETURN: the callee returns `Nominal{decl, inner}` but THIS node's solved
             // type is `inner` — an `unwrap(mk(x))` fold peeled the TYPE but left the nominal-returning call as
             // the value (e.g. the @invariant `mk` synthesized as `__invariant_construct_Percent : … -> Percent`,
