@@ -28816,7 +28816,10 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(b.contains("implementation/seed/crates/cdz-runtime/src/champ.rs"));
         assert!(b.contains("hot_op_allocation_ceilings"));
         assert!(b.contains("nix run .#bench")); // current runner, NOT the removed `cargo xtask bench`
-        assert!(!b.contains("cargo xtask bench"), "must not name the removed xtask bench arm");
+        assert!(
+            !b.contains("cargo xtask bench"),
+            "must not name the removed xtask bench arm"
+        );
         // Fail-open: the script's LAST statement is `exit 0` (the warn sections never block a commit; only the
         // trunk-guard (1) and the baseline vanished-check (6) block, each on its own explicit `exit 1`).
         assert!(
