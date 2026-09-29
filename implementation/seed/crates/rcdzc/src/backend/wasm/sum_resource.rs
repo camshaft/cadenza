@@ -153,14 +153,45 @@ pub(super) fn emit_runtime_sum_resource(
             .map(|hi| (hi.effect.clone(), hi.op.clone()))
             .collect();
         let effect0 = host_imports[0].effect.clone();
-        // SINGLE effect only — `assemble_host_runtime_resource` imports ONE host interface, so >1 distinct
-        // effect would be conflated + mis-serialized (PR #481). Decline the multi-effect shape cleanly.
-        if host_imports.iter().any(|hi| hi.effect != effect0) {
+        // The DISTINCT host effects delegated here, in first-appearance order — one imported interface each
+        // (SHAPE 341). More than one routes to `assemble_host_runtime_resource_multi` below.
+        let distinct_effects: Vec<String> = {
+            let mut v: Vec<String> = Vec::new();
+            for hi in &host_imports {
+                if !v.iter().any(|e| e == &hi.effect) {
+                    v.push(hi.effect.clone());
+                }
+            }
+            v
+        };
+        // SCOPE: multi-interface delegation is supported for SCALAR/unit ops only. A string-param or
+        // spilled-compound host op composed across >1 interface needs the shared-`"mem"` multi-interface emit
+        // (a later increment), so decline it cleanly (decline-don't-miscompile) — a single-interface escape
+        // handles both those shapes (SHAPE 339/340).
+        if distinct_effects.len() > 1 && (needs_shared_mem || needs_list || !result_defs.is_empty())
+        {
             return Err(Reject::declined(
                 crate::diag::DeclineId::WasmMultiHostEffectDelegation,
-                "delegating more than one host effect from a resource-escaping entrypoint is not \
-                 supported (one interface per envelope)",
+                "delegating more than one host effect from a resource-escaping entrypoint is supported \
+                 only for scalar/unit ops; a string-param or compound-result op across multiple host \
+                 interfaces needs the shared-memory multi-interface emit (a later increment)",
             ));
+        }
+        // Two distinct effects sharing an op NAME would collide in the ONE `"host"` core module the program
+        // binds (ops are re-exported by name), so decline that cleanly rather than conflate them.
+        if distinct_effects.len() > 1 {
+            let mut seen: Vec<&str> = Vec::new();
+            for hi in &host_imports {
+                if seen.contains(&hi.op.as_str()) {
+                    return Err(Reject::declined(
+                        crate::diag::DeclineId::WasmMultiHostEffectDelegation,
+                        "delegating more than one host effect that share an operation name from a \
+                         resource-escaping entrypoint is not supported (the ops collide in the single \
+                         `host` core module)",
+                    ));
+                }
+                seen.push(hi.op.as_str());
+            }
         }
         // Name the host import by the WORLD's FULL import interface (`cadenza:platform/probe`), not the guest
         // effect's SHORT kebab segment (`probe`) — a conforming host binds against the FQ name, and the
@@ -259,6 +290,54 @@ pub(super) fn emit_runtime_sum_resource(
                 core_functype: Vec::new(),
             })
             .collect();
+        // MULTI-INTERFACE (SHAPE 341): >1 distinct host effect → import each as its own component instance
+        // (its FQ interface's instance-type) and alias each op out of it. One `HostGroup` per distinct effect,
+        // ops in `host_imports` order; scalar/unit only here (`needs_list`/`result_defs` empty per the scope
+        // guard above), so each group's compound-result fields are empty.
+        if distinct_effects.len() > 1 {
+            let groups: Vec<envelope::HostGroup> = distinct_effects
+                .iter()
+                .map(|e| {
+                    let g_iface = crate::backend::wasm::world_import_iface_for_effect(db, e)
+                        .unwrap_or_else(|| e.clone());
+                    let g_fns: Vec<envelope::HostFn> = host_imports
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, hi)| &hi.effect == e)
+                        .map(|(i, hi)| envelope::HostFn {
+                            op: hi.op.clone(),
+                            comp_functype: host_op_comp_functype(
+                                hi,
+                                0,
+                                0,
+                                &[],
+                                result_crefs[i].clone(),
+                            ),
+                            has_list_param: hi
+                                .params
+                                .iter()
+                                .any(|p| matches!(p, host::HostParam::Bytes)),
+                            core_functype: Vec::new(),
+                        })
+                        .collect();
+                    envelope::HostGroup {
+                        effect_iface: g_iface,
+                        host_fns: g_fns,
+                        needs_list: false,
+                        result_defs: Vec::new(),
+                        record_defs: Vec::new(),
+                    }
+                })
+                .collect();
+            return Ok(envelope::assemble_host_runtime_resource_multi(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &groups,
+                &make_slots,
+            ));
+        }
         return Ok(if needs_shared_mem {
             envelope::assemble_host_runtime_resource_shared_mem(
                 &main_core,

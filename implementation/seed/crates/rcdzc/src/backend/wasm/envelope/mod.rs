@@ -4545,6 +4545,253 @@ pub fn assemble_host_runtime_resource(
     out
 }
 
+/// The MULTI-INTERFACE twin of [`assemble_host_runtime_resource`] — a sum-escaping entrypoint that delegates
+/// `g = groups.len()` DISTINCT host effects (SHAPE 341). The single-interface form imports ONE host instance
+/// (comp instance 0) and aliases every host op out of it; here each `HostGroup` is imported as its OWN
+/// component instance (its interface's instance-type) and each op is aliased out of ITS instance. Everything
+/// below the component import/alias/type layer is IDENTICAL to the single-interface form: the `g` distinct
+/// interfaces are re-exported through ONE `"host"` core module (each op bound by its unique op name), so the
+/// CORE structure (host-ops instance, heap, dtor, program) is `g`-independent. Only the component index spaces
+/// shift with `g`: `g` host instance-types (comp types `0..g`) + the runtime instance-type (comp type `g`),
+/// the resource type at comp type `g+1`, minted make/encode types from `base = g+2`, `g` imported host
+/// instances (`0..g`) + the runtime instance (`g`), and the inner re-export at comp instance `g+1`. For
+/// `g == 1` the layout collapses to `assemble_host_runtime_resource`'s indices (comp types 0/1/2, base 3,
+/// instances 0/1/2). SCOPE: SCALAR/unit host ops, no shared memory (a string-param or spilled-compound op in a
+/// multi-interface escape composes the shared-`"mem"` form — a later increment); the caller declines those.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_host_runtime_resource_multi(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    groups: &[HostGroup],
+    make_slots: &[ArgSlot],
+) -> Vec<u8> {
+    let g = groups.len();
+    // The host ops flattened in GROUP order — the comp-func alias order (`0..h`), the core-func lower order,
+    // and the core `"host"` instance export list all iterate this sequence, so they agree by construction.
+    let all_host_fns: Vec<&HostFn> = groups.iter().flat_map(|grp| grp.host_fns.iter()).collect();
+    let h = all_host_fns.len();
+    let k = imports.len();
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+
+    // sec 7: `g` host-effect instance-types (comp types `0..g`) THEN the runtime instance-type (comp type `g`).
+    let type_sec = {
+        let mut items = Vec::new();
+        for grp in groups {
+            items.extend_from_slice(&host_effect_instance_type(
+                &grp.host_fns,
+                grp.needs_list || grp.host_fns.iter().any(|f| f.has_list_param),
+                &grp.result_defs,
+                &grp.record_defs,
+            ));
+        }
+        items.extend_from_slice(&runtime_op_instance_type(imports));
+        section(sec::COMPONENT_TYPE, &wasm_vec(g + 1, &items))
+    };
+    out.extend_from_slice(&type_sec);
+
+    // sec 10: import each host effect interface (instance of its comp type `i`, under its kebab iface name) →
+    // comp instances `0..g`, THEN the runtime (comp type `g`, `import_name`) → comp instance `g`.
+    let import_sec = {
+        let mut items = Vec::new();
+        for (i, grp) in groups.iter().enumerate() {
+            let mut he = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+                &grp.effect_iface,
+            ));
+            he.push(0x05); // ComponentTypeRef::Instance
+            uleb128(i as u64, &mut he);
+            items.extend_from_slice(&he);
+        }
+        let mut rt = extern_name(import_name);
+        rt.push(0x05);
+        uleb128(g as u64, &mut rt);
+        items.extend_from_slice(&rt);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(g + 1, &items))
+    };
+    out.extend_from_slice(&import_sec);
+
+    // sec 6: alias each host op out of ITS effect's comp instance (`i`) → comp funcs `0..h` (group order),
+    // then each RUNTIME op out of comp instance `g` → comp funcs `h..h+k`.
+    let op_alias_sec = {
+        let mut items = Vec::new();
+        for (i, grp) in groups.iter().enumerate() {
+            for f in &grp.host_fns {
+                items.extend_from_slice(&comp_alias_item(
+                    i as u32,
+                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
+                ));
+            }
+        }
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(g as u32, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(h + k, &items))
+    };
+    out.extend_from_slice(&op_alias_sec);
+
+    // sec 8: canon-lower each aliased op (comp funcs `0..h+k`) → core funcs `0..h+k`. Memoryless (scalar ops).
+    let lower_sec = {
+        let mut items = Vec::new();
+        for i in 0..(h + k) {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(h + k, &items))
+    };
+    out.extend_from_slice(&lower_sec);
+
+    // sec 2: the host core instance re-exporting the lowered HOST ops (core funcs `0..h`) under their op names
+    // → core instance 0 (the program's ONE `"host"` import binds here — op names are unique across effects).
+    let host_core_inst = {
+        let ex: Vec<(&str, u32)> = all_host_fns
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.op.as_str(), i as u32))
+            .collect();
+        core_export_instance_item(&ex)
+    };
+    out.extend_from_slice(&section(sec::CORE_INSTANCE, &wasm_vec(1, &host_core_inst)));
+
+    // sec 2: the `heap-dtor` core instance exporting the lowered `drop` (core func `h + drop's index`) →
+    // core instance 1.
+    let drop_core = imports
+        .iter()
+        .position(|op| op.name == RUNTIME_DROP)
+        .map(|i| (h + i) as u32)
+        .expect("the runtime-resource escape imports `drop` for the dtor");
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&[(RUNTIME_DROP, drop_core)])),
+    ));
+    // sec 1: the dtor core module (module 0).
+    out.extend_from_slice(&core_module_section(dtor_core));
+    // sec 2: instantiate the dtor module threading `heap-dtor` = core instance 1 → core instance 2.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[(HEAP_DTOR_MODULE, 1)])),
+    ));
+    // sec 6: alias `t-dtor` out of core instance 2 → core func `h+k`.
+    out.extend_from_slice(&section(
+        sec::ALIAS,
+        &wasm_vec(1, &core_alias_item(2, DTOR_CORE_EXPORT)),
+    ));
+    // sec 7: the resource type `t` (rep i32, dtor = core func `h+k`) → comp type `g+1` (after the `g+1`
+    // instance-types).
+    let res_ty = (g + 1) as u32;
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(1, &resource_type_item((h + k) as u32)),
+    ));
+    // sec 8: canon `resource.new` (core func `h+k+1`) + `resource.rep` (core func `h+k+2`).
+    let resource_canons = {
+        let mut items = resource_new_item(res_ty);
+        items.extend_from_slice(&resource_rep_item(res_ty));
+        section(sec::CANON, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&resource_canons);
+    // sec 2: the `heap` core instance exporting the k runtime ops (`h..h+k`) + resource-new (`h+k+1`) +
+    // resource-rep (`h+k+2`) → core instance 3.
+    let heap_exports = {
+        let mut ex: Vec<(&str, u32)> = imports
+            .iter()
+            .enumerate()
+            .map(|(i, op)| (op.name, (h + i) as u32))
+            .collect();
+        ex.push((RESOURCE_NEW, (h + k + 1) as u32));
+        ex.push((RESOURCE_REP, (h + k + 2) as u32));
+        ex
+    };
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&heap_exports)),
+    ));
+    // sec 1: the program core module (module 1).
+    out.extend_from_slice(&core_module_section(main_core));
+    // sec 2: instantiate the program (module 1) threading `host` = core instance 0 AND `heap` = core instance
+    // 3 → core instance 4.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(
+            1,
+            &core_instantiate_item(1, &[(HOST_MODULE, 0), (HEAP_MODULE, 3)]),
+        ),
+    ));
+    // sec 6: alias the boundary exports off the program instance (core instance 4).
+    let boundary_aliases = {
+        let mut items = Vec::new();
+        items.extend_from_slice(&core_alias_item(4, MAKE_CORE_EXPORT));
+        items.extend_from_slice(&core_alias_item(4, ENCODE_CORE_EXPORT));
+        items.extend_from_slice(&memory_alias_item(4, MEMORY_EXPORT));
+        items.extend_from_slice(&core_alias_item(4, REALLOC_EXPORT));
+        section(sec::ALIAS, &wasm_vec(4, &items))
+    };
+    out.extend_from_slice(&boundary_aliases);
+    // sec 7: [minted tuple types per compound make-param] then `own<t>` and the `make` functype. Minted tuple
+    // types start at comp type `g+2` (`base`), `own`/`borrow` ref the resource comp type `g+1`.
+    let base = (g + 2) as u32;
+    let shift = call_arg_tuple_type_count(make_slots);
+    let own_ty = base + shift;
+    let make_ft = base + 1 + shift;
+    let make_types = {
+        let mut next_type = base;
+        let mut items = Vec::new();
+        let tup_idxs = mint_call_arg_tuple_types(make_slots, &mut next_type, &mut items);
+        items.extend_from_slice(&own_item(res_ty));
+        items.extend_from_slice(&make_functype_slots(
+            make_slots,
+            &tup_idxs,
+            &owned_valtype(own_ty),
+        ));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2 + shift as usize, &items))
+    };
+    out.extend_from_slice(&make_types);
+    // sec 8: lift `make` (core func `h+k+3`) → component func `h+k`.
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(1, &canon_lift_item((h + k + 3) as u32, make_ft)),
+    ));
+    // sec 7: `borrow<t>`, the shared `list u8`, then the `encode` functype.
+    let borrow_ty = base + 2 + shift;
+    let list_ty = base + 3 + shift;
+    let encode_ft = base + 4 + shift;
+    let encode_types = {
+        let mut items = borrow_item(res_ty);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&self_borrow_to_list_functype(borrow_ty, list_ty));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    };
+    out.extend_from_slice(&encode_types);
+    // sec 8: lift `encode` (core func `h+k+4`) carrying Memory 0 + Realloc (core func `h+k+5`) → comp func
+    // `h+k+1`.
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(
+            1,
+            &canon_lift_list_item((h + k + 4) as u32, 0, (h + k + 5) as u32, encode_ft),
+        ),
+    ));
+    // sec 4: the nested re-export component (BORROW variant).
+    out.extend_from_slice(&component_section(&resource_inner_component_borrow(
+        make_slots,
+    )));
+    // sec 5: instantiate the inner component (component 0) with the resource (comp type `g+1`) + the two
+    // lifted funcs (comp funcs `h+k`, `h+k+1`) → comp instance `g+1` (after the `g+1` imported instances).
+    out.extend_from_slice(&section(
+        sec::COMPONENT_INSTANCE,
+        &wasm_vec(
+            1,
+            &component_instantiate_item(res_ty, (h + k) as u32, (h + k + 1) as u32),
+        ),
+    ));
+    // sec 11: export the instantiated inner component as `cadenza:run/run` → comp instance `g+1`.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_instance_item(RUN_INTERFACE, (g + 1) as u32)),
+    ));
+    out
+}
+
 /// The SHARED-MEMORY twin of [`assemble_host_runtime_resource`] (the sum/`make`+`encode` escape) — for a host
 /// op whose SPILLED-COMPOUND result (or STRING parameter) needs the canonical Memory + Realloc options, which
 /// the self-memory form cannot provide (the lower↔instance circularity, see SHAPE 95). Mirrors
