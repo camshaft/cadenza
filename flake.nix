@@ -262,6 +262,7 @@
           # first: fileset.toSource copies are read-only. Same stub machinery as the per-crate crane checks.
           # preBuild (crane's hook — runs after crane restores cargoArtifacts' target/, before the build).
           preBuild = ''
+            ${craneGitStanza}
             # INJECT the nix-built runtime/nfc content hashes into the compiler's `option_env!` reads
             # (rcdzc `runtime_abi.rs`), so this `cdz` STAMPS the exact runtime/nfc it will run against in
             # THIS closure — not the platform-specific literal `codegen` last committed. The value-heap
@@ -519,7 +520,54 @@
         # wasm — so each reproduces EXACTLY the matching GHA job, now cached by nix:
         #   Increment 1 — `fmt` (cargo fmt --all --check) + `clippy` (cargo clippy --workspace …).
         #   Increment 2 — `test` (cargo test --workspace).
-        seedCargoVendor = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
+        seedCargoVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./Cargo.lock;
+          # etude-bigint is a git dep of cdz-num (the rust-backend bignum; operator seq-1332), pinned to
+          # the rev carrying `Big: Ord`/`PartialOrd` (etude PR #328). A git dep has no crates.io checksum,
+          # so vendor it offline via its fetch hash. Distinct rev/hash from the runtime vendor's d5ef70bf
+          # pin (cdz-num may lead cdz-runtime — Ord is unused in the runtime, so its frozen hash is stable).
+          outputHashes = {
+            "etude-bigint-0.1.0" = "sha256-0dhJMP5+kD5/EReEChPHDmwJL5JK72WSMP3p0vUeXU8=";
+          };
+        };
+        # SHARED crane preBuild snippet: register the etude-bigint GIT source into crane's own CARGO_HOME
+        # config for EVERY crane derivation whose cargoVendorDir is seedCargoVendor. etude-bigint is a git
+        # dep of cdz-num in the ROOT lock (operator seq-1332). crane (buildDepsOnly / buildPackage /
+        # mkCargoDerivation / cargoTest / cargoClippy) derives its OWN CARGO_HOME vendor config from
+        # cargoVendorDir and emits only the crates-io source replacement, DROPPING importCargoLock's
+        # `[source."git+…"]` stanza → cargo tries to CLONE etude.git from the network (offline sandbox →
+        # fail). This is the SAME failure mode + fix as codegenCheck (which used the merged codegenVendor);
+        # here it applies fleet-wide to the seed vendor. Register a private directory source pointing at
+        # seedCargoVendor (which vendored the etude git checkout, keyed by outputHashes), then append the
+        # git stanza (from seedCargoVendor's own .cargo/config.toml) with replace-with REWRITTEN to that
+        # private source — crane names its directory source differently, so we cannot reuse vendored-sources,
+        # and must not redefine it (collides with crane's crates-io source). crane owns its config here, so
+        # the mkCargoVendorEnv gitStanzaFrom path does NOT reach it. The NON-crane mkCargoVendorEnv consumers
+        # already carry the git stanza (their non-merged branch cats seedCargoVendor's own config verbatim).
+        # Prepend this to a crane derivation's preBuild (order among preBuild steps is irrelevant; it only
+        # must run before the cargo invocation, which crane's preBuild always does).
+        # mkCraneGitStanza: emit the crane preBuild line that APPENDS ONE git-bearing sub-vendor's
+        # `[source."git+…"]` stanza (which crane drops when it regenerates its CARGO_HOME config) into that
+        # config, with `replace-with` RETARGETED to crane's OWN vendored directory source — crane names it
+        # `nix-sources` and points it at the (merged) cargoVendorDir, which physically HOLDS the git
+        # checkout. We deliberately do NOT define our own directory source: crane's nix-sources already
+        # covers the same directory, and a SECOND source pointing at the same dir is a hard cargo error
+        # ("source dir ... already defined"). So we only re-register the git source ENTRY and point it at
+        # nix-sources. sed grabs only the git stanzas (first `[source."git+` header to EOF).
+        mkCraneGitStanza = subVendor: ''
+          sed -n '/^\[source\."git+/,$p' "${subVendor}/.cargo/config.toml" \
+            | sed 's/replace-with = "vendored-sources"/replace-with = "nix-sources"/' \
+            >> "$CARGO_HOME/config.toml"
+        '';
+        # The UNIFORM crane git-stanza for every crane derivation whose cargoVendorDir is seedCargoVendor OR
+        # codegenVendor. Registers BOTH etude git revs the tree now carries: the ROOT-lock rev 05084a79
+        # (cdz-num, via seedCargoVendor) and the runtime rev d5ef70bf (cdz-runtime, via cdzRuntimeCargoVendor),
+        # each retargeted at crane's nix-sources. A seedCargoVendor consumer only USES the seed rev and a
+        # codegenVendor consumer uses both; a registered-yet-unused git source is harmless in cargo (it is
+        # only read when a dep resolves to it), so ONE uniform stanza is safe everywhere. The two revs are
+        # distinct git-source keys (different rev in the URL), so their entries never collide, and pointing
+        # both at the single nix-sources dir avoids the duplicate-source-dir error.
+        craneGitStanza = (mkCraneGitStanza seedCargoVendor) + (mkCraneGitStanza cdzRuntimeCargoVendor);
         # `test` (`cargo test --workspace`) reads more of the repo at RUN time than fmt/clippy do, so its
         # src is WIDER than `seedSrc` (crates + xtask). fmt/clippy keep the narrow `seedSrc` for finer
         # cache invalidation (a spec/compiler-ml edit shouldn't bust lint). The extra paths:
@@ -949,6 +997,7 @@
           # chmod first: fileset.toSource copies can be read-only, so the stub mkdir/echo would fail on the
           # tree without this (same guard the per-crate crane checks' preBuild uses before stubNonClosure).
           preBuild = ''
+            ${craneGitStanza}
             chmod -R u+w .
             ${stubNonClosure [ ]}
           '';
@@ -985,6 +1034,7 @@
           cargoVendorDir = seedCargoVendor;
           CARGO_PROFILE = "release";
           preBuild = ''
+            ${craneGitStanza}
             chmod -R u+w .
             ${stubNonClosure [ ]}
           '';
@@ -1004,6 +1054,7 @@
           cargoVendorDir = codegenVendor;
           CARGO_PROFILE = "release";
           preBuild = ''
+            ${craneGitStanza}
             chmod -R u+w .
             ${stubNonClosure [ ]}
           '';
@@ -1028,6 +1079,7 @@
           cargoVendorDir = seedCargoVendor;
           CARGO_PROFILE = "ci";
           preBuild = ''
+            ${craneGitStanza}
             chmod -R u+w .
             ${stubNonClosure [ ]}
           '';
@@ -1084,6 +1136,7 @@
             };
             nativeBuildInputs = extraInputs;
             preBuild = ''
+              ${craneGitStanza}
               chmod -R u+w .
               ${stubNonClosure closure}
               ${pkgs.lib.optionalString (crate == "cdz-platform") ''
@@ -3205,6 +3258,7 @@
             cargoVendorDir = seedCargoVendor;
             # preBuild (crane's hook — runs AFTER crane restores cargoArtifacts' target/, before build).
             preBuild = ''
+              ${craneGitStanza}
               ${pkgs.lib.optionalString injectRuntimeHash ''
                 # Same nix-built-hash injection as `seedCompiler`: this compiler stamps the runtime/nfc content
                 # hash of the components in THIS closure into the wasm it emits, so a program built here imports
@@ -6257,10 +6311,15 @@
         codegenVendor = pkgs.symlinkJoin {
           name = "cdz-codegen-cargo-vendor";
           paths = [
-            # xtask + the seed workspace (root lock).
-            (pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; })
+            # xtask + the seed workspace (root lock). REUSE the named seedCargoVendor binding (same ./Cargo.lock)
+            # rather than a bare importCargoLock: the root lock now carries the etude-bigint GIT dep (cdz-num,
+            # rev 05084a79), so a bare importCargoLock would FAIL ("specify a hash through outputHashes"). The
+            # git checkout + its fetch hash live on seedCargoVendor's outputHashes; sharing the binding dedups
+            # it into this merged vendor so crane consumers here resolve the root etude offline too.
+            seedCargoVendor
             # the cdz-runtime + cdz-nfc component builds (own locks) that codegen spawns. cdz-runtime's
-            # vendor (the shared git-aware binding) carries the etude-bigint git source + its fetch hash.
+            # vendor (the shared git-aware binding) carries the etude-bigint git source + its fetch hash
+            # (the runtime rev d5ef70bf — distinct from the root/cdz-num rev above).
             cdzRuntimeCargoVendor
             (pkgs.rustPlatform.importCargoLock {
               lockFile = ./implementation/seed/crates/cdz-nfc/Cargo.lock;
@@ -6306,25 +6365,13 @@
             export HOME="$TMPDIR/home"
             export XDG_CACHE_HOME="$TMPDIR/cache"
             mkdir -p "$HOME" "$XDG_CACHE_HOME"
-            # etude-bigint is a GIT dep inside the merged codegenVendor (operator seq-1332, first git dep
-            # in the frozen-hash wasm vendor). crane derives its OWN CARGO_HOME vendor config from
-            # cargoVendorDir and emits only the crates-io source replacement, DROPPING importCargoLock's
-            # `[source."git+…"]` stanza. So `cargo run … codegen` (which spawns `cargo component build` for
-            # cdz-runtime) would try to CLONE etude.git from the network — offline sandbox → fail. Fix
-            # (crane owns its config HERE, so mkCargoVendorEnv's gitStanzaFrom does not reach it): register
-            # a private directory source pointing at the runtime sub-vendor (which importCargoLock vendored
-            # the etude git checkout INTO, keyed by outputHashes), then append the git `[source."git+…"]`
-            # header(s) with `replace-with` REWRITTEN to that private source. We do NOT reuse the stanza's
-            # own `replace-with = "vendored-sources"` because crane names its directory source differently,
-            # and we do NOT redefine `vendored-sources` (that would collide with crane's crates-io source).
-            # The new source only ever resolves the git origin, so crane's crates-io path is untouched.
-            {
-              echo ""
-              echo '[source.cdz-runtime-git-vendored]'
-              echo 'directory = "${cdzRuntimeCargoVendor}"'
-              sed -n '/^\[source\."git+/,$p' "${cdzRuntimeCargoVendor}/.cargo/config.toml" \
-                | sed 's/replace-with = "vendored-sources"/replace-with = "cdz-runtime-git-vendored"/'
-            } >> "$CARGO_HOME/config.toml"
+            # etude-bigint is a GIT dep in the merged codegenVendor — BOTH the runtime rev d5ef70bf (via
+            # cdzRuntimeCargoVendor, which codegen's `cargo component build` for cdz-runtime needs) AND the
+            # root/cdz-num rev 05084a79 (via seedCargoVendor, now shared into codegenVendor). crane derives
+            # its own CARGO_HOME config from cargoVendorDir and DROPS importCargoLock's `[source."git+…"]`
+            # stanzas, so cargo would try to CLONE etude.git from the network (offline → fail). The shared
+            # craneGitStanza registers both revs' private directory sources + rewritten git stanzas.
+            ${craneGitStanza}
           '';
           # xtask codegen --check regenerates runtime_abi.rs (building cdz-runtime + cdz-nfc components via
           # cargo-component to fold in their hashes) and fails if the committed file drifted. --locked =
@@ -6393,6 +6440,8 @@
           CARGO_PROFILE = "ci";
           doInstallCargoArtifacts = false;
           nativeBuildInputs = [ pkgs.wasm-tools ];
+          # etude-bigint git dep (cdz-num) is now in the seed vendor; crane drops the git stanza (see craneGitStanza).
+          preBuild = craneGitStanza;
           buildPhaseCargoCommand = ''
             cargo run --locked --package xtask --profile ci -- gate --opt-sweep --store "${componentStore}"
           '';
@@ -6451,6 +6500,8 @@
           doInstallCargoArtifacts = false;
           nativeBuildInputs = [ ];
           RUST_MIN_STACK = "67108864";
+          # etude-bigint git dep is in the merged codegenVendor; crane drops the git stanza (see craneGitStanza).
+          preBuild = craneGitStanza;
           buildPhaseCargoCommand = ''
             cargo run --locked --package xtask-bench --profile release
           '';
