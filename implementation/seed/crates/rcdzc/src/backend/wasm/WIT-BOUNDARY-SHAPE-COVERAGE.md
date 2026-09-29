@@ -214,10 +214,14 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   VariantMemMixed arm returns true for a Bytes/List case (so the host import's canon `Lower` gets the `Memory`
   option); the register field arm admits a Bytes/List case guarded by `cursor.is_some()` (a position whose arg
   does not reserve a cursor still declines cleanly). `emit_variant_mixed_arg_reg_flatten`'s Bytes/List arms
-  (unchanged — the bare-ARG ones) rope-copy / marshal at the cursor → `(ptr, len|count)`. REMAINING at a register
-  position: a Bytes/List mixed-variant case at a TUPLE-ELEMENT (`tuple_arg_needs_cursor` + the SHAPE 265 arm would
-  need the same cursor-reservation extension); a Bytes/List mixed-variant field nested under option/result/tuple
-  (the option<record>/result<record>/tuple pre-scan mirror clauses do not yet reserve for it → declines cleanly).
+  (unchanged — the bare-ARG ones) rope-copy / marshal at the cursor → `(ptr, len|count)`. The register positions this
+  once listed as REMAINING have all since landed (this clause is kept as a cross-reference, not an open gap): a
+  Bytes/List mixed-variant case at a TUPLE-ELEMENT is ✅ DONE — SHAPE 270/271 (see the tuple-ELEMENT entry below); a
+  Bytes/List mixed-variant field nested under `option<record>`/`result<record>` is ✅ DONE — SHAPE 272–275, and the
+  Bytes/List mixed-variant ELEMENT of a `tuple` nested under `option`/`result` is ✅ DONE — SHAPE 276–279. A Bytes/List
+  mixed-variant field nested under a BARE `tuple` (`tuple<record{v: variant{…, c(list<u8>)}}, s64>`) also EMITS
+  (validation-clean — the tuple pre-scan's `record_has_mem_mixed_variant_field` recursion reserves the cursor); not
+  yet corpus-pinned (needs a faithful-run pin when the nix gate is reachable).
 - **[emit] a HETEROGENEOUS MIXED `variant` at a REGISTER tuple-ELEMENT position — ✅ DONE / TESTED (SHAPE 265).**
   The tuple-element twin of SHAPE 264 (as SHAPE 257 was the tuple-element twin of the SHAPE 256 record-field
   variant-tuple). A `tuple<variant{a, b(s64), c(tuple<s32,s64>)}, s64>` arg previously DECLINED
