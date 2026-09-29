@@ -3445,6 +3445,28 @@ if [ "${{FLEET_SKIP_GRADER_CONSUMERS_WARN:-}}" != "1" ]; then
     echo "  (Silence: FLEET_SKIP_GRADER_CONSUMERS_WARN=1.)" >&2
   fi
 fi
+
+# (9) HOT-OP RUNTIME FILE → allocation-bench WARN (fail-open; v-corpus-harness gate ruling 2026-09-29;
+# #110b's alloc regression escaped to main). `hot_op_allocation_ceilings` (cdz-runtime tests) is #[ignore]d —
+# a process-wide alloc counter needing --ignored --test-threads=1 — so `cargo test` + `cargo xtask dev-gate`
+# SKIP it; it runs ONLY in CI's `allocation bench` job (nix checks.bench-check), so an alloc-ceiling regression
+# from a hot-op change reds ONLY on main. The bench is EXPENSIVE + serial, so per the hook doctrine (never hang
+# a commit) this is a REMINDER-to-run, NOT an inline run — same shape as (4)/(5)/(8). The current runner is
+# `nix run .#bench` (the old per-xtask bench arm was decomposed into the standalone xtask-bench crate). When a
+# hot-op runtime file is staged, WARN. Silence: FLEET_SKIP_ALLOC_BENCH_WARN=1.
+if [ "${{FLEET_SKIP_ALLOC_BENCH_WARN:-}}" != "1" ]; then
+  if git diff --cached --name-only --diff-filter=ACM -- \
+       'implementation/seed/crates/cdz-runtime/src/bytes_string.rs' \
+       'implementation/seed/crates/cdz-runtime/src/vector.rs' \
+       'implementation/seed/crates/cdz-runtime/src/champ.rs' \
+       'implementation/seed/crates/cdz-runtime/src/scalars.rs' 2>/dev/null | grep -q .; then
+    echo "⚠ fleet pre-commit: you touched a hot-op runtime file; run \`nix run .#bench\` before landing —" >&2
+    echo "  hot_op_allocation_ceilings is #[ignore]d so dev-gate/\`cargo test\` skip it and an alloc-ceiling" >&2
+    echo "  regression only reds on CI's \`allocation bench\` / main (#110b escaped this way). If the new cost is" >&2
+    echo "  operator-accepted, rebaseline spec/bench/.alloc-baseline in the SAME slice (\`nix run .#bench -- --save\`)." >&2
+    echo "  (Silence: FLEET_SKIP_ALLOC_BENCH_WARN=1.)" >&2
+  fi
+fi
 exit 0
 "##
     )
@@ -28785,6 +28807,16 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(b.contains("FLEET_SKIP_GRADER_CONSUMERS_WARN"));
         assert!(b.contains("implementation/seed/crates/cdz-corpus-grade/src"));
         assert!(b.contains("cargo build -p cdz-rust-run -p cdz-run -p cdz --all-targets"));
+        // Section (9): WARN (fail-open) when a hot-op cdz-runtime file is staged, nudging to run the allocation
+        // bench (v-corpus-harness gate ruling 2026-09-29; #110b escaped because hot_op_allocation_ceilings is
+        // #[ignore]d → dev-gate/`cargo test` skip it, only CI's `allocation bench` reds). Names the CURRENT
+        // `nix run .#bench` (the old `cargo xtask bench` arm was removed by the xtask-bench decompose).
+        assert!(b.contains("FLEET_SKIP_ALLOC_BENCH_WARN"));
+        assert!(b.contains("implementation/seed/crates/cdz-runtime/src/bytes_string.rs"));
+        assert!(b.contains("implementation/seed/crates/cdz-runtime/src/champ.rs"));
+        assert!(b.contains("hot_op_allocation_ceilings"));
+        assert!(b.contains("nix run .#bench")); // current runner, NOT the removed `cargo xtask bench`
+        assert!(!b.contains("cargo xtask bench"), "must not name the removed xtask bench arm");
         // Fail-open: the script's LAST statement is `exit 0` (the warn sections never block a commit; only the
         // trunk-guard (1) and the baseline vanished-check (6) block, each on its own explicit `exit 1`).
         assert!(
