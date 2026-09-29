@@ -2134,7 +2134,7 @@ pass	a comparison-select over the two zeros returns the UNTAKEN operand and the 
 pass	a compile-time Char comparison folds beside performs (the runtime-Char boundary's served face)
 pass	a compile-time expansion residual combines with a runtime param per call
 pass	a compile-time type branch reads a runtime parameter's static type
-pass	a compile-time-constant None passed as a top-level option host-op ARGUMENT (corpus TODO — pre-existing bug)
+pass	a compile-time-constant None passed as a top-level option host-op ARGUMENT (crosses via #10029 perform-arg grounding)
 pass	a compile-time-foldable rope compact agrees with its runtime-built twin
 pass	a complementary comparison pair nested past a third operand still folds via reassociation
 pass	a complementary comparison split across a nested connective folds to false
