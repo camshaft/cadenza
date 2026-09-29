@@ -10732,6 +10732,7 @@ cases
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list((Some (c #record((= q 2) (= p 1)))) (None unit)))
   (output 55)
   (live-objects 0))
 
@@ -10979,6 +10980,7 @@ cases
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#record((= r #record((= a 1) (= c 3) (= b 2)))) #record((= r #record((= a 4) (= c 6) (= b 5))))))
   (output 55)
   (live-objects 0))
 
@@ -11032,6 +11034,7 @@ cases
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#record((= xs #list(#record((= a 1) (= c 3) (= b 2)) #record((= a 4) (= c 6) (= b 5)))))))
   (output 55)
   (live-objects 0))
 
@@ -11105,6 +11108,7 @@ cases
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#tuple(#record((= a 1) (= c 3) (= b 2)) 7) #tuple(#record((= a 4) (= c 6) (= b 5)) 8)))
   (output 55)
   (live-objects 0))
 
@@ -11210,6 +11214,7 @@ cases
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#record((= v (b #record((= a1 1) (= c1 3) (= b1 2)))))))
   (output 55)
   (live-objects 0))
 
@@ -11283,6 +11288,7 @@ cases
   (call run)
   (host-responses (respond probe.push (: 55 Int64)))
   (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#record((= o (Some #record((= a 1) (= c 3) (= b 2)))))))
   (output 55)
   (live-objects 0))
 
