@@ -139,6 +139,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytes"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+
+[[package]]
 name = "cadenza-ast"
 version = "0.1.0"
 
@@ -160,6 +166,7 @@ dependencies = [
  "bolero",
  "cadenza-ast",
  "etude-bigint",
+ "etude-bytevec",
  "num-bigint",
  "num-traits",
  "talc",
@@ -201,6 +208,30 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "etude-bigint"
+version = "0.1.0"
+source = "git+https://github.com/camshaft/etude.git?rev=d5ef70bf662bd46c5a504fb234ef4d8c15c37f45#d5ef70bf662bd46c5a504fb234ef4d8c15c37f45"
+
+[[package]]
+name = "etude-buffer"
+version = "0.1.0"
+source = "git+https://github.com/camshaft/etude.git?rev=d5ef70bf662bd46c5a504fb234ef4d8c15c37f45#d5ef70bf662bd46c5a504fb234ef4d8c15c37f45"
+dependencies = [
+ "bytes",
+ "etude-ensure",
+]
+
+[[package]]
+name = "etude-bytevec"
+version = "0.1.0"
+source = "git+https://github.com/camshaft/etude.git?rev=d5ef70bf662bd46c5a504fb234ef4d8c15c37f45#d5ef70bf662bd46c5a504fb234ef4d8c15c37f45"
+dependencies = [
+ "bytes",
+ "etude-buffer",
+ "etude-ensure",
+]
+
+[[package]]
+name = "etude-ensure"
 version = "0.1.0"
 source = "git+https://github.com/camshaft/etude.git?rev=d5ef70bf662bd46c5a504fb234ef4d8c15c37f45#d5ef70bf662bd46c5a504fb234ef4d8c15c37f45"
 
