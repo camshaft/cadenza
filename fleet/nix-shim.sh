@@ -46,6 +46,22 @@ for _d in $PATH; do
 done
 IFS="$_oldifs"
 
+# FALLBACK: PATH did not carry the real nix. This is the norm inside a fleet agent window whose tmux
+# server was started with a minimal env (no login-shell profile → the Determinate `nix-daemon.sh` PATH
+# edit never ran), so `nix` on PATH is ONLY this shim and the scan above finds nothing. Rather than refuse
+# (which wedges every nix call — build/flake-check/gate — for the whole agent), probe the well-known
+# standard + Determinate install locations. Skip any that resolve back to this shim. (Determinate 2026: the
+# user profile moved to $XDG_STATE_HOME/nix/profile, legacy ~/.nix-profile may also exist — try both.)
+if [ -z "$_real" ]; then
+  for _cand in \
+    "${XDG_STATE_HOME:-$HOME/.local/state}/nix/profile/bin/nix" \
+    "$HOME/.nix-profile/bin/nix" \
+    "/nix/var/nix/profiles/default/bin/nix" \
+    "/run/current-system/sw/bin/nix"; do
+    if [ -x "$_cand" ] && [ "$_cand" != "$_self" ]; then _real="$_cand"; break; fi
+  done
+fi
+
 run_real() {
   if [ -n "$_real" ]; then
     export _CDZ_NIX_SHIM_ACTIVE=1  # mark children so a nix-spawns-nix never re-enters the shim
