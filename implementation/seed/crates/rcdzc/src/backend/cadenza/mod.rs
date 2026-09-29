@@ -846,17 +846,27 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
     let mut emitted_def_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for &def in &layout.order {
         let dn = db.defs[def].name.clone();
-        // SUPPRESS the synthesized checked-constructor / checker def of a single-payload `@invariant`
-        // newtype whose `(@ (invariant …) (type …))` wrapper we reconstructed above — a recompile
-        // re-synthesizes it, and its call sites re-emit as raw `(<Ctor> payload)` (the `Core::Call` arm).
-        // A def named `__invariant_construct_<T>__d<disc>` (multi-variant/nullary shape) is NOT in the set
-        // (its `<T>__d<disc>` suffix never matches a bare type name), so it is still emitted — no dangling.
-        if let Some(t) = dn
+        // SUPPRESS the synthesized checked-constructor / checker defs of an `@invariant` type whose
+        // `(@ (invariant …) (type …))` wrapper we reconstructed above — a recompile re-synthesizes them, and
+        // their call sites re-emit as raw constructions (the `Core::Call` arm). Strip the prefix AND a
+        // trailing `__d<disc>` (the per-disc multi-variant/nullary form) to recover the bare type name, so
+        // both `__invariant_construct_<T>` and `__invariant_construct_<T>__d<i>` match a reconstructed `<T>`.
+        if let Some(rest) = dn
             .strip_prefix("__invariant_construct_")
             .or_else(|| dn.strip_prefix("__invariant_check_"))
-            && reconstructed_inv.contains(t)
         {
-            continue;
+            let type_name = match rest.rfind("__d") {
+                Some(p)
+                    if !rest[p + 3..].is_empty()
+                        && rest[p + 3..].bytes().all(|c| c.is_ascii_digit()) =>
+                {
+                    &rest[..p]
+                }
+                _ => rest,
+            };
+            if reconstructed_inv.contains(type_name) {
+                continue;
+            }
         }
         if !emitted_def_names.insert(dn.to_string()) {
             continue;
@@ -1266,25 +1276,123 @@ fn copy_ast_subtree(db: &Db, b: &mut Builder, root: StructId) -> StructId {
         .expect("copy_ast_subtree leaves the root's new id")
 }
 
-/// If `decl` is a SINGLE-PAYLOAD `@invariant` NEWTYPE — the shape whose construction `lower_sum_new`
-/// diverts through the bare `__invariant_construct_<T>` checked constructor (`lower.rs`, `establish_divert`)
-/// — return its `@invariant` predicate occurrence (over the `self` value binder), else `None`. This is the
-/// gate for the PRE-DIVERT re-emit: for such a type the backend re-emits the ORIGINAL source form —
-/// `(@ (invariant P) (type T …))` + raw `(<Ctor> payload)` constructions, SUPPRESSING the synthesized
-/// `__invariant_construct_<T>`/`__invariant_check_<T>` defs — so a recompile (HOP2) re-synthesizes +
-/// re-diverts IDENTICALLY to a direct compile (rather than compiling the post-synth explicit-constructor
-/// form, which HOP2 cannot re-establish → an inline/reclaim divergence). Multi-variant / multi-payload /
-/// nullary `@invariant` shapes (the per-disc `__invariant_construct_<T>__d<disc>` divert) are NOT
-/// reconstructed here — they fall through to the current post-synth emit (no regression).
+/// If `decl` is an `@invariant` type whose constructions the PRE-DIVERT re-emit can reconstruct, return its
+/// `@invariant` predicate occurrence (a form over the `self` value binder), else `None`. For such a type the
+/// backend re-emits the ORIGINAL source form — `(@ (invariant P) (type T …))` + raw constructions —
+/// SUPPRESSING the synthesized `__invariant_construct_<T>[__d<disc>]`/`__invariant_check_<T>` defs, so a
+/// recompile (HOP2) re-synthesizes + re-diverts IDENTICALLY to a direct compile (rather than compiling the
+/// post-synth explicit constructor/checker, which HOP2 cannot re-establish → an inline/reclaim divergence,
+/// and whose checker's non-scalar variant match HOP2 outright declines, CDZ node 24). Two reconstructable
+/// shapes: a SINGLE-PAYLOAD newtype (the bare `__invariant_construct_<T>` divert → re-emit a raw nominal
+/// `(<Ctor> payload)`), and a REAL sum (multi-variant / nullary — the per-disc `__invariant_construct_<T>__d
+/// <disc>` divert → re-emit a raw `Core::SumNew` via [`emit_sum_new`]). A MULTI-PAYLOAD newtype (erased to a
+/// `Ty::Tuple`, in `newtype_inner` but not single-payload) is NOT reconstructed and falls through to the
+/// current post-synth emit (no regression) — its `emit_sum_new` would decline on the non-sum inner anyway.
 fn invariant_pred_for_reconstruct(db: &Db, decl: &crate::db::TypeDecl) -> Option<StructId> {
-    if db.newtype_inner.contains_key(&decl.occ)
-        && decl.variants.len() == 1
-        && decl.variants[0].payloads.len() == 1
-    {
-        db.invariant_of(decl.occ)
-    } else {
-        None
+    let pred = db.invariant_of(decl.occ)?;
+    let is_newtype = db.newtype_inner.contains_key(&decl.occ);
+    let single_payload_newtype =
+        is_newtype && decl.variants.len() == 1 && decl.variants[0].payloads.len() == 1;
+    // A real (non-erased) sum — every variant construction re-emits via `emit_sum_new`.
+    let real_sum = !is_newtype;
+    (single_payload_newtype || real_sum).then_some(pred)
+}
+
+/// The discriminant a synthesized `__invariant_construct_<T>__d<disc>` checked constructor builds — parsed
+/// from the trailing `__d<digits>` (`establish_divert`'s per-variant naming). A BARE
+/// `__invariant_construct_<T>` (the single-payload-newtype / single-variant form) has no such suffix → disc 0.
+fn disc_from_construct_name(name: &str) -> u32 {
+    match name.rfind("__d") {
+        Some(p)
+            if !name[p + 3..].is_empty() && name[p + 3..].bytes().all(|c| c.is_ascii_digit()) =>
+        {
+            name[p + 3..].parse().unwrap_or(0)
+        }
+        _ => 0,
     }
+}
+
+/// Re-emit a `Core::SumNew` (variant `disc` of the sum at `id`'s type, with `payloads`) as the ascribed
+/// surface `(: (<Variant> p…) <sum-type>)`. Factored out of the `Core::SumNew` match arm so the `@invariant`
+/// pre-divert rewrite (the `Core::Call` arm) can reconstruct the SAME raw construction from a diverted
+/// `__invariant_construct_<T>__d<disc>` call — reusing the exact own-type/expected peel, variant-head recovery,
+/// per-payload slot-type threading, and `(: … <sum>)` ascription (see the arm's inline rationale).
+#[allow(clippy::too_many_arguments)]
+fn emit_sum_new(
+    db: &mut Db,
+    b: &mut Builder,
+    disc: u32,
+    payloads: &[StructId],
+    id: StructId,
+    expected: &Option<Ty>,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Result<StructId, Reject> {
+    // The value's own solved type; peel a STACK of newtype nominals to the underlying sum (a `SumNew` typed
+    // the erased newtype reaches here as the NOMINAL). When the own type is UNDER-DETERMINED (a free type
+    // arg — a bare nullary `(None)` at a join), fall back to the concrete `expected` of the same sum decl.
+    let mut own_ty = crate::infer::type_of(db, id);
+    while let Ty::Nominal { inner, .. } = &own_ty {
+        own_ty = (**inner).clone();
+    }
+    let ty = match (&own_ty, expected) {
+        (Ty::Sum { decl: od, .. }, Some(ex @ Ty::Sum { decl: ed, .. }))
+            if od == ed && ty_has_free_arg(&own_ty) && !ty_has_free_arg(ex) =>
+        {
+            ex.clone()
+        }
+        _ => own_ty,
+    };
+    let decl = match &ty {
+        Ty::Sum { decl, .. } => *decl,
+        _ => {
+            return Err(Reject::decline(
+                "the Cadenza backend cannot recover a variant head for a non-sum SumNew"
+                    .to_string(),
+            ));
+        }
+    };
+    // `(: <variant> <sum-type>)` — the ASCRIPTION pins a folded / under-parameterized variant (`(None)` →
+    // `Option _` → CDZ0203) to its full solved sum type via `type_ast` (which returns `None` — a decline —
+    // for a genuinely under-determined sum rather than emitting a bad surface).
+    let colon = b.name(":");
+    let head = crate::lower::variant_head_ast(db, b, decl, disc).ok_or_else(|| {
+        Reject::decline(
+            "the Cadenza backend could not recover the variant name for a SumNew".to_string(),
+        )
+    })?;
+    let mut variant_children = vec![head];
+    match payloads.len() {
+        // A NULLARY variant carries `unit` (`(None unit)`).
+        0 => variant_children.push(b.name("unit")),
+        // SINGLE payload — its `expected` is the variant's INSTANTIATED payload type at this sum type.
+        1 => {
+            let pexp = sum_payload_expected(db, decl, disc, &ty);
+            variant_children.push(emit_expr(db, b, payloads[0], pexp, env, emitted)?);
+        }
+        // MULTI-payload `(<Variant> p0 p1 …)` — each payload with its INSTANTIATED slot type as `expected`
+        // (the variant's slot `Tuple` from `sum_payload_expected`), so a nested under-determined payload
+        // recovers its instantiation; a slot of unknown type falls back to `None`.
+        _ => {
+            let payload_expected = sum_payload_expected(db, decl, disc, &ty);
+            for (i, &p) in payloads.iter().enumerate() {
+                let pexp = match &payload_expected {
+                    Some(Ty::Tuple(ts)) => ts.get(i).cloned(),
+                    _ => None,
+                };
+                variant_children.push(emit_expr(db, b, p, pexp, env, emitted)?);
+            }
+        }
+    }
+    let variant = b.list(variant_children);
+    let ncx = db.name_ctx();
+    let ty_node = crate::lower::type_ast(b, &ty, &ncx).ok_or_else(|| {
+        Reject::unsupported(
+            "the Cadenza backend does not support lowering a variant of an under-determined sum type"
+                .to_string(),
+        )
+    })?;
+    Ok(b.list(vec![colon, variant, ty_node]))
 }
 
 /// Reconstruct `(def (<name> (: <p> <Ty>)…) <body>)` for definition `def`. B1a handles NULLARY defs and
@@ -2803,23 +2911,45 @@ fn emit_expr_viewed(
             // newtype (Nominal return, one variant/payload) whose decl was emitted and carries an `@invariant`.
             // Other shapes (the per-disc `__invariant_construct_<T>__d<disc>`) are NOT reconstructed → their
             // Nominal is not a single-payload newtype, so the gate fails and the call re-emits normally.
-            let call = if callee_name.starts_with("__invariant_construct_")
-                && args.len() == 1
-                && let Some(Ty::Nominal { decl, inner, .. }) = callee_return_ty(db, callee)
-                && is_emitted_single_payload_newtype(db, decl, emitted)
-                && db.newtype_inner.contains_key(&decl)
-                && db.invariant_of(decl).is_some()
-            {
-                let ctor = crate::lower::variant_head_ast(db, b, decl, 0).ok_or_else(|| {
-                    Reject::decline(
-                        "the Cadenza backend could not recover the newtype ctor for an @invariant \
-                         construct rewrite"
-                            .to_string(),
-                    )
-                })?;
-                let arg_node = emit_expr(db, b, args[0], Some((*inner).clone()), env, emitted)?;
-                b.list(vec![ctor, arg_node])
-            } else {
+            let call = 'rewrite: {
+                if callee_name.starts_with("__invariant_construct_") {
+                    match callee_return_ty(db, callee) {
+                        // SINGLE-PAYLOAD NEWTYPE: re-emit the raw nominal construction `(<Ctor> payload)`. The
+                        // shared erased-return peel below wraps `(match … ((<Ctor> x) x))` at a consumer whose
+                        // solved type is the INNER (the optimizer folded that unwrap), yielding the inner value.
+                        Some(Ty::Nominal { decl, inner, .. })
+                            if args.len() == 1
+                                && is_emitted_single_payload_newtype(db, decl, emitted)
+                                && db.newtype_inner.contains_key(&decl)
+                                && db.invariant_of(decl).is_some() =>
+                        {
+                            let ctor =
+                                crate::lower::variant_head_ast(db, b, decl, 0).ok_or_else(|| {
+                                    Reject::decline(
+                                        "the Cadenza backend could not recover the newtype ctor for \
+                                         an @invariant construct rewrite"
+                                            .to_string(),
+                                    )
+                                })?;
+                            let arg_node =
+                                emit_expr(db, b, args[0], Some((*inner).clone()), env, emitted)?;
+                            break 'rewrite b.list(vec![ctor, arg_node]);
+                        }
+                        // REAL SUM (multi-variant / nullary): re-emit the raw construction as a `Core::SumNew`
+                        // of variant `disc` (from the `__d<disc>` suffix) with the call's args as payloads,
+                        // via `emit_sum_new` — HOP2 re-diverts + re-establishes the invariant, and the
+                        // suppressed checker's non-scalar match (CDZ node 24) is never re-emitted.
+                        Some(Ty::Sum { decl, .. })
+                            if emitted.contains(&decl) && db.invariant_of(decl).is_some() =>
+                        {
+                            let disc = disc_from_construct_name(&callee_name);
+                            break 'rewrite emit_sum_new(
+                                db, b, disc, &args, id, &expected, env, emitted,
+                            )?;
+                        }
+                        _ => {}
+                    }
+                }
                 let head = b.name(callee_name.as_str());
                 let mut children = Vec::with_capacity(1 + args.len());
                 children.push(head);
@@ -3092,98 +3222,7 @@ fn emit_expr_viewed(
         // non-ctor prelude binding). A nullary variant carries `unit` (`(None unit)`), a single-payload
         // variant its payload; a multi-argument variant surface is not canonical and declines. Mirrors
         // lower's constant value surface.
-        Core::SumNew { disc, payloads } => {
-            // The value's own solved type. When it is UNDER-DETERMINED (a free type argument — a bare
-            // nullary `(None)` at a join whose element type only the sibling branch fixes, so this node's
-            // own type is `Option<?>`), fall back to the `expected` type the surrounding context supplied
-            // (the `if`/`let`/match position this value fills). Both are the SAME sum declaration; `expected`
-            // just carries the RESOLVED type arguments, which is what the `(: … <sum-type>)` ascription needs.
-            let own_ty = crate::infer::type_of(db, id);
-            // A newtype-Construct PEEL: `nominal_disposition` classifies a `SumNew` typed the erased newtype
-            // as a Construction (`(Mk <inner>)`), and re-emits its payload via `emit_expr_viewed`, so this arm
-            // is reached with `own_ty` = the NOMINAL (`Cached`), not the inner sum. The variant (`Some`/`None`)
-            // belongs to the UNDERLYING sum, and a sum-ctor node never IS a pre-existing nominal, so peel the
-            // nominal to its inner sum — the variant head, payload types, and `(: … <sum>)` ascription all
-            // resolve against the underlying sum. Without this, `own_ty` stays the nominal → "non-sum SumNew".
-            // Peel through a STACK of newtypes (`Wrap(Mk Inner)`, `Inner(Mi Box)`, `Box` a sum): a
-            // newtype-over-newtype-over-sum construction reaches the inner sum only after unwrapping EVERY
-            // nominal layer (single-level left `own_ty` = an inner NEWTYPE, still non-sum → the decline).
-            let mut own_ty = own_ty;
-            while let Ty::Nominal { inner, .. } = &own_ty {
-                own_ty = (**inner).clone();
-            }
-            let ty = match (&own_ty, &expected) {
-                // Under-determined own type + a concrete expected of the same sum decl → use expected.
-                (Ty::Sum { decl: od, .. }, Some(ex @ Ty::Sum { decl: ed, .. }))
-                    if od == ed && ty_has_free_arg(&own_ty) && !ty_has_free_arg(ex) =>
-                {
-                    ex.clone()
-                }
-                _ => own_ty,
-            };
-            let decl = match &ty {
-                Ty::Sum { decl, .. } => *decl,
-                _ => {
-                    return Err(Reject::decline(
-                        "the Cadenza backend cannot recover a variant head for a non-sum SumNew"
-                            .to_string(),
-                    ));
-                }
-            };
-            // `(: <variant> <sum-type>)` — the ASCRIPTION is required: the optimizer often folds a sum
-            // value to a bare variant with no surrounding type context (e.g. `main` = `(None unit)`), and
-            // a nullary or partially-parameterized variant under-determines the sum's type parameters
-            // (`(Option _)` / `(Result Int64 _)`) → CDZ0203 on recompile. Annotating with the full solved
-            // sum type (via lower's `type_ast`) pins it. `type_ast` returns `None` for an under-determined
-            // sum (a free type-arg), so a genuinely-ambiguous value DECLINES rather than emit a bad surface.
-            let colon = b.name(":");
-            let head = crate::lower::variant_head_ast(db, b, decl, disc).ok_or_else(|| {
-                Reject::decline(
-                    "the Cadenza backend could not recover the variant name for a SumNew"
-                        .to_string(),
-                )
-            })?;
-            let mut variant_children = vec![head];
-            match payloads.len() {
-                // A NULLARY variant carries `unit` (`(None unit)`).
-                0 => variant_children.push(b.name("unit")),
-                // SINGLE payload — its `expected` is the variant's INSTANTIATED payload type at this sum
-                // type, so a bare `(None)` nested as a payload (`(Some (None))` : `Option (Option Int64)`,
-                // whose inner own type is `Option<?>`) recovers `Option Int64` from the outer instantiation.
-                1 => {
-                    let pexp = sum_payload_expected(db, decl, disc, &ty);
-                    variant_children.push(emit_expr(db, b, payloads[0], pexp, env, emitted)?);
-                }
-                // MULTI-argument variant `(<Variant> p0 p1 …)` — each payload emitted left-to-right with its
-                // INSTANTIATED slot type as `expected` (the variant's slot types at THIS sum type, a `Tuple`
-                // from `sum_payload_expected`). Threading the slot type resolves a payload whose OWN type is
-                // under-determined — the GENERIC × RECURSIVE case: `(type (Tree a) (Leaf) (Node (Tree a) a
-                // (Tree a)))` at `(Tree String)`, whose nested nullary `(Leaf)` slots have own type `(Tree ?)`
-                // (no payload fixes `a`); with `expected = (Tree String)` the `SumNew` `ty` fallback recovers
-                // the instantiation and its `(: (Leaf) (Tree String))` ascription pins it (else `type_ast`
-                // fails → the "under-determined sum type" decline). A slot whose type is itself unknown falls
-                // back to `None` (prior behavior).
-                _ => {
-                    let payload_expected = sum_payload_expected(db, decl, disc, &ty);
-                    for (i, &p) in payloads.iter().enumerate() {
-                        let pexp = match &payload_expected {
-                            Some(Ty::Tuple(ts)) => ts.get(i).cloned(),
-                            _ => None,
-                        };
-                        variant_children.push(emit_expr(db, b, p, pexp, env, emitted)?);
-                    }
-                }
-            }
-            let variant = b.list(variant_children);
-            let ncx = db.name_ctx();
-            let ty_node = crate::lower::type_ast(b, &ty, &ncx).ok_or_else(|| {
-                Reject::unsupported(
-                    "the Cadenza backend does not support lowering a variant of an under-determined sum type"
-                        .to_string(),
-                )
-            })?;
-            Ok(b.list(vec![colon, variant, ty_node]))
-        }
+        Core::SumNew { disc, payloads } => emit_sum_new(db, b, disc, &payloads, id, &expected, env, emitted),
         // A match over a runtime SUM scrutinee — re-emit the surface `(match <scrutinee> (<pat> <body>)…)`.
         // M4a handles the SIMPLE decision-tree shape (delegated to [`emit_match_sum`]): a root switch on the
         // scrutinee's OWN discriminant, every arm an explicit variant with a bare LEAF body; a disc-folded /
