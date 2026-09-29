@@ -87,6 +87,13 @@ enum CorpusCmd {
         /// subcommand (its exit-3 contract); `--count` deliberately does not red on vanished.
         #[arg(long)]
         count: bool,
+        /// Report the MISSING-from-baseline count grouped BY CORPUS FILE (chapter), most-missing first —
+        /// the harvest-lag breakdown v-corpus-harness monitors (which chapter is driving the drift; e.g. a
+        /// heavily-landing chapter vs stable ones a partial re-harvest could flush). Prints one
+        /// `<count>\t<file>` line per chapter with any missing case + a total, then exits 0. A first-class
+        /// replacement for a hand `grep -oFf` loop; composes with neither `--count` nor `--list-missing`.
+        #[arg(long)]
+        by_chapter: bool,
     },
     /// Check corpus files are in NATIVE compound-value form — FAST, no compile/run.
     ///
@@ -251,7 +258,8 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
             baseline,
             list_missing,
             count,
-        } => check_baseline_drift(files, baseline, *list_missing, *count),
+            by_chapter,
+        } => check_baseline_drift(files, baseline, *list_missing, *count, *by_chapter),
         CorpusCmd::NativizeCheck { files, fix } => check_nativize_idempotence(files, *fix),
         CorpusCmd::LiveObjectsGuard { base, strict } => check_live_objects_edits(base, *strict),
         CorpusCmd::CapabilityErrorCheck { files } => check_capability_error_pins(files),
@@ -302,16 +310,46 @@ fn check_baseline_drift(
     baseline: &str,
     list_missing: bool,
     count: bool,
+    by_chapter: bool,
 ) -> Result<(), String> {
     let mut corpus: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // title → the corpus file (basename) it first appears in — for the `--by-chapter` grouping. First-wins:
+    // a title is expected unique to one file, so the first sighting is its home chapter.
+    let mut title_file: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
     for path in files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
-        corpus.extend(corpus_descriptions(&text).map_err(|e| format!("{path}: {e}"))?);
+        let base = std::path::Path::new(path)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone());
+        for t in corpus_descriptions(&text).map_err(|e| format!("{path}: {e}"))? {
+            title_file.entry(t.clone()).or_insert_with(|| base.clone());
+            corpus.insert(t);
+        }
     }
     let bl_text =
         std::fs::read_to_string(baseline).map_err(|e| format!("reading {baseline}: {e}"))?;
     let baseline_descs = baseline_descriptions(&bl_text);
     let (vanished, missing) = baseline_drift(&corpus, &baseline_descs);
+
+    // `--by-chapter`: the missing-from-baseline count grouped by corpus file, most-missing first — the
+    // harvest-lag breakdown (which chapter drives the drift). One `<count>\t<file>` line + a total, exit 0.
+    if by_chapter {
+        for (file, n) in missing_by_file(&missing, &title_file) {
+            println!("{n}\t{file}");
+        }
+        println!("total\t{} missing across {} chapter(s)", missing.len(), {
+            let mut files: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            for m in &missing {
+                if let Some(f) = title_file.get(m) {
+                    files.insert(f.as_str());
+                }
+            }
+            files.len()
+        });
+        return Ok(());
+    }
 
     // `--count`: emit ONLY the corpus-ahead-of-baseline integer to stdout + exit 0 (a machine-readable
     // count query for a monitor cron). Suppress the prose/warnings AND the vanished guard — vanished
@@ -827,6 +865,27 @@ fn baseline_drift(
         .cloned()
         .collect();
     (vanished, missing)
+}
+
+/// Group `missing` titles by their home corpus file (via `title_file`), returning `(file, count)` pairs
+/// sorted MOST-MISSING FIRST (ties by file name) — the `baseline-drift --by-chapter` harvest-lag breakdown
+/// (which chapter drives the drift). A missing title with no `title_file` entry (should not happen for a
+/// real corpus title) groups under `"(unknown)"`. Pure so it is unit-testable.
+fn missing_by_file(
+    missing: &[String],
+    title_file: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, usize)> {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for m in missing {
+        let file = title_file.get(m).map(String::as_str).unwrap_or("(unknown)");
+        *counts.entry(file).or_insert(0) += 1;
+    }
+    let mut out: Vec<(String, usize)> = counts
+        .into_iter()
+        .map(|(f, n)| (f.to_string(), n))
+        .collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out
 }
 
 /// Titles present in `subset_descs` but ABSENT from `wasm_descs` — the dangerous subset-drift direction
@@ -1789,6 +1848,40 @@ diff --git a/spec/semantics/19-sets.sexp b/spec/semantics/19-sets.sexp
             baseline_drift(&corpus, &exact),
             (Vec::<String>::new(), Vec::<String>::new())
         );
+    }
+
+    /// `missing_by_file` groups missing titles by their home corpus file, most-missing first (ties by file
+    /// name), so `baseline-drift --by-chapter` shows which chapter drives the harvest lag. An unmapped title
+    /// falls under "(unknown)".
+    #[test]
+    fn missing_by_file_groups_most_missing_first() {
+        let title_file: std::collections::BTreeMap<String, String> = [
+            ("m1", "28-wit.sexp"),
+            ("m2", "28-wit.sexp"),
+            ("m3", "28-wit.sexp"),
+            ("n1", "06-num.sexp"),
+            ("z1", "06-num.sexp"),
+            ("s1", "05-comp.sexp"),
+        ]
+        .iter()
+        .map(|(t, f)| (t.to_string(), f.to_string()))
+        .collect();
+        // 28-wit has 3 missing, 06-num 2, 05-comp 1, plus one unmapped title.
+        let missing: Vec<String> = ["m1", "m2", "m3", "n1", "z1", "s1", "ghost"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            missing_by_file(&missing, &title_file),
+            vec![
+                ("28-wit.sexp".to_string(), 3),
+                ("06-num.sexp".to_string(), 2),
+                ("(unknown)".to_string(), 1), // "ghost" has no file; ties with 05-comp at 1 → name order
+                ("05-comp.sexp".to_string(), 1),
+            ]
+        );
+        // Empty missing ⇒ empty breakdown.
+        assert!(missing_by_file(&[], &title_file).is_empty());
     }
 
     /// `subset_only_titles` flags a subset (rust/rust-async) title absent from the wasm superset — the
