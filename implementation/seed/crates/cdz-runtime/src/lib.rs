@@ -223,8 +223,8 @@ struct Node {
     /// byte buffer, or a string's UTF-8 bytes. Empty for pure-compound nodes (array/map). Read back
     /// by reinterpretation — the compiler's static type says how to read it. Stored as `Raw`, which
     /// inlines the common ≤`INLINE_RAW_CAP`-byte payload (scalars, sum discs, CHAMP headers, vec
-    /// headers — the overwhelming majority) with NO heap Vec, spilling to the heap only for longer
-    /// bytes/strings. This is storage-transparent: `Raw` derefs to `&[u8]`, so the tagless byte-hash
+    /// headers — the overwhelming majority) with NO heap allocation, holding a longer bytes/string leaf
+    /// in a `Raw::Rope` (a refcounted `ByteVec`). This is storage-transparent: `Raw` derefs to `&[u8]`, so the tagless byte-hash
     /// (`champ_hash`/`champ_eq`/`champ_key_cmp`) and every reader see the identical bytes regardless.
     raw: Raw,
     /// DEBUG-only liveness GUARD for use-after-free + wild-handle detection (native tests /
@@ -288,7 +288,7 @@ fn assert_node_live(ptr: *const Node, guard: u32, ctx: &str) {
 
 /// The inline capacity of a `Raw`'s payload. Sized to `CHAMP_HEADER_SIZE` (12) — the largest raw a hot
 /// node carries (a CHAMP node's `[datamap][nodemap][size]`); a scalar is ≤8, a sum disc 4, a vec
-/// header 8, so all of those inline too. Bytes/strings longer than this spill to the heap.
+/// header 8, so all of those inline too. Bytes/strings longer than this go in a `Raw::Rope` (ByteVec).
 const INLINE_RAW_CAP: usize = 12;
 
 /// A node's raw payload: inline for the common ≤`INLINE_RAW_CAP`-byte case (no heap allocation),
