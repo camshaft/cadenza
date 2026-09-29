@@ -11388,7 +11388,7 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	TWO host effects delegated from one sum-escaping entrypoint decline cleanly (deferral: multi-interface import emit)
 todo	a HOST effect + a PEER effect both feeding one sum-escaping entrypoint decline cleanly (deferral: host+peer fusion emit)
-todo	a COMPOUND host-import result wrapped in a sum result declines cleanly (deferral: value-heap-rep lift)
+pass	a COMPOUND host-import result wrapped in a sum escapes as run's resource result
 todo	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes

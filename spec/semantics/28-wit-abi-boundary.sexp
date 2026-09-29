@@ -11760,18 +11760,17 @@ cases
   (live-objects 0))
 
 (case
-  "a COMPOUND host-import result wrapped in a sum result declines cleanly (deferral: value-heap-rep lift)"
+  "a COMPOUND host-import result wrapped in a sum escapes as run's resource result"
   (doc
-    "SHAPE 339 (v-wit-boundary) — DEFERRAL, corpus-pinned per the 084999 discipline. run() = Some(probe.spell)
-           where probe.spell : () -> String, so run : () -> Option<String> — a COMPOUND (spilled_result) host
-           result wrapped in a sum that escapes as run's resource entrypoint. The payloadless-ENUM twin (SHAPE
-           336) is DONE via the enum-disc→sum-new materialization bridge; this COMPOUND twin still DECLINES
-           cleanly (CDZ0900, decline-don't-miscompile): the sum-escape host path does not yet LIFT the spilled
-           compound host result into the escape's value-heap rep (a String payload routes through the
-           recursive-sum / value-encode escape branch, which needs the SHAPE-95 shared-`\"mem\"` host-result
-           machinery composed with a sum-new over the lifted payload handle). This case records the IDEALISTIC
-           cross so it auto-flips to PASS when the value-heap-rep lift lands and can never silently regress.
-           Intended value when the lift lands: probe.spell -> \"ok\", run() -> Some(\"ok\").")
+    "SHAPE 339 (v-wit-boundary) — WORKING. run() = Some(probe.spell) where probe.spell : () -> String, so
+           run : () -> Option<String> — a COMPOUND (spilled_result) host result wrapped in a sum that escapes as
+           run's resource entrypoint. The payloadless-ENUM twin (SHAPE 336) crosses via the enum-disc→sum-new
+           materialization bridge; this COMPOUND twin lifts the spilled compound host result into the escape's
+           value-heap rep through the recursive-sum / value-encode escape branch composed with the SHAPE-95
+           shared-`\"mem\"` host-result machinery (a `\"mem\"` core module instantiated first + the host-op
+           canon-lower carrying the Memory/Realloc options + the `import_base += needs_shared_mem` core-func
+           shift, so `make` calls `run` rather than the imported `cabi_realloc`). probe.spell -> \"ok\",
+           run() -> Some(\"ok\"); byte-exact and zero-leak.")
   (wit-world
     (world w (import cadenza:platform/probe (member spell (func (result (string)))))))
   (input
