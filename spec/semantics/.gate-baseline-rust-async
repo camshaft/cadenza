@@ -775,6 +775,7 @@ pass	a Bool value under a narrow-width let-binder annotation is a type clash, no
 pass	a Bool-payload ctor BINDER used as a Bool in an if computes on the compiled path
 pass	a Bool-returning comparison operator passed to an inline HOF
 pass	a Bytes ROPE handler state GROWS by bin-append per perform and each resume reads the prior length
+pass	a Bytes concat operand that is re-read after the concat survives the FBIP move-not-clone (shared operand not moved in place)
 pass	a Bytes entry argument is marshalled as a Vec<u8>
 pass	a Bytes field projected off a nullary record with Ast siblings folds byte-exact and eliminates the record
 pass	a Bytes slice VIEW and a rope compare equal by content in both directions
