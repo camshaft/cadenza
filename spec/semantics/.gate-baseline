@@ -11404,7 +11404,7 @@ todo	an entrypoint delegating two distinct host effects performs both and return
 pass	byp2 a Bytes entry param destructured by a runtime bin match reclaims
 pass	byp3 a Bytes entry param sliced crosses on wasm and rust (dup-aware borrow-lift reclaim)
 pass	ckr2 a consumed String ENTRY param crosses on wasm and rust (dup-aware borrow-lift reclaim)
-todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
+pass	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
 pass	elc2 a Map keyed by the lifted List entry param answers its value on lookup
 todo	expect traps on the absent case of a runtime optional
 todo	fpr3 a PARTIAL-resume local op whose body performs a foreign op folds (abort preserves the foreign advance)
