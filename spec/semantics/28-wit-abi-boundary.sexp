@@ -11616,3 +11616,52 @@ cases
   (host-arg-received cadenza:platform/probe.push #list((b #record((= d #list(104 105)) (= n 2))) (a unit)))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record{o: option<variant{a, b(record{d: bytes, n: s64})}>}> host-op arg crosses (an option<variant{RecordMem}> field)"
+  (doc
+    "SHAPE 333 (v-wit-boundary) — the option<variant> FIELD position of SHAPE 317's variant RecordMem case: an
+           `option<variant{a, b(record{d: bytes, n: s64})}>` record field. The option-field arm threads the field's
+           `WitType::Option(WitType::Variant(...))` to `emit_option_to_mem`, whose mixed-variant arm writes the
+           payload variant in place via `emit_variant_mixed_to_mem` (its record arm re-resolves the RecordMem case's
+           record from the guest Ty + WIT, spilling the Bytes field at the cursor). Pins that the RecordMem admission
+           (SHAPE 317) composes under an option field. run() pushes [{o: Some(B{d:b\"hi\", n:2})}]; live-objects=0.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= o (option (variant (a) (b (record (= d (list (u8))) (= n (s64)))))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (Record (: d Bytes) (: n Int64))))
+      (effect probe (op push (-> (List (Record (: o (Option Sig)))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= o (Some (Sig.B #record((= d b"hi") (= n 2))))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#record((= o (Some (b #record((= d #list(104 105)) (= n 2))))))))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<tuple<variant{a, b(record{d: bytes, n: s64})}, s64>> host-op arg crosses (a variant{RecordMem} tuple element)"
+  (doc
+    "SHAPE 334 (v-wit-boundary) — the TUPLE-ELEMENT position of SHAPE 317's variant RecordMem case: a
+           `variant{a, b(record{d: bytes, n: s64})}` as a tuple element. `emit_tuple_to_mem` threads the element WIT
+           from the tuple's `WitType::Tuple` so the variant element fires `emit_variant_mixed_to_mem`, whose record
+           arm writes the RecordMem case (Bytes field spilled at the cursor). Pins the RecordMem admission at a tuple
+           element. run() pushes [(B{d:b\"hi\", n:2}, 9)]; live-objects=0.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (tuple (variant (a) (b (record (= d (list (u8))) (= n (s64))))) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (Record (: d Bytes) (: n Int64))))
+      (effect probe (op push (-> (List (Tuple Sig Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #list(#tuple((Sig.B #record((= d b"hi") (= n 2))) 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#tuple((b #record((= d #list(104 105)) (= n 2))) 9)))
+  (output 55)
+  (live-objects 0))
