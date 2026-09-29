@@ -1553,6 +1553,24 @@ pub(super) fn emit_runtime_bytes_resource(
     used.insert("bytes-len");
     used.insert("bytes-get");
     used.insert("drop");
+    // A SPILLED-COMPOUND host result's LIFT (`select::emit_result_lift`) CONSTRUCTS a value-heap value with
+    // runtime ops the reducer's own Core may never use — so `collect_module_used_ops` misses them. Declare
+    // exactly the ops the lift emits (walking the op's WIT result type in lockstep with `emit_result_lift`,
+    // via `declare_result_lift_ops`), mirroring the plain host path. Without this the lift's `CallImport`
+    // resolves to an out-of-range func index and the component fails validation. Only host ops carry a
+    // `spilled_result`; a peer-only escape adds nothing here.
+    {
+        let mut host_probe: Vec<host::HostImport> = Vec::new();
+        for &def in &layout.order {
+            let body = def_body(db, def)?;
+            host::collect_host_imports(db, body, &mut host_probe);
+        }
+        for hi in &host_probe {
+            if let Some(ty) = hi.spilled_result.clone() {
+                crate::backend::wasm::declare_result_lift_ops(db, &ty, &mut used);
+            }
+        }
+    }
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
         .map(|name| {
@@ -1611,24 +1629,30 @@ pub(super) fn emit_runtime_bytes_resource(
                  (a scalar/unit host op result-escaping as a resource IS supported)",
             ));
         }
-        // DECLINE-DON'T-MISCOMPILE (B2 pending): a COMPOUND host RESULT (string / bytes / list / tuple /
-        // record / option / result / variant / enum — anything `spilled_result`/`enum_result`) reached in
-        // this with-methods resource escape needs the B1 result-lift machinery this scalar-only assembler
-        // does NOT yet declare; without it the lift op resolves to an out-of-range func index and the
-        // component fails validation (CDZ0910 "unknown function"). Decline CLEANLY until B2 threads the
-        // lift through the `assemble_host_runtime_resource*` sites. A scalar/unit host result IS supported.
-        if host_imports
-            .iter()
-            .any(|h| h.spilled_result.is_some() || h.enum_result.is_some())
-        {
+        // A SPILLED compound host RESULT (string / bytes / list / tuple / record / option / result / variant
+        // — anything `spilled_result`) escaping directly as the resource entrypoint result is now supported via
+        // the SHARED-MEMORY path (SHAPE 95): `needs_shared_mem` routes the core module to import
+        // `"mem"."mem"` + `"mem"."cabi_realloc"` and the assembler to
+        // `assemble_host_runtime_resource_with_scalar_methods_shared_mem`, whose host-op canon-lower carries the
+        // Memory + Realloc option a compound result needs. The result-lift ops are declared into `used` above
+        // (mirroring the plain host path), so the lift's `CallImport`s resolve. A payloadless ENUM RESULT
+        // (`enum_result`) is a DISTINCT lift (a nominal enum type declared at the entrypoint, core result i32,
+        // no shared memory) not yet threaded through the resource-escape sites — decline it CLEANLY.
+        if host_imports.iter().any(|h| h.enum_result.is_some()) {
             return Err(Reject::unsupported(
-                "a host op with a compound result (string / bytes / list / record / option / variant / \
-                 enum) escaping directly as a resource entrypoint is not supported (a scalar/unit host op \
-                 result-escaping as a resource IS supported)",
+                "a host op with an ENUM result escaping directly as a resource entrypoint is not supported \
+                 (a scalar/unit or a spilled-compound host result result-escaping as a resource IS supported)",
             ));
         }
-        let iface = host_imports[0].effect.clone();
-        if host_imports.iter().any(|hi| hi.effect != iface) {
+        let needs_shared_mem = host_imports.iter().any(|h| h.spilled_result.is_some());
+        let effect0 = host_imports[0].effect.clone();
+        // Name the host import by the WORLD's FULL import interface (`cadenza:platform/probe`), not the guest
+        // effect's SHORT kebab segment (`probe`) — the host-call sequence + a conforming host bind against the
+        // FQ name (the plain host-delegating envelope + the reducer bytes-provider path already do this; the
+        // resource-escape sites previously named by effect, the B1b residue). Falls back to the effect name
+        // with no imposed world (byte-identical).
+        let iface = world_import_iface_for_effect(db, &effect0).unwrap_or(effect0.clone());
+        if host_imports.iter().any(|hi| hi.effect != effect0) {
             return Err(Reject::declined(
                 crate::diag::DeclineId::WasmMultiHostEffectDelegation,
                 "delegating more than one host effect from a resource-escaping entrypoint is not \
@@ -1641,8 +1665,12 @@ pub(super) fn emit_runtime_bytes_resource(
             .iter()
             .map(|hi| (hi.effect.clone(), hi.op.clone()))
             .collect();
+        // The import FUNC base the defined bodies index against: host ops (h) + runtime ops (k) + resource-new
+        // + resource-rep (2), PLUS the imported `mem.cabi_realloc` (+1) in shared-mem mode. Must equal the core
+        // builder's `ifc` so a body's `call <export>`/self-call resolves to the defined func, not an import
+        // (an off-by-one here makes `make` call `cabi_realloc` instead of the run body — the SHAPE-95 trap).
         let host_layout = layout
-            .with_import_base(h + k + 2)
+            .with_import_base(h + k + 2 + needs_shared_mem as u32)
             .with_host_order(host_order);
         let host_layout = &host_layout;
 
@@ -1691,6 +1719,7 @@ pub(super) fn emit_runtime_bytes_resource(
             &escape_lifted_table(host_layout),
             0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
             &[], // no static-compound init
+            needs_shared_mem, // SHAPE 95: import `"mem"` when a compound host result escapes
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -1713,11 +1742,20 @@ pub(super) fn emit_runtime_bytes_resource(
                 result: envelope::MethodResult::ListU8,
             },
         ];
+        // A SPILLED compound host RESULT (SHAPE 95: `string`) must be DECLARED in the host effect
+        // instance-type + referenced by the op's component functype (else its canon-lower emits no result and
+        // the lowered import drops the retptr the guest expects). `build_host_result_types` computes the
+        // per-op result `CRef` + any result defined-types the SAME way the plain host path does. For a
+        // scalar/unit host set (the existing shapes) every `result_crefs[i]` is `None` and `result_defs` is
+        // empty → byte-identical to the former `host_op_comp_functype(hi, 0, 0, &[], None)`.
+        let (needs_list, result_defs, result_crefs, _arg_list_crefs) =
+            build_host_result_types(db, &host_imports);
         let host_fns: Vec<envelope::HostFn> = host_imports
             .iter()
-            .map(|hi| envelope::HostFn {
+            .enumerate()
+            .map(|(i, hi)| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0, &[], None),
+                comp_functype: host_op_comp_functype(hi, 0, 0, &[], result_crefs[i].clone()),
                 has_list_param: hi
                     .params
                     .iter()
@@ -1725,7 +1763,20 @@ pub(super) fn emit_runtime_bytes_resource(
                 core_functype: Vec::new(),
             })
             .collect();
-        return Ok(
+        return Ok(if needs_shared_mem {
+            envelope::assemble_host_runtime_resource_with_scalar_methods_shared_mem(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &iface,
+                &host_fns,
+                &make_param_bytes,
+                &scalar_methods,
+                needs_list,
+                &result_defs,
+            )
+        } else {
             envelope::assemble_host_runtime_resource_with_scalar_methods(
                 &main_core,
                 &dtor_core,
@@ -1735,8 +1786,8 @@ pub(super) fn emit_runtime_bytes_resource(
                 &host_fns,
                 &make_param_bytes,
                 &scalar_methods,
-            ),
-        );
+            )
+        });
     }
     // The fused envelope supports MULTIPLE distinct peer interfaces (grouped into g imported instances).
     let p = extern_imports.len() as u32;
@@ -1794,6 +1845,7 @@ pub(super) fn emit_runtime_bytes_resource(
         &escape_lifted_table(layout),
         0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
         &[], // no static-compound init
+        false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,

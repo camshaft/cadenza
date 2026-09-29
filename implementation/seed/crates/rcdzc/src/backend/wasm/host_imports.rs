@@ -1302,11 +1302,26 @@ pub(super) fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValT
 pub(super) fn host_as_extern_for(host_imports: &[host::HostImport]) -> Vec<host::ExternImport> {
     host_imports
         .iter()
-        .map(|hi| host::ExternImport {
-            interface: hi.effect.clone(),
-            op: hi.op.clone(),
-            params: hi.params.iter().filter_map(host_param_abi).collect(),
-            result: hi.result,
+        .map(|hi| {
+            let mut params: Vec<runtime_abi::AbiValType> =
+                hi.params.iter().filter_map(host_param_abi).collect();
+            // A SPILLED compound host RESULT (SHAPE 95: e.g. `string`) is returned through a caller-provided
+            // RETPTR: the canonical ABI lowers a >1-flat result to a TRAILING i32 return-pointer param and the
+            // core func returns nothing. The guest body pushes `(args…, retptr)` and `call`s the import, so the
+            // core IMPORT TYPE this `ExternImport` produces (`extern_import_functype`) MUST carry the trailing
+            // i32 retptr + no core result — mirroring the plain host path's `host_import_functype`. This
+            // `ExternImport` feeds ONLY the core import type on the resource-escape path (the component-level
+            // host op type comes from `host_op_comp_functype`), and a peer op never carries `spilled_result`,
+            // so the retptr appears exactly where it belongs. `result` is already `None` for a spilled result.
+            if hi.spilled_result.is_some() {
+                params.push(runtime_abi::AbiValType::U32); // the i32 retptr (u32 pointer → core i32)
+            }
+            host::ExternImport {
+                interface: hi.effect.clone(),
+                op: hi.op.clone(),
+                params,
+                result: hi.result,
+            }
         })
         .collect()
 }

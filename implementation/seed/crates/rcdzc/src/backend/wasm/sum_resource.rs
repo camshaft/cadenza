@@ -157,6 +157,7 @@ pub(super) fn emit_runtime_sum_resource(
             &escape_lifted_table(host_layout),
             0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
             &[], // no static-compound init
+            false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -236,6 +237,7 @@ pub(super) fn emit_runtime_sum_resource(
         &escape_lifted_table(layout),
         0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
         &[], // no static-compound init
+        false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
@@ -460,6 +462,7 @@ pub(super) fn emit_recursive_sum_resource(
             &escape_lifted_table(host_layout),
             0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
             &[], // no static-compound init
+            false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -529,6 +532,7 @@ pub(super) fn emit_recursive_sum_resource(
         &escape_lifted_table(layout),
         static_compounds.len(),
         &static_compound_init,
+        false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
     )
     .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);

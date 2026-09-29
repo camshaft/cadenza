@@ -5285,6 +5285,283 @@ pub fn assemble_host_runtime_resource_with_scalar_methods(
     out
 }
 
+/// [`assemble_host_runtime_resource_with_scalar_methods`] for the SHARED-MEMORY case (SHAPE 95): a host op
+/// returns a COMPOUND value (e.g. `string`) that escapes DIRECTLY as the resource entrypoint result, so the
+/// host-op canon-lower needs a Memory + Realloc option pointing at a memory that exists BEFORE the (importing)
+/// program core is instantiated — the lower<->instance circularity the self-memory assembler cannot resolve.
+/// Mirrors [`assemble_host_runtime_mem`]'s shared-`"mem"`-module shape: a `"mem"` core module (memory + a bump
+/// `cabi_realloc`) is core MODULE 0 / core INSTANCE 0; `mem.mem` → core memory 0 and `mem.cabi_realloc` → core
+/// func 0 are aliased BEFORE the host-op lowers; the host ops lower with `canon_lower_item_mem_realloc(i, 0, 0)`;
+/// and `main_core` (built with `needs_shared_mem = true`) IMPORTS `"mem"."mem"` + `"mem"."cabi_realloc"` instead
+/// of defining them. `rs = 1` (the aliased `mem.cabi_realloc` occupies core func 0) shifts every core-func index
+/// +1; the mem instance prepended shifts every core-instance index +1 (mem 0, host 1, drop 2, dtor-inst 3,
+/// heap 4, program 5) and every core-module index +1 (mem 0, dtor 1, program 2). The encode/method lifts read
+/// core memory 0 + the shared realloc core func 0 (not the program's — it no longer exports them). COMPONENT
+/// func indices are unchanged (rs is a CORE-func shift). The self-memory assembler above is UNTOUCHED, so every
+/// non-escaping resource shape is byte-identical.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_host_runtime_resource_with_scalar_methods_shared_mem(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    iface: &str,
+    host_fns: &[HostFn],
+    make_param_bytes: &[u8],
+    methods: &[ScalarMethod],
+    // Compound-host-RESULT (B1) declared types + the `has_list` flag — the host op's spilled result (e.g.
+    // `string`) is declared in the host effect instance-type so the host-op canon-lower carries the result
+    // (and thus the retptr param the guest expects). Mirrors `assemble_host_runtime_mem`'s `needs_list` +
+    // `result_defs`. For a `string` result both are trivial (string is primitive → no defined type), but the
+    // op's `comp_functype` MUST still carry the string result (built by the caller via `result_crefs`).
+    needs_list: bool,
+    result_defs: &[(Vec<u8>, bool)],
+) -> Vec<u8> {
+    let h = host_fns.len();
+    let k = imports.len();
+    let rs = 1u32; // the aliased `mem.cabi_realloc` = core func 0, shifting every core-func index +1
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+
+    // sec 7: TWO instance-types — host effect (comp type 0) then runtime (comp type 1). The host effect type
+    // now DECLARES the compound host result (via `result_defs` + each op's `comp_functype`).
+    let type_sec = {
+        let host_it = host_effect_instance_type(
+            host_fns,
+            needs_list || host_fns.iter().any(|f| f.has_list_param),
+            result_defs,
+            &[],
+        );
+        let rt_it = runtime_op_instance_type(imports);
+        let mut items = host_it;
+        items.extend_from_slice(&rt_it);
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&type_sec);
+
+    // sec 10: import host effect (comp instance 0) + runtime (comp instance 1). IDENTICAL.
+    let import_sec = {
+        let mut items = Vec::new();
+        let mut he = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+            iface,
+        ));
+        he.push(0x05);
+        uleb128(0, &mut he);
+        items.extend_from_slice(&he);
+        let mut rt = extern_name(import_name);
+        rt.push(0x05);
+        uleb128(1, &mut rt);
+        items.extend_from_slice(&rt);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&import_sec);
+
+    // sec 6: alias host ops (comp funcs 0..h) + runtime ops (comp funcs h..h+k). IDENTICAL.
+    let op_alias_sec = {
+        let mut items = Vec::new();
+        for f in host_fns {
+            items.extend_from_slice(&comp_alias_item(
+                0,
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
+            ));
+        }
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(1, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(h + k, &items))
+    };
+    out.extend_from_slice(&op_alias_sec);
+
+    // sec 1: the shared `"mem"` core module (memory + bump `cabi_realloc`) → core MODULE 0. Its allocator is
+    // seated past the program's static data (`shared_realloc_init(main_core)`), the one bump cursor.
+    out.extend_from_slice(&core_module_section(&shared_mem_realloc_module(
+        shared_realloc_init(main_core),
+    )));
+    // sec 2: instantiate the mem module (no args) → core INSTANCE 0.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[])),
+    ));
+    // sec 6: alias `mem.mem` → core memory 0 AND `mem.cabi_realloc` → core func 0, BOTH before the lowers so a
+    // spilled-result host-op lower references them (the Memory + Realloc canon options).
+    {
+        let mut it = memory_alias_item(0, "mem");
+        it.extend_from_slice(&core_alias_item(0, "cabi_realloc")); // → core func 0
+        out.extend_from_slice(&section(sec::ALIAS, &wasm_vec(2, &it)));
+    }
+
+    // sec 8: lower each HOST op with Memory (core memory 0) + Realloc (shared, core func 0) so its spilled
+    // compound result writes into the shared memory via the shared allocator → core funcs `rs..rs+h`; the
+    // RUNTIME ops lower memoryless (scalar `u32` handles) → core funcs `rs+h..rs+h+k`.
+    let lower_sec = {
+        let mut items = Vec::new();
+        for i in 0..h {
+            items.extend_from_slice(&canon_lower_item_mem_realloc(i as u32, 0, 0));
+        }
+        for i in h..(h + k) {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(h + k, &items))
+    };
+    out.extend_from_slice(&lower_sec);
+
+    // sec 2: host core instance exporting the lowered HOST ops (core funcs `rs+0..rs+h`) → core instance 1.
+    let host_core_inst = {
+        let ex: Vec<(&str, u32)> = host_fns
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.op.as_str(), rs + i as u32))
+            .collect();
+        core_export_instance_item(&ex)
+    };
+    out.extend_from_slice(&section(sec::CORE_INSTANCE, &wasm_vec(1, &host_core_inst)));
+    // sec 2: `heap-dtor` instance exporting the lowered `drop` (`rs + h + drop_pos`) → core instance 2.
+    let drop_core = imports
+        .iter()
+        .position(|op| op.name == RUNTIME_DROP)
+        .map(|i| rs + (h + i) as u32)
+        .expect("the runtime-resource escape imports `drop` for the dtor");
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&[(RUNTIME_DROP, drop_core)])),
+    ));
+    // sec 1: the dtor module → core MODULE 1 (mem is module 0).
+    out.extend_from_slice(&core_module_section(dtor_core));
+    // sec 2: instantiate the dtor module (module 1) threading `heap-dtor` = core instance 2 → core instance 3.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(1, &[(HEAP_DTOR_MODULE, 2)])),
+    ));
+    // sec 6: alias `t-dtor` out of core instance 3 → core func `rs+h+k`.
+    out.extend_from_slice(&section(
+        sec::ALIAS,
+        &wasm_vec(1, &core_alias_item(3, DTOR_CORE_EXPORT)),
+    ));
+    // sec 7: the resource type `t` (rep i32, dtor = core func `rs+h+k`) → component type 2.
+    let res_ty = 2u32;
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(1, &resource_type_item(rs + (h + k) as u32)),
+    ));
+    // sec 8: canon resource.new (→ core func `rs+h+k+1`) + resource.rep (→ core func `rs+h+k+2`).
+    let resource_canons = {
+        let mut items = resource_new_item(res_ty);
+        items.extend_from_slice(&resource_rep_item(res_ty));
+        section(sec::CANON, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&resource_canons);
+    // sec 2: `heap` instance exporting the k runtime ops (`rs+h..rs+h+k`) + resource-new (`rs+h+k+1`) +
+    // resource-rep (`rs+h+k+2`) → core instance 4.
+    let heap_exports = {
+        let mut ex: Vec<(&str, u32)> = imports
+            .iter()
+            .enumerate()
+            .map(|(i, op)| (op.name, rs + (h + i) as u32))
+            .collect();
+        ex.push((RESOURCE_NEW, rs + (h + k + 1) as u32));
+        ex.push((RESOURCE_REP, rs + (h + k + 2) as u32));
+        ex
+    };
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&heap_exports)),
+    ));
+    // sec 1: the program core module → core MODULE 2. It IMPORTS `"mem"."mem"` + `"mem"."cabi_realloc"` (built
+    // with `needs_shared_mem = true`), plus `"host"` + `"heap"`.
+    out.extend_from_slice(&core_module_section(main_core));
+    // sec 2: instantiate the program (module 2) threading `host` = core instance 1, `heap` = core instance 4,
+    // AND `mem` = core instance 0 → core instance 5.
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(
+            1,
+            &core_instantiate_item(2, &[(HOST_MODULE, 1), (HEAP_MODULE, 4), ("mem", 0)]),
+        ),
+    ));
+    // sec 6: alias the boundary exports off the program instance (core instance 5): make `rs+h+k+3`, t-encode
+    // `rs+h+k+4`, THEN each method's `t-<name>` (core func `rs+h+k+5+i`). NO memory / cabi_realloc alias off the
+    // program — in shared-mem mode those are the mem module's (core memory 0 / core func 0), aliased above.
+    let boundary_aliases = {
+        let mut items = Vec::new();
+        items.extend_from_slice(&core_alias_item(5, MAKE_CORE_EXPORT));
+        items.extend_from_slice(&core_alias_item(5, ENCODE_CORE_EXPORT));
+        for m in methods {
+            items.extend_from_slice(&core_alias_item(5, m.core_export));
+        }
+        section(sec::ALIAS, &wasm_vec(2 + methods.len(), &items))
+    };
+    out.extend_from_slice(&boundary_aliases);
+    // sec 7 + 8: make (own<t> comp type 3, make-ft 4 → comp func `h+k`) and encode (borrow<t> 5 + list 6 +
+    // encode-ft 7 → comp func `h+k+1`). Core func args shift +rs; the encode lift reads core memory 0 (shared)
+    // + the SHARED realloc (core func 0). Component func + type indices are unchanged.
+    let own_ty = 3u32;
+    let make_ft = 4u32;
+    let borrow_ty = 5u32;
+    let list_ty = 6u32;
+    let encode_ft = 7u32;
+    let make_types = {
+        let mut items = own_item(res_ty);
+        items.extend_from_slice(&params_result_functype(
+            make_param_bytes,
+            &owned_valtype(own_ty),
+        ));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    };
+    out.extend_from_slice(&make_types);
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(1, &canon_lift_item(rs + (h + k + 3) as u32, make_ft)),
+    ));
+    let encode_types = {
+        let mut items = borrow_item(res_ty);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&self_borrow_to_list_functype(borrow_ty, list_ty));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    };
+    out.extend_from_slice(&encode_types);
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(
+            1,
+            &canon_lift_list_item(rs + (h + k + 4) as u32, 0, 0, encode_ft),
+        ),
+    ));
+    // Per method `i`: functype (comp type `8+i`) REUSING borrow<t> type 5 (+ list type 6), then a canon lift of
+    // core func `rs+h+k+5+i` → comp func `h+k+2+i`. A ListU8 method reads core memory 0 + shared realloc 0.
+    for (i, m) in methods.iter().enumerate() {
+        let ty_idx = 8u32 + i as u32;
+        let functype = match m.result {
+            MethodResult::Scalar(prim) => self_borrow_to_scalar_functype(borrow_ty, prim),
+            MethodResult::ListU8 => self_borrow_to_list_functype(borrow_ty, list_ty),
+        };
+        out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &functype)));
+        let lift = match m.result {
+            MethodResult::Scalar(_) => canon_lift_item(rs + (h + k + 5 + i) as u32, ty_idx),
+            MethodResult::ListU8 => canon_lift_list_item(rs + (h + k + 5 + i) as u32, 0, 0, ty_idx),
+        };
+        out.extend_from_slice(&section(sec::CANON, &wasm_vec(1, &lift)));
+    }
+    // sec 4: the nested re-export component (make/encode + methods) — IDENTICAL (component-level).
+    out.extend_from_slice(&component_section(
+        &resource_inner_component_scalar_methods(make_param_bytes, methods),
+    ));
+    // sec 5: instantiate the inner component with the resource (comp type 2) + lifted funcs (make comp func
+    // `h+k`, encode `h+k+1`, method i `h+k+2+i`) → component instance 2. IDENTICAL (component funcs unchanged).
+    out.extend_from_slice(&section(
+        sec::COMPONENT_INSTANCE,
+        &wasm_vec(
+            1,
+            &component_instantiate_scalar_methods_item(res_ty, (h + k) as u32, methods),
+        ),
+    ));
+    // sec 11: export the inner instance as `cadenza:run/run` → component instance 2.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_instance_item(RUN_INTERFACE, 2)),
+    ));
+    out
+}
+
 /// Assemble a CLOSURE-RESOURCE component (C-HOST-1): a closure crossing the boundary as a resource whose
 /// `call` method invokes it. The same runtime-import + resource shape as [`assemble_runtime_resource`],
 /// but the second lifted method is `call : (self: own<t>, args…) -> R` (no `encode`, so no `list<u8>`

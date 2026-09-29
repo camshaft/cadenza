@@ -2695,6 +2695,7 @@ fn emit_runtime_resource(
             &escape_lifted_table(host_layout),
             static_compounds.len(),
             &static_compound_init,
+            false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -2786,6 +2787,7 @@ fn emit_runtime_resource(
         &escape_lifted_table(layout),
         static_compounds.len(),
         &static_compound_init,
+        false, // not a shared-memory (spilled-compound-result) escape — the module defines its own memory
     )
     .map_err(Reject::decline)?;
     // DEBUG: a compound-returning program is debuggable too. The user function bodies lead the escape
