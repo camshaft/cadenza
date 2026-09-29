@@ -476,6 +476,63 @@ pub fn check_live_objects_scalar(
     None
 }
 
+/// Grade the `(host-arg-received <op> <value>)` assertions against the args the host ACTUALLY RECEIVED
+/// (the ARG-ECHO check, co-designed with v-wit-boundary 2026-09-29) — the fix for the host-arg BYTE-LAYOUT
+/// hole: the response mock returns a fixed value and never echoes the arg, so a stride UNDER-RESERVATION
+/// (element N+1 clobbering N — a divergent-order record under an option in a list) produces a VALID wasm
+/// that instantiates + executes + returns the mock value with live-objects=0 and does NOT trap, silently
+/// passing the gate. Capturing the component-model canonically-LIFTED arg (wasmtime lifts per the correct
+/// WIT stride, so a too-tight guest write reads back corrupted/shifted) and asserting it turns these cases
+/// from validate-only into true round-trip pins.
+///
+/// PER-OP CALL-ORDER alignment (matching how `(host-responses)` sequences per op): the k-th
+/// `(host-arg-received op V)` clause for a given `op` is checked against the k-th observed CALL of that
+/// `op`. Returns `None` iff every asserted arg matches, else a `Fail` message naming the op + 1-based call
+/// index + expected/got. An assertion for a call that did NOT happen (fewer observed calls of that op than
+/// asserted) FAILs. Value-forms compare by EXACT string (both are the ONE canonical printer's output, so a
+/// byte-divergence is a string-divergence). Assertions are OPT-IN per call — an observed call with NO
+/// `(host-arg-received …)` clause is NOT required to match anything (a case pins only the args it cares
+/// about), so an un-asserted received arg is never a failure. Pure, so it is unit-testable ahead of the
+/// capture (S1) + parse (S2) slices.
+pub fn check_host_args_received(
+    // The corpus `(host-arg-received op value)` clauses, in corpus order.
+    expected: &[(String, String)],
+    // The args the host received, as `(op, canonical-value-form)` in OBSERVED CALL ORDER.
+    received: &[(String, String)],
+) -> Option<String> {
+    // Per op, the received value-forms in call order — so the k-th expected for `op` maps to the k-th call.
+    let mut by_op: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for (op, val) in received {
+        by_op.entry(op.as_str()).or_default().push(val.as_str());
+    }
+    // How many assertions we have already consumed for each op → the next one is that op's next call.
+    let mut consumed: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (op, want) in expected {
+        let k = consumed.entry(op.as_str()).or_insert(0);
+        let calls = by_op.get(op.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+        match calls.get(*k) {
+            None => {
+                return Some(format!(
+                    "host-arg-received: op {op:?} call {} was asserted (arg {want:?}) but the host \
+                     observed only {} call(s) of {op:?}",
+                    *k + 1,
+                    calls.len()
+                ));
+            }
+            Some(got) if *got != want.as_str() => {
+                return Some(format!(
+                    "host-arg-received mismatch on op {op:?} call {}: expected {want:?}, got {got:?} \
+                     (a divergent arg byte-layout — e.g. a stride under-reservation — or a marshal miscompile)",
+                    *k + 1
+                ));
+            }
+            Some(_) => {}
+        }
+        *k += 1;
+    }
+    None
+}
+
 /// seq-15 PURE-BINARY leak semantics: a KNOWN-LEAK case (`(live-objects known-leak)`) is NEVER count-checked
 /// (the leak magnitude does not matter — [`check_live_objects`] is simply skipped for it by the grade
 /// callers). This surfaces the FIX signal instead: return `true` iff the known-leak case now measures FULLY
@@ -4306,6 +4363,65 @@ mod tests {
         );
         // Length mismatch (list ≠ trial count) is an authoring Fail, not a silent under-check.
         assert!(check_live_objects(fletcher, Some(3), Some(&[3, 13])).is_some());
+    }
+
+    /// `check_host_args_received` (the arg-echo grade): a `(host-arg-received op V)` clause is checked
+    /// against the k-th observed call of `op`, PER-OP call order. Match passes; a value divergence (the
+    /// stride/marshal miscompile) fails naming op+call; an assertion for a call that did not happen fails;
+    /// un-asserted received calls are fine (opt-in per call).
+    #[test]
+    fn check_host_args_received_per_op_call_order() {
+        let pair = |op: &str, v: &str| (op.to_string(), v.to_string());
+        // Divergent-record witness (SHAPE 297/298 shape): the host received exactly the asserted record.
+        let recd = vec![pair("probe.push", "#record((= a 1) (= b 2) (= c 3))")];
+        let want = vec![pair("probe.push", "#record((= a 1) (= b 2) (= c 3))")];
+        assert_eq!(check_host_args_received(&want, &recd), None);
+        // A stride under-reservation clobbers c → the lifted arg diverges → FAIL naming the op + call 1.
+        let clobbered = vec![pair("probe.push", "#record((= a 1) (= b 2) (= c 0))")];
+        let msg = check_host_args_received(&want, &clobbered).unwrap();
+        assert!(
+            msg.contains("probe.push") && msg.contains("call 1"),
+            "{msg}"
+        );
+        // PER-OP call order: two calls of the same op pin each call's arg independently (2nd diverges).
+        let two_recd = vec![pair("io.put", "1"), pair("io.put", "2")];
+        let two_want = vec![pair("io.put", "1"), pair("io.put", "9")];
+        assert_eq!(check_host_args_received(&two_recd, &two_recd), None);
+        assert!(
+            check_host_args_received(&two_want, &two_recd)
+                .unwrap()
+                .contains("call 2")
+        );
+        // INTERLEAVED ops: alignment is per-op, not global position — io.get's 1st call is #record, even
+        // though a probe.ping call was observed between io.get's two calls.
+        let interleaved = vec![
+            pair("io.get", "#record((= x 1))"),
+            pair("probe.ping", "(None unit)"),
+            pair("io.get", "#record((= x 2))"),
+        ];
+        assert_eq!(
+            check_host_args_received(
+                &[
+                    pair("io.get", "#record((= x 1))"),
+                    pair("io.get", "#record((= x 2))")
+                ],
+                &interleaved
+            ),
+            None
+        );
+        // An assertion for a call that did NOT happen (op asserted twice, observed once) FAILs.
+        assert!(
+            check_host_args_received(&two_want, &[pair("io.put", "1")])
+                .unwrap()
+                .contains("only 1 call")
+        );
+        // OPT-IN: an un-asserted received call is never a failure (assert only the args a case cares about).
+        assert_eq!(
+            check_host_args_received(&[pair("io.put", "1")], &two_recd),
+            None
+        );
+        // No assertions ⇒ always pass (empty expected).
+        assert_eq!(check_host_args_received(&[], &two_recd), None);
     }
 
     #[test]
