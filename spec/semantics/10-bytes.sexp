@@ -1066,6 +1066,39 @@
   (output (: 100000 Int64))
   (live-objects 0))
 
+; The FBIP move-not-clone SOUNDNESS face: `Bytes.concat` moves its operands rather than cloning them (to keep
+; the concat cascade O(n)), but a move-in-place is sound ONLY for a uniquely-owned (rc1) operand. Here `base`
+; is used by the concat AND re-read afterwards, so it is shared (rc>1) at the concat and MUST NOT be moved in
+; place — else the later `(Bytes.at base 2)` reads a corrupted/reclaimed cell. A `filler` alloc between the
+; concat and the re-read would reuse `base`'s slot if it were over-dropped, so the re-read doubles as a release-
+; runtime UAF tripwire (the debug runtime traps on a freed-cell access; the release runtime diverges the value).
+(case
+  "a Bytes concat operand that is re-read after the concat survives the FBIP move-not-clone (shared operand not moved in place)"
+  (doc
+    "Regression guard for the concat/slice FBIP move-not-clone (O(n)-cascade reclaim): `base = [10,20,sel]`
+           feeds `Bytes.concat base [40,50]` AND is read again by `Bytes.at base 2` after a `filler` allocation.
+           Because `base` is live-after the concat (rc>1), the move-not-clone must NOT consume it in place — the
+           re-read must still see `sel`. At sel=30: base[2]=30 → 30000, filler[0]=99 → 9900, len(joined)=5 → 50,
+           joined[2]=30 → 30; total 39980. An over-eager move that consumed the shared `base` reads a wrong byte
+           (the filler reuses its slot on release) or traps on the debug runtime (freed-cell access). live-objects 0.")
+  (input
+    (do
+      (def
+        (main (: sel Int64))
+        (do
+          (def base (Bytes.of #list(10 20 (UInt8.wrap sel))))
+          (def joined (Bytes.concat base (Bytes.of #list(40 50))))
+          (def filler (Bytes.of #list(99 99 99)))
+          (+
+            (* 1000 (Option.expect (Bytes.at base 2) "b"))
+            (+
+              (* 100 (Option.expect (Bytes.at filler 0) "f"))
+              (+ (* 10 (Bytes.len joined)) (Option.expect (Bytes.at joined 2) "j"))))))
+      (export main)))
+  (call main (: 30 Int64))
+  (output (: 39980 Int64))
+  (live-objects 0))
+
 (case
   "String.from-bytes of a runtime slice decodes the WINDOW only"
   (doc
