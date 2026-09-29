@@ -11863,6 +11863,34 @@ cases
   (live-objects 0))
 
 (case
+  "TWO host effects delegated from one recursive-sum (List) escaping entrypoint each import their own interface"
+  (doc
+    "SHAPE 344 (v-wit-boundary) — WORKING. run() = List.push(list, a.f + b.g) delegating TWO distinct host
+           effects (a, b) from one RECURSIVE-SUM (List) resource-escaping entrypoint — the recursive-sum twin of
+           SHAPE 341's flat-sum multi-interface escape. The recursive-sum host branch now mirrors the flat-sum
+           branch: it imports EACH host effect as its own component instance (its FQ interface's instance-type)
+           and aliases each op out of ITS instance (`assemble_host_runtime_resource_multi`, which is
+           escape-form-agnostic — the RecursiveSum form is already baked into the core module), re-exporting all
+           ops through the ONE `\"host\"` core module the program binds (each op bound by its unique name). SCOPE:
+           scalar/unit ops (a compound-result op across >1 interface routes through the shared-memory multi form,
+           a later SHAPE). a.f -> 3, b.g -> 4, run() -> (list 7); byte-exact and zero-leak.")
+  (wit-world
+    (world w
+      (import cadenza:platform/a (member f (func (result (s64)))))
+      (import cadenza:platform/b (member g (func (result (s64)))))))
+  (input
+    (do
+      (effect a (op f (-> Unit Int64)))
+      (effect b (op g (-> Unit Int64)))
+      (def (run) ((. List push) (list) (+ (host (a) (a.f unit)) (host (b) (b.g unit)))))
+      (export run)))
+  (call run)
+  (host-responses (respond a.f (: 3 Int64)) (respond b.g (: 4 Int64)))
+  (host-calls (call cadenza:platform/a.f) (call cadenza:platform/b.g))
+  (output (: (list 7) (List Int64)))
+  (live-objects 0))
+
+(case
   "a HOST effect and a PEER effect both feeding a scalar entrypoint compose both import spaces"
   (doc
     "SHAPE 342a (v-wit-boundary) — WORKING, the NON-escape foundation of SHAPE 342. run() = H.h + Math.add 5
