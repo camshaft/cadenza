@@ -819,6 +819,10 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
             emitted_effects.insert(decl.name.as_str().into());
         }
     }
+    // Then the `(bind E "contract")` peer-binding directives for the emitted effects — WITHOUT them the
+    // recompile demotes a peer effect to a plain host effect (corpus-cadenza-28 0405 SHAPE 342 trap / 0404
+    // SHAPE 342a CDZ0906 decline). See [`emit_effect_bind_decls`].
+    emit_effect_bind_decls(db, &mut b, &emitted_effects, &mut root_children);
 
     // The lambda-lifted lambdas, shared (by `Rc`) into each definition's binder environment so a
     // `Core::Closure { code }` body resolves its lifted lambda by index. Empty for a closure-free program.
@@ -1018,6 +1022,12 @@ pub fn emit_fragment(
             }
         }
     }
+    // The `(bind …)` peer-binding directives, mirroring the effect-decl treatment: emit them only when this
+    // fragment OWNS the decls (`include_type_decls`); a mark-only closure fragment carries neither. See
+    // [`emit_effect_bind_decls`] + the whole-program `emit`.
+    if include_type_decls {
+        emit_effect_bind_decls(db, &mut b, &emitted_effects, &mut root_children);
+    }
 
     let lifted: std::rc::Rc<[crate::lower::LiftedLambda]> = layout.lifted.clone().into();
     // ONLY the named subset, in `layout.order` (deterministic) — NO exports (added at splice time).
@@ -1052,6 +1062,32 @@ pub fn emit_fragment(
     // twice already makes two DISTINCT StructIds — a tree, the separately-declined 0409 class — never a
     // shared node). Cheap: an already-tree arena is returned borrowed (no clone/rebuild).
     Ok(crate::codec::encode(&crate::canon::canonicalize(&arenas)))
+}
+
+/// Re-emit the top-level `(bind <Effect> "<contract>")` peer-binding directives for every EMITTED effect
+/// that is bound to a peer contract (`db.effect_bindings`, populated by `scan_effect_bindings` at load).
+/// A `(bind …)` associates an effect with a cross-component peer contract, so a `((. E o) …)` perform of a
+/// bound effect lowers to a `Core::HostCall` the backend routes to the PEER envelope rather than a plain
+/// host import. WITHOUT this directive on the round-trip, the recompile demotes the peer effect to a plain
+/// HOST effect: the fused import space then either declines (`assemble_host_extern` refuses more than one
+/// host interface, CDZ0906 — the scalar SHAPE 342a face) or compiles a component that imports the peer op
+/// from the wrong ("host") space and TRAPS at run (the sum-escape SHAPE 342 face, corpus-cadenza-28 0405).
+/// Emitted after the `(effect …)` decls (matching the source order `effect… bind… def…`) and gated on the
+/// effect having been emitted, so a bind never names an effect absent from the re-emitted surface.
+fn emit_effect_bind_decls(
+    db: &Db,
+    b: &mut Builder,
+    emitted_effects: &std::collections::HashSet<std::rc::Rc<str>>,
+    root_children: &mut Vec<StructId>,
+) {
+    for (effect, contract) in &db.effect_bindings {
+        if emitted_effects.contains(effect.as_str()) {
+            let bind_head = b.name("bind");
+            let name_node = b.name(effect.as_str());
+            let contract_node = b.atom_leaf(Leaf::Str(contract.as_str().into()));
+            root_children.push(b.list(vec![bind_head, name_node, contract_node]));
+        }
+    }
 }
 
 /// Reconstruct a user EFFECT's `(effect <Name> (op <o> (-> <Domain> <Result>))…)` declaration so a
