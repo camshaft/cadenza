@@ -3653,6 +3653,54 @@
   (output (: 6 Int64)))
 
 (case
+  "a mutually-recursive group const-folds a dead literal-if branch that wraps the MUTUAL CALL — dropping the recursion arm cuts the cycle after one step (adv-69 rw4 sub-face, dead-branch drops the call)"
+  (doc
+    "The mutual-SCC literal-if const-fold cases above all place the PERFORM inside the literal-if and
+           the mutual call OUTSIDE it. This pins the complementary shape: the literal-if wraps the MUTUAL
+           CALL, and a `false` literal selects the non-recursive branch — so const-folding
+           `(if false (odd-w (- n 1)) 0)` → `0` DROPS the recursion arm, cutting the cycle after the first
+           step. `(def (even-w n) (if (= n 0) 0 (+ (St.get) (if false (odd-w (- n 1)) 0))))` (and the odd-w
+           twin): only the entry `even-w 3` runs its `(St.get)` (the recursion is dropped, never reaching
+           odd-w), so seeded St=1 the single read is 1 → 1. Pins that the const-fold correctly eliminates a
+           dead branch even when that branch holds the reentrant call — the SCC/recursion analysis must stay
+           consistent with the post-fold (now non-recursive-through-that-branch) body, not fold the wrong
+           arm or leave a dangling call. A true literal in the same position keeps the call and recurses
+           normally (the dual, exercised by the run harness).")
+  (input
+    (do
+      (effect St (op get (-> Unit Int64)))
+      (def (even-w (: n Int64)) (if (= n 0) 0 (+ (St.get) (if false (odd-w (- n 1)) 0))))
+      (def (odd-w (: n Int64)) (if (= n 0) 0 (+ (St.get) (if false (even-w (- n 1)) 0))))
+      (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (even-w 3)))
+      (export main)))
+  (output (: 1 Int64)))
+
+(case
+  "a mutually-recursive group const-folds a literal-if that selects between TWO distinct effects' performs — the taken effect advances, the untaken effect is dropped (adv-69 rw4 sub-face, multi-effect discrimination)"
+  (doc
+    "Extends the mutual-SCC literal-if const-fold to a branch whose two arms perform DISTINCT effects:
+           `(if true (St.get) (St2.g2))`. The const-fold selects the `true` arm `(St.get)` and DROPS the
+           `St2.g2` arm entirely, so only St is advanced and St2 is never performed — the body reduces to the
+           direct `(+ (St.get) (odd-w …))` the pure-mutual group fold threads. Seeded St=1 the three gets
+           read 1,2,3 → 6 (St2, seeded 100, is never touched — its handler is present only to make the
+           untaken arm well-typed). Pins that the literal-if const-fold picks the correct effect's perform
+           and cleanly discharges the dropped arm without conflating the two effects' handler state or
+           leaving the untaken perform to fire. A false literal would symmetrically select `St2.g2` and drop
+           `St.get` (the dual).")
+  (input
+    (do
+      (effect St (op get (-> Unit Int64)))
+      (effect St2 (op g2 (-> Unit Int64)))
+      (def (even-w (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) (St2.g2)) (odd-w (- n 1)))))
+      (def (odd-w (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) (St2.g2)) (even-w (- n 1)))))
+      (def
+        (main)
+        (handle St2 100 ((g2 (u) s (resume s s)))
+          (handle St 1 ((get (u) s (resume s (+ s 1)))) (even-w 3))))
+      (export main)))
+  (output (: 6 Int64)))
+
+(case
   "a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds"
   (doc
     "The `match` companion of the separate-branch mutual case above — the cycle dispatches on a

@@ -3799,6 +3799,8 @@ pass	a mutually-recursive fold matching a rebuilt list with a payload binder bui
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
 pass	a mutually-recursive generic group is instantiated per type
 pass	a mutually-recursive group const-folds a DEAD performing branch away — a live literal-if perform is kept while a dead literal-if perform is eliminated with no spurious state advance (adv-69 rw4 sub-face, dead-branch elimination)
+pass	a mutually-recursive group const-folds a dead literal-if branch that wraps the MUTUAL CALL — dropping the recursion arm cuts the cycle after one step (adv-69 rw4 sub-face, dead-branch drops the call)
+pass	a mutually-recursive group const-folds a literal-if that selects between TWO distinct effects' performs — the taken effect advances, the untaken effect is dropped (adv-69 rw4 sub-face, multi-effect discrimination)
 pass	a mutually-recursive group performs in its entry def while its partner only dispatches
 pass	a mutually-recursive group performs in one branch and recurses in the OTHER
 pass	a mutually-recursive group performs through a shared non-recursive helper
