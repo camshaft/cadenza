@@ -71,6 +71,15 @@ pub struct Record {
     /// consumes these when it performs an operation; the gate driver passes each to `cdz-run
     /// --host-response`. Empty for a case that makes no host call.
     pub host_responses: Vec<(String, String)>,
+    /// ARG-ECHO assertions — `(op, value-form)` pairs from repeatable `(host-arg-received E.op <value>)`
+    /// clauses, in corpus order. Each pins the value the host RECEIVED for a delegated call, PER-OP call
+    /// order (the k-th clause for an op checks the k-th call of that op). Closes the host-arg BYTE-LAYOUT
+    /// hole: the response mock never echoes the arg, so a stride under-reservation (element N+1 clobbering
+    /// N) produces a valid wasm that executes + returns the mock value with live-objects=0 and passes the
+    /// gate — capturing the canonically-lifted arg and asserting it makes the layout observable. Graded by
+    /// `cdz_corpus_grade::check_host_args_received` against the args cdz-run captured. Empty for a case that
+    /// asserts no received args (opt-in per call). Co-designed with v-wit-boundary.
+    pub host_arg_received: Vec<(String, String)>,
     /// The recorded HOST-CALL sequence (E2h) — the dotted `E.op` names from a `(host-calls (call E.op
     /// arg…) …)` clause, in call order. The gate verifies the run's OBSERVED host calls against this, so
     /// a dropped/extra/reordered call is a Fail (not a false Pass on a matching return value). Empty for a
@@ -737,6 +746,15 @@ pub fn render(records: &[Record]) -> String {
             out.push_str(op);
             out.push('\n');
         }
+        // ARG-ECHO assertions: one `host-arg-received\t<op>\t<value>` line each, in corpus order — the
+        // values the host must RECEIVE (per-op call order). Absent for a case that asserts no received args.
+        for (op, value) in &r.host_arg_received {
+            out.push_str("host-arg-received\t");
+            out.push_str(op);
+            out.push('\t');
+            out.push_str(value);
+            out.push('\n');
+        }
         // WARNING pins (operator seq353 inc2): one `warns\t<CODE>` or `warns\t<CODE> (message "phrase")`
         // line each — the compile warnings the case asserts (a presence check, orthogonal to the outcome).
         for (code, message) in &r.warns {
@@ -977,6 +995,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut modules: Vec<Module> = Vec::new();
     let mut peers: Vec<Peer> = Vec::new();
     let mut host_responses: Vec<(String, String)> = Vec::new();
+    let mut host_arg_received: Vec<(String, String)> = Vec::new();
     let mut host_calls: Vec<String> = Vec::new();
     let mut warns: Vec<(String, Option<String>)> = Vec::new();
     let mut wit_world: Option<String> = None;
@@ -1250,6 +1269,22 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     }
                 }
             }
+            // `(host-arg-received E.op <value>)` — ARG-ECHO: assert the VALUE the host RECEIVED for a
+            // delegated call, per-op call order (the k-th clause for an op pins the k-th call of that op).
+            // REPEATABLE — one clause per asserted call. Mirrors the `(host-responses (respond …))` /
+            // `(host-calls (call …))` op-naming. Closes the host-arg byte-layout hole (a stride
+            // under-reservation makes the canonically-lifted arg diverge). Graded by
+            // `check_host_args_received` against cdz-run's captured args.
+            Some("host-arg-received") => {
+                if let Some(tail) = a.as_form(clause, "host-arg-received")
+                    && let Some(&op_id) = tail.first()
+                    && let Some(&val_id) = tail.get(1)
+                {
+                    let op = dotted_op(a, op_id);
+                    let value = value_of(a, val_id);
+                    host_arg_received.push((op, value));
+                }
+            }
             // `(host-calls (call E.op arg…) …)` — the ordered host-call sequence the run must make. Each
             // `call` names its operation (`E.op`, rendered dotted); the args are for documentation (the
             // gate verifies the op sequence). The gate compares the run's observed host calls against this.
@@ -1389,6 +1424,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         peers,
         trials,
         host_responses,
+        host_arg_received,
         host_calls,
         warns,
         wit_world,
@@ -1989,6 +2025,47 @@ mod tests {
             text.contains(r#"(not "internal error")"#),
             "not-clause renders: {text}"
         );
+    }
+
+    /// ARG-ECHO (host-arg byte-layout pin): repeatable `(host-arg-received E.op <value>)` clauses parse into
+    /// `host_arg_received` as `(dotted-op, value-form)` pairs in corpus order (per-op call order preserved),
+    /// and render one `host-arg-received\t<op>\t<value>` stream line each. The counterpart to
+    /// `cdz_corpus_grade::check_host_args_received`.
+    #[test]
+    fn host_arg_received_clauses_parse_and_render() {
+        let recs = read(
+            r#"(case "arg-echo" (input (do (def (run) 0) (export run))) (call run) (output (: 0 Int64))
+                 (host-responses (respond probe.push (: 55 Int64)))
+                 (host-arg-received probe.push #record((= a 1) (= b 2) (= c 3)))
+                 (host-arg-received probe.push #record((= a 4) (= b 5) (= c 6))))"#,
+        )
+        .unwrap();
+        assert_eq!(
+            recs[0].host_arg_received,
+            vec![
+                (
+                    "probe.push".to_string(),
+                    "#record((= a 1) (= b 2) (= c 3))".to_string()
+                ),
+                (
+                    "probe.push".to_string(),
+                    "#record((= a 4) (= b 5) (= c 6))".to_string()
+                ),
+            ]
+        );
+        // Renders one stream line per assertion, in order.
+        let text = to_records(
+            r#"(case "arg-echo" (input (do (def (run) 0) (export run))) (call run) (output (: 0 Int64))
+                 (host-arg-received probe.push #record((= a 1) (= b 2) (= c 3))))"#,
+        )
+        .unwrap();
+        assert!(
+            text.contains("host-arg-received\tprobe.push\t#record((= a 1) (= b 2) (= c 3))\n"),
+            "arg-echo stream line: {text}"
+        );
+        // A case with no clause carries an empty vec (no line).
+        let none = read(r#"(case "x" (input 5) (output (: 5 Int64)))"#).unwrap();
+        assert!(none[0].host_arg_received.is_empty());
     }
 
     /// authoring end of C1 — the counterpart to `cdz_corpus_grade`'s decode of the shredded clauses.
