@@ -413,18 +413,39 @@ fn collect_one_level_field_reads(
         if !seen.insert(node) {
             return;
         }
-        if let Core::SumPayload { scrutinee, path } = core_of(db, node)
-            && scrutinee == scrut
-            && path.starts_with(prefix)
-        {
-            match path.get(prefix.len()) {
-                // Exactly one step past the prefix, and it is the LAST step, and it is an `Elem` → a
-                // one-level positional field/slot read. Bind-early-eligible.
-                Some(crate::core::PathStep::Elem(j)) if path.len() == prefix.len() + 1 => {
-                    fields.insert(*j);
+        if let Core::SumPayload { scrutinee, path } = core_of(db, node) {
+            // Case A: a read keyed DIRECTLY on the list/match scrutinee `scrut` (a root-relative /
+            // optimizer-composed read).
+            if scrutinee == scrut && path.starts_with(prefix) {
+                match path.get(prefix.len()) {
+                    // Exactly one step past the prefix, and it is the LAST step, and it is an `Elem` → a
+                    // one-level positional field/slot read. Bind-early-eligible.
+                    Some(crate::core::PathStep::Elem(j)) if path.len() == prefix.len() + 1 => {
+                        fields.insert(*j);
+                    }
+                    // The whole element (path == prefix) or a deeper / non-`Elem` read → not eligible.
+                    _ => *ok = false,
                 }
-                // The whole element (path == prefix) or a deeper / non-`Elem` read → not eligible.
-                _ => *ok = false,
+            }
+            // Case B: a TWO-LEVEL positional field read whose scrutinee is itself the bound ELEMENT node
+            // `SumPayload{scrut, prefix}` — the optimizer keyed a nested tuple/record destructure RELATIVE
+            // TO THE ELEMENT, not the root list (`(match h (#tuple(k _) …))` inside a list arm: `k` reads
+            // `SumPayload{h_node, [Elem(0)]}` where `h_node = SumPayload{scrut, [Elem(i)]}`). Treat it as a
+            // one-level field read (bind-early-eligible) and RETURN WITHOUT recursing into the element node:
+            // otherwise the element node's own visit matches Case A's whole-element `path == prefix` guard
+            // and wrongly sets `ok = false`, defeating bind-early and forcing the flatten-to-projections that
+            // keeps the element live (corpus-cadenza-05 case-1220 403-obj trie leak).
+            else if path.len() == 1
+                && let Some(crate::core::PathStep::Elem(j)) = path.first()
+                && let Core::SumPayload {
+                    scrutinee: elem_scrut,
+                    path: elem_path,
+                } = core_of(db, scrutinee)
+                && elem_scrut == scrut
+                && &*elem_path == prefix
+            {
+                fields.insert(*j);
+                return;
             }
         }
         for c in crate::backend::wasm::select::core_child_ids(db, node) {
@@ -447,6 +468,34 @@ fn collect_one_level_field_reads(
     } else {
         None
     }
+}
+
+/// Fully compose a `Core::SumPayload` read key down to its ROOT: while the scrutinee is itself a
+/// `SumPayload{root, prefix}` (a nested destructure — the optimizer keyed an inner field read relative to
+/// the bound intermediate, not the root), prepend the intermediate's `prefix` and descend to `root`. Returns
+/// the root scrutinee + the accumulated root-relative path. Used at the `Core::SumPayload` emit arm to
+/// resolve an element-relative field read to the ROOT-relative binder key that [`emit_list_elem_binder`]
+/// registers for a bind-early destructure (`(root, [Elem(i), Elem(j)])`), so a nested `(match h (#tuple(k
+/// _) …))` field read finds its bind-early binder instead of falling to the flatten-to-projections (the
+/// corpus-cadenza-05 case-1220 leak). Read-only over `db`.
+fn fully_compose_payload_key(
+    db: &mut Db,
+    scrutinee: StructId,
+    path: &[crate::core::PathStep],
+) -> (StructId, Vec<crate::core::PathStep>) {
+    let mut s = scrutinee;
+    let mut p = path.to_vec();
+    while let Core::SumPayload {
+        scrutinee: root,
+        path: prefix,
+    } = core_of(db, s)
+    {
+        let mut composed = prefix.to_vec();
+        composed.extend_from_slice(&p);
+        p = composed;
+        s = root;
+    }
+    (s, p)
 }
 
 /// Emit the surface PATTERN + register the binders for ONE list-element slot at `elem_prefix` (`[Elem(i)]`).
@@ -3244,6 +3293,25 @@ fn emit_expr_viewed(
         // ONLY inside the arm body that bound it; a read whose binder is not in scope (a nested sub-pattern
         // this slice does not emit) declines.
         Core::SumPayload { scrutinee, path } => {
+            // COMPOSE-THROUGH-INTERMEDIATE-SUMPAYLOAD: a nested destructure keys its field read relative to
+            // the BOUND element (`SumPayload{elem_node, [Elem(j)]}`), but bind-early registered that field
+            // binder under the ROOT-relative composed key `(root, prefix ++ [Elem(j)])` ([`emit_list_elem_binder`]).
+            // If the exact `(scrutinee, path)` is not itself a registered binder but its fully-composed root
+            // key IS, resolve against the composed key — so a `(match h (#tuple(k _) …))` field read finds
+            // the bind-early tuple binder instead of falling to the flatten-to-projections that keeps the
+            // element live (corpus-cadenza-05 case-1220). Purely additive: composes ONLY when the exact key
+            // misses and the composed key hits; a genuine deep read (no registered composed key) is untouched.
+            let (scrutinee, path): (StructId, std::rc::Rc<[crate::core::PathStep]>) =
+                if env.payloads.contains_key(&(scrutinee, path.to_vec())) {
+                    (scrutinee, path)
+                } else {
+                    let (cs, cp) = fully_compose_payload_key(db, scrutinee, &path);
+                    if cs != scrutinee && env.payloads.contains_key(&(cs, cp.clone())) {
+                        (cs, cp.into())
+                    } else {
+                        (scrutinee, path)
+                    }
+                };
             // Exact registered binder (a match arm's own payload slot).
             if let Some(nm) = env.payloads.get(&(scrutinee, path.to_vec())).cloned() {
                 // TYPE-AWARE NEWTYPE PEEL: the binder may hold an ERASED single-variant, single-payload
