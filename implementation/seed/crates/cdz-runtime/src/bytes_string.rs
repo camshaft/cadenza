@@ -129,7 +129,7 @@ pub(crate) fn op_bytes_len(buf: Handle) -> u32 {
 /// guest linear memory) into a heap Bytes in ONE cross-component call instead of one call/byte. Mirrors
 /// `op_str_new` minus UTF-8 validation: an EMPTY slice → the shared IMMORTAL empty-BYTES singleton (reuse the
 /// `op_bytes_alloc` len==0 mint-once path); else a fresh owned leaf holding `data` VERBATIM (`alloc` stores it
-/// inline when ≤INLINE_RAW_CAP, on the heap when larger). A CONSTRUCTOR — produces a NEW owned Bytes and
+/// inline when ≤INLINE_RAW_CAP, in a refcounted ByteVec (Raw::Rope) when larger). A CONSTRUCTOR — produces a NEW owned Bytes and
 /// CONSUMES nothing (`data` arrives by value, not as a handle). Called by `Guest::bytes_new`.
 pub(crate) fn op_bytes_new(data: Vec<u8>) -> Handle {
     if data.is_empty() {
@@ -214,7 +214,7 @@ pub(crate) fn bytes_flatten(h: Handle) {
     // child freed here can never be reached through `h`.
     let children = match unsafe { h.node_mut() } {
         Some(n) => {
-            n.raw = Raw::from(dst); // the flattened bytes (a wide rope leaf → Heap)
+            n.raw = Raw::from(dst); // the flattened bytes (a wide leaf → Raw::Rope, a refcounted ByteVec)
             n.handles.take() // the (now-orphaned) rope children (an owned `Handles`) to drop below
         }
         None => return,
