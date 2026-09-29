@@ -5390,6 +5390,58 @@ mod tests {
         );
     }
 
+    /// ARG-ECHO capture end-to-end (the host-arg byte-layout pin's run half): a hand-built component that
+    /// imports `probe.push(s64)->s64`, calls it with a FIXED arg (7), and returns the host response (55).
+    /// `run_with_live_objects` must (a) fire the host closure → observed captures the op, AND (b) capture the
+    /// RECEIVED arg's value-form into the 3rd tuple element — the channel `check_host_args_received` grades.
+    /// The captured arg is `7` (the guest's arg), NOT `55` (the response), proving it echoes the real arg.
+    /// Verifies the S1 capture wiring independently of any corpus case / the Cadenza compiler (wat only).
+    #[cfg(feature = "cranelift")]
+    #[test]
+    fn arg_echo_captures_the_received_host_arg() {
+        // A minimal component: import probe.push(s64)->s64, export run()->s64 = probe.push(7).
+        let wat = r#"
+(component
+  (import "test:pkg/probe" (instance $probe
+    (export "push" (func (param "x" s64) (result s64)))))
+  (alias export $probe "push" (func $push_hi))
+  (core func $push_lo (canon lower (func $push_hi)))
+  (core module $m
+    (import "probe" "push" (func $push (param i64) (result i64)))
+    (func (export "run") (result i64)
+      (call $push (i64.const 7))))
+  (core instance $mi (instantiate $m
+    (with "probe" (instance (export "push" (func $push_lo))))))
+  (func $run_hi (result s64) (canon lift (core func $mi "run")))
+  (export "run" (func $run_hi))
+)
+"#;
+        let bytes = wat::parse_str(wat).expect("assemble the host-import component");
+        let opts = RunOpts {
+            export: Some("run".to_string()),
+            host_responses: vec![HostResponse {
+                op: "test:pkg/probe.push".into(),
+                value: "55".into(),
+            }],
+            ..Default::default()
+        };
+        let (outcome, observed, received, _live) =
+            run_with_live_objects(&bytes, &opts, None, false, None).expect("run the component");
+        // The run fired the host op and returned the response.
+        assert!(
+            matches!(&outcome, Outcome::Value(v) if v == "55"),
+            "outcome: {outcome:?}"
+        );
+        assert_eq!(observed, vec!["test:pkg/probe.push".to_string()]);
+        // THE PIN: the received arg is captured as its canonical value-form — and it is the GUEST'S arg (7),
+        // not the response (55). A stride/marshal miscompile would surface here as a different value.
+        assert_eq!(
+            received,
+            vec![("test:pkg/probe.push".to_string(), "7".to_string())],
+            "arg-echo must capture the received arg value-form"
+        );
+    }
+
     #[test]
     fn hash_extracted_from_pinned_import() {
         let name = "cadenza:runtime/heap@0.0.0+abc123";
