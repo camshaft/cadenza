@@ -85,6 +85,10 @@ pub fn grade(
     // Parallel to `per_trial_live` (one entry per trial, same order): does the trial RETURN a heap-free
     // scalar? Fed to `check_live_objects_scalar` so a later heap-RETURN trial's 0-check is skipped (#7527).
     let mut per_trial_scalar: Vec<bool> = Vec::new();
+    // ARG-ECHO: the `(op, received-arg value-form)` pairs the host observed across ALL trials, in call
+    // order — asserted against the case's `(host-arg-received …)` clauses after grade_run. Empty for a
+    // case that makes no host call / asserts no received arg. Closes the host-arg byte-layout hole.
+    let mut received_args_all: Vec<(String, String)> = Vec::new();
     let result = grade_run(
         &test_run,
         compile_status,
@@ -133,7 +137,7 @@ pub fn grade(
             // A `(peer …)` case composes its providers (the consumer's imported interface is bound by
             // forwarding the peer's exported funcs over the shared runtime); a plain case runs the consumer
             // alone. Both read the shared runtime's live-cell count for the heap-balance assertion.
-            let (outcome, observed, live) = if peers.is_empty() {
+            let (outcome, observed, received, live) = if peers.is_empty() {
                 match run_with_live_objects(
                     component_bytes,
                     &opts,
@@ -141,7 +145,7 @@ pub fn grade(
                     drop_handle,
                     call_member,
                 ) {
-                    Ok(triple) => triple,
+                    Ok(quad) => quad,
                     // An emitted component that will not LOAD (wasmtime "invalid component: …", from
                     // `run_with_live_objects`'s `load_guest`) is a MISCOMPILE / bad artifact — grade it a
                     // FAIL, do NOT let the error crash the harvest. This makes the grade harvest ROBUST to a
@@ -172,11 +176,12 @@ pub fn grade(
                     drop_handle,
                     call_member,
                 ) {
-                    Ok(triple) => triple,
-                    Err(e) => (Outcome::Trap(format!("{e}")), Vec::new(), None),
+                    Ok(quad) => quad,
+                    Err(e) => (Outcome::Trap(format!("{e}")), Vec::new(), Vec::new(), None),
                 }
             };
             per_trial_live.push(live);
+            received_args_all.extend(received);
             Ok(match outcome {
                 Outcome::Value(v) => GradeOutcome::Value(v, observed),
                 Outcome::Trap(t) => GradeOutcome::Trap(t),
@@ -232,6 +237,21 @@ pub fn grade(
         &per_trial_scalar,
         tolerate_fewer_live_objects && test_run.live_objects_cadenza_tolerate,
     ) {
+        result.grade = std::mem::replace(&mut result.grade, Grade::Pass).worse(Grade::Fail(msg));
+    }
+
+    // ARG-ECHO assertion (`(host-arg-received …)`): the values the host RECEIVED for its delegated calls
+    // must match, PER-OP call order — closing the host-arg byte-layout hole (a stride under-reservation
+    // corrupts the canonically-lifted arg, which this catches as a value-form divergence). OPT-IN: inert
+    // unless the case authored `(host-arg-received …)` clauses (`check_host_args_received` no-ops on empty
+    // expected). A mismatch worsens the grade to Fail. Peer cases capture no received args yet (deferred),
+    // so a peer case asserting one would see "0 calls observed" — acceptable until peer arg-echo lands.
+    if !test_run.host_arg_received.is_empty()
+        && let Some(msg) = cdz_corpus_grade::check_host_args_received(
+            &test_run.host_arg_received,
+            &received_args_all,
+        )
+    {
         result.grade = std::mem::replace(&mut result.grade, Grade::Pass).worse(Grade::Fail(msg));
     }
 

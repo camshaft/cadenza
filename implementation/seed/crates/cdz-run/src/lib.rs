@@ -698,13 +698,21 @@ fn compose_and_instantiate(
 /// Reuses the same host-capturing linker + [`run_export`] drive as [`run_capturing_compiled`] (so every
 /// export shape — named, sole, kebab-normalized, resource/closure escape — is handled identically), then
 /// additionally reads the runtime instance's counter when a heap import is present.
+/// The `(op, received-arg value-form)` pairs an arg-echo grade captures — one per delegated host call, in
+/// call order (a single-param op records its param's value-form; a multi-param op a `#tuple(…)`; a nullary
+/// op nothing). Asserted against `(host-arg-received …)` by `cdz_corpus_grade::check_host_args_received`.
+pub type ReceivedArgs = Vec<(String, String)>;
+/// A single run's grade-path result: the outcome, the observed host-op sequence, the arg-echo capture, and
+/// the post-run live-cell count (`None` for a no-heap/trap run).
+pub type RunLiveResult = (Outcome, Vec<String>, ReceivedArgs, Option<u32>);
+
 pub fn run_with_live_objects(
     component_bytes: &[u8],
     opts: &RunOpts,
     second_call: Option<&[String]>,
     drop_handle: bool,
     call_member: Option<&str>,
-) -> Result<(Outcome, Vec<String>, Option<u32>)> {
+) -> Result<RunLiveResult> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
     let component = load_guest(&engine, component_bytes, opts)
@@ -734,7 +742,18 @@ pub fn run_with_live_objects(
     // Bind every HOST import so a delegated effect's operations are satisfied by the recorded responses,
     // capturing the observed op sequence (inert for a program that makes no host call).
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
+    // ARG-ECHO capture channel (grade path): the value-form of each delegated host call's received arg,
+    // asserted against `(host-arg-received …)`. Inert unless a case asserts.
+    let received_args: Arc<Mutex<ReceivedArgs>> = Arc::new(Mutex::new(Vec::new()));
+    bind_host_imports(
+        &engine,
+        &component,
+        &mut linker,
+        opts,
+        &observed,
+        Some(&received_args),
+        &[],
+    )?;
 
     // bytes-second run-wiring: resolve the running export's guest result-Ty, so a WIT-erased leaf renders
     // its value-form via `render_val_typed` (Bytes `b"…"` vs `list<u8>` `#list`, Symbol `#"…"`). The map
@@ -760,6 +779,7 @@ pub fn run_with_live_objects(
         param_ty,
     )?;
     let calls = observed.lock().expect("observed calls mutex").clone();
+    let recv_args = received_args.lock().expect("received args mutex").clone();
     // Read the heap balance ONLY on a clean VALUE return: a trapping run aborted mid-computation, so its
     // heap balance is ill-defined AND the runtime instance may be unusable after the guest trap (calling
     // its `live-objects` export could itself error and mask the real trap). A trap case therefore reports
@@ -768,7 +788,7 @@ pub fn run_with_live_objects(
         (Outcome::Value(_), Some(rt)) => Some(read_live_objects(&mut store, rt)?),
         _ => None,
     };
-    Ok((outcome, calls, live))
+    Ok((outcome, calls, recv_args, live))
 }
 
 /// Read the runtime heap's `live-objects` export (a nullary `-> u32`) — the count of live heap cells. On
@@ -851,7 +871,7 @@ pub fn run_with_rc_trace(
     };
 
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
+    bind_host_imports(&engine, &component, &mut linker, opts, &observed, None, &[])?;
     let result_types = result_types_of(component_bytes, opts)?;
     let result_ty = lookup_result_ty(&result_types, opts.export.as_deref());
     // The PARAM-Ty twin (cdz-param-type section): lets the arg-decode recover a value-form (`BigInt`) param.
@@ -1525,7 +1545,7 @@ pub fn run_capturing_compiled(
     // dotted `E.op` to `observed`, so the caller can compare the observed sequence against the case's
     // recorded `(host-calls …)`. Inert for a program with no host import (the common case).
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    bind_host_imports(&engine, component, &mut linker, opts, &observed, &[])?;
+    bind_host_imports(&engine, component, &mut linker, opts, &observed, None, &[])?;
 
     // bytes-second run-wiring (same as `run_with_live_objects`): the guest result-Ty rides on the compiled
     // component (scanned from its `cdz-result-type` section at `compile_component`), so `cdz run` /
@@ -1925,7 +1945,7 @@ fn run_composition_hosted_capturing(
     let mut skip: Vec<String> = compiled.peers.iter().map(|(_, i)| i.clone()).collect();
     skip.extend(bindings.iter().map(|b| b.iface.clone()));
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    bind_host_imports(&engine, consumer, &mut linker, opts, &observed, &skip)?;
+    bind_host_imports(&engine, consumer, &mut linker, opts, &observed, None, &skip)?;
 
     // Bind each explicit host-op closure into the consumer, marshalling through the shared runtime's ropes.
     // Requires the shared runtime to exist (String host-op args/results cross as rope handles into it).
@@ -1983,7 +2003,7 @@ pub fn run_with_peers_live_objects(
     second_call: Option<&[String]>,
     drop_handle: bool,
     call_member: Option<&str>,
-) -> Result<(Outcome, Vec<String>, Option<u32>)> {
+) -> Result<RunLiveResult> {
     // PRECOMPILED (seq-250): the peer-composition path (`compile_composition`) JIT-compiles the consumer +
     // each peer and takes no `RunOpts`, so it cannot yet load precompiled `.cwasm` artifacts. A cranelift-
     // free exec therefore cannot run a `(peer …)` corpus case yet — fail with a clear signal rather than the
@@ -1997,14 +2017,19 @@ pub fn run_with_peers_live_objects(
         );
     }
     let compiled = compile_composition(consumer_bytes, peers)?;
-    run_composition_hosted_capturing(
+    // ARG-ECHO is not yet captured on the peer-composition path (the load-bearing witnesses are PLAIN
+    // host-arg cases, not peer cases) — return an empty received-args list so a peer case's grade simply
+    // asserts no received args. Threading capture through `run_composition_hosted_capturing` is a follow-up
+    // if a peer case ever needs to pin a received arg.
+    let (outcome, observed, live) = run_composition_hosted_capturing(
         &compiled,
         opts,
         Vec::new(),
         second_call,
         drop_handle,
         call_member,
-    )
+    )?;
+    Ok((outcome, observed, Vec::new(), live))
 }
 
 /// Verify a consumer's imported model op `model_iface`.`op_name` has the `(u32) -> u32` boundary shape
@@ -3391,6 +3416,13 @@ fn bind_host_imports(
     linker: &mut Linker<()>,
     opts: &RunOpts,
     observed: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    // ARG-ECHO capture (`Some` only on the corpus GRADE path): each delegated host call records
+    // `(dotted E.op, received-arg value-form)` here, in call order — the arg-echo channel the grade asserts
+    // against `(host-arg-received …)` (closing the host-arg byte-layout hole: the canonically-lifted arg is
+    // captured, so a stride under-reservation shows as a value divergence). `None` for the cdz-run/cdz-test
+    // paths (no arg-echo). A single-param op records its param's value-form; a multi-param op records a
+    // `#tuple(…)` of all params; a nullary op records nothing (no arg to echo).
+    received_args: Option<&std::sync::Arc<std::sync::Mutex<ReceivedArgs>>>,
     // Interface names ALREADY bound (as cross-component PEERS, X4) — skip them here so a peer interface
     // is not also bound as a host effect (a double-bind is a linker error). Empty for a plain run.
     skip: &[String],
@@ -3441,6 +3473,7 @@ fn bind_host_imports(
             let cursor = Arc::clone(&cursor);
             let responses = Arc::clone(&responses);
             let observed = Arc::clone(observed);
+            let received_args = received_args.map(Arc::clone);
             let op_label = format!("{iface_name}.{fname}");
             iface.func_new(&fname, move |_ctx, params, results| {
                 // OBSERVE the call — append its dotted `E.op` in call order (so the gate can verify the
@@ -3463,6 +3496,24 @@ fn bind_host_imports(
                     format!("{op_label}\t{}", str_args.join(" "))
                 };
                 observed.lock().expect("observed calls mutex").push(entry);
+                // ARG-ECHO: on the grade path, record the RECEIVED arg's value-form so the grade can assert
+                // it against a `(host-arg-received …)` clause. A single-param op records its param directly
+                // (`#record(…)` / a scalar); a multi-param op records a `#tuple(…)` of all params; a nullary
+                // op records nothing (no arg to echo). Uses the ONE canonical printer (`render_val`), so a
+                // stride under-reservation — which corrupts the canonically-lifted param — shows as a
+                // value-form divergence. Inert unless a case asserts (opt-in) + `received_args` is `Some`.
+                if let Some(ra) = &received_args {
+                    let vf = match params {
+                        [] => None,
+                        [one] => Some(render_val(one)),
+                        many => Some(render_val(&Val::Tuple(many.to_vec()))),
+                    };
+                    if let Some(vf) = vf {
+                        ra.lock()
+                            .expect("received args mutex")
+                            .push((op_label.clone(), vf));
+                    }
+                }
                 // adv-65 (HIGH differential): a UNIT-result op returns nothing, but it STILL CONSUMES its
                 // response row when the fixture supplied one for it — the corpus model is "responses are
                 // consumed IN ORDER of the calls made", so a `(host (io) (do (io.ping k) (+ (io.get k) k)))`

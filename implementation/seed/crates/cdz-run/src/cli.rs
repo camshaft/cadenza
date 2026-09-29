@@ -696,7 +696,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
                 content_address(rt)
             );
         }
-        let (outcome, observed, live) = run_with_live_objects(
+        let (outcome, observed, _received_args, live) = run_with_live_objects(
             &component_bytes,
             &opts,
             second_call,
