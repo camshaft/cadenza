@@ -44,8 +44,100 @@ pub fn lint_mandates(repo: &Path) -> Result<Vec<Violation>, String> {
     let mut out = Vec::new();
     out.extend(no_new_integration_tests(repo)?);
     out.extend(no_hard_coded_runtime_hash(repo)?);
+    out.extend(no_cross_crate_source_include(repo)?);
     // Follow-on: no_hex_except_tracing, no_thin_wrapper_fns (syn-based).
     Ok(out)
+}
+
+/// The `no-cross-crate-source-include` mandate (operator seq-1385: "no path-includes"): a
+/// `#[path = "…/…"]` attribute or an `include!(…)` whose path ESCAPES the crate (contains `../`) is a
+/// cross-crate SOURCE-SHARE — the "copy-don't-depend" / path-include pattern the operator banned going
+/// forward. It couples two crates by SOURCE instead of a real dependency: exactly the class that let
+/// #174's cdz-num→runtime bigint break reach main (a source-include compiled in one crate's build and
+/// broke another's, and the nix gate that didn't build the native crate missed it). A real crate
+/// dependency — or a build-time shared crate — is the sanctioned alternative.
+///
+/// SCOPE (why this is a going-forward guard, not a fleet-redder — v-cadenza-ci audit 2026-09-29):
+/// ZERO real cross-crate `#[path]`/`include!` exist in `implementation/**` at introduction — the last
+/// one (cdz-num→runtime) was removed under #174/cecb302360, and the deliberate codec/float "copy" shares
+/// use a non-`#[path]` build mechanism. So this STARTS GREEN.
+///  - In-crate `#[path = "sub/mod.rs"]` (submodule layout, no `../`) is NOT a cross-crate share — allowed.
+///  - Codegen `include!(concat!(env!("OUT_DIR"), "/gen.rs"))` (no `../`) is allowed.
+///  - Comment MENTIONS of the mechanism are ignored — the scan strips a `//` line comment before matching
+///    (the current tree's only occurrences are prose in `//`/`///` comments).
+///  - Escape: `// mandate:allow no-cross-crate-source-include: <reason>` on the line, for a blessed share.
+///  - VENDORED (`reference/`) trees are not ours to police.
+fn no_cross_crate_source_include(repo: &Path) -> Result<Vec<Violation>, String> {
+    let impl_root = repo.join("implementation");
+    let mut rs = Vec::new();
+    collect_rs_files(&impl_root, &mut rs).map_err(|e| {
+        format!(
+            "cannot enumerate {} for the mandate lint: {e}",
+            impl_root.display()
+        )
+    })?;
+    let mut out = Vec::new();
+    for f in rs {
+        let rel = f.strip_prefix(repo).unwrap_or(&f);
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        if is_vendored_path(&rel_str) {
+            continue;
+        }
+        let src = std::fs::read_to_string(&f).map_err(|e| {
+            format!(
+                "cannot read {} for the source-include mandate: {e}",
+                f.display()
+            )
+        })?;
+        // Cheap prefilter: only files that textually carry a path-include token (a tiny population).
+        if !(src.contains("#[path") || src.contains("include!")) {
+            continue;
+        }
+        for (i, raw) in src.lines().enumerate() {
+            if line_is_cross_crate_source_include(raw) {
+                let code = strip_line_comment(raw);
+                out.push(Violation {
+                    file: f.clone(),
+                    reason: format!(
+                        "cross-crate source-share at line {} (`{}`) — operator seq-1385 bans a NEW \
+                         `#[path=]`/`include!` that escapes the crate (`../`): it couples two crates by \
+                         SOURCE (the class that let #174's cdz-num→runtime break reach main). Use a real \
+                         crate dependency or a build-time shared crate. In-crate `#[path]` and \
+                         `include!(concat!(env!(\"OUT_DIR\"), …))` are fine (no `../`). A blessed existing \
+                         share needs `// mandate:allow no-cross-crate-source-include: <reason>`",
+                        i + 1,
+                        code.trim()
+                    ),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Strip a `//` line comment (covers `//`, `///`, `//!`) from a source line, returning the code portion.
+/// A PROSE mention of `#[path]`/`include!`/`../` in a comment must never trip the lint — only a real
+/// attribute/macro in the code portion counts. (This is a lexically-naive cut at the first `//`, which is
+/// sufficient here: the population is path-include lines, none of which carry a `//` inside a string.)
+fn strip_line_comment(raw: &str) -> &str {
+    match raw.find("//") {
+        Some(p) => &raw[..p],
+        None => raw,
+    }
+}
+
+/// Does this source line carry a cross-crate source-include violation? True when the CODE portion (comment
+/// stripped) contains `../` AND a `#[path`/`include!` token, and the line does NOT carry the
+/// `mandate:allow no-cross-crate-source-include` escape. `../` is the cross-crate signal: sibling crates
+/// need it to escape the crate root; an in-crate `#[path = "sub/mod.rs"]` and an `OUT_DIR` codegen
+/// `include!` have none. Factored out as a pure predicate so it is unit-testable without a filesystem.
+fn line_is_cross_crate_source_include(raw: &str) -> bool {
+    // The `mandate:allow` escape rides in the comment, so test the FULL line first.
+    if raw.contains("mandate:allow no-cross-crate-source-include") {
+        return false;
+    }
+    let code = strip_line_comment(raw);
+    code.contains("../") && (code.contains("#[path") || code.contains("include!"))
 }
 
 /// The `no-integration-tests` mandate: ANY `tests/*.rs` cargo integration test is a violation — a
@@ -605,6 +697,42 @@ mod tests {
         assert!(!is_integration_test_path(Path::new(
             "implementation/seed/crates/foo/tests/helper-crate/src/lib.rs"
         )));
+    }
+
+    #[test]
+    fn cross_crate_source_include_predicate() {
+        // A `#[path]` escaping the crate (`../`) is a cross-crate source-share → trips.
+        assert!(line_is_cross_crate_source_include(
+            r#"#[path = "../cdz-num/src/bigint.rs"]"#
+        ));
+        // An `include!` of a sibling crate's source likewise trips.
+        assert!(line_is_cross_crate_source_include(
+            r#"    include!("../../runtime/src/codec.rs");"#
+        ));
+        // An in-crate `#[path = "sub/mod.rs"]` (submodule layout, no `../`) is NOT a cross-crate share.
+        assert!(!line_is_cross_crate_source_include(
+            r#"#[path = "sub/mod.rs"]"#
+        ));
+        // An OUT_DIR codegen `include!` (no `../`) is fine.
+        assert!(!line_is_cross_crate_source_include(
+            r#"include!(concat!(env!("OUT_DIR"), "/gen.rs"));"#
+        ));
+        // A PROSE mention in a comment must NOT trip — the code portion is empty after the `//` strip.
+        assert!(!line_is_cross_crate_source_include(
+            r#"// never `#[path = "../other/src/x.rs"]` — use a real dep"#
+        ));
+        assert!(!line_is_cross_crate_source_include(
+            r#"/// See the old `include!("../foo.rs")` we removed under #174."#
+        ));
+        // The mandate:allow escape suppresses a genuinely-blessed share (the escape rides in the comment,
+        // so the FULL line is tested before the strip).
+        assert!(!line_is_cross_crate_source_include(
+            r#"#[path = "../shared/src/lib.rs"] // mandate:allow no-cross-crate-source-include: blessed"#
+        ));
+        // A `../` alone (no path-include token) is not a source-share.
+        assert!(!line_is_cross_crate_source_include(
+            r#"let p = Path::new("../sibling/data");"#
+        ));
     }
 
     #[test]
