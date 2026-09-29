@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(52);
+    let shape = c.variant(53);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -1021,8 +1021,25 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      frees `xs` before Map.lookup canonicalizes it -> wrong value / trap. `(match (Map.lookup m xs)
         //      ((Some v) (+ v n)) …)` -> v=7 (xs was inserted with 7), value = 7+n (arg-oracle, xs dead after
         //      lookup). Arg = a. Verified rust AGREE (4->11, 1->8, 0->7, -4->3); corpus elc2 value 7.
-        _ => (
+        51 => (
             "(do (def (main (: n Int64)) (let ((xs #list(n (+ n 1) (+ n 2)))) (let ((m (Map.insert (Map.insert Map.empty xs 7) #list(9 9) 5))) (match (Map.lookup m xs) ((Some v) (+ v n)) ((None) -1))))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 52 — mtll1 INVARIANT-MAP-PARAM `Map.to-list`'d IN A SELF-LOOP (the #b50180e899 borrow-gate reclaim
+        //      value/UAF fence — the Map TWIN of shape 49's Set.to-list, CLOSING the fix's two-arm coverage). A
+        //      `build` makes a 3-entry Map {0:0,1:10,2:20}; `loop` threads it UNCHANGED (invariant) through a
+        //      self-recursion, borrowing it via `(Map.to-list mp)` every iteration for a `List.len` fold (tot += 3
+        //      each step). b50180e899's param_only_borrowed_or_backedge_rec (loop-exit reclaim gate) added BOTH a
+        //      SetToList arm (shape 49) AND this DISTINCT MapToList arm (op_map_to_list borrows the map + returns a
+        //      list of key/value pairs — its own borrow classification, gated on SCALAR key+value; a heap entry
+        //      would alias into the result list -> stays denied, leak-not-UAF). The corpus (19-sets) pins the LEAK
+        //      side (live-objects 0); THIS pins the VALUE/UAF side: a mis-fired loop-exit drop that frees the
+        //      invariant Map before a later iteration's Map.to-list reads it -> trap / wrong tot. value = 3*n for
+        //      n>0 (n iterations x 3-entry map), else 0 (loop body skipped). Arg = a. Verified rust AGREE
+        //      (5->15, 0->0, 40->120, -4->0); corpus main(500)->1500.
+        _ => (
+            "(do (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) (if (< i n) (build (+ i 1) n (Map.insert mp i (* i 10))) mp)) (def (loop (: j Int64) (: n Int64) (: mp (Map Int64 Int64)) (: tot Int64)) (if (< j n) (loop (+ j 1) n mp (+ tot (List.len (Map.to-list mp)))) tot)) (def (main (: n Int64)) (loop 0 n (build 0 3 Map.empty) 0)) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6463,13 +6480,13 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main`.
-        let mut reached = [false; 52];
-        for seed in 0u64..3120 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` + the mtll1 invariant-Map-param Map.to-list-in-a-self-loop `main`.
+        let mut reached = [false; 53];
+        for seed in 0u64..3180 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
-            // variant(52) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
-            // shape selector AND every arg literal on live entropy. (shapes 19-51 reuse e0/e1/e2/s0/u/a — no new read.)
+            // variant(53) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
+            // shape selector AND every arg literal on live entropy. (shapes 19-52 reuse e0/e1/e2/s0/u/a — no new read.)
             for _ in 0..64 {
                 x ^= x >> 30;
                 x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -6612,11 +6629,13 @@ mod tests {
                 reached[50] = true; // shape 50 = sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` (borrow-when-canonicalizing #a0f501dde5)
             } else if ep.source.contains("(Map.insert Map.empty xs 7)") {
                 reached[51] = true; // shape 51 = mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` (borrow-when-canonicalizing #a0f501dde5, Map twin of 50)
+            } else if ep.source.contains("(Map.to-list mp)") {
+                reached[52] = true; // shape 52 = mtll1 invariant-Map-param Map.to-list'd in a self-loop `main` (borrow-gate reclaim #b50180e899, Map twin of 49)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all fifty-two export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all fifty-three export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
