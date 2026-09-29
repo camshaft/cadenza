@@ -5265,7 +5265,7 @@
       (export main)))
   (call main (: 500 Int64))
   (output (: 1500 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Set.to-list over a BORROWED param source reused across a loop borrows it (no consume) -- value-correct, no UAF"
@@ -5288,7 +5288,7 @@
       (export main)))
   (call main (: 500 Int64))
   (output (: 1500 Int64))
-  (live-objects known-leak))
+  (live-objects 0))
 
 (case
   "Set.union over two owned-temporary runtime sets reclaims both operands and the result (no live objects)"

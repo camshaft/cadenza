@@ -779,6 +779,32 @@ pub(super) fn param_only_borrowed_or_backedge_rec(
         Core::SetLen { set } => recur(db, set, true),
         Core::MapSize { map } => recur(db, map, true),
         Core::SetContains { set, elem, .. } => recur(db, set, true) && recur(db, elem, true),
+        // `Map.to-list`/`Set.to-list` READ the collection into a FRESH entry list — they BORROW the container
+        // (core.rs: not consumed), producing a new list. SOUND only when the entries hold NO heap alias into the
+        // container: for a Map, BOTH key AND value must be scalar (a heap key/value would put a live alias into
+        // the result list → borrowing-then-loop-base-dropping the container = UAF, the #4917 view class); for a
+        // Set, the ELEMENT must be scalar. The scalar case (an invariant Map/Set param `to-list`'d each iteration
+        // for a `List.len`/scalar fold — the 19-sets Map.to-list/Set.to-list borrowed-param-reused-across-a-loop
+        // known-leak, where the fresh result list is reclaimed after the borrowing `List.len` but the invariant
+        // container param leaked at the terminal arm) BORROWS the container → the invariant param gets its
+        // loop-exit reclaim. The exact `Map.lookup`/`ListAt` scalar-guard pattern applied to to-list, and
+        // CONSISTENT with the escape walk's already-borrow `MapToList`/`SetToList` arms (reclaim.rs). A heap-entry
+        // to-list stays denied (conservative → leak, never a UAF). The reclaim stays gated by
+        // `looped_invariant_param_caller_owned` (AXIS A) at the drop site, so a caller-reused param is never dropped.
+        Core::MapToList { map, .. } => {
+            let entries_scalar = match type_of(db, map).strip_nominal() {
+                Ty::Map(k, v) => !is_heap_type(k) && !is_heap_type(v),
+                _ => false,
+            };
+            entries_scalar && recur(db, map, true)
+        }
+        Core::SetToList { set, .. } => {
+            let elem_scalar = match type_of(db, set).strip_nominal() {
+                Ty::Set(e) => !is_heap_type(e),
+                _ => false,
+            };
+            elem_scalar && recur(db, set, true)
+        }
         // STRUCTURAL COMPARE / EQUALITY ops BORROW both heap operands (read in place for the hash/compare,
         // dropping only an owned temporary — core.rs; mirrors `binding_escapes`/`collect_consuming_payload_
         // sites` which recurse both with `consuming=false`) and return a SCALAR (`Bool`/ordering `Int`) that
