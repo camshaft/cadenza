@@ -464,7 +464,7 @@ pub(super) fn emit_product_to_mem(
     db: &mut Db,
     agg_slot: u32,
     dest_addr: u32,
-    layout: &[(usize, Ty)],
+    layout: &[(usize, Ty, Option<crate::wit_world::WitType>)],
     cursor: u32,
     work_base: u32,
     high: &mut u32,
@@ -479,11 +479,15 @@ pub(super) fn emit_product_to_mem(
     }
     *high = (*high).max(work_base + 3);
     // Walk the fields in CANONICAL layout order, accumulating each field's offset (aligned to its own
-    // alignment) — the exact offset walk `emit_result_lift`'s product arm reads back.
+    // alignment) — the exact offset walk `emit_result_lift`'s product arm reads back. Each field is sized in
+    // its OWN WIT order (`canonical_layout_wit` with the threaded `fwit`) so a DIVERGENT nested record field
+    // (WIT order ≠ guest name-lex order, different padded size) advances `foff` / reserves the extent by the
+    // WIT-order write, not the guest-order layout — byte-identical to `canonical_layout` for every field except
+    // a divergent-order nested record (`fwit == None`, e.g. a positional tuple element, is the guest fallback).
     let mut foff: u32 = 0;
-    for (cell, fty) in layout {
+    for (cell, fty, fwit) in layout {
         let cell = *cell;
-        let (fs, fa) = canonical_layout(db, fty);
+        let (fs, fa) = canonical_layout_wit(db, fty, fwit.as_ref());
         foff = align_up_u32(foff, fa);
         match get_op_ty(db, fty)? {
             // A SCALAR field: `mem[dest_addr + foff] = narrow(unbox(arr-get(agg, cell)))` at its canonical width.
@@ -711,10 +715,51 @@ pub(super) fn emit_product_to_mem(
                     out,
                 )?;
             }
+            // A nested RECORD field (`list<record{r: record{…}, …}>`): write the record product IN PLACE at
+            // `dest_addr + foff` via `emit_record_to_mem`, ordering ITS fields to the field's own WIT
+            // declaration order (threaded as `fwit`) — the recursive analogue of a `list<record>` ELEMENT. The
+            // field was sized WIT-order by `canonical_layout_wit` above, so a DIVERGENT nested record (WIT order
+            // ≠ guest name-lex order) reserves the correct extent and the write does not overflow into the next
+            // field. Requires the field's WIT record (present on the `emit_record_to_mem` path; a positional
+            // `emit_tuple_to_mem` element threads `fwit = None` and so a record element there declines below).
+            None if matches!(fty.strip_nominal(), Ty::Record(_))
+                && matches!(fwit, Some(crate::wit_world::WitType::Record(_))) =>
+            {
+                let Ty::Record(fields) = fty.strip_nominal() else {
+                    unreachable!("record by the guard")
+                };
+                let fields = (*fields).clone();
+                let field_wit = fwit.clone().expect("record WIT by the guard");
+                let rec_slot = work_base + 3;
+                let field_addr = work_base + 4;
+                scratch_ty.insert(rec_slot, ValType::I32);
+                scratch_ty.insert(field_addr, ValType::I32);
+                *high = (*high).max(work_base + 5);
+                out.push(Lir::LocalGet(agg_slot));
+                out.push(Lir::ConstI32(cell as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [record handle] (borrows agg)
+                out.push(Lir::LocalSet(rec_slot));
+                out.push(Lir::LocalGet(dest_addr));
+                out.push(Lir::ConstI32(foff as i32));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(field_addr)); // field_addr = dest_addr + foff
+                emit_record_to_mem(
+                    db,
+                    rec_slot,
+                    field_addr,
+                    &fields,
+                    &field_wit,
+                    cursor,
+                    work_base + 5,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+            }
             _ => {
                 return Err(Reject::unsupported(
                     "a product host-arg element field that is not a scalar, `Bytes`, `list`, `tuple`, \
-                     option<scalar>, or variant<scalar> is not supported",
+                     `record`, option<scalar>, or variant<scalar> is not supported",
                 ));
             }
         }
@@ -747,8 +792,9 @@ pub(super) fn emit_record_to_mem(
         ));
     };
     let names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
-    let mut layout: Vec<(usize, Ty)> = Vec::with_capacity(wit_fields.len());
-    for (fname, _fwit) in wit_fields {
+    let mut layout: Vec<(usize, Ty, Option<crate::wit_world::WitType>)> =
+        Vec::with_capacity(wit_fields.len());
+    for (fname, fwit) in wit_fields {
         let i = names.iter().position(|n| n == fname).ok_or_else(|| {
             Reject::decline(
                 "a host WIT record field is absent from the guest `list<record>` element type",
@@ -759,7 +805,8 @@ pub(super) fn emit_record_to_mem(
             .nth(i)
             .expect("name-lex index in range")
             .clone();
-        layout.push((i, fty));
+        // Thread each field's declared WIT so a nested RECORD field is sized + written in WIT order.
+        layout.push((i, fty, Some(fwit.clone())));
     }
     emit_product_to_mem(
         db, rec_slot, dest_addr, &layout, cursor, work_base, high, scratch_ty, out,
@@ -780,10 +827,12 @@ pub(super) fn emit_tuple_to_mem(
     scratch_ty: &mut HashMap<u32, ValType>,
     out: &mut Emit,
 ) -> Result<(), Reject> {
-    let layout: Vec<(usize, Ty)> = elems
+    // A tuple is POSITIONAL, so no field-name reorder — thread `None` per element (a record element of a tuple
+    // needs the field WIT threaded through `emit_tuple_to_mem`, a later slice, so it declines in the product walk).
+    let layout: Vec<(usize, Ty, Option<crate::wit_world::WitType>)> = elems
         .iter()
         .enumerate()
-        .map(|(i, t)| (i, t.clone()))
+        .map(|(i, t)| (i, t.clone(), None))
         .collect();
     emit_product_to_mem(
         db, tup_slot, dest_addr, &layout, cursor, work_base, high, scratch_ty, out,
@@ -1479,8 +1528,14 @@ fn emit_variant_tuple_to_mem(
             "a variant tuple-payload case is not a tuple",
         ));
     };
-    // The product writer's layout is `(arr-get cell, element type)` in positional (= component) order.
-    let layout: Vec<(usize, Ty)> = elems.iter().cloned().enumerate().collect();
+    // The product writer's layout is `(arr-get cell, element type, field WIT)` in positional (= component)
+    // order — a positional tuple threads `None` WIT per element (no name reorder; a record element declines).
+    let layout: Vec<(usize, Ty, Option<crate::wit_world::WitType>)> = elems
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(i, t)| (i, t, None))
+        .collect();
 
     let disc = work_base;
     let field_addr = work_base + 1;
@@ -1713,7 +1768,13 @@ fn emit_variant_mixed_to_mem(
                 let Ty::Tuple(elems) = pty.strip_nominal() else {
                     return Err(Reject::decline("a mixed variant tuple case is not a tuple"));
                 };
-                let layout: Vec<(usize, Ty)> = elems.iter().cloned().enumerate().collect();
+                // Positional tuple payload: `None` WIT per element (a record element declines in the walk).
+                let layout: Vec<(usize, Ty, Option<crate::wit_world::WitType>)> = elems
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(i, t)| (i, t, None))
+                    .collect();
                 out.push(Lir::LocalGet(disc));
                 out.push(Lir::ConstI32(*pd));
                 out.push(Lir::I32Eq);
