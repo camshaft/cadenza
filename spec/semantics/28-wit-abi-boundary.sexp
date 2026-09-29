@@ -11455,3 +11455,28 @@ cases
   (host-arg-received cadenza:platform/probe.push #list(#record((= o (Some (stop 7))))))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<tuple<option<variant{go, stop(s64)}>, s64>> host-op arg crosses (an option<variant> TUPLE ELEMENT)"
+  (doc
+    "SHAPE 327 (v-wit-boundary) — a `list<tuple<option<variant{go, stop(s64)}>, s64>>` host-op ARGUMENT: an
+           `option<variant>` element of a TUPLE list element (the mem-write path via `emit_tuple_to_mem` →
+           `emit_option_to_mem`). The tuple-element twin of SHAPE 326 (the option<variant> RECORD-FIELD): the same
+           `emit_option_to_mem` scalar-variant arm (routing through the general `emit_variant_to_mem`) writes the
+           option's variant payload in place at the element offset, and `emit_tuple_to_mem` threads the element WIT
+           from the tuple's `WitType::Tuple`. run() pushes [(Some(stop(7)), 9)]; the byte-exact received arg is
+           pinned; a VALID running component (live-objects=0).")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (list (tuple (option (variant (go) (stop (s64)))) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (Go) (Stop Int64))
+      (effect probe (op push (-> (List (Tuple (Option Sig) Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #list(#tuple((Some (Sig.Stop 7)) 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list(#tuple((Some (stop 7)) 9)))
+  (output 55)
+  (live-objects 0))
