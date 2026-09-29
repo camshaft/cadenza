@@ -112,7 +112,7 @@ pub(super) fn emit_runtime_sum_resource(
         {
             return Err(Reject::unsupported(
                 "a host op with a compound or enum result feeding a sum-escaping resource entrypoint is not \
-                 supported (the sum-escape host path does not yet declare the host result's boundary type nor \
+                 supported (the sum-escape host path does not declare the host result's boundary type nor \
                  lift its value-heap rep); a scalar/unit host result-escaping as a resource IS supported",
             ));
         }
@@ -442,7 +442,7 @@ pub(super) fn emit_recursive_sum_resource(
         {
             return Err(Reject::unsupported(
                 "a host op with a compound or enum result feeding a sum-escaping resource entrypoint is not \
-                 supported (the sum-escape host path does not yet declare the host result's boundary type nor \
+                 supported (the sum-escape host path does not declare the host result's boundary type nor \
                  lift its value-heap rep); a scalar/unit host result-escaping as a resource IS supported",
             ));
         }
