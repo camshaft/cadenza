@@ -10765,3 +10765,81 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level list<record{xs: list<s64>}> host-op arg crosses (a list<T> FIELD of a record list element)"
+  (doc
+    "SHAPE 300 (v-wit-boundary) — a top-level `list<record{xs: list<s64>}>` host-op ARGUMENT: a list whose
+           element is a RECORD with a `list<s64>` FIELD. A record list element is written IN PLACE by
+           `emit_product_to_mem`, which handled a scalar / `Bytes` / `option<scalar>` / `variant` field but NOT a
+           `list<T>` field — so `product_field_marshalable` declined the `xs` field and the whole op declined
+           CDZ0903 (a record element with a Bytes field crossed; one with a list field did not). Now
+           `emit_product_to_mem` gains a list-field arm (the list analogue of its `Bytes` field arm): marshal the
+           field list's backing into `mem` at the running cursor via `emit_list_arg_marshal` (leaving
+           `(outer-ptr, count)`), then write the `(ptr@foff, count@foff+4)` header at the field offset;
+           `product_field_marshalable` admits a NO-WIT-element list field (`list_field_no_wit`: a scalar / `Bytes`
+           / nested list of those — a record/tuple element needs the field WIT threaded, a later slice). `used_ops`
+           already declared a list field's `vec-*`/element ops (`collect_record_field_ops`'s list arm), and the
+           outer `list` arg already reserves the cursor. run() pushes [{xs: [1, 2]}]; a VALID running component
+           (live-objects=0) pins the list-field-in-a-record-list-element round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= xs (list (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: xs (List Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= xs #list(1 2)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{d: bytes, xs: list<s64>}> host-op arg with 2 elements crosses (Bytes + list<T> fields, cursor across elements)"
+  (doc
+    "SHAPE 301 (v-wit-boundary) — the MULTI-FIELD, MULTI-ELEMENT twin of SHAPE 300: a
+           `list<record{d: list<u8>, xs: list<s64>}>` whose record element carries BOTH a `Bytes` field and a
+           `list<s64>` field, pushed with TWO elements. Each element is written at the per-element stride; the `d`
+           rope and the `xs` backing both spill into `mem` at the SAME running cursor, which advances across both
+           fields AND across elements (the Bytes arm advances by `len`, `emit_list_arg_marshal` advances by the
+           backing size). Confirms the list-field arm composes with the Bytes-field arm and the cursor stays
+           consistent across a multi-element list. run() pushes [{d: b\"AB\", xs: [1,2]}, {d: b\"CD\", xs: [3,4,5]}];
+           a VALID running component (live-objects=0) pins the two-mem-field record element across elements.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= d (list (u8))) (= xs (list (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: d Bytes) (: xs (List Int64)))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= d b"AB") (= xs #list(1 2))) #record((= d b"CD") (= xs #list(3 4 5)))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a top-level list<tuple<list<s64>, s64>> host-op arg crosses (a list<T> ELEMENT of a tuple list element)"
+  (doc
+    "SHAPE 302 (v-wit-boundary) — the TUPLE-element twin of SHAPE 300: a `list<tuple<list<s64>, s64>>` whose
+           list element is a TUPLE with a `list<s64>` element (and a scalar). A tuple list element is written IN
+           PLACE by the same `emit_product_to_mem` (a tuple is a positional product), so its new list-field arm
+           lays the `list<s64>` element's backing at the cursor + a `(ptr,count)` header at the element offset,
+           the scalar written inline. run() pushes [([1, 2], 9)]; a VALID running component (live-objects=0) pins
+           the list-element-in-a-tuple-list-element round-trip.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (tuple (list (s64)) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Tuple (List Int64) Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #list(#tuple(#list(1 2) 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))

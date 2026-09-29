@@ -2326,15 +2326,38 @@ pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world:
 /// Whether a `list<T>` ELEMENT type is marshalable as a host arg by `select::emit_list_arg_marshal`: a
 /// `Bytes`/`String` (crosses as an inner `(ptr,len)`), a SCALAR (aliased-width int/char/float, written
 /// inline), a NESTED `list` whose own element is marshalable (recursed to arbitrary depth), or a RECORD whose
-/// every field is a scalar or `Bytes` (written in place at its canonical layout by `emit_record_to_mem`).
+/// every field is `product_field_marshalable` (written in place at its canonical layout by `emit_record_to_mem`).
 /// Kept in lockstep with the marshal's element arms so the representability gate admits exactly what the
-/// marshal emits — a record with a nested-record/list field, or a tuple/variant element, declines here.
+/// marshal emits — a record with a nested-record field, or a tuple/variant element, declines here.
 /// Whether a RECORD/TUPLE field of a `list<record|tuple>` ELEMENT is marshalable in place by
-/// `select::emit_product_to_mem`: a scalar, a `Bytes`, or an `option<scalar>` (written via `emit_option_to_mem`
-/// at the field's canonical offset). A nested record/list/tuple/option<bytes> field is a later slice.
+/// `select::emit_product_to_mem`: a scalar, a `Bytes`, an `option<scalar>`, a scalar/tuple `variant`, an `enum`,
+/// or a `list<T>` of a NO-WIT element (scalar/`Bytes`/nested list of those — [`list_field_no_wit`], written via
+/// `emit_list_arg_marshal` at the cursor + a `(ptr,count)` header). A nested record/tuple/option<compound> field,
+/// or a `list` of a record/tuple element (needs the field WIT threaded), is a later slice.
+/// Whether `f` is a `list<T>` field whose element needs NO WIT to marshal — a scalar, a `Bytes`/`String`, or a
+/// nested `list` of those (recursed). `emit_product_to_mem`'s list-field arm passes `elem_wit = None`, so it can
+/// only lay a list whose element is offset-agnostic; a `record`/`tuple`/`option`/`variant` element would need
+/// the field WIT threaded through (a later slice) and returns `false` here (the field then declines cleanly).
+fn list_field_no_wit(f: &Ty) -> bool {
+    let Ty::List(elem) = f.strip_nominal() else {
+        return false;
+    };
+    match elem.strip_nominal() {
+        Ty::Bytes | Ty::String => true,
+        Ty::List(_) => list_field_no_wit(elem),
+        other => abi_val_type(other).is_some(),
+    }
+}
+
 fn product_field_marshalable(db: &mut Db, f: &Ty) -> bool {
     matches!(f.strip_nominal(), Ty::Bytes | Ty::String)
         || abi_val_type(f).is_some()
+        // A `list<T>` field of a product LIST-ELEMENT (`list<record{xs: list<s64>, …}>`): written by
+        // `emit_product_to_mem`'s list-field arm — the list backing spilled into `mem` at the cursor + a
+        // `(ptr,count)` header at the field offset (the list analogue of a `Bytes` field). SCOPED to a NO-WIT
+        // element (scalar / `Bytes` / nested list of those) via [`list_field_no_wit`]: a `record`/`tuple`
+        // element needs the field WIT threaded through `emit_product_to_mem` (a later slice), so it declines.
+        || list_field_no_wit(f)
         || option_payload_ty(db, f).is_some_and(|p| abi_val_type(&p).is_some())
         // A general `variant<scalar>` field of a product element (`list<record{v: variant{…}, …}>` /
         // `list<tuple<variant, …>>`): written in place by `select::emit_variant_to_mem`. Detected after
