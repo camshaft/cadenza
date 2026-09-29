@@ -3245,6 +3245,27 @@
   (output (: 150 UInt8)))
 
 (case
+  "a narrow-width tuple map VALUE is grounded to its declared field width at runtime emit"
+  (doc
+    "`(Map.lookup (: #map((= n (tuple 100))) (Map Int64 (Tuple Int8))) n)` keyed by a RUNTIME `n` — the
+           runtime key keeps the map from const-folding, so the value tuple `(tuple 100)` SURVIVES to the
+           backend emit. Its narrow field `100` must be grounded to the map's DECLARED value slot `(Tuple
+           Int8)`, NOT the literal's own defaulted Int64: projecting `(. t 0)` reads it back at Int8 = 100.
+           The map-VALUE twin of the narrow tuple/record projection cases above — a compound map value
+           carries the same narrow field through the value heap as a bare tuple, so its literal field is
+           grounded from the map's declared value type at construction, not the element's under-ground self-
+           type (else the field renders at the i64 default into an Int8 slot and the backend rejects it).")
+  (input
+    (do
+      (def (main (: n Int64))
+        (match (Map.lookup (: #map((= n #tuple(100))) (Map Int64 (Tuple Int8))) n)
+          ((Some t) (. t 0))
+          (None (: 0 Int8))))
+      (export main)))
+  (call main (: 3 Int64))
+  (output (: 100 Int8)))
+
+(case
   "a runtime tuple built behind a recursive call escapes to the host"
   (doc
     "A tuple returned from a RECURSIVE function that threads a runtime value into it —
