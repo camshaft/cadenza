@@ -6999,7 +6999,14 @@ pub(super) fn emit(
                         // Use the WIT-AWARE cases so a RECORD payload case's field slots follow the WIT record's
                         // declaration order (the bare detector orders them name-lex). Consistent with `serialize`
                         // (which flattens the classifier's WIT-ordered `HostParam` cases) + `host_imports` (the WIT
-                        // `variant` type). A record case with no resolvable WIT field order → a clean decline.
+                        // `variant` type). A record case with no resolvable WIT field order → a CODED CDZ0903
+                        // decline: this fires for a sum whose WIT is NOT a `WitType::Variant` (e.g. a
+                        // `result<bytes, record>` — a 2-variant sum that reaches this arm, but its WIT is
+                        // `WitType::Result`, so the Err-record case cannot be WIT-ordered here) or a WIT field
+                        // absent from the guest record. Coded (not a bare `Reject::decline`) so the boundary
+                        // classifier band stays coded — a compound-`Err` result arg is a queued crossing (it needs
+                        // the Ok/Err-disc-aware WIT ordering + byte-exact verification via the forthcoming
+                        // `host-arg-received` harness), not a silent codeless refusal.
                         let wit_variant = wit_params.as_ref().and_then(|p| p.get(arg_i));
                         let cases = crate::backend::wasm::host::variant_mixed_payload_cases_wit(
                             db,
@@ -7007,8 +7014,11 @@ pub(super) fn emit(
                             wit_variant,
                         )
                         .ok_or_else(|| {
-                            Reject::decline(
-                                "a mixed variant arg with a record case has no resolvable WIT field order",
+                            Reject::coded(
+                                crate::diag::Code::HostOpNoBoundaryForm,
+                                "a mixed variant host-op argument with a record payload case has no resolvable \
+                                 WIT field order (its declared WIT is not a `variant`, e.g. a `result` with a \
+                                 record error case, or a WIT field is absent from the guest record)",
                             )
                         })?;
                         let var_slot = arg_base.max(*high);

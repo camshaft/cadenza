@@ -10733,3 +10733,35 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a top-level result<list<u8>, record{code, n}> host-op arg DECLINES CDZ0903 (compound-Err result, codeless->coded)"
+  (doc
+    "SHAPE 299 (v-wit-boundary) — a top-level `result<list<u8>, record{code:s32, n:s64}>` host-op ARGUMENT: a
+           `result` whose Err arm is a RECORD (structured error), Ok arm a `list<u8>` (Bytes). The `result<bytes,
+           enum>` arg path (`result_bytes_enum`) handles an ENUM (payloadless) Err; a RECORD Err declines it, so the
+           arg falls through to the generic MIXED-VARIANT arm (a `result` is a 2-variant sum: Ok(bytes) is a Bytes
+           case, Err(record) a Record case). That arm WIT-orders a record case via `variant_mixed_payload_cases_wit`,
+           which needs the arg's WIT to be a `variant` — but a `result` arg's WIT is `WitType::Result`, so the
+           Err-record case cannot be WIT-ordered and the op DECLINES. Previously this was a CODELESS `error:` (a
+           classifier-admitted arg the emit then refused wordlessly); now it is a CODED CDZ0903 (`HostOpNoBoundaryForm`)
+           — decline-don't-miscompile + codeless->coded. The idealistic behavior is that it crosses as WIT
+           `result<list<u8>, record{code, n}>` (disc + the selected arm's payload). Grades Todo now (CDZ0903 is a
+           coded decline). CROSSING it is a QUEUED unit: it needs the Ok/Err-disc-aware WIT ordering (map the
+           `result`'s Ok/Err arms to their payload WITs) + BYTE-EXACT verification via the forthcoming
+           `(host-arg-received …)` harness (a silent Ok/Err disc-swap is not observable through the fixed-response
+           mock today). Companion to SHAPE 294-298: pins that the compound-Err result arg DECLINES CLEANLY (coded)
+           rather than emitting a codeless refusal or an invalid module.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (u8)) (record (= code (s32)) (= n (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Result Bytes (Record (: code Int32) (: n Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Ok b"z"))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
