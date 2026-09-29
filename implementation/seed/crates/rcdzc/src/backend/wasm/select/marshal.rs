@@ -2003,6 +2003,15 @@ fn emit_variant_mixed_to_mem(
                     Some(crate::wit_world::WitType::Variant(c)) => {
                         c.get(*pd as usize).and_then(|(_, p)| p.as_ref())
                     }
+                    // A `result<T, E>` (e.g. as a list element) flattens as `variant{ok(T), err(E)}` with
+                    // ok = disc 0 / err = disc 1 — the same Ok=0/Err=1 mapping the register mixed Record arm
+                    // (`variant_mixed_payload_cases_wit`, SHAPE 299) uses. Without this arm a `result<bytes,
+                    // record>` list ELEMENT (its Err-record case) declined codelessly here.
+                    Some(crate::wit_world::WitType::Result { ok, err }) => match *pd {
+                        0 => ok.as_deref(),
+                        1 => err.as_deref(),
+                        _ => None,
+                    },
                     _ => None,
                 }
                 .ok_or_else(|| {
