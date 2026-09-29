@@ -58,9 +58,13 @@ pub(crate) fn op_bytes_set(buf: Handle, index: u32, value: u32) -> Handle {
     }
     match unsafe { buf.node_mut() } {
         None => {}
-        // A `Rope` leaf (a >inline-cap buffer, e.g. from `bytes-alloc` then this per-byte fill) writes
-        // in place via `ByteVec::set_byte` (copy-on-write on the backing `Bytes`), keeping it a `Rope`
-        // rather than materializing it to a plain `Vec` — so the alloc+set build path stays refcounted.
+        // A `Rope` leaf (an already-refcounted leaf — a `bytes-concat`/`bytes-slice` result kept as
+        // `Raw::Rope` by `bytes_leaf_from_bytevec`, or a `promote_leaf_to_rope` leaf; NOT the alloc+set
+        // build path, whose >cap buffer is a `Raw::Heap` — `Raw::from` no longer Rope-ifies a fresh
+        // >cap `Vec`, see `From<Vec<u8>> for Raw`) writes in place via `ByteVec::set_byte`, which
+        // COPIES-ON-WRITE the backing `Bytes` chunk if it is shared (so a sibling `ByteVec` slicing the
+        // same chunk is not corrupted), keeping the leaf a `Rope` rather than letting `as_mut_slice`
+        // materialize it to a plain `Vec` — the shared storage stays refcounted.
         Some(n) => match &mut n.raw {
             Raw::Rope(bv) => {
                 if bv.set_byte(index as usize, value as u8).is_err() {
