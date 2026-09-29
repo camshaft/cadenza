@@ -2326,16 +2326,18 @@ pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world:
 /// Whether a `list<T>` ELEMENT type is marshalable as a host arg by `select::emit_list_arg_marshal`: a
 /// `Bytes`/`String` (crosses as an inner `(ptr,len)`), a SCALAR (aliased-width int/char/float, written
 /// inline), a NESTED `list` whose own element is marshalable (recursed to arbitrary depth), or a RECORD whose
-/// every field is `product_field_marshalable` (written in place at its canonical layout by `emit_record_to_mem`).
-/// Kept in lockstep with the marshal's element arms so the representability gate admits exactly what the
-/// marshal emits — a record with a nested-record field, or a tuple/variant element, declines here.
+/// every field is `product_field_marshalable` (written in place at its canonical layout by `emit_record_to_mem`,
+/// each field's WIT threaded so a nested record field is WIT-ordered). Kept in lockstep with the marshal's
+/// element arms so the representability gate admits exactly what the marshal emits.
 /// Whether a RECORD/TUPLE field of a `list<record|tuple>` ELEMENT is marshalable in place by
 /// `select::emit_product_to_mem`: a scalar, a `Bytes`, an `option<scalar>`, a scalar/tuple `variant`, an `enum`,
 /// a `list<T>` of a NO-WIT element (scalar/`Bytes`/nested list of those — [`list_field_no_wit`], written via
-/// `emit_list_arg_marshal` at the cursor + a `(ptr,count)` header), or a nested `tuple<…>` whose every element is
+/// `emit_list_arg_marshal` at the cursor + a `(ptr,count)` header), a nested `tuple<…>` whose every element is
 /// itself marshalable ([`tuple_field_marshalable`] — POSITIONAL, written via `emit_tuple_to_mem` with no field
-/// WIT). A nested RECORD field, an `option<compound>` field, or a `list`/`tuple` whose element is a RECORD (all
-/// need the field WIT threaded through `emit_product_to_mem` to order name-lex fields), is a later slice.
+/// WIT), or a nested RECORD field ([`record_field_marshalable`], written WIT-ordered via `emit_record_to_mem`) —
+/// the last ONLY on the `wit = true` path (the enclosing writer supplies the field's WIT). An `option<compound>`
+/// field, or a `list`/`tuple` whose element is a RECORD (needing the field WIT threaded through
+/// `emit_tuple_to_mem` / `emit_list_arg_marshal`), is a later slice.
 /// Whether `f` is a `list<T>` field whose element needs NO WIT to marshal — a scalar, a `Bytes`/`String`, or a
 /// nested `list` of those (recursed). `emit_product_to_mem`'s list-field arm passes `elem_wit = None`, so it can
 /// only lay a list whose element is offset-agnostic; a `record`/`tuple`/`option`/`variant` element would need
@@ -2360,10 +2362,34 @@ fn tuple_field_marshalable(db: &mut Db, f: &Ty) -> bool {
         return false;
     };
     let elems = elems.to_vec(); // release the borrow of `f` before the recursive `&mut db` calls
-    !elems.is_empty() && elems.iter().all(|e| product_field_marshalable(db, e))
+    // A tuple is written POSITIONALLY by `emit_tuple_to_mem`, which threads NO field WIT to its elements — so
+    // each element must be marshalable WITHOUT WIT (`wit = false`); a record element (needing WIT ordering)
+    // declines here, matching the product walk's `None`-WIT positional path.
+    !elems.is_empty()
+        && elems
+            .iter()
+            .all(|e| product_field_marshalable(db, e, false))
 }
 
-fn product_field_marshalable(db: &mut Db, f: &Ty) -> bool {
+/// Whether `f` is a nested RECORD field a product LIST-ELEMENT can carry — a non-empty record whose every field
+/// is itself [`product_field_marshalable`] WITH its WIT (the nested record is written by `emit_record_to_mem`,
+/// which threads each field's declared WIT). Only reachable when the enclosing writer supplies this field's WIT
+/// (`wit = true` — the `emit_record_to_mem` path); a positional tuple element (`wit = false`) declines a record.
+fn record_field_marshalable(db: &mut Db, f: &Ty) -> bool {
+    let Ty::Record(fields) = f.strip_nominal() else {
+        return false;
+    };
+    let ftys: Vec<Ty> = fields.values().cloned().collect(); // release the borrow before `&mut db` recursion
+    !ftys.is_empty()
+        && ftys
+            .iter()
+            .all(|ft| product_field_marshalable(db, ft, true))
+}
+
+/// `wit` = whether the enclosing writer can supply THIS field's declared WIT (true on the `emit_record_to_mem`
+/// path, false for a positional `emit_tuple_to_mem` element) — gates the nested-RECORD arm, which needs the WIT
+/// to order its name-lex fields to the host declaration order.
+fn product_field_marshalable(db: &mut Db, f: &Ty, wit: bool) -> bool {
     matches!(f.strip_nominal(), Ty::Bytes | Ty::String)
         || abi_val_type(f).is_some()
         // A `list<T>` field of a product LIST-ELEMENT (`list<record{xs: list<s64>, …}>`): written by
@@ -2392,6 +2418,13 @@ fn product_field_marshalable(db: &mut Db, f: &Ty) -> bool {
         // its disc at the enum's canonical width. Detected after variant (both are Sums; `enum_cases` requires
         // ALL-nullary variants). The product-element analogue of the top-level record enum FIELD (SHAPE 174).
         || enum_cases(db, f).is_some()
+        // A nested RECORD field of a product element (`list<record{r: record{…}, …}>`): written in place by
+        // `emit_product_to_mem`'s record-field arm via `emit_record_to_mem`, WIT-ordered + WIT-SIZED (so a
+        // DIVERGENT nested record reserves the correct extent). ONLY admitted when the enclosing writer supplies
+        // this field's WIT (`wit` — the `emit_record_to_mem` path); a positional tuple element (`wit = false`)
+        // declines it (a tuple threads no field WIT this slice). Detected last (a record is neither a Sum nor a
+        // list/tuple, so the earlier arms already declined it).
+        || (wit && record_field_marshalable(db, f))
 }
 
 pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
@@ -2399,10 +2432,18 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
         Ty::Bytes | Ty::String => true,
         Ty::List(inner) => list_elem_marshalable(db, &inner),
         Ty::Record(fields) => {
-            !fields.is_empty() && fields.values().all(|f| product_field_marshalable(db, f))
+            // A record ELEMENT is written by `emit_record_to_mem` with its WIT → its fields can supply WIT
+            // (`wit = true`), so a nested record field crosses.
+            let ftys: Vec<Ty> = fields.values().cloned().collect();
+            !ftys.is_empty() && ftys.iter().all(|f| product_field_marshalable(db, f, true))
         }
         Ty::Tuple(elems) => {
-            !elems.is_empty() && elems.iter().all(|e| product_field_marshalable(db, e))
+            // A tuple ELEMENT is written POSITIONALLY (`emit_tuple_to_mem`, no field WIT) → `wit = false`.
+            let elems = elems.to_vec();
+            !elems.is_empty()
+                && elems
+                    .iter()
+                    .all(|e| product_field_marshalable(db, e, false))
         }
         // A `result<list<u8>, enum>` element (`list<result<list<u8>, enum>>`): written in place at its canonical
         // result layout (disc byte + payload join) by `select::emit_result_to_mem` — Ok copies the Bytes rope at

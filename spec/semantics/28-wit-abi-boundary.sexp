@@ -10919,3 +10919,64 @@ cases
   (host-calls (call cadenza:platform/probe.push))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<record{r: record{p:s32, q:s64}}> host-op arg crosses (a nested RECORD field of a record list element)"
+  (doc
+    "SHAPE 306 (v-wit-boundary) — a `list<record{r: record{p:s32, q:s64}}>` host-op ARGUMENT: a record list
+           element with a nested RECORD field. A record list element is written IN PLACE by `emit_product_to_mem`,
+           which handled scalar / `Bytes` / `list` / `option<scalar>` / `variant` / `enum` / `tuple` fields but
+           NOT a nested `record` field (a record needs its WIT to order its name-lex fields to the host declaration
+           order) — so it declined CDZ0903. Now `emit_product_to_mem` threads each field's declared WIT (the
+           `layout` carries `(cell, ty, Option<WitType>)`; `emit_record_to_mem` fills it from the WIT record's
+           fields) and gains a record-field arm: write the nested record product IN PLACE at `dest_addr + foff`
+           via `emit_record_to_mem`, WIT-ordered — the recursive analogue of a `list<record>` ELEMENT. The field is
+           sized WIT-order by `canonical_layout_wit` (threaded `fwit`), so `foff` advances by the WIT-order extent.
+           `product_field_marshalable` admits a nested record field via `record_field_marshalable` ONLY when the
+           enclosing writer supplies WIT (`wit = true` — the `emit_record_to_mem` path); a positional tuple element
+           (`wit = false`) still declines a record. This case's WIT order (p, q) EQUALS the guest name-lex order
+           (p<q); a DIVERGENT order is SHAPE 307. run() pushes TWO elements [{r:{p:1,q:2}}, {r:{p:3,q:4}}]; a VALID
+           running component (live-objects=0) pins the nested-record-field record list element across elements.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= r (record (= p (s32)) (= q (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: r (Record (: p Int32) (: q Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= r #record((= p (: 1 Int32)) (= q 2)))) #record((= r #record((= p (: 3 Int32)) (= q 4))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a list<record{r: record{a:s32, c:s64, b:s32} divergent}> host-op arg crosses (WIT-order nested record field)"
+  (doc
+    "SHAPE 307 (v-wit-boundary) — the DIVERGENT-order twin of SHAPE 306: a `list<record{r: record{a:s32, c:s64,
+           b:s32}}>` whose WIT declares the nested record's fields (a, c, b) — DIVERGING from the guest name-lex
+           order (a, b, c). The two orders size DIFFERENTLY under alignment padding: guest name-lex {a, b, c} = 16
+           bytes (a@0, b@4, c@8), but WIT {a, c, b} = 24 (a@0, c@8, b@16). The nested record field is sized WIT-order
+           by `emit_product_to_mem`'s `canonical_layout_wit` sizing (threaded `fwit`) and written WIT-order by
+           `emit_record_to_mem`; the ENCLOSING list-element stride is likewise sized WIT-order (the element record's
+           `canonical_layout_wit` recurses into the field's WIT). Before the fix the record field declined
+           altogether (CDZ0903); with the field sized guest-order (16) a 2+-element list would under-reserve each
+           element's slot and element N+1's write would clobber element N — a miscompile `wasm-tools validate`
+           cannot catch. Reuses the SAME `canonical_layout_wit` machinery SHAPE 297/298 pin for the option/variant
+           positions, now reached for the record-FIELD position. run() pushes TWO records
+           [{r:{a:1,b:2,c:3}}, {r:{a:4,b:5,c:6}}]; a VALID running component (live-objects=0) pins the divergent-order
+           nested record field across multiple elements.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (record (= r (record (= a (s32)) (= c (s64)) (= b (s32))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (List (Record (: r (Record (: a Int32) (: b Int32) (: c Int64))))) Int64)))
+      (def (run) (host (probe) (probe.push #list(#record((= r #record((= a (: 1 Int32)) (= b (: 2 Int32)) (= c 3)))) #record((= r #record((= a (: 4 Int32)) (= b (: 5 Int32)) (= c 6))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
