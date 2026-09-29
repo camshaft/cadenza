@@ -1132,9 +1132,9 @@
      inline-safe `lower_let` short-circuit. Both Ok → the tuple `(7 9)`, summed to 16; the FIRST failing `?`
      short-circuits `mk` to its Err (mapped to -1), leaving the later `?` unevaluated (k=1: second Err; k=0:
      first Err). Verified leak-clean (live-objects 0 every path). Pins the Tuple arm of the compound-ctor
-     descent beside the List arm (trl1) and the Record arm (trr3); a `map` element `?` remains a clean
-     CDZ0900 decline (its `(= k v)` entries evaluate the KEY too, needing per-entry key-then-value ordering —
-     a deliberate later slice).")
+     descent beside the List arm (trl1), the Record arm (trr3), and the Map arm (trmd1), whose `(= k v)`
+     entries descend with per-entry key-then-value ordering — completing the family across all five
+     containers.")
   (input
     (do
       (def
@@ -1171,8 +1171,9 @@
      record `{a=7, b=9}`, summed to 16; the FIRST failing `?` short-circuits `mk` to its Err (mapped to -1),
      leaving the later `?` unevaluated (k=1: second Err; k=0: first Err). An IMPURE earlier field value is
      bound as a prefix `let` ahead of the `?` so field-evaluation order is preserved. Verified leak-clean
-     (live-objects 0 every path). Completes the compound-ctor element `?` family (list/tuple/set/record); a
-     `map` field `?` stays a clean CDZ0900 decline (its key is evaluated too — a later slice).")
+     (live-objects 0 every path). One arm of the compound-ctor element `?` family (list/tuple/set/record);
+     the `map` arm — whose `(= k v)` entries evaluate the KEY too, needing per-entry key-then-value ordering —
+     lands in trmd1, completing the family across all five containers.")
   (input
     (do
       (def
