@@ -2353,6 +2353,19 @@ fn list_field_no_wit(f: &Ty) -> bool {
     }
 }
 
+/// Whether `f` is a `list<T>` field whose element is a FULL marshalable list element ([`list_elem_marshalable`] —
+/// a `record`/`tuple`/`option`/… element that orders its fields by the element's WIT). Reachable ONLY when the
+/// enclosing writer threads THIS field's WIT (`wit = true`): `emit_product_to_mem`'s list-field arm then passes
+/// `Some(WitType::List(inner))` to `emit_list_arg_marshal`, whose element writers order the element WIT-order.
+/// The WIT-threaded superset of [`list_field_no_wit`] (which stays the `wit = false` fallback).
+fn list_field_with_wit(db: &mut Db, f: &Ty) -> bool {
+    let Ty::List(elem) = f.strip_nominal() else {
+        return false;
+    };
+    let elem = (*elem).clone(); // release the borrow before the `&mut db` recursion
+    list_elem_marshalable(db, &elem)
+}
+
 /// Whether `f` is a nested `tuple<…>` field a product LIST-ELEMENT can carry — a non-empty tuple whose every
 /// element is itself [`product_field_marshalable`]. Positional, so `emit_tuple_to_mem` writes it with NO field
 /// WIT; a tuple with a record/tuple element that needs WIT ordering declines (that element is not
@@ -2394,10 +2407,14 @@ fn product_field_marshalable(db: &mut Db, f: &Ty, wit: bool) -> bool {
         || abi_val_type(f).is_some()
         // A `list<T>` field of a product LIST-ELEMENT (`list<record{xs: list<s64>, …}>`): written by
         // `emit_product_to_mem`'s list-field arm — the list backing spilled into `mem` at the cursor + a
-        // `(ptr,count)` header at the field offset (the list analogue of a `Bytes` field). SCOPED to a NO-WIT
-        // element (scalar / `Bytes` / nested list of those) via [`list_field_no_wit`]: a `record`/`tuple`
-        // element needs the field WIT threaded through `emit_product_to_mem` (a later slice), so it declines.
+        // `(ptr,count)` header at the field offset (the list analogue of a `Bytes` field). A NO-WIT element
+        // (scalar / `Bytes` / nested list of those, [`list_field_no_wit`]) crosses in ANY position; a `record`/
+        // compound ELEMENT crosses ONLY when the enclosing writer threads THIS field's WIT (`wit` — the
+        // `emit_record_to_mem` path passes `Some(WitType::List(inner))` to `emit_list_arg_marshal`, ordering the
+        // element's fields), gated by [`list_field_with_wit`]; a positional tuple element (`wit = false`) admits
+        // only the no-WIT form.
         || list_field_no_wit(f)
+        || (wit && list_field_with_wit(db, f))
         // A nested `tuple<…>` field of a product LIST-ELEMENT (`list<record{t: tuple<s32,s64>, …}>`): written in
         // place by `emit_product_to_mem`'s tuple-field arm via `emit_tuple_to_mem` (POSITIONAL — no field WIT).
         // Each element must itself be `product_field_marshalable` (recursively) — a tuple with a record element

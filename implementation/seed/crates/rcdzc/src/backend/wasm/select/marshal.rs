@@ -557,19 +557,25 @@ pub(super) fn emit_product_to_mem(
                 out.push(Lir::I32Add);
                 out.push(Lir::LocalSet(cursor)); // cursor += len
             }
-            // A `list<T>` field (list<scalar>/list<Bytes>/nested list of those): marshal the list backing into
-            // `mem` at the running `cursor` via `emit_list_arg_marshal` (which leaves `(outer-ptr, count)`), then
-            // write its `(ptr@foff, count@foff+4)` header — the list analogue of the `Bytes` field above (a header
-            // at the field offset + the backing spilled at the cursor; `emit_list_arg_marshal` advances the cursor
-            // itself). SCOPED to a NO-WIT element (`product_field_marshalable`'s list arm admits only a scalar /
-            // `Bytes` / nested-list-of-those element): a `record`/`tuple` list element needs the field's WIT
-            // threaded through `emit_product_to_mem` to order its fields — a later slice — so `elem_wit` is `None`
-            // here (and `emit_list_arg_marshal` would itself decline a record element lacking its WIT).
+            // A `list<T>` field (list<scalar>/list<Bytes>/nested list of those, OR — when the field's WIT is
+            // threaded — a `list<record>`/`list<tuple>`/…): marshal the list backing into `mem` at the running
+            // `cursor` via `emit_list_arg_marshal` (which leaves `(outer-ptr, count)`), then write its
+            // `(ptr@foff, count@foff+4)` header — the list analogue of the `Bytes` field above (a header at the
+            // field offset + the backing spilled at the cursor; `emit_list_arg_marshal` advances the cursor
+            // itself). The field's list-element WIT (from `fwit == Some(WitType::List(inner))`, present on the
+            // `emit_record_to_mem` path) is threaded to `emit_list_arg_marshal` so a RECORD/compound element orders
+            // its fields to the host declaration order; when the field's WIT is absent (a positional tuple element
+            // threads `fwit = None`), `elem_wit` is `None` and only a NO-WIT element crosses (`emit_list_arg_marshal`
+            // itself declines a record element lacking its WIT), matching `product_field_marshalable`'s list gate.
             None if matches!(fty.strip_nominal(), Ty::List(_)) => {
                 let Ty::List(elem) = fty.strip_nominal() else {
                     unreachable!("list by the guard")
                 };
                 let elem = (**elem).clone();
+                let elem_wit = match fwit {
+                    Some(crate::wit_world::WitType::List(inner)) => Some(inner.as_ref()),
+                    _ => None,
+                };
                 let list_slot = work_base + 3;
                 let lptr = work_base + 4;
                 let lcount = work_base + 5;
@@ -584,7 +590,7 @@ pub(super) fn emit_product_to_mem(
                 emit_list_arg_marshal(
                     db,
                     &elem,
-                    None,
+                    elem_wit,
                     list_slot,
                     cursor,
                     work_base + 6,
