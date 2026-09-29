@@ -308,11 +308,22 @@ const INLINE_RAW_CAP: usize = 12;
 /// a slice of a single chunk stays single-chunk), so `as_slice` can borrow it contiguously; a concat
 /// rope stays a node-rope (children in `handles`) and never reaches this arm.
 enum Raw {
-    Inline { len: u8, buf: [u8; INLINE_RAW_CAP] },
+    Inline {
+        len: u8,
+        buf: [u8; INLINE_RAW_CAP],
+    },
     Heap(Vec<u8>),
     // BOXED so the (relatively large) `ByteVec` does not inflate `Raw` — and thus every `Node`, most of
     // which are scalars/compounds using the `Inline` arm. The box is one indirection paid only by a
     // >inline-cap bytes/string leaf; its `ByteVec` (and the refcounted `Bytes` inside) lives behind it.
+    //
+    // NOT CONSTRUCTED YET: this variant is the target of the in-progress `bytes-concat`/`bytes-slice` →
+    // `ByteVec` migration. Its read arms (`as_slice`/`clear`/`extend_from_slice`/`as_mut_slice`/`len`/
+    // `Clone`) are wired so that migration can start building it without churning this enum; until then no
+    // constructor produces it (blanket-`Rope`ing every >cap raw regressed the vector/CHAMP hot paths, so
+    // `Raw::from` now defaults to `Heap`). Remove this `allow` in the commit that makes concat/slice build
+    // `Rope` leaves.
+    #[allow(dead_code)]
     Rope(alloc::boxed::Box<etude_bytevec::ByteVec>),
 }
 
@@ -450,10 +461,13 @@ impl Raw {
 impl From<Vec<u8>> for Raw {
     /// Build a `Raw` from a freshly-constructed byte vector (the `alloc` boundary): inline it when it
     /// fits the cap (the common case — the Vec is then dropped, unallocated-away), else move the bytes
-    /// into a `Rope` (`ByteVec`). A raw longer than the inline cap is only ever a bytes/string LEAF's
-    /// content (scalars ≤8, sum discs 4, CHAMP/vec headers ≤12 all inline), so holding it in a `ByteVec`
-    /// gives that leaf refcounted `Bytes` backing — shared on `dup`, handed off by refcount across the
-    /// host boundary (operator seq-1382). The `ByteVec` is single-chunk (built from one `Vec`).
+    /// into a `Heap` `Vec` — ONE allocation, reusing `v`'s own buffer. This is the NEUTRAL default for
+    /// any eagerly-materialized raw: a wide vector cumulative-size table, a CHAMP header, or a plain
+    /// bytes/string leaf. The refcounted `Rope` (`ByteVec`) rep is NOT applied here — it is reserved for
+    /// values that genuinely defer or SHARE their bytes (`bytes-concat`/`bytes-slice`, once those build
+    /// on `ByteVec`), because blanket-`Rope`ing every >cap raw made each wide size-table rebuild AND each
+    /// transient string-key probe pay a `Box` + `ByteVec` allocation for no sharing benefit — the
+    /// `vec_drop_fold` and `map_lookup_stringkey` hot-path regressions this restores.
     fn from(v: Vec<u8>) -> Raw {
         if v.len() <= INLINE_RAW_CAP {
             let mut buf = [0u8; INLINE_RAW_CAP];
@@ -463,7 +477,7 @@ impl From<Vec<u8>> for Raw {
                 buf,
             }
         } else {
-            Raw::Rope(alloc::boxed::Box::new(etude_bytevec::ByteVec::from(v)))
+            Raw::Heap(v)
         }
     }
 }
@@ -474,9 +488,15 @@ impl Clone for Raw {
             // Share the `ByteVec` — an O(1) refcount bump on the underlying `Bytes`, not a byte copy.
             // This is the `dup` win: cloning a bytes/string leaf's payload shares its backing store.
             Raw::Rope(bv) => Raw::Rope(bv.clone()),
-            // Inline/Heap: re-derive via `From` so a small heap buffer clones back to inline (and a
-            // large one moves into a `Rope`). Keeps clones inline when possible.
-            other => Raw::from(other.as_slice().to_vec()),
+            // A `Heap` raw is an INTERNAL mutable buffer (a wide vector/CHAMP radix header), so clone it to
+            // a `Heap` `Vec` in kind: one allocation, no `ByteVec`. Routing it through `Raw::from` used to
+            // Rope-ify a >cap header (a `Box` + `ByteVec` per clone) — the fold hot path paid it per push.
+            Raw::Heap(v) => Raw::Heap(v.clone()),
+            // Inline: cheap value copy (the `[u8; INLINE_RAW_CAP]` buffer is `Copy`), stays inline.
+            Raw::Inline { len, buf } => Raw::Inline {
+                len: *len,
+                buf: *buf,
+            },
         }
     }
 }
