@@ -2456,7 +2456,6 @@ pub(super) fn emit_variant_record_arg_reg_flatten(
         &fields,
         record_wit,
         None, // all-scalar fields → no `mem`/cursor
-        true, // WIT-authoritative: a variant RECORD payload case (component laid from the WIT)
         rec_slot + 1,
         high,
         scratch_ty,
@@ -2802,7 +2801,6 @@ pub(super) fn emit_variant_mixed_arg_reg_flatten(
                     &fields,
                     &record_wit,
                     None,            // all-scalar fields → no `mem`/cursor
-                    true, // WIT-authoritative: a mixed-variant RECORD payload case (component from the WIT)
                     temp_base + cnt, // work_base past the temp field slots
                     high,
                     scratch_ty,
@@ -3044,7 +3042,6 @@ pub(super) fn emit_result_record_arg_reg_flatten(
         &fields,
         ok_wit,
         cursor, // a Bytes/list field copies into `mem` at the cursor; None for an all-scalar record
-        true, // WIT-authoritative: the Ok record of a result<record, enum> (component from the WIT)
         rec_slot + 1,
         high,
         scratch_ty,
@@ -3619,7 +3616,6 @@ pub(super) fn emit_option_reg_flatten(
             &sub,
             &wit,
             cursor,
-            true, // WIT-authoritative: the payload record of an option<record> (component from the WIT)
             pay_slot + 1,
             high,
             scratch_ty,
@@ -3941,28 +3937,6 @@ pub(super) fn emit_option_reg_flatten(
     Ok(())
 }
 
-/// The CORE wasm valtype a SCALAR WIT type flattens to (the canonical component-model lowering): a narrow int /
-/// bool / char / u32 → `i32`, a 64-bit int → `i64`, `f32`/`f64` → their float. `None` for a non-scalar WIT type
-/// (list/record/tuple/option/variant/…), whose flatten is not a single core slot. Used to compare a tuple
-/// element's WIT-declared width against the guest value's width (`valtype_of`) at the host boundary.
-fn wit_scalar_core_valtype(w: &crate::wit_world::WitType) -> Option<ValType> {
-    use crate::wit_world::WitType;
-    match w {
-        WitType::Bool
-        | WitType::U8
-        | WitType::U16
-        | WitType::U32
-        | WitType::S8
-        | WitType::S16
-        | WitType::S32
-        | WitType::Char => Some(ValType::I32),
-        WitType::U64 | WitType::S64 => Some(ValType::I64),
-        WitType::F32 => Some(ValType::F32),
-        WitType::F64 => Some(ValType::F64),
-        _ => None,
-    }
-}
-
 /// Marshal a top-level value-heap `tuple<…>` host argument whose handle is in `tup_slot` into the
 /// POSITIONALLY-FLATTENED core slots the built-in `tuple<T…>` param lowers to — pushed onto the operand stack
 /// in element (= declaration = component) order, no discriminant. A SCALAR element is one core slot (the
@@ -4270,7 +4244,6 @@ pub(super) fn emit_tuple_reg_flatten(
                 &sub,
                 &elem_wit,
                 cursor,
-                true, // WIT-authoritative: a RECORD element of a tuple arg (component from the WIT)
                 work_base + 1,
                 high,
                 scratch_ty,
@@ -4278,23 +4251,10 @@ pub(super) fn emit_tuple_reg_flatten(
             )?;
             continue;
         }
-        // decline-don't-miscompile: a tuple arg's COMPONENT type is built from the WORLD-declared WIT
-        // (`add_wit_type_deduped` on the tuple WIT — authoritative), but the guest-side core flatten
-        // (`host_import_functype` + this marshal) is keyed off the guest VALUE's core width. When the guest
-        // value's width DIVERGES from the WIT-declared element width (e.g. an `Int64` literal element crossing a
-        // WIT `s32` slot — the literal is not coerced to the narrow WIT width), the guest flatten (i64) would
-        // disagree with the component functype (i32) and the runtime rejects the component at instantiation
-        // (CDZ0910). Decline cleanly instead. A WIT-authoritative narrow/widen at the boundary (making it cross)
-        // is a separate, larger fix — the whole boundary must key scalar widths off the WIT, incl. the direct
-        // record path whose component type is currently built from the guest abi.
-        if let Some(ews) = elem_wits.as_ref().and_then(|ws| ws.get(i))
-            && let Some(wvt) = wit_scalar_core_valtype(ews)
-            && valtype_of(ety) != Some(wvt)
-        {
-            return Err(Reject::decline(
-                "a tuple host-arg scalar element's guest width differs from its WIT-declared width",
-            ));
-        }
+        // A scalar element's guest VALUE width matches its WIT-declared width: a deferred-width perform-arg
+        // literal is grounded to the op's declared param width by `infer::ground_perform_arg_ty` (#10029), and a
+        // genuinely fixed-width mismatch is rejected at type-check (CDZ0203) before this marshal — so no width
+        // guard is needed here (the former CDZ0910-holding decline is retired).
         let read = get_op_ty(db, ety)?.ok_or_else(|| {
             Reject::decline(
                 "a top-level tuple arg element is not a scalar/bytes/tuple this increment",
@@ -4329,15 +4289,6 @@ pub(super) fn emit_record_arg_marshal(
     fields: &std::collections::BTreeMap<crate::resolved::Symbol, Ty>,
     wit: &crate::wit_world::WitType,
     cursor: Option<u32>,
-    // Whether this record's COMPONENT type is built WIT-authoritatively (its scalar field widths come from the
-    // WORLD-declared WIT — the case for a record nested under a tuple/option/result/variant WRAPPER, whose
-    // component type is laid by `add_wit_type_deduped` on the WIT). When true, a scalar field whose guest VALUE
-    // width diverges from its WIT-declared width is a decline-don't-miscompile decline (the guest flatten would
-    // disagree with the WIT-authoritative component functype → CDZ0910). FALSE for the DIRECT record arg, whose
-    // component type is built from the guest abi (`HostParam::Record`'s nominal type) — self-consistent at the
-    // guest width, so no width decline (a divergence there is latently wrong vs a real host, resolved by the
-    // infer:: perform-arg grounding fix, NOT by declining a currently-crossing direct record).
-    wit_widths_authoritative: bool,
     work_base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
@@ -4374,20 +4325,11 @@ pub(super) fn emit_record_arg_marshal(
             .expect("name-lex index in range")
             .clone();
         let fty = &fty;
-        // decline-don't-miscompile: in a WIT-authoritative-component context, a scalar field whose guest VALUE
-        // width differs from its WIT-declared width would make the guest flatten (guest width) disagree with the
-        // component functype (WIT width) → CDZ0910. Decline cleanly. (The guest width comes from an ungrounded
-        // perform-arg literal, e.g. an `Int64` `3` crossing a WIT `s32` field — the SHAPE 103/104 infer:: root,
-        // owned by v-compiler-primitives; once grounded, guest width == WIT width and this crosses.) The DIRECT
-        // record path (`wit_widths_authoritative == false`, component built from the guest abi) is exempt — its
-        // component matches the guest width, so it stays self-consistent.
-        if wit_widths_authoritative
-            && wit_scalar_core_valtype(fwit).is_some_and(|wvt| valtype_of(fty) != Some(wvt))
-        {
-            return Err(Reject::decline(
-                "a record host-arg scalar field's guest width differs from its WIT-declared width",
-            ));
-        }
+        // A scalar field's guest VALUE width matches its WIT-declared width: a deferred-width perform-arg literal
+        // is grounded to the op's declared param width by `infer::ground_perform_arg_ty` (#10029, walking
+        // compound shapes in parallel), and a genuinely fixed-width mismatch (e.g. an `Int64` value into a WIT
+        // `s32` field) is rejected at type-check (CDZ0203) before reaching this marshal — so no width guard is
+        // needed here (the former CDZ0910-holding decline is retired).
         match get_op_ty(db, fty)? {
             // A SCALAR field: arr-get + unbox → one core slot.
             Some(read) => {
@@ -4487,7 +4429,6 @@ pub(super) fn emit_record_arg_marshal(
                     &sub,
                     fwit,
                     cursor,
-                    wit_widths_authoritative, // a nested record FIELD inherits the parent's WIT-authoritativeness
                     work_base + 4,
                     high,
                     scratch_ty,
@@ -5066,7 +5007,6 @@ pub(super) fn emit_record_arg_marshal(
                     &sub,
                     payload_wit,
                     cursor,
-                    wit_widths_authoritative, // an option<record> FIELD inherits the parent's WIT-authoritativeness
                     base_slot + n,
                     high,
                     scratch_ty,
