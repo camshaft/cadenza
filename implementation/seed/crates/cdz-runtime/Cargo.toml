@@ -67,6 +67,15 @@ blake3 = { version = "1.8", default-features = false }
 # the crate boundary is erased, so the emitted wasm stays byte-reproducible (hash re-recorded once).
 cadenza-ast = { path = "../cadenza-ast", default-features = false }
 
+# Arbitrary-precision signed integers — the shared `etude-bigint` crate (operator directive seq-1332:
+# migrate cdz-runtime's value data structures onto the etude crates). Pinned by `rev` for a
+# byte-reproducible frozen-hash wasm; `no_std` + `alloc` only (no transitive runtime deps), so it drops
+# cleanly into this standalone wasm workspace. Replaces the former hand-written in-tree `bigint.rs` limb
+# library — the canonical sign-magnitude heap-leaf bytes are unchanged (limb width is invisible in the
+# stripped little-endian byte stream), so only the runtime wasm's arithmetic code (and thus its content
+# hash) moves. See src/bigint.rs (now a thin re-export).
+etude-bigint = { git = "https://github.com/camshaft/etude.git", rev = "d5ef70bf662bd46c5a504fb234ef4d8c15c37f45" }
+
 # The embedded wasm allocator (see src/allocator.rs) — the runtime ships its own allocator. Gated to
 # wasm only: native `cargo test` uses the system allocator, so the Handle-typed core stays testable
 # natively without pulling talc in. Swappable in one file — the heap core never references it.

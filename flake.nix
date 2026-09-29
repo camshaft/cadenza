@@ -106,9 +106,12 @@
         #   - symlinkJoin-MERGED vendor (merged = true): several importCargoLock outputs joined into one
         #     dir; their per-vendor `.cargo/config.toml`s collide in the join (one wins), so we can't
         #     source a single authoritative one — hand-roll the crates-io config pointing `directory` at
-        #     the join. All merged vendors today are crates-io-only (build-std + component-dep locks); a
-        #     merged vendor that ever needs a git stanza would need it merged in explicitly (flag if so).
-        mkCargoVendorEnv = { vendor, merged ? false }:
+        #     the join. Most merged vendors are crates-io-only (build-std + component-dep locks). When a
+        #     merged vendor DOES carry a git dep (etude-bigint, the runtime's — operator seq-1332), pass
+        #     `gitStanzaFrom = <the git-bearing sub-vendor>`: the crates-io config is emitted as before,
+        #     then that sub-vendor's own `[source."git+…"]` stanzas are appended (the git crate is already
+        #     in the join, so `replace-with = "vendored-sources"` resolves it offline).
+        mkCargoVendorEnv = { vendor, merged ? false, gitStanzaFrom ? null }:
           if merged then ''
             export HOME="$TMPDIR/home"
             export CARGO_HOME="$TMPDIR/cargo"
@@ -122,6 +125,16 @@
             [source.vendored-sources]
             directory = "${vendor}"
             EOF
+            ${pkgs.lib.optionalString (gitStanzaFrom != null) ''
+              # A GIT dep lives in this merged vendor (the first: etude-bigint, operator seq-1332). The
+              # hand-rolled crates-io-only config above drops the `[source."git+…"] replace-with` stanza
+              # importCargoLock emits, so cargo would try to fetch the git crate from the network (offline
+              # → fail). Append those git source stanzas from the git-bearing sub-vendor's own config (they
+              # are emitted LAST in that file). The git crate is already physically in the merged symlinkJoin,
+              # so `replace-with = "vendored-sources"` (directory = the merged dir above) resolves it offline —
+              # this is the "merge the git stanza in explicitly" the merged-vendor note called for.
+              sed -n '/^\[source\."git+/,$p' "${gitStanzaFrom}/.cargo/config.toml" >> "$CARGO_HOME/config.toml"
+            ''}
           '' else ''
             export HOME="$TMPDIR/home"
             export CARGO_HOME="$TMPDIR/cargo"
@@ -2058,12 +2071,22 @@
         };
 
         # Merged offline vendor dir: the runtime's crates.io deps + the toolchain's build-std deps.
+        # The cdz-runtime crate's OWN cargo-lock vendor. cdz-runtime deps on etude-bigint
+        # (github.com/camshaft/etude) as a pinned GIT source (operator seq-1332: runtime data structures
+        # onto the shared etude crates). A git dep in a lockfile has no crates.io checksum, so importCargoLock
+        # needs its fetch hash here to vendor it offline for the hermetic wasm build. Named (not inlined) so
+        # BOTH runtimeVendor and codegenVendor share the one git-aware vendor AND mkCargoVendorEnv can source
+        # its `[source."git+…"]` stanza for the merged-vendor config (see gitStanzaFrom above).
+        cdzRuntimeCargoVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/cdz-runtime/Cargo.lock;
+          outputHashes = {
+            "etude-bigint-0.1.0" = "sha256-UAMpUC76+mBTypc69pZp+biAzTY/1XRuVZr+BifH0Yg=";
+          };
+        };
         runtimeVendor = pkgs.symlinkJoin {
           name = "cdz-runtime-cargo-vendor";
           paths = [
-            (pkgs.rustPlatform.importCargoLock {
-              lockFile = ./implementation/seed/crates/cdz-runtime/Cargo.lock;
-            })
+            cdzRuntimeCargoVendor
             (pkgs.rustPlatform.importCargoLock {
               # build-std's own lockfile, shipped inside the pinned toolchain derivation.
               lockFile = "${rustToolchain}/lib/rustlib/src/rust/library/Cargo.lock";
@@ -2097,7 +2120,7 @@
         # SHARED `hashOf` derivation (no IFD; computed once, not re-run here) and stamped by the
         # `cdz-component-rewrite` CLI, mirroring `xtask build`'s `stamp_nfc_into_heap` so nix and the
         # self-build agree byte-for-byte.
-        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ], emitRaw ? false, stampNfcHash ? null, world ? null }:
+        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ], emitRaw ? false, stampNfcHash ? null, world ? null, gitStanzaFrom ? null }:
           pkgs.stdenvNoCC.mkDerivation {
             inherit pname src;
             version = "0.0.0";
@@ -2126,7 +2149,9 @@
               runHook preBuild
               export RUSTC_BOOTSTRAP=1
               # Merged vendor (crates.io + build-std + the NFC component-dep lock) → merged = true.
-              ${mkCargoVendorEnv { inherit vendor; merged = true; }}
+              # gitStanzaFrom (the runtime's git-bearing sub-vendor) appends its git source-replacement
+              # stanza so etude-bigint resolves offline from the join; null for a no-git-dep crate (nfc).
+              ${mkCargoVendorEnv { inherit vendor gitStanzaFrom; merged = true; }}
               cd implementation/seed/crates/${crateDir}
               ${pkgs.lib.optionalString (world != null) ''
                 # RC-TRACE variant (v-nix 2026-08-31): retarget cargo-component at a non-default world for
@@ -2199,6 +2224,9 @@
             artifact = "cdz_runtime";
             src = runtimeSrc;
             vendor = runtimeVendor;
+            # runtimeVendor is a merged symlinkJoin; cdz-runtime's lock has the etude-bigint git dep, so
+            # point the merged-vendor env at that sub-vendor to append its git source stanza (offline resolve).
+            gitStanzaFrom = cdzRuntimeCargoVendor;
             stampNfcHash = nfcHash;
           };
 
@@ -6231,10 +6259,9 @@
           paths = [
             # xtask + the seed workspace (root lock).
             (pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; })
-            # the cdz-runtime + cdz-nfc component builds (own locks) that codegen spawns.
-            (pkgs.rustPlatform.importCargoLock {
-              lockFile = ./implementation/seed/crates/cdz-runtime/Cargo.lock;
-            })
+            # the cdz-runtime + cdz-nfc component builds (own locks) that codegen spawns. cdz-runtime's
+            # vendor (the shared git-aware binding) carries the etude-bigint git source + its fetch hash.
+            cdzRuntimeCargoVendor
             (pkgs.rustPlatform.importCargoLock {
               lockFile = ./implementation/seed/crates/cdz-nfc/Cargo.lock;
             })
@@ -6279,6 +6306,25 @@
             export HOME="$TMPDIR/home"
             export XDG_CACHE_HOME="$TMPDIR/cache"
             mkdir -p "$HOME" "$XDG_CACHE_HOME"
+            # etude-bigint is a GIT dep inside the merged codegenVendor (operator seq-1332, first git dep
+            # in the frozen-hash wasm vendor). crane derives its OWN CARGO_HOME vendor config from
+            # cargoVendorDir and emits only the crates-io source replacement, DROPPING importCargoLock's
+            # `[source."git+…"]` stanza. So `cargo run … codegen` (which spawns `cargo component build` for
+            # cdz-runtime) would try to CLONE etude.git from the network — offline sandbox → fail. Fix
+            # (crane owns its config HERE, so mkCargoVendorEnv's gitStanzaFrom does not reach it): register
+            # a private directory source pointing at the runtime sub-vendor (which importCargoLock vendored
+            # the etude git checkout INTO, keyed by outputHashes), then append the git `[source."git+…"]`
+            # header(s) with `replace-with` REWRITTEN to that private source. We do NOT reuse the stanza's
+            # own `replace-with = "vendored-sources"` because crane names its directory source differently,
+            # and we do NOT redefine `vendored-sources` (that would collide with crane's crates-io source).
+            # The new source only ever resolves the git origin, so crane's crates-io path is untouched.
+            {
+              echo ""
+              echo '[source.cdz-runtime-git-vendored]'
+              echo 'directory = "${cdzRuntimeCargoVendor}"'
+              sed -n '/^\[source\."git+/,$p' "${cdzRuntimeCargoVendor}/.cargo/config.toml" \
+                | sed 's/replace-with = "vendored-sources"/replace-with = "cdz-runtime-git-vendored"/'
+            } >> "$CARGO_HOME/config.toml"
           '';
           # xtask codegen --check regenerates runtime_abi.rs (building cdz-runtime + cdz-nfc components via
           # cargo-component to fold in their hashes) and fails if the committed file drifted. --locked =

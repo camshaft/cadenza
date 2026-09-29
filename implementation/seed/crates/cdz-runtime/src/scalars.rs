@@ -386,7 +386,7 @@ pub(crate) fn normalize_rational(
     let g = num.gcd(den); // non-negative; gcd(0, d) = |d|
     let (mut n, _) = num.divmod(&g).expect("gcd is nonzero when den != 0");
     let (mut d, _) = den.divmod(&g).expect("gcd is nonzero when den != 0");
-    if d.neg {
+    if d.is_negative() {
         n = n.neg();
         d = d.neg();
     }
