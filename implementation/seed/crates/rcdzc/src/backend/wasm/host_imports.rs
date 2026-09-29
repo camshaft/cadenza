@@ -514,7 +514,14 @@ pub(super) fn record_field_cref(
                     // A `Bytes` case references the shared `(list u8)` DEFINED type.
                     Some(host::VariantPayloadKind::Bytes) => Some(CRef::Idx(list_idx)),
                     // A `List<scalar>` case: lay a `(list <elem>)` DEFINED type over the scalar element and
-                    // reference its index.
+                    // reference its index. A COMPOUND element (`list<record>`/`list<tuple>`/…) is NOT built here —
+                    // this ABI-only builder has no `Db`/WIT to resolve the element's structure, so `abi_val_type`
+                    // returns `None` and the case would fall to a NULLARY placeholder (a mismatch with serialize's
+                    // list-header flatten, CDZ0910). The register-flatten record-FIELD emit
+                    // (`emit_variant_mixed_arg_reg_flatten` via `emit_record_arg_marshal`) DECLINES such a case
+                    // cleanly (its `List` admit condition requires a scalar element), so this nullary payload is
+                    // never reached for a compound-element list in the register path; crossing it is a later
+                    // increment (thread the element ABI/WIT through here).
                     Some(host::VariantPayloadKind::List(elem_ty)) => {
                         let ec = host::abi_val_type(elem_ty).map(|v| CRef::Prim(v.comp_byte()));
                         ec.map(|elem_cref| {

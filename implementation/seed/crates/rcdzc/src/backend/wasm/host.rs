@@ -1896,9 +1896,46 @@ pub fn is_boundary_record(db: &mut Db, ty: &Ty) -> bool {
     match ty {
         Ty::Record(fields) => {
             let fields = fields.clone(); // release the borrow of `ty` before the `&mut db` calls
-            !fields.is_empty() && fields.values().all(|f| field_boundary_abi(db, f).is_some())
+            !fields.is_empty()
+                && fields.values().all(|f| {
+                    field_boundary_abi(db, f)
+                        .is_some_and(|abi| record_field_abi_reg_representable(&abi))
+                })
         }
         _ => false,
+    }
+}
+
+/// Whether a record FIELD's boundary ABI is REGISTER-FLATTEN representable — i.e. [`record_field_cref`] can build
+/// its exported component type AND the register emit (`emit_record_arg_marshal`) can push it, in lockstep with
+/// serialize's `variant_mixed_join_slots` flatten. Every [`is_boundary_record`] caller is a REGISTER position (a
+/// record ARG, an `option<record>`/`tuple<record>`/`result<record>` payload), so the gate must reject a
+/// CURSOR-SPILLING mixed-variant case the register path cannot express: a `RecordMem` case (a variant case
+/// carrying a record with a Bytes/list/nested-compound field) or a `List<compound>` case (a variant case carrying
+/// `list<record>`/`list<tuple>`/…). `record_field_cref` is ABI-only (no `Db`/WIT), so it lays such a case as a
+/// NULLARY placeholder — a component type that UNDER-flattens vs serialize's list-header / positional flatten,
+/// which the runtime rejects at instantiation (CDZ0910). Those cases DO cross at the MEM position (a list ELEMENT,
+/// via `emit_product_to_mem` + a WIT-driven type), so rejecting them HERE (the register-flatten twin) is an honest
+/// coded decline (CDZ0903 at `first_unrepresentable_host_op`), NOT a lost shape. Recurses through the container
+/// field abis so a nested record/option/tuple/list carrying such a variant field is rejected in lockstep.
+fn record_field_abi_reg_representable(abi: &RecordFieldAbi) -> bool {
+    match abi {
+        RecordFieldAbi::VariantMemMixed(cases) => cases.iter().all(|(_, k)| match k {
+            // A `list<compound-element>` case: `record_field_cref`'s List arm builds a `(list <scalar>)` only
+            // (`abi_val_type(elem)`), dropping a compound element to a nullary payload.
+            Some(VariantPayloadKind::List(elem)) => abi_val_type(elem).is_some(),
+            // A `RecordMem` case (a cursor-spilling record payload): `record_field_cref` emits a nullary
+            // placeholder for it (it has no scalar-abi pairs and no `Db` to resolve the record) — mem-only.
+            Some(VariantPayloadKind::RecordMem(_)) => false,
+            _ => true,
+        }),
+        RecordFieldAbi::Record(fields) => {
+            fields.iter().all(|(_, f)| record_field_abi_reg_representable(f))
+        }
+        RecordFieldAbi::Option(inner) => record_field_abi_reg_representable(inner),
+        RecordFieldAbi::Tuple(elems) => elems.iter().all(record_field_abi_reg_representable),
+        RecordFieldAbi::List(elem) => record_field_abi_reg_representable(elem),
+        _ => true,
     }
 }
 
