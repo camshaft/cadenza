@@ -2847,14 +2847,36 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // owned, so consume the operand into a `mut` local, push, and yield it — value semantics agree).
         Core::ListPush { list, elem } => {
             let l = emit(db, list, env, ctx)?;
-            let e = emit(db, elem, env, ctx)?;
+            // GROUND the pushed element to the list's DECLARED element type — a bare narrow-int element
+            // (`__v.push(100i64)` into a `Vec<i8>`) or a compound element with a narrow field (`(100u64 as
+            // i64,)` into a `Vec<(i8,)>`) otherwise defaults to i64 → rustc E0308 (wasm's untyped list handle
+            // needs no element type). `emit_elem_grounding_empty_list` grounds a scalar (Int/Float) or a
+            // compound (tuple/record/list) LITERAL to the target; a non-literal element carries its own
+            // concrete type and falls through. The `List.push`/`prepend`/`Map.insert`/`Set.insert` twin of
+            // the SetOf/MapNew/ListNew construction-site element grounding (#8481/#10098/#10105).
+            let elem_ty = match type_of(db, id).strip_nominal() {
+                Ty::List(et) => Some((**et).clone()),
+                _ => None,
+            };
+            let e = match elem_ty.as_ref() {
+                Some(t) => emit_elem_grounding_empty_list(db, elem, Some(t), env, ctx)?,
+                None => emit(db, elem, env, ctx)?,
+            };
             Ok(format!("{{ let mut __v = {l}; __v.push({e}); __v }}"))
         }
         // `List.prepend` → insert `elem` at the FRONT, returning the NEW list (persistent semantics; the
         // front-growth twin of `List.push`). Consume the operand into a `mut` local and `insert(0, …)`.
         Core::ListPrepend { list, elem } => {
             let l = emit(db, list, env, ctx)?;
-            let e = emit(db, elem, env, ctx)?;
+            // Ground the prepended element to the list's declared element type — see `List.push` above.
+            let elem_ty = match type_of(db, id).strip_nominal() {
+                Ty::List(et) => Some((**et).clone()),
+                _ => None,
+            };
+            let e = match elem_ty.as_ref() {
+                Some(t) => emit_elem_grounding_empty_list(db, elem, Some(t), env, ctx)?,
+                None => emit(db, elem, env, ctx)?,
+            };
             Ok(format!("{{ let mut __v = {l}; __v.insert(0, {e}); __v }}"))
         }
         // `List.concat` → the two lists joined in order (`lhs` then `rhs`). Consume `lhs` into a `mut`
@@ -3136,29 +3158,48 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // `BTreeMap<i64, u8>` → the `u8` value slot gets an `i64` → E0308). Ground each to the map's
             // key/value type (`emit_grounded` renders a bare literal at that width, no-op when already
             // width-carrying) — the Map twin of the Set-element / list-element sibling-width render (adv-68).
-            let (key_it, val_it): (Option<IntTy>, Option<IntTy>) =
+            let (map_key_ty, map_val_ty): (Option<Ty>, Option<Ty>) =
                 match type_of(db, id).strip_nominal() {
-                    Ty::Map(mk, mv) => {
-                        let ki = match mk.strip_nominal() {
-                            Ty::Int(it) => Some(*it),
-                            _ => None,
-                        };
-                        let vi = match mv.strip_nominal() {
-                            Ty::Int(it) => Some(*it),
-                            _ => None,
-                        };
-                        (ki, vi)
-                    }
+                    Ty::Map(mk, mv) => (Some((**mk).clone()), Some((**mv).clone())),
                     _ => (None, None),
                 };
-            let k = match key_it {
-                Some(it) => emit_grounded(db, key, it, env, ctx)?,
-                None => emit(db, key, env, ctx)?,
+            let key_it = map_key_ty.as_ref().and_then(|t| match t.strip_nominal() {
+                Ty::Int(it) => Some(*it),
+                _ => None,
+            });
+            let val_it = map_val_ty.as_ref().and_then(|t| match t.strip_nominal() {
+                Ty::Int(it) => Some(*it),
+                _ => None,
+            });
+            // A COMPOUND key/value (a tuple/record/list) with a bare narrow field defaults its own `type_of`
+            // to the i64 default → `((100 as i64),)` into a `BTreeMap<(i8,), _>` / `BTreeMap<_, (i8,)>` →
+            // E0308. Ground it through the map's DECLARED key/value type via `emit_elem_grounding_empty_list`
+            // (the `Map.insert` twin of the `MapNew` compound key/value grounding #10098); a scalar Int keeps
+            // the `emit_grounded` width render, a non-compound/non-int falls through to the plain emit.
+            let k = if let Some(it) = key_it {
+                emit_grounded(db, key, it, env, ctx)?
+            } else if let Some(ct) = map_key_ty.as_ref().filter(|t| {
+                matches!(
+                    t.strip_nominal(),
+                    Ty::Tuple(_) | Ty::Record(_) | Ty::List(_)
+                )
+            }) {
+                emit_elem_grounding_empty_list(db, key, Some(ct), env, ctx)?
+            } else {
+                emit(db, key, env, ctx)?
             };
             let k = wrap_ord_key(&db.name_ctx(), k, &kt);
-            let v = match val_it {
-                Some(it) => emit_grounded(db, val, it, env, ctx)?,
-                None => emit(db, val, env, ctx)?,
+            let v = if let Some(it) = val_it {
+                emit_grounded(db, val, it, env, ctx)?
+            } else if let Some(ct) = map_val_ty.as_ref().filter(|t| {
+                matches!(
+                    t.strip_nominal(),
+                    Ty::Tuple(_) | Ty::Record(_) | Ty::List(_)
+                )
+            }) {
+                emit_elem_grounding_empty_list(db, val, Some(ct), env, ctx)?
+            } else {
+                emit(db, val, env, ctx)?
             };
             Ok(format!(
                 "{{ let mut __m = {m}; __m.insert({k}, {v}); __m }}"
@@ -3485,7 +3526,17 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let mut set_ctx = ctx.clone();
             set_ctx.set_typed_by_enclosing_insert = true;
             let s = emit(db, set, env, &set_ctx)?;
-            let e = emit(db, elem, env, ctx)?;
+            // Ground the inserted element to the set's DECLARED element type — a bare narrow scalar or a
+            // compound element with a narrow field otherwise defaults to i64 → E0308 against a
+            // `BTreeSet<i8>` / `BTreeSet<(i8,)>` (the `Set.insert` twin of the `SetOf` element grounding).
+            let set_elem_ty = match type_of(db, id).strip_nominal() {
+                Ty::Set(el) => Some((**el).clone()),
+                _ => None,
+            };
+            let e = match set_elem_ty.as_ref() {
+                Some(t) => emit_elem_grounding_empty_list(db, elem, Some(t), env, ctx)?,
+                None => emit(db, elem, env, ctx)?,
+            };
             let e = wrap_ord_key(&db.name_ctx(), e, &et);
             Ok(format!("{{ let mut __s = {s}; __s.insert({e}); __s }}"))
         }
