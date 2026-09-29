@@ -11588,3 +11588,31 @@ cases
   (host-arg-received cadenza:platform/probe.push #list(#record((= o (Some #tuple(#tuple(1 2) 9))))))
   (output 55)
   (live-objects 0))
+
+(case
+  "a list<variant{a, b(record{d: bytes, n: s64})}> host-op arg crosses (a RecordMem variant case as a direct list element)"
+  (doc
+    "SHAPE 332 (v-wit-boundary) — the direct-LIST-ELEMENT position of SHAPE 317's variant RecordMem case: a
+           `variant{a, b(record{d: bytes, n: s64})}` is the list element itself (not a record field). SHAPE 317's
+           `VariantPayloadKind::RecordMem` admission (`variant_mem_mixed_kind_supported` → true) made
+           `list_elem_marshalable` admit this variant, and `emit_variant_mixed_to_mem`'s record arm writes the
+           RecordMem case (re-resolving the record from the guest Ty + WIT via `emit_record_to_mem`, spilling the
+           Bytes field at the cursor). The mem/list used_ops collector now recurses a RecordMem case's record ops
+           (`arr-get` + `get-int` + `bytes-len`/`bytes-get`) via `collect_list_elem_ops` — WITHOUT that those ops
+           were undeclared and the element's `CallImport` resolved to `u32::MAX` (CDZ0910, the found-gap this pins).
+           run() pushes [B{d:b\"hi\", n:2}, A]; a VALID running component (live-objects=0).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (variant (a) (b (record (= d (list (u8))) (= n (s64))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (Record (: d Bytes) (: n Int64))))
+      (effect probe (op push (-> (List Sig) Int64)))
+      (def (run) (host (probe) (probe.push #list((Sig.B #record((= d b"hi") (= n 2))) (Sig.A)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list((b #record((= d #list(104 105)) (= n 2))) (a unit)))
+  (output 55)
+  (live-objects 0))

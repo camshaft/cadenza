@@ -277,9 +277,15 @@ pub(super) fn collect_mixed_variant_ops(
         match kind {
             crate::backend::wasm::host::VariantPayloadKind::Tuple(_)
             | crate::backend::wasm::host::VariantPayloadKind::List(_)
-            | crate::backend::wasm::host::VariantPayloadKind::Record(..) => {
+            | crate::backend::wasm::host::VariantPayloadKind::Record(..)
+            | crate::backend::wasm::host::VariantPayloadKind::RecordMem(_) => {
                 // Tuple → `arr-get` + per-element ops; List<scalar> → `vec-len`/`vec-get` + element unbox;
-                // Record<scalar> → `arr-get` per field + each field's unbox — all via the shared collector.
+                // Record<scalar> → `arr-get` per field + each field's unbox; RecordMem (a cursor-spilling
+                // record case, SHAPE 317 family) → `arr-get` per field + each field's unbox + a Bytes field's
+                // `bytes-len`/`bytes-get` rope-spill — all via the shared `collect_list_elem_ops` over the
+                // record `Ty` (`pty`). Without RecordMem here, a variant-with-RecordMem-case as a mem element
+                // (e.g. `list<variant{a, b(record{bytes})}>`) left `arr-get`/`bytes-len`/`bytes-get`/`get-int`
+                // undeclared → `CallImport` resolved to `u32::MAX` → CDZ0910 (the found-gap this arm closes).
                 collect_list_elem_ops(db, &pty, out);
             }
             crate::backend::wasm::host::VariantPayloadKind::Bytes => {
