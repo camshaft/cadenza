@@ -248,3 +248,58 @@ async fn post_without_a_valid_write_credential_is_unauthorized() {
     let (status, _, _) = raw_post(addr, "/", Some("wrong"), b"x".to_vec()).await;
     assert_eq!(status, 401);
 }
+
+/// Spawn a CAS server with a small per-write body ceiling (both credentials configured), for the
+/// oversized-body (`413`) tests — the DoS guard that stops an unbounded upload exhausting memory.
+async fn spawn_server_with_max_body(max_body_bytes: usize) -> SocketAddr {
+    let server = Arc::new(
+        CasServer::in_memory()
+            .with_read_credential(READ.to_string())
+            .with_write_credential(WRITE.to_string())
+            .with_max_body_bytes(max_body_bytes),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(server.serve(listener));
+    addr
+}
+
+#[tokio::test]
+async fn a_post_over_the_body_ceiling_is_413() {
+    let max = 8;
+    let addr = spawn_server_with_max_body(max).await;
+
+    // A body over the ceiling is refused 413 — the upload never reaches the store.
+    let (over_status, over_loc, _) = raw_post(addr, "/", Some(WRITE), vec![b'x'; max + 1]).await;
+    assert_eq!(over_status, 413, "an oversized POST body is 413");
+    assert_eq!(over_loc, None, "a rejected upload assigns no address");
+
+    // A body exactly at the ceiling still succeeds (the limit is inclusive — pins the off-by-one).
+    let (at_status, _, _) = raw_post(addr, "/", Some(WRITE), vec![b'x'; max]).await;
+    assert_eq!(at_status, 201, "a body exactly at the ceiling is accepted");
+}
+
+#[tokio::test]
+async fn a_put_over_the_body_ceiling_is_413() {
+    let max = 8;
+    let addr = spawn_server_with_max_body(max).await;
+
+    // The ceiling is enforced BEFORE the content-address check, so an oversized body is 413 regardless
+    // of the key it is PUT under (the body is never fully read, let alone hashed).
+    let over = vec![b'x'; max + 1];
+    let over_key = Hash::of(HashTag::Blob, &over).to_string();
+    assert_eq!(
+        raw_put(addr, &over_key, Some(WRITE), over).await,
+        413,
+        "an oversized PUT body is 413"
+    );
+
+    // A body exactly at the ceiling, PUT under its own hash, is accepted (201).
+    let at = vec![b'x'; max];
+    let at_key = Hash::of(HashTag::Blob, &at).to_string();
+    assert_eq!(
+        raw_put(addr, &at_key, Some(WRITE), at).await,
+        201,
+        "a body exactly at the ceiling is accepted"
+    );
+}
