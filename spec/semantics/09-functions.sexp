@@ -13590,7 +13590,7 @@
   (live-objects 0))
 
 (case
-  "byp3 a Bytes entry param sliced declines (extraction past the length borrow)"
+  "byp3 a Bytes entry param sliced crosses on wasm and rust (dup-aware borrow-lift reclaim)"
   (input
     (do
       (def
