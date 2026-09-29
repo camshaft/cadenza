@@ -7,7 +7,7 @@
 1000	bigint_of_i64 x1000
 0	bigint_to_i64 x1000
 3004	bytes_concat x1000
-448	bytes_flatten x64
+268	bytes_flatten x64
 1000	bytes_slice x1000
 4000	fbip_map_fresh x1000
 2000	fbip_map_reuse x1000

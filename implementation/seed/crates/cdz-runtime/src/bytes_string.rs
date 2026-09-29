@@ -309,6 +309,44 @@ fn content_bytevec(h: Handle) -> etude_bytevec::ByteVec {
     })
 }
 
+/// Like [`content_bytevec`] but for a CONSUMED operand (the caller `op_drop`s `h` right after): when `h`'s
+/// node is UNIQUELY owned (`rc == 1`), MOVE its `ByteVec` out instead of cloning it. This is the FBIP take
+/// (mirrors the vector's rc==1 spine reuse) that keeps a growing concat cascade `rope = concat(rope, piece)`
+/// — module assembly, the exact O(n²) the bytes rope exists to KILL — O(n): a clone re-refcounts the
+/// accumulator's whole growing chunk container every step (O(n) work × n steps = O(n²)); a move is O(1).
+/// SAFE because `rc == 1` means no other owner can observe `h`: emptying `h`'s raw is unobservable, and the
+/// caller's `op_drop(h)` then frees just the shell — the moved chunks are no longer reachable through `h`,
+/// so no double-free. A SHARED (`rc > 1`) or IMMORTAL (`rc == u32::MAX`, so `!= 1`) node CLONES (refcount-
+/// shares the chunks) and does NOT mutate `h`'s raw — a sibling still needs the value. Callers run
+/// `promote_leaf_to_rope(h)` FIRST, so a `Heap` leaf is already `Rope` here (the `Heap` arm is a defensive
+/// fallback that reuses the buffer). A null/immediate reads as empty.
+fn content_bytevec_consuming(h: Handle) -> etude_bytevec::ByteVec {
+    if is_immediate(h) {
+        return etude_bytevec::ByteVec::default();
+    }
+    // SHARED / IMMORTAL: clone (refcount-share the chunks); MUST NOT mutate `h`'s raw (a sibling reads it).
+    if node_rc(h) != 1 {
+        return content_bytevec(h);
+    }
+    // UNIQUE (rc == 1): take `h`'s content by MOVE. Replace the raw with an empty inline so the subsequent
+    // `op_drop(h)` reclaims only the shell (a leaf already has empty handles). `Rope` moves the boxed
+    // `ByteVec` out (no clone — the win); `Heap` reuses the `Vec`'s buffer; `Inline` copies its ≤cap bytes.
+    match unsafe { h.node_mut() } {
+        None => etude_bytevec::ByteVec::default(),
+        Some(n) => match core::mem::replace(
+            &mut n.raw,
+            Raw::Inline {
+                len: 0,
+                buf: [0u8; INLINE_RAW_CAP],
+            },
+        ) {
+            Raw::Rope(bv) => *bv, // MOVE the boxed ByteVec out — the O(1) take that restores the O(n) cascade
+            Raw::Heap(v) => etude_bytevec::ByteVec::from(v), // reuse the buffer (unreachable after promote)
+            Raw::Inline { len, buf } => etude_bytevec::ByteVec::from(buf[..len as usize].to_vec()),
+        },
+    }
+}
+
 /// Allocate a fresh bytes/string LEAF (empty `handles`) holding `bv`'s content: INLINE when it fits the
 /// cap (a short contiguous copy — preserves the no-heap short-leaf rep and the inline-small invariant
 /// the reuse/rep tests pin), else a `Raw::Rope` that KEEPS the `ByteVec` (its chunks stay shared by
@@ -328,10 +366,12 @@ fn bytes_leaf_from_bytevec(bv: etude_bytevec::ByteVec) -> Handle {
 
 /// `bytes-concat(a, b)` — a new Bytes = the bytes of `a` then `b`. Builds one `ByteVec` = a's chunks
 /// then b's, appended by REFCOUNT (`ByteVec::append` moves the chunks — O(chunks), no byte copy), so a
-/// concat cascade stays linear (the chunk rope defers the copy to the single compact-on-read, the same
-/// O(n)-not-O(n²) property the old node-rope had). CONSUMES `a` and `b`: `content_bytevec` clones-to-
-/// share then `op_drop` releases our operand reference (a unique operand's node is freed and its Bytes
-/// transferred into the result; a shared one keeps its Bytes shared). Empty operand is the identity.
+/// concat cascade stays linear. CONSUMES `a` and `b` via `content_bytevec_consuming`: a UNIQUELY-owned
+/// (`rc == 1`) operand's `ByteVec` is MOVED out (no clone), a shared one is refcount-cloned; then
+/// `op_drop` releases our operand reference (freeing just the emptied shell on the move path). The move
+/// is load-bearing for the growing cascade `rope = concat(rope, piece)` (module assembly): `rope` is
+/// `rc == 1` each step, so moving its chunk container is O(1) — cloning it would be O(n) work × n steps
+/// = the O(n²) copy the bytes rope exists to KILL. Empty operand is the identity.
 pub(crate) fn op_bytes_concat(a: Handle, b: Handle) -> Handle {
     let la = op_bytes_len(a);
     let lb = op_bytes_len(b);
@@ -353,8 +393,8 @@ pub(crate) fn op_bytes_concat(a: Handle, b: Handle) -> Handle {
     // O(1) concat), and a retained operand re-concatenated later shares rather than re-copies.
     promote_leaf_to_rope(a);
     promote_leaf_to_rope(b);
-    let mut r = content_bytevec(a);
-    let mut rb = content_bytevec(b);
+    let mut r = content_bytevec_consuming(a);
+    let mut rb = content_bytevec_consuming(b);
     r.append(&mut rb);
     op_drop(a);
     op_drop(b);
@@ -409,10 +449,11 @@ pub(crate) fn op_bytes_slice(buf: Handle, start: u32, len: u32) -> Handle {
     }
     // Promote a `Heap` parent to a shareable `Rope` first, so THIS slice and every later slice of the
     // same parent RC-share its chunk instead of each copying the whole parent (the repeated-`String.at`
-    // lexer path). Then `ByteVec::slice` structurally shares the parent's chunks (O(log n), no byte copy);
-    // CONSUME `buf` (content_bytevec shares its chunks by refcount, op_drop releases our operand ref).
+    // lexer path). Then `ByteVec::slice` structurally narrows the chunk view (O(log n), no byte copy).
+    // CONSUME `buf` via `content_bytevec_consuming`: a UNIQUE (`rc == 1`) parent's `ByteVec` is MOVED out
+    // (no clone) then sliced; a shared one is refcount-cloned; `op_drop(buf)` releases our operand ref.
     promote_leaf_to_rope(buf);
-    let r = content_bytevec(buf).slice((start as usize)..((start + len) as usize));
+    let r = content_bytevec_consuming(buf).slice((start as usize)..((start + len) as usize));
     op_drop(buf);
     bytes_leaf_from_bytevec(r)
 }

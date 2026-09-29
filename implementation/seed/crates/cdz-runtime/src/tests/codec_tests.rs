@@ -2771,14 +2771,15 @@ fn hot_op_allocation_ceilings() {
         op_drop(rope);
     });
     println!("ALLOC bytes_flatten x{DEPTH}: {flatten}");
-    // Build allocs: 1 base leaf + DEPTH×(piece leaf + ByteVec-rope concat leaf ≈ node Box + boxed
-    // ByteVec + chunk deque) then flatten/compact adds the flattened leaf. All bounded by O(DEPTH),
-    // NOT O(DEPTH²). The per-step concat cost rose with `bytevec everywhere` (operator seq-1876,
-    // accepted), so the linear count climbed from the old node-rope build — ceiling raised to match,
-    // still guarding the O(DEPTH) shape.
+    // Build allocs for the growing cascade `rope = concat(rope, piece)`: each step `rope` is UNIQUELY
+    // owned (rc==1, freshly reassigned), so `content_bytevec_consuming` MOVES its `ByteVec` out (no clone)
+    // — O(1)/step, so the whole cascade is O(DEPTH), and its alloc count dropped from the clone-cascade's
+    // ~448 to ~268 (#282). This ceiling now GUARDS that FBIP move: a regression to cloning a unique
+    // operand (re-refcounting the accumulator's growing chunk container every step = the O(DEPTH²) work
+    // the bytes rope exists to kill) climbs the count back toward ~448 and trips this. Deterministic count.
     assert!(
-        flatten <= 500,
-        "bytes_flatten DEPTH={DEPTH} allocs {flatten} exceeds ceiling 500 (linear in DEPTH: base + DEPTH×(piece + ByteVec-rope concat leaf) + one flattened/compacted leaf; a regression to O(DEPTH²) re-flatten/re-walk would blow up)"
+        flatten <= 320,
+        "bytes_flatten DEPTH={DEPTH} allocs {flatten} exceeds ceiling 320 (O(DEPTH): base + DEPTH×(piece + MOVED concat leaf) + one compacted leaf; a regression to CLONING a unique concat operand — the O(DEPTH²) cascade — climbs back toward ~448 and trips this)"
     );
 
     // (J3b) SMALL flatten — the hot per-char shape a real STRING LEXER hits: `String.at(s,i)` returns a
@@ -3378,6 +3379,30 @@ fn shared_map_copy_path_cpu_scaling_probe() {
         let rem_ns = t1.elapsed().as_nanos() as f64 / reps as f64;
         println!("MAPSHARED n={n:>6}  insert {ins_ns:7.1} ns/op   remove {rem_ns:7.1} ns/op");
         op_drop(base);
+    }
+}
+
+#[test]
+#[ignore] // diagnostic timing — run with --release --ignored --nocapture (DEBUG ns are inflated/ratio-distorted)
+// #282: the growing-concat cascade `rope = concat(rope, piece)` (module assembly — the exact O(n²) copy the
+// bytes rope exists to KILL). `rope` is UNIQUELY owned (rc==1) each step, so `content_bytevec_consuming`
+// MOVES its `ByteVec` out — O(1)/concat, so the whole cascade + single final compact is O(n): ns/element
+// stays FLAT as n grows. A regression to CLONING the unique accumulator re-refcounts its growing chunk
+// container every step = O(n²) → ns/element grows ~linearly with n (the tell). The deterministic guard is
+// the `bytes_flatten` alloc ceiling (hot_op_allocation_ceilings, ~268 moved vs ~448 cloned); this probe is
+// the timing observability the alloc count can't give (a linear alloc count hides quadratic WORK).
+fn concat_cascade_cpu_scaling_probe() {
+    for &n in &[1000i64, 4000, 16000, 64000] {
+        let t0 = std::time::Instant::now();
+        let mut rope = op_bytes_alloc(0);
+        for k in 0..n {
+            let piece = op_bytes_new(vec![(k & 0xff) as u8; 4]); // fresh unique 4-byte piece
+            rope = op_bytes_concat(rope, piece); // rope stays rc==1 → the MOVE path
+        }
+        rope = op_bytes_compact(rope); // the single O(total) materialize at the end
+        let per_el = t0.elapsed().as_nanos() as f64 / n as f64;
+        println!("CONCATCASCADE n={n:>6}  {per_el:7.1} ns/element (flat = O(n) move; growing = O(n²) clone-regression)");
+        op_drop(rope);
     }
 }
 
