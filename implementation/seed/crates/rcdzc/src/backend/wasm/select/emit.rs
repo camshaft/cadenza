@@ -6337,6 +6337,10 @@ pub(super) fn emit(
                     // A top-level `option<list<T>>` arg marshals the payload list into `mem` on Some → cursor.
                     || crate::backend::wasm::host::option_payload_ty(db, &at)
                         .is_some_and(|p| matches!(p.strip_nominal(), Ty::List(_)))
+                    // A top-level `option<mixed-variant-with-Bytes/List-case>` arg spills that case into `mem` at
+                    // the cursor (`emit_option_reg_flatten`'s mixed-variant branch → `emit_variant_mixed_arg_reg_flatten`)
+                    // → reserve it (else the rope copies to a bogus slot; `wasm-tools validate` misses that).
+                    || crate::backend::wasm::host::option_mixed_variant_needs_cursor(db, &at)
                     // A top-level `result<list<u8>, enum>` arg copies the Ok `list<u8>` payload's rope into
                     // `mem` on the Ok arm (`emit_result_arg_reg_flatten`) → needs the running scratch cursor.
                     || crate::backend::wasm::host::result_bytes_enum(db, &at).is_some()

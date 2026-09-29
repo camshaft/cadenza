@@ -1514,6 +1514,23 @@ pub(super) fn collect_used_ops_into_seen(
                                 {
                                     out.insert(read);
                                 }
+                            } else if crate::backend::wasm::host::variant_mixed_payload_cases(
+                                db, &payload,
+                            )
+                            .is_some_and(|cases| {
+                                cases.iter().all(|(_, k)| {
+                                    crate::backend::wasm::host::variant_mem_mixed_kind_supported(k)
+                                })
+                            }) {
+                                // A HETEROGENEOUS MIXED `variant` payload is flattened by
+                                // `emit_option_reg_flatten`'s mixed-variant branch →
+                                // `emit_variant_mixed_arg_reg_flatten`: `sum-disc`/`sum-payload` + each payload
+                                // case's ops (a scalar's unbox, a `Bytes` case's rope copy, a `List` case's
+                                // `vec-*` + element ops, a tuple/record case's `arr-get` + field ops). Declare
+                                // exactly those via the shared `collect_record_field_ops` (its VariantMemMixed
+                                // arm — the used_ops twin of the marshal). Checked after the scalar-variant arm
+                                // (disjoint) and before the nested-option arm.
+                                collect_record_field_ops(db, &payload, out);
                             } else if crate::backend::wasm::host::option_payload_ty(db, &payload)
                                 .is_some()
                                 && crate::backend::wasm::host::field_boundary_abi(db, &payload)
