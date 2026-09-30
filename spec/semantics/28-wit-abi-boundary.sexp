@@ -12375,3 +12375,49 @@ cases
   (host-arg-received cadenza:platform/probe.push #record((= n 7) (= o (Some #record((= p 1) (= inner (Some 9)))))))
   (output 55)
   (live-objects 0))
+
+(case
+  "a bare result<s64, variant{bad, worse}> host-op arg crosses (NULLARY-case variant err arm, distinct from enum)"
+  (doc
+    "SHAPE 361 (v-wit-boundary) — the result<_, VARIANT> REMAINING (coverage doc), nullary-case half. An err
+           arm declared as a `variant` with all-nullary cases crosses IDENTICALLY to the `enum` err arm (SHAPE 186):
+           `emit_result_scalar_arg_reg_flatten` reads the err sum's discriminant into the join slot. The WIT
+           constructor differs (`variant` vs `enum` — DISTINCT component types) but both flatten the err arm to a
+           single disc slot, so the guest sum `Er = (Bad) (Worse)` crosses under either. run() emits `(Ok 7)`; the
+           host returns 55, live-objects=0. The PAYLOAD-carrying variant err arm is SHAPE 362 (declines).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (s64) (variant (bad) (worse)))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result Int64 Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok 7))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a result<s64, variant{bad, detail(s64)}> host-op arg declines coded (PAYLOAD-carrying variant err arm)"
+  (doc
+    "SHAPE 362 (v-wit-boundary) — the result<_, VARIANT> REMAINING, payload-carrying half. When the `variant`
+           err arm has a PAYLOAD case (`detail(s64)`), the err arm no longer flattens to a single disc slot — the
+           payload must be marshalled — and the result-ARG register flatten has no boundary form for it, so the op
+           declines cleanly with the coded CDZ0903 (decline-don't-miscompile: a coded decline, never a CDZ0910).
+           Contrast SHAPE 361 (nullary-case variant err, which crosses like an enum). A payload-carrying err at the
+           result-arg register position is a tracked later slice, consistent with the register-flatten-limitation
+           pattern (SHAPE 351).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (s64) (variant (bad) (detail (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Detail (: v Int64)))
+      (effect probe (op push (-> (Result Int64 Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok 7))))
+      (export run)))
+  (call run)
+  (error CDZ0903))
