@@ -1970,25 +1970,15 @@ pub(crate) fn option_arg_crosses(db: &mut Db, ty: &Ty) -> bool {
     };
     abi_val_type(&p).is_some()
         || matches!(p, Ty::Bytes)
-        // a `tuple<…>` payload crosses iff EVERY element is one of the shapes the `emit_option_reg_flatten` tuple
-        // branch marshals cleanly under an option: a SCALAR, a `Bytes`, a `list<T>` (element crossing), or a
-        // HETEROGENEOUS MIXED `variant` (scalar/tuple/record/Bytes/List cases). `emit_option_reg_flatten`'s tuple
-        // branch derives its capture widths from each element's `field_boundary_abi` and recurses
-        // `emit_tuple_reg_flatten`. This is NARROWER than the direct-tuple `tuple_arg_crosses` gate on purpose: a
-        // RECORD element with a sub-i64 (s32/s16/s8) field hits a PRE-EXISTING tuple<record> flatten mismatch
-        // (a component-functype CDZ0910, reproducible on the DIRECT tuple arg too — a found gap routed to be
-        // fixed), so an option<tuple<record>> DECLINES cleanly here rather than miscompile (decline-don't-
-        // miscompile). Once the tuple<record{sub-i64}> flatten is fixed this can widen to full `tuple_arg_crosses`.
-        || matches!(p.strip_nominal(), Ty::Tuple(es)
-        if !es.is_empty()
-            && es.iter().all(|e| {
-                abi_val_type(e).is_some()
-                    || matches!(e.strip_nominal(), Ty::Bytes)
-                    || matches!(e.strip_nominal(), Ty::List(_))
-                    || variant_mixed_payload_cases(db, e).is_some_and(|cases| {
-                        cases.iter().all(|(_, k)| variant_mem_mixed_kind_supported(k))
-                    })
-            }))
+        // a `tuple<…>` payload crosses iff the SAME per-element admit set the DIRECT tuple ARG uses
+        // ([`tuple_arg_crosses`]) accepts every element — `emit_option_reg_flatten`'s tuple branch recurses
+        // `emit_tuple_reg_flatten` (the direct-tuple emit) and the option<tuple> cursor pre-scan uses
+        // `tuple_arg_needs_cursor`, so option<tuple> has full parity with the direct tuple arg. (This was formerly
+        // NARROWER — a RECORD element was excluded because a `tuple<record{sub-i64}>` flatten mismatched the
+        // component functype (CDZ0910); that guest-width-vs-WIT-width divergence was fixed by #10029's
+        // `ground_perform_arg_ty`, so the direct tuple<record> now crosses (SHAPE 355) and the narrowing is
+        // retired — option<tuple<record>> crosses too, SHAPE 356.)
+        || (matches!(p.strip_nominal(), Ty::Tuple(_)) && tuple_arg_crosses(db, &p))
         // a `list<T>` payload crosses iff its ELEMENT crosses at the boundary (`field_boundary_abi`) — the same
         // admit set a `list<T>` ARG / a record list FIELD use. `emit_option_reg_flatten`'s list branch marshals
         // the payload list into `mem` via `emit_list_arg_marshal` and pushes `(disc, ptr, count)`, the register

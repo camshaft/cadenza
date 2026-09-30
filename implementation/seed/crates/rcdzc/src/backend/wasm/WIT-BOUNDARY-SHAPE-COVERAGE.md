@@ -302,11 +302,13 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `collect_record_field_ops`; and the emit.rs `option<tuple>` cursor pre-scan uses `tuple_arg_needs_cursor`
   (recursing a mixed-variant Bytes/List leaf) instead of the Bytes-only `tuple_has_bytes_element`. `result<tuple>`
   already crossed this shape (its pre-scan already used `tuple_arg_needs_cursor` + `result_tuple_enum` →
-  `tuple_arg_crosses`); SHAPE 278/279 pin it. The `option<tuple>` widening is deliberately NARROWER than the
-  direct-tuple `tuple_arg_crosses` (it excludes a RECORD element) — see the GAPS `[emit, tuple<record>]` entry:
-  a record element with a sub-i64 (s32/s16/s8) field hits a PRE-EXISTING tuple<record> flatten CDZ0910, so
-  option<tuple<record>> DECLINES cleanly rather than inherit the miscompile. REMAINING at a register position: a
-  record/tuple element reached via a `tuple` under option (blocked on the tuple<record{sub-i64}> fix); a
+  `tuple_arg_crosses`); SHAPE 278/279 pin it. The `option<tuple>` classifier now DELEGATES to the direct-tuple
+  `tuple_arg_crosses` (full parity, ✅ 2026-09-30) — the former RECORD-element exclusion was a decline-don't-
+  miscompile guard for the `tuple<record{sub-i64}>` component-functype CDZ0910, which #10029's `ground_perform_arg_ty`
+  width-grounding FIXED (the direct `tuple<record{a:s32,b:s64}>` now crosses, SHAPE 355), so `option<tuple<record>>`
+  crosses too (SHAPE 356) — as do nested-tuple / scalar-variant / enum tuple elements under an option, since
+  `emit_option_reg_flatten`'s tuple branch recurses the same `emit_tuple_reg_flatten` and the pre-scan already uses
+  `tuple_arg_needs_cursor`. RESOLVED (was: REMAINING at a register position — a record/tuple element reached via a
   DIVERGENT-order record payload case at a REGISTER position is now ✅ DONE (2026-09-28, SHAPE 281 record-FIELD +
   SHAPE 282 tuple-ELEMENT). Rather than threading the WIT through `record_field_cref`'s signature (the earlier-feared
   cross-cutting shared-CRef-infra refactor), the fix carries the WIT-orderable field info IN the abi:
