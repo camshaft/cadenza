@@ -12216,3 +12216,56 @@ cases
   (host-arg-received cadenza:platform/probe.push #record((= perms (flags r x)) (= n 9)))
   (output 55)
   (live-objects 0))
+
+(case
+  "a tuple<record{a:s32,b:s64}, s64> host-op arg crosses (a record element with a sub-i64 field — the #10029 width-grounding witness)"
+  (doc
+    "SHAPE 355 (v-wit-boundary) — a DIRECT `tuple<record{a:s32,b:s64}, s64>` host-op arg: a tuple whose first
+           element is a RECORD with a SUB-i64 (`s32`) field. This shape formerly hit a component-functype CDZ0910
+           — the guest flattened the `s32` field's Int64 literal to an i64 slot while the WIT-authoritative
+           component type declared an i32 slot (the guest-width-vs-WIT-width divergence). #10029's
+           `ground_perform_arg_ty` now commits the literal `1` to the op's declared `s32` width, so the guest
+           flatten (i32) matches the component type and the value CROSSES via `emit_tuple_reg_flatten`'s record
+           element arm. run() pushes ({a:1, b:2}, 7); the byte-exact `(host-arg-received …)` pin proves the
+           narrowed field + the sibling s64 cross correctly. This retires the stale option<tuple> record-element
+           narrowing (SHAPE 356).")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (tuple (record (= a (s32)) (= b (s64))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Tuple (Record (: a Int32) (: b Int64)) Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple(#record((= a (: 1 Int32)) (= b 2)) 7))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #tuple(#record((= a 1) (= b 2)) 7))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "an option<tuple<record{a:s32,b:s64}, s64>> host-op arg crosses (option<tuple> widened to full tuple_arg_crosses parity)"
+  (doc
+    "SHAPE 356 (v-wit-boundary) — `option<tuple<record{a:s32,b:s64}, s64>>`: the option-wrapped twin of SHAPE 355.
+           `option_arg_crosses`'s tuple branch was formerly NARROWER than the direct-tuple `tuple_arg_crosses` — it
+           EXCLUDED a RECORD element, because a `tuple<record{sub-i64}>` flatten mismatched the component functype
+           (CDZ0910). With #10029's width-grounding fixing that (SHAPE 355 now crosses directly), the narrowing is
+           RETIRED: `option_arg_crosses`'s tuple branch now delegates to `tuple_arg_crosses` (full parity), since
+           `emit_option_reg_flatten`'s tuple branch recurses the SAME `emit_tuple_reg_flatten` as the direct arg and
+           the option<tuple> cursor pre-scan already uses `tuple_arg_needs_cursor`. So an option<tuple> now admits a
+           record element (and nested-tuple / scalar-variant / enum elements) exactly where the direct tuple arg
+           does. run() pushes Some({a:1,b:2}, 7); the byte-exact `(host-arg-received … (Some …))` pin proves the
+           record-in-tuple-under-option marshal.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (option (tuple (record (= a (s32)) (= b (s64))) (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Tuple (Record (: a Int32) (: b Int64)) Int64)) Int64)))
+      (def (run) (host (probe) (probe.push (Some #tuple(#record((= a (: 1 Int32)) (= b 2)) 7)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push (Some #tuple(#record((= a 1) (= b 2)) 7)))
+  (output 55)
+  (live-objects 0))
