@@ -12345,3 +12345,28 @@ cases
   (host-arg-received cadenza:platform/probe.push #list((b #list(#record((= x 1) (= y 2)))) (a unit)))
   (output 55)
   (live-objects 0))
+
+(case
+  "an option<record{p: s32, inner: option<s64>}> record-ARG FIELD declines coded (nested-compound option payload field, later slice)"
+  (doc
+    "SHAPE 360 (v-wit-boundary) — the coverage-doc line-358 REMAINING: a record host-op ARG with an
+           `option<record>` FIELD whose option payload record itself carries a NESTED-COMPOUND field (here
+           `inner: option<s64>`). It declines cleanly with the coded CDZ0903: `field_boundary_abi`'s option<record>
+           payload arm is conservatively scalar/Bytes-only, so the `o` field is not boundary-representable and the
+           whole record arg declines at `first_unrepresentable_host_op` — rather than admitting it and reaching
+           `emit_option_reg_flatten`'s record branch → `emit_record_arg_marshal`, which cannot yet lay a nested
+           `option<scalar>` field inside an `option<record>` payload (forcing it produces a CDZ0910 core-type
+           mismatch, expected-i32-found-i64). Sibling of SHAPE 351 (same emit_option_reg_flatten CDZ0910 avoided by
+           an upstream coded decline). Distinct from SHAPE 357 (top-level option arg, which DOES cross) and the
+           SHAPE 124 family (an option<record{SCALARS}> field, which crosses) — only the nested-compound payload
+           field is the tracked later slice. Guards decline-don't-miscompile: this MUST stay a clean CDZ0903 (never
+           a silent reflective-fallback nor a CDZ0910) until the marshal + component-type lay the nested field.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (record (= n (s64)) (= o (option (record (= p (s32)) (= inner (option (s64)))))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: n Int64) (: o (Option (Record (: p Int32) (: inner (Option Int64)))))) Int64)))
+      (def (run) (host (probe) (probe.push #record((= n 7) (= o (Some #record((= p (: 1 Int32)) (= inner (Some 9)))))))))
+      (export run)))
+  (call run)
+  (error CDZ0903))
