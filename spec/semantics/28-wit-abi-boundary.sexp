@@ -12090,3 +12090,48 @@ cases
   (host-arg-received cadenza:platform/probe.push #record((= v (b #list(10 20))) (= n 7)))
   (output 55)
   (live-objects 0))
+
+(case
+  "a record{v: variant{a, b(list<tuple<s32,s64>>)}, n: s64} host-op arg declines coded (list<tuple> variant case — the list-element-type twin of SHAPE 348)"
+  (doc
+    "SHAPE 350 (v-wit-boundary) — the LIST-ELEMENT-TYPE twin of SHAPE 348: the variant `b` case carries a
+           `list<TUPLE>` rather than a `list<record>`. `record_field_cref`'s `VariantMemMixed` List arm builds a
+           `(list <elem>)` component type only for a SCALAR element (`abi_val_type`); a `tuple<s32,s64>` element is
+           `abi_val_type`=`None` (a tuple is not a scalar), so — like the SHAPE 348 record element — it would drop
+           to a NULLARY payload and mismatch serialize's list-header flatten (CDZ0910). `is_boundary_record`'s
+           `record_field_abi_reg_representable` guard rejects ANY non-scalar list element (`abi_val_type(elem).
+           is_some()`), so the op declines cleanly with the coded CDZ0903 — proving the SHAPE 348 fix is keyed to
+           the ELEMENT's scalar-ness, not to `record` specifically. Crosses at the mem position (a list ELEMENT);
+           register-parity crossing is a later increment.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (record (= v (variant (a) (b (list (tuple (s32) (s64)))))) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (List (Tuple Int32 Int64))))
+      (effect probe (op push (-> (Record (: v Sig) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= v (Sig.B #list(#tuple((: 1 Int32) 2)))) (= n 7)))))
+      (export run)))
+  (call run)
+  (error CDZ0903))
+
+(case
+  "an option<record{v: variant{a, b(list<record>)}, n: s64}> host-op arg declines coded (SHAPE 348 under an option<record> payload)"
+  (doc
+    "SHAPE 351 (v-wit-boundary) — the OPTION<record> PAYLOAD position of SHAPE 348: the same list<compound>
+           variant field, now inside an `option<record>` host-op arg. `option_arg_crosses` admits an option<record>
+           payload via `is_boundary_record` (the SAME register-representability gate the bare record arg uses), so
+           the `record_field_abi_reg_representable` guard's rejection of the list<compound> variant field composes
+           under the option — the op declines cleanly with the coded CDZ0903 rather than the register option branch
+           reaching `emit_option_reg_flatten` → `emit_record_arg_marshal` and hitting the CDZ0910 mismatch. Proves
+           the SHAPE 348 gate covers every register position that recurses through `is_boundary_record` (record ARG,
+           option<record>/tuple<record>/result<record> payload), in lockstep.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (option (record (= v (variant (a) (b (list (record (= x (s32)) (= y (s64))))))) (= n (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (List (Record (: x Int32) (: y Int64)))))
+      (effect probe (op push (-> (Option (Record (: v Sig) (: n Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= v (Sig.B #list(#record((= x (: 1 Int32)) (= y 2))))) (= n 7))))))
+      (export run)))
+  (call run)
+  (error CDZ0903))
