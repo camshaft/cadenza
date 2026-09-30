@@ -2794,8 +2794,8 @@ fn ensure_disk_guard_cron(fleet: &Fleet) {
 
 /// The desired every-5-min user-crontab line for the SLACK-BRIDGE liveness guard (v-fleet-tooling
 /// 2026-09-13), tagged `# fleet:slack-bridge-guard` so [`reconcile_tagged_crons`] can find/heal it. Runs the
-/// HUB copy of `slack-bridge-guard.sh`, which runs the bridge's own idempotent `revive.sh` when no bridge
-/// worker is up. WHY it matters: the operator's concierge-down alert (#8931) posts to Slack THROUGH the
+/// HUB copy of `slack-bridge-guard.sh`, which relaunches the membrain-skynet-bridge daemon when no bridge
+/// process is up. WHY it matters: the operator's concierge-down alert (#8931) posts to Slack THROUGH the
 /// bridge (bypassing the down concierge), so the "never down without noticing" guarantee is only as reliable
 /// as the bridge — this keeps it up out-of-band even if the v-slack-bridge agent's own loop is down. 5 min:
 /// the alert path must recover fast; the guard is a cheap pgrep + idempotent no-op when the bridge is up.
@@ -3028,10 +3028,10 @@ fn up(fleet: &Fleet, crons_only: bool) {
     // concierge note on a fresh escalation. Alarm-only (no auto-reclaim). Closes the no-early-warning gap the
     // 2026-09-13 root-FS-full incident hit. Independent + fail-open + drift-healed.
     ensure_disk_guard_cron(fleet);
-    // The slack-bridge liveness guard cron: `slack-bridge-guard.sh` runs the bridge's own idempotent
-    // revive.sh when no bridge worker is up, out-of-band from the v-slack-bridge agent — so the operator's
-    // concierge-down alert path (#8931, which posts through the bridge) can't fail silently. Independent +
-    // fail-open + drift-healed.
+    // The slack-bridge liveness guard cron: `slack-bridge-guard.sh` relaunches the membrain-skynet-bridge
+    // daemon when no bridge process is up (and sheds extras keeping the newest), out-of-band from the
+    // v-slack-bridge agent — so the operator's concierge-down alert path (#8931, which posts through the
+    // bridge) can't fail silently. Independent + fail-open + drift-healed.
     ensure_slack_bridge_guard_cron(fleet);
     // Re-assert the `# fleet:watchdog` entry as a FIRST-CLASS tagged cron — but DISABLED per the operator ban
     // 2026-09-10 (the destructive reap/recreate watchdog was killing active agents). This does NOT schedule

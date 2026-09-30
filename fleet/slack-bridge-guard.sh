@@ -15,7 +15,10 @@
 #
 # SINGLETON is a correctness property, not just hygiene: two daemons = double Slack relay (a message relayed
 # twice, Frank answering twice). So this holds the daemon to exactly one — revive when none is up, and shed
-# the extras (keeping the oldest) when more than one is. A missing PROCESS is the only revive trigger; a stale
+# the extras (keeping the NEWEST) when more than one is. Keep-newest, not keep-oldest: the common cause of a
+# second instance is a fresh deploy started alongside a not-yet-exited old one, so the newest process is the
+# intended (just-deployed) binary — keeping the oldest would kill the deploy and revert to the stale binary
+# (v-slack-bridge, 2026-09-30). A missing PROCESS is the only revive trigger; a stale
 # ~/.midway/cookie is NOT (the daemon starts fine without it and simply cannot post/read until it is
 # refreshed), so this never thrash-revives on a cookie expiry.
 #
@@ -53,14 +56,15 @@ bridge_pids() {
   done
 }
 
-# Order PIDs oldest-first by kernel start time (/proc/<pid>/stat field 22), so a kill-extras keeps the
-# longest-running (most-established) instance and sheds the newer duplicates.
-oldest_first() {
+# Order PIDs newest-first by kernel start time (/proc/<pid>/stat field 22, higher = started later), so a
+# kill-extras keeps the just-started (freshest-deployed) instance and sheds the older duplicates. A PID whose
+# /proc/<pid>/stat is unreadable sorts to start-time 0 (oldest), so it is never the one kept.
+newest_first() {
   local p st
   for p in "$@"; do
     st="$(awk '{print $22}' "/proc/$p/stat" 2>/dev/null || echo 0)"
     printf '%s %s\n' "$st" "$p"
-  done | sort -n | awk '{print $2}'
+  done | sort -rn | awk '{print $2}'
 }
 
 mapfile -t PIDS < <(bridge_pids)
@@ -74,14 +78,15 @@ if [ "$COUNT" -eq 1 ]; then
 fi
 
 if [ "$COUNT" -ge 2 ]; then
-  # More than one daemon → double relay. Keep the oldest, kill the rest (SIGTERM — the daemon exits cleanly).
-  mapfile -t ORDERED < <(oldest_first "${PIDS[@]}")
+  # More than one daemon → double relay. Keep the newest (the just-deployed binary), kill the rest (SIGTERM —
+  # the daemon exits cleanly).
+  mapfile -t ORDERED < <(newest_first "${PIDS[@]}")
   keep="${ORDERED[0]}"
   killed=""
   for p in "${ORDERED[@]:1}"; do
     kill "$p" 2>/dev/null && killed="${killed}${killed:+,}${p}"
   done
-  printf '%s: slack-bridge had %s instances (double relay) — kept oldest pid %s, killed %s. A human/v-slack-bridge should check why a second instance started.\n' \
+  printf '%s: slack-bridge had %s instances (double relay) — kept newest pid %s, killed %s. A human/v-slack-bridge should check why a second instance started.\n' \
     "$(now)" "$COUNT" "$keep" "${killed:-none}" > "$ALARM" 2>/dev/null || true
   printf '%s bridge=MULTI kept=%s killed=%s\n' "$(now)" "$keep" "${killed:-none}" > "$STAMP" 2>/dev/null || true
   exit 0
