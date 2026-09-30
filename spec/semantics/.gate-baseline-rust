@@ -2221,6 +2221,7 @@ pass	a constant value out of range for a non-aliased bit-field bin segment names
 pass	a constant value out of range for a signed bin segment names the signed type and negative-inclusive range
 pass	a constant value out of range for its unsigned bin segment is a provable trap naming value, type, range
 pass	a constant variant carrying a tuple payload destructures by a nested tuple pattern and folds
+pass	a constant-FAILING try mid LIST-literal short-circuits the whole list at compile time
 pass	a constant-condition if folds to its fitting branch under a narrow annotation and runs
 pass	a constant-count shift and constant-divisor remainder are trap-free so a tautology comparison folds (value + trap parity)
 pass	a constant-failure `?` in a NESTED let elides a trapping OUTER-let init it discards
