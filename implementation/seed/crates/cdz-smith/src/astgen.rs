@@ -226,7 +226,7 @@ pub struct ExportParam {
 /// rebuild of the inner tuple corrupts the sum.
 pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
     let mut c = ByteCursorChoice::new(entropy);
-    let shape = c.variant(59);
+    let shape = c.variant(60);
     // Small bounded args so products stay in range (no overflow trap) and the value stays trivially
     // comparable. `a`/`b` may be NEGATIVE (sign-marshal coverage); `u` is non-negative (UInt64-safe).
     let a = c.int_bounded(-40, 40);
@@ -1159,8 +1159,24 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //      DISTINCT from shape 47 (trss1 String.slice) + shapes 53/55 (byp3/eab3 Bytes.slice on an ENTRY
         //      param, not a try-shell payload). k>0 -> x=5, Bytes.of [5,5,5], slice 0..2 -> len 2; k<=0 ->
         //      Err 111 (`?` short-circuits). Verified NON-HOLLOW both backends (rust 1->2/5->2/0->111/-4->111).
-        _ => (
+        58 => (
             "(do (def (mk (: r (Result Int64 Int64))) (: (do (def x (try r)) (Ok (Bytes.of #list((UInt8.of x) (UInt8.of x) (UInt8.of x))))) (Result Bytes Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok 5) (Err 111))) ((Ok bs) (match (Bytes.slice bs 0 2) ((Some sl) (Bytes.len sl)) ((None) -9))) ((Err e) e))) (export main))"
+                .to_string(),
+            vec![a.to_string()],
+        ),
+        // 59 — trbs2 a SLICE-OF-SLICE over a `?`-bound Bytes under the Ok arm reclaims the try-shell + BOTH
+        //      view leaves to zero (the 4726be48e core-opt fix / #10147 — the view-of-view sibling of shape 58's
+        //      trbs1). A `?`-bound scalar builds a runtime 5-byte Bytes under the Ok arm of a `(Result Bytes
+        //      Int64)` boundary in `mk` (INLINED into main); the Ok arm slices it (outer = `(Bytes.slice bs 1 4)`)
+        //      then slices THAT (inner = `(Bytes.slice outer 1 3)`, start+LENGTH) and reads `(Bytes.len inner)`.
+        //      DISTINCT reclaim balance from shape 58 (single slice): TWO nested rope-node view leaves + the try
+        //      husk must all reclaim to zero (nested builder-children). THIS pins the VALUE/UAF side — an
+        //      over-drop that frees an intermediate rope node while the inner view still points at it → wrong len
+        //      / trap (the corpus pins the LEAK side, live-objects 0). k>0 -> x=7, Bytes.of [7;5], outer=[7;4]
+        //      (slice 1 len 4), inner=[7;3] (slice 1 len 3), len 3; k<=0 -> Err 55 (`?` short-circuits). Verified
+        //      NON-HOLLOW both backends (rust 1->3/5->3/0->55/-4->55).
+        _ => (
+            "(do (def (mk (: r (Result Int64 Int64))) (: (do (def x (try r)) (Ok (Bytes.of #list((UInt8.of x) (UInt8.of x) (UInt8.of x) (UInt8.of x) (UInt8.of x))))) (Result Bytes Int64))) (def (main (: k Int64)) (match (mk (if (> k 0) (Ok 7) (Err 55))) ((Ok bs) (match (Bytes.slice bs 1 4) ((Some outer) (match (Bytes.slice outer 1 3) ((Some inner) (Bytes.len inner)) ((None) -8))) ((None) -9))) ((Err e) e))) (export main))"
                 .to_string(),
             vec![a.to_string()],
         ),
@@ -6601,9 +6617,9 @@ mod tests {
         // Char scalar-entry-param `f` + the big1 BigInt heap-bignum scalar-entry-param `f` + the ssa1
         // String.scalar-at char-extraction entry-param `f` + the eop3 option<list<string>>
         // sum-holding-a-byte-leaf-list entry-param `f` + the rob1 record-of-bools bool-leaf entry-param `f` +
-        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` + the mtll1 invariant-Map-param Map.to-list-in-a-self-loop `main` + the mvg1 narrow-width tuple MAP VALUE literal grounded to declared field width `main` + the trbs1 `?`-bound Bytes.slice-in-a-try-Ok-arm reclaiming the try-shell + slice view `main`.
-        let mut reached = [false; 59];
-        for seed in 0u64..3540 {
+        // the tdd1 runtime-`?` do-def entry-param `main` + the trr1 expression-position `?` entry-param `main` + the trl1 multi-`?` compound-ctor entry-param `main` + the trn1 nested-compound-ctor `?` entry-param `main` + the trc1 call-argument `?` entry-param `main` + the trsc1 CHAMP-collection-in-a-try-Ok-arm entry-param `main` + the trml1 Map.lookup-in-a-try-Ok-arm entry-param `main` + the chdo1 Set.remove-threaded-dead-at-base entry-param `main` + the trae1 bare-returned `?`-bound heap-Result entry-param `main` + the srm2 nested set-rest re-match entry-param `main` + the trnt1 chained double-`?` do-def entry-param `main` + the trnt1c compact nested-`?` entry-param `main` + the chdo2 Map.remove-threaded-dead-at-base entry-param `main` + the trss1 String.slice-in-a-try-Ok-arm entry-param `main` + the byp2 Bytes-entry-param bin-match destructure `main` + the stll1 invariant-Set-param Set.to-list-in-a-self-loop `main` + the sci1 canonicalizing list-element double-used at Set.insert+Set.contains `main` + the mci1 canonicalizing list-key double-used at Map.insert+Map.lookup `main` + the mtll1 invariant-Map-param Map.to-list-in-a-self-loop `main` + the mvg1 narrow-width tuple MAP VALUE literal grounded to declared field width `main` + the trbs1 `?`-bound Bytes.slice-in-a-try-Ok-arm reclaiming the try-shell + slice view `main` + the trbs2 slice-of-slice over a `?`-bound Bytes reclaiming the try-shell + both view leaves `main`.
+        let mut reached = [false; 60];
+        for seed in 0u64..3600 {
             let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(51);
             let mut bytes = Vec::new();
             // variant(53) reads 1 byte then SEVEN int_bounded reads consume 8 each (57 total); 64 keeps the
@@ -6764,11 +6780,13 @@ mod tests {
                 reached[57] = true; // shape 57 = mvg1 narrow-width tuple MAP VALUE literal grounded to declared field width `main` (rust-backend compound-map-value grounding #3421821f4f / #10098, Map twin of 56)
             } else if ep.source.contains("(Bytes.slice bs 0 2)") {
                 reached[58] = true; // shape 58 = trbs1 `?`-bound Bytes.slice-in-a-try-Ok-arm reclaims the try-shell + slice view `main` (core-opt G5 rope-owned-builder relax #4726be48e / #10147, Bytes.slice sibling of shape 47's trss1). Marker `(Bytes.slice bs 0 2)` (bs/0/2) is unique — distinct from shape 53's `(match (Bytes.slice b 1 2)` and shape 55's `Option.expect (Bytes.slice` (both `b 1 2`, ENTRY-param slices)
+            } else if ep.source.contains("(Bytes.slice outer 1 3)") {
+                reached[59] = true; // shape 59 = trbs2 SLICE-OF-SLICE over a `?`-bound Bytes in a try-Ok-arm reclaims the try-shell + BOTH view leaves `main` (core-opt #4726be48e / #10147, view-of-view sibling of shape 58's trbs1). Marker `(Bytes.slice outer 1 3)` — unique (`outer` used by no other shape; trbs2's outer slice `(Bytes.slice bs 1 4)` also distinct from shape 58's `bs 0 2`)
             }
         }
         assert!(
             reached.iter().all(|&r| r),
-            "all fifty-nine export-param shapes must be reachable across seeds: reached={reached:?}"
+            "all sixty export-param shapes must be reachable across seeds: reached={reached:?}"
         );
     }
 
