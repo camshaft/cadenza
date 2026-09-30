@@ -12318,3 +12318,30 @@ cases
   (host-calls (call cadenza:platform/probe.get))
   (output 99)
   (live-objects 0))
+
+(case
+  "a list<variant{a, b(list<record>)}> host-op arg crosses (a list ELEMENT that is the SHAPE 348 compound-list variant)"
+  (doc
+    "SHAPE 359 (v-wit-boundary) — the LIST-ELEMENT position of the compound-list variant (SHAPE 348 was the
+           register record-FIELD position, which declines; this ELEMENT position crosses via the MEM path). Each
+           list element is a `variant{a, b(list<record{x,y}>)}` written in place by `emit_variant_mixed_to_mem`,
+           whose List arm marshals the `b` case's inner `list<record>` at the cursor with the element WIT threaded
+           from the variant's `WitType::List` — so a compound (record) list element is laid WIT-order, unlike the
+           ABI-only register `record_field_cref` path. run() pushes [B([{x:1,y:2}]), A]; the byte-exact
+           `(host-arg-received …)` pin proves the compound-list `b` case + the nullary `a` case (rendered `(a unit)`)
+           cross correctly as list elements, live-objects=0. Confirms the mem-path admits a list<compound> variant
+           case the register position declines.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (list (variant (a) (b (list (record (= x (s32)) (= y (s64)))))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (List (Record (: x Int32) (: y Int64)))))
+      (effect probe (op push (-> (List Sig) Int64)))
+      (def (run) (host (probe) (probe.push #list((Sig.B #list(#record((= x (: 1 Int32)) (= y 2)))) (Sig.A)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #list((b #list(#record((= x 1) (= y 2)))) (a unit)))
+  (output 55)
+  (live-objects 0))
