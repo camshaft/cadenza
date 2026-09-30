@@ -12135,3 +12135,33 @@ cases
       (export run)))
   (call run)
   (error CDZ0903))
+
+(case
+  "a tuple<variant{a, b(list<record>)}, s64> host-op arg crosses (a compound-variant TUPLE element — WIT-driven, unlike the record-FIELD position)"
+  (doc
+    "SHAPE 352 (v-wit-boundary) — the TUPLE-element counterpart of SHAPE 348, and it CROSSES where the
+           record-FIELD position declines. A top-level `tuple<T…>` host-op arg references its `(tuple <elem>…)`
+           component type by the per-param `CRef` the caller computes WIT-DRIVEN (`add_wit_type_deduped` over the
+           op's imposed WIT, `host_op_comp_functype`'s `HostParam::Tuple` arm) — so the `variant{a, b(list<record>)}`
+           element's `(list (record …))` payload is laid faithfully from the WIT, matching serialize's list-header
+           flatten + the guest push (`emit_tuple_reg_flatten` → `emit_variant_mixed_arg_reg_flatten`, marshalling
+           the list backing into shared `mem`). Contrast SHAPE 348: a record ARG references its EXPORTED NOMINAL
+           record type, laid field-by-field by the ABI-only `record_field_cref`, which cannot build a compound
+           list element (no `Db`/WIT) and so declines. This asymmetry marks the register-parity opportunity — a
+           record arg could cross the same shape by building its nominal type WIT-driven like the tuple/option/
+           result params do. run() pushes ([B[{x:1,y:2}]], 7); the byte-exact `(host-arg-received …)` pin proves
+           the compound-variant tuple element crosses correctly, live-objects=0.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (tuple (variant (a) (b (list (record (= x (s32)) (= y (s64)))))) (s64))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (List (Record (: x Int32) (: y Int64)))))
+      (effect probe (op push (-> (Tuple Sig Int64) Int64)))
+      (def (run) (host (probe) (probe.push #tuple((Sig.B #list(#record((= x (: 1 Int32)) (= y 2)))) 7))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #tuple((b #list(#record((= x 1) (= y 2)))) 7))
+  (output 55)
+  (live-objects 0))
