@@ -12269,3 +12269,28 @@ cases
   (host-arg-received cadenza:platform/probe.push (Some #tuple(#record((= a 1) (= b 2)) 7)))
   (output 55)
   (live-objects 0))
+
+(case
+  "an option<record{o: option<record{p:s32,q:s64}>, n: s64}> host-op arg crosses (an option<record> FIELD inside an option payload record — deep nesting)"
+  (doc
+    "SHAPE 357 (v-wit-boundary) — the deep-nesting case the coverage doc flagged REMAINING (an option<compound>
+           FIELD inside an OPTION payload record). `option_arg_crosses` admits the payload record via
+           `is_boundary_record`, whose `field_boundary_abi` recursion admits the `o` field as `Option(Record)`;
+           `emit_option_reg_flatten`'s record branch recurses `emit_record_arg_marshal`, whose option-field arm
+           recurses `emit_option_reg_flatten` again on the inner `option<record>` — so the two option layers +
+           the inner record compose with no new code. run() pushes Some({o: Some({p:1, q:2}), n:9}); the byte-exact
+           `(host-arg-received …)` pin proves the nested Some({p,q}) + the sibling scalar cross correctly under the
+           outer option, live-objects=0.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param m (option (record (= o (option (record (= p (s32)) (= q (s64))))) (= n (s64))))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Option (Record (: o (Option (Record (: p Int32) (: q Int64)))) (: n Int64))) Int64)))
+      (def (run) (host (probe) (probe.push (Some #record((= o (Some #record((= p (: 1 Int32)) (= q 2)))) (= n 9))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push (Some #record((= o (Some #record((= p 1) (= q 2)))) (= n 9))))
+  (output 55)
+  (live-objects 0))
