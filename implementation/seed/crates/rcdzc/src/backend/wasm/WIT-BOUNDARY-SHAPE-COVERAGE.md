@@ -689,12 +689,14 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   Faithfully verified: status-0 shred-compile (2002-byte component, `wasm-tools validate` clean) emitting
   `push: func(list<host-result-t2>)` with `host-result-t2 = variant{a, b(s64), c(list<host-result-t0>)}` /
   `host-result-t0 = record{x: s32, y: s64}`.
-  REMAINING: a Bytes/nested-compound tuple ELEMENT (in a tuple-payload variant); a WIT-ordered RECORD payload case
-  whose WIT order diverges from guest name-lex order (needs a WIT-ordered stride, not just the guard-decline); the
+  A WIT-ordered RECORD payload case whose WIT order diverges from guest name-lex order is now ✅ DONE — SHAPE 368
+  (`emit_variant_mixed_to_mem`'s record arm re-resolves the record from the case WIT and lays it WIT-ordered +
+  WIT-sized, so a divergent case crosses with a byte-exact host-arg; the WIT-ordered stride, not a guard-decline).
+  REMAINING: a Bytes/nested-compound tuple ELEMENT (in a tuple-payload variant); the
   heterogeneous mix at a REGISTER record-field/tuple-element position (declines).
-  REMAINING variant gaps: a RECORD compound payload case in a MIXED variant (the TUPLE compound payload
-  case in a mixed variant is now ✅ DONE — SHAPE 243, `VariantPayloadKind::Tuple`; the ≥3-payload-case mem join is
-  ✅ DONE — SHAPE 242). (The mixed
+  A RECORD compound payload case in a MIXED variant is now ✅ DONE — SHAPE 367 (bare-ARG position, the record twin
+  of the TUPLE payload case SHAPE 243, `VariantPayloadKind::Record`/`RecordMem`); the ≥3-payload-case mem join is
+  ✅ DONE — SHAPE 242. (The mixed
   int↔float / f32↔f64 single-payload variant reinterpret join is now ✅ DONE — SHAPE 233/234/235; and a MULTI-payload
   case `b(s64,s64)` — one case with ≥2 payloads — is ✅ DONE, SHAPE 236: `variant_tuple_payload_case` admits n>=2
   since `variant_payload_ty_at` synthesizes the payload tuple, reusing `HostParam::VariantTuple` unchanged.)
