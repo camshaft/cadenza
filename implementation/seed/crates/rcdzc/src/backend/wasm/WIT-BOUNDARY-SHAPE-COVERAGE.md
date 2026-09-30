@@ -10,6 +10,15 @@ this prose — when you edit a predicate, update the matching row here so the ch
 This doc is keyed on **function/predicate names** (stable across edits), not line numbers (which rot).
 Grep the name to find the arm.
 
+**Pin discipline (process-contract #402):** a shape is recorded as ✅ crosses / a PASS corpus case ONLY after a
+GRADE on the canonical corpus path — `cdz-corpus records` shred to a BINARY `wit-world.ast`, then
+`cdz-compile` + `cdz-run --grade` (or `cargo xtask corpus-chapter-gate`) checking the expected
+`output`/`host-arg-received`. NEVER conclude "crosses" from a bare `cdz compile` success, and NEVER from a
+SOURCE-world (`world.sexp`) compile: a source-world compile-clean can be the reflective/bare-effect value-form
+FALLBACK — it emits wasm but returns a `#record{kind, payload, schema_descriptor}` envelope instead of crossing
+the WIT boundary, so it "compiles" yet does NOT cross (the SHAPE 360 false-positive). A coded DECLINE, by contrast,
+fires at `first_unrepresentable_host_op` before any backend emit, so it is target-uniform (wasm/coarse confirms it).
+
 ## The four paths
 
 A host operation (`(effect …)` op) crosses on one of three paths, selected inside
@@ -508,8 +517,8 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `slot_vts[0]` (WIT order) to the join int and emits `I64ReinterpretF64`/`I32ReinterpretF32` at the k==0
   reverse-capture, `serialize` emits the join int for slot 0. The reinterpret follows the WIT-REORDERED slot 0, not
   name-lex position — SHAPE 213 (`{a:f64,b:s64}`, no reorder) + 214 (guest `{a:s64,b:f64}` but WIT `(b:f64, a:s64)`
-  → the name-lex-second `b:f64` reorders into slot 0 and is reinterpreted there). REMAINING (result family):
-  `result<_, variant>` (err arm a variant).
+  → the name-lex-second `b:f64` reorders into slot 0 and is reinterpreted there). `result<_, variant>` (err arm a
+  variant) is ✅ DONE (#10170/#10172).
 - **[emit, register-path] a top-level `result<tuple, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
   192/193/194 all-scalar; 204/205 compound element; 206 float non-slot-0 element).** The tuple-Ok sibling of the record-Ok result: a
   `HostParam::ResultTuple(elem-abis: Vec<RecordFieldAbi>, err-cases)` (detector `result_tuple_enum` + a
@@ -544,8 +553,8 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   to i64 for f64), `serialize` emits the join int for slot 0, and `result_tuple_enum` now admits a float first
   element (the SHAPE 206 slot-0 decline is lifted). SHAPE 211 (`tuple<f64,s64>`, `(param i32 i64 i64)`) + 212
   (`tuple<f32,s64>`, `(param i32 i32 i64)`). REMAINING (result family): a FLOAT slot-0 field in a `result<record>`
-  (adds the WIT-reorder — the tuple slot-0 done here is the positional counterpart; the record twin is next);
-  `result<_, variant>` (err arm a variant).
+  (adds the WIT-reorder — the tuple slot-0 done here is the positional counterpart; the record twin is next).
+  `result<_, variant>` (err arm a variant) is ✅ DONE (#10170/#10172).
 - **[emit, MEM-path] a top-level `result<list<scalar>, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 195/196).**
   The list-Ok sibling of the Bytes-Ok result: a new `HostParam::ResultList(err-cases)` (detector
   `result_list_enum`, admitting a `list<T>` whose ELEMENT is a scalar + a payloadless-enum Err; a `list<u8>` Ok is
@@ -568,7 +577,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `(list u8)`-type change (`ResultList` rides the structural-CRef path, verified: the modules validate + run,
   live-objects=0). The whole widening was a `result_list_enum` element-gate relaxation to `list_elem_marshalable`;
   the emit + used_ops already handled every element via the shared list marshal + `collect_list_elem_ops`.
-  REMAINING (result family): a compound/float tuple element; a record with a compound field; `result<_, variant>`.
+  REMAINING (result family): a FLOAT slot-0 field in a `result<record>` (line ~555). A NESTED-COMPOUND Ok payload
+  is now ✅ DONE — SHAPE 371 (`result<record{n:s64, r:record{p:s32,q:s64}}, enum>`, a nested-record FIELD in the Ok
+  record) + SHAPE 372 (`result<tuple<record{p,q},s64>, enum>`, a compound-record ELEMENT in the Ok tuple):
+  `emit_result_record_arg_reg_flatten` / `emit_result_tuple_arg_reg_flatten` recurse `emit_record_arg_marshal`,
+  whose nested-record field/element arm flattens the sub-record inline, so the nested compound crosses with NO new
+  code. `result<_, variant>` (err arm a variant) is ✅ DONE (#10170/#10172).
 - **[emit, register-path] a top-level `option<variant>` host-op ARG — ✅ DONE (SHAPE 167/168).** The option
   payload is a scalar-payload `variant`: `option_arg_crosses` now admits it, and `emit_option_reg_flatten`'s
   variant branch flattens the value-heap option to `(opt-disc, var-disc, payload-join)` = the option disc + the
