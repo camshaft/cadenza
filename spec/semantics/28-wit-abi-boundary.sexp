@@ -12508,3 +12508,54 @@ cases
       (export run)))
   (call run)
   (error CDZ0903))
+
+(case
+  "a mixed variant{a, b(record{x:s32,y:s64})} host-op arg crosses (RECORD compound payload case)"
+  (doc
+    "SHAPE 367 (v-wit-boundary) — the RECORD compound payload case in a MIXED variant at the bare-ARG position
+           (the coverage-doc REMAINING variant gap; the TUPLE compound payload case is SHAPE 243). The mixed
+           variant {a (nullary), b(record{x,y})} crosses: `variant_mixed_payload_cases` classifies the `b` case as a
+           record payload, `emit_variant_mixed_to_mem` writes the record in place WIT-ordered, and the lift
+           reconstructs it. run() pushes b({x:1,y:2}); the byte-exact `(host-arg-received …)` pin proves the record
+           payload case + the nullary `a` case (rendered `(a unit)` when taken) cross, live-objects=0.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (record (= x (s32)) (= y (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (Record (: x Int32) (: y Int64))))
+      (effect probe (op push (-> Sig Int64)))
+      (def (run) (host (probe) (probe.push (Sig.B #record((= x (: 1 Int32)) (= y 2))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push (b #record((= x 1) (= y 2))))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a mixed variant{p, q(record{m:s32,a:s64})} host-op arg crosses with WIT order DIVERGING from guest name-lex"
+  (doc
+    "SHAPE 368 (v-wit-boundary) — the divergent-order half of the RECORD-payload-case-in-a-mixed-variant gap
+           (coverage doc line-692: a WIT-ordered record payload case whose WIT order diverges from guest name-lex
+           needs a WIT-ordered STRIDE, not just a guard-decline). The `q` case's record is `{m:s32, a:s64}`: guest
+           name-lex order is [a, m] (a<m) but the WIT declares [m, a], so the marshal must lay the fields WIT-order,
+           not name-lex. `emit_variant_mixed_to_mem`'s record arm re-resolves the record from the case WIT and writes
+           WIT-ordered + WIT-sized, so the divergent case crosses correctly. run() pushes q({m:1, a:2}); the
+           byte-exact `(host-arg-received …)` pin proves the WIT-ordered stride, live-objects=0.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m2 (variant (p) (q (record (= m (s32)) (= a (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (P) (Q (Record (: m Int32) (: a Int64))))
+      (effect probe (op push (-> Sig Int64)))
+      (def (run) (host (probe) (probe.push (Sig.Q #record((= m (: 1 Int32)) (= a 2))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push (q #record((= m 1) (= a 2))))
+  (output 55)
+  (live-objects 0))
