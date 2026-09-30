@@ -12603,3 +12603,48 @@ cases
       (export run)))
   (call run)
   (error CDZ0903))
+
+(case
+  "result<record{n:s64, r:record{p:s32,q:s64}}, enum> host-op arg crosses (Ok record with a nested-record COMPOUND field)"
+  (doc
+    "SHAPE 371 (v-wit-boundary) — the result-family REMAINING 'a record with a compound field' (coverage doc).
+           The result<record, enum> Ok arm, previously exercised only with all-scalar Ok records (SHAPE 189/190/191),
+           crosses with a NESTED-RECORD field: `emit_result_record_arg_reg_flatten` recurses `emit_record_arg_marshal`
+           on the Ok record, whose nested-record field arm flattens the `r` sub-record's fields inline. run() emits
+           Ok({n:7, r:{p:1, q:2}}); the host returns 55, live-objects=0. The err disc rides slot 0 on Err.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= n (s64)) (= r (record (= p (s32)) (= q (s64))))) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type E (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: n Int64) (: r (Record (: p Int32) (: q Int64)))) E) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= n 7) (= r #record((= p (: 1 Int32)) (= q 2))))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "result<tuple<record{p,q},s64>, enum> host-op arg crosses (Ok tuple with a compound record ELEMENT)"
+  (doc
+    "SHAPE 372 (v-wit-boundary) — the result-family REMAINING 'a compound tuple element' (coverage doc). The
+           result<tuple, enum> Ok arm crosses with a COMPOUND (record) tuple element: the Ok tuple's elements
+           flatten positionally, the record element's fields inline. run() emits Ok(#tuple({p:1,q:2}, 9)); the host
+           returns 55, live-objects=0. The err disc rides slot 0 on Err.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (record (= p (s32)) (= q (s64))) (s64)) (enum bad worse))) (result (s64)))))))
+  (input
+    (do
+      (type E (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple (Record (: p Int32) (: q Int64)) Int64) E) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple(#record((= p (: 1 Int32)) (= q 2)) 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
