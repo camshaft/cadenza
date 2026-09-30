@@ -12421,3 +12421,90 @@ cases
       (export run)))
   (call run)
   (error CDZ0903))
+
+(case
+  "a result<list<u8>, variant{bad,worse}> host-op arg crosses (bytes Ok + nullary variant err)"
+  (doc
+    "SHAPE 363 (v-wit-boundary) — the bytes-Ok member of the result<_, VARIANT> family. A nullary-case
+           variant err arm flattens to a single disc slot identically to the enum err arm (SHAPE 164), so a
+           result<list<u8>, variant{nullary}> crosses like result<list<u8>, enum>. run() builds Ok(b\"\\x01\\x02\\x03\")
+           and performs probe.push; the host returns 55, live-objects=0.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (u8)) (variant (bad) (worse)))) (result (s64)))))))
+  (input
+    (do
+      (type E (Bad) (Worse))
+      (effect probe (op push (-> (Result Bytes E) Int64)))
+      (def (run) (host (probe) (probe.push (Ok (Bytes.of #list(1 2 3))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a result<record{x:s64,y:s64}, variant{bad,worse}> host-op arg crosses (record Ok + nullary variant err)"
+  (doc
+    "SHAPE 364 (v-wit-boundary) — the record-Ok member of the result<_, VARIANT> family. A nullary-case
+           variant err arm flattens to a single disc slot like the enum err (SHAPE 189/190), so a
+           result<record-of-scalars, variant{nullary}> crosses like result<record, enum>: the Ok record's fields
+           flatten POSITIONALLY (WIT order) with the err disc riding slot 0 on Err. run() emits Ok({x:3,y:4}); the
+           host returns 55, live-objects=0.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (record (= x (s64)) (= y (s64))) (variant (bad) (worse)))) (result (s64)))))))
+  (input
+    (do
+      (type E (Bad) (Worse))
+      (effect probe (op push (-> (Result (Record (: x Int64) (: y Int64)) E) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #record((= x 3) (= y 4))))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a result<tuple<s64,s64>, variant{bad,worse}> host-op arg crosses (tuple Ok + nullary variant err)"
+  (doc
+    "SHAPE 365 (v-wit-boundary) — the tuple-Ok member of the result<_, VARIANT> family. A nullary-case
+           variant err arm flattens to a single disc slot like the enum err (the result<tuple,enum> family), so a
+           result<tuple<s64,s64>, variant{nullary}> crosses: the Ok tuple's elements flatten POSITIONALLY with the
+           err disc riding slot 0 on Err. run() emits Ok(#tuple(3 4)); the host returns 55, live-objects=0.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (tuple (s64) (s64)) (variant (bad) (worse)))) (result (s64)))))))
+  (input
+    (do
+      (type Er (Bad) (Worse))
+      (effect probe (op push (-> (Result (Tuple Int64 Int64) Er) Int64)))
+      (def (run) (host (probe) (probe.push (Ok #tuple(3 4)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a result<list<u8>, variant{bad, detail(s64)}> host-op arg declines coded (bytes Ok + PAYLOAD variant err)"
+  (doc
+    "SHAPE 366 (v-wit-boundary) — the payload-carrying variant err arm declines CDZ0903 REGARDLESS of the Ok
+           arm carrier: even with a bytes Ok, a `detail(s64)` payload case in the variant err arm has no result-arg
+           register boundary form (the err arm no longer flattens to a single disc slot), so the op declines cleanly
+           (decline-don't-miscompile, never a CDZ0910). Generalizes SHAPE 362 (scalar Ok) across the Ok carriers; a
+           tracked later slice (the multi-slot err-flatten join carrying the err variant's payload).")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (result (list (u8)) (variant (bad) (detail (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type E (Bad) (Detail (: v Int64)))
+      (effect probe (op push (-> (Result Bytes E) Int64)))
+      (def (run) (host (probe) (probe.push (Ok (Bytes.of #list(1 2 3))))))
+      (export run)))
+  (call run)
+  (error CDZ0903))
