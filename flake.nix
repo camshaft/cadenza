@@ -5835,6 +5835,17 @@
               printf '%s' "$?" > "$out/compile.status"
             fi
             cp "$case/test-run.ast" "$out/test-run.ast"
+            # Forward the imposed WIT-world (if any) so the exec can pass --wit-world → cdz-rust-run declines
+            # the imposed-world case to todo (#7726: rust — sync AND async — has no external-world ingest; the
+            # rust-async emit is a WORLD-UNAWARE standalone .rs, same as sync). PARITY with mkCorpusRustBuild:
+            # without this the async exec never sees the world → runs the bare program → cdz-rust-render prints
+            # the guest variant name (e.g. `One 0`) instead of the WIT-declared kebab (`one 0`) = a dishonest
+            # FAIL on corpus-rust-async (the exact gap task #346's all-targets contract surfaced). Presence-only.
+            if [ -e "$case/wit-world.ast" ]; then cp "$case/wit-world.ast" "$out/wit-world.ast"; fi
+            # Forward any cross-component PEER (peer-*.ast) so the exec can pass --peer → cdz-rust-run declines
+            # the peer case to todo (#7835: the rust-async emit has no component/peer boundary). Presence-only
+            # (the path is a signal, not read); copy all, the exec passes the first. PARITY with mkCorpusRustBuild.
+            for p in "$case"/peer-*.ast; do [ -e "$p" ] && cp "$p" "$out/"; done
           '';
 
         mkCorpusRustAsyncExec = { name, build, idx }:
