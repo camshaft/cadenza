@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
-# slack-bridge-guard.sh — keep the fleet↔Slack bridge alive OUT OF BAND, decoupled from the v-slack-bridge
-# agent's loop (v-fleet-tooling, 2026-09-13).
+# slack-bridge-guard.sh — keep the fleet↔Slack bridge alive OUT OF BAND, decoupled from any agent's loop
+# (v-fleet-tooling, 2026-09-13; retargeted from the node bridge.js to the membrain daemon 2026-09-30).
 #
 # WHY: the operator's alert path runs THROUGH the bridge — notably the concierge-down alert (#8931), which
-# posts to the operator's Slack via the bridge daemon precisely BECAUSE the concierge (the normal path) is
-# down. So "never let the concierge go down without anyone noticing" is only as reliable as the bridge. The
-# bridge is normally kept up by (a) run.sh's own crash-restart loop and (b) the v-slack-bridge AGENT's loop
-# calling revive.sh — but if that agent is itself down AND run.sh has died, the bridge stays down and the
-# operator stops being notified (the alerter fails silently). This cron closes that gap, the same
-# decouple-a-critical-function-from-an-agent pattern as reap-leases.sh (which decouples lease reclaim from
-# the watchdog): it runs the bridge's OWN idempotent revive.sh — a no-op when a bridge worker is already up,
-# a detached run.sh launch when none is — and raises a board alarm (surfaced by `fleet status`) when it had
-# to act. It REUSES v-slack-bridge's revive.sh (their tool + their liveness signal); this only guarantees it
-# runs regardless of any agent's liveness.
+# posts to the operator's Slack via the bridge precisely BECAUSE the concierge (the normal path) is down. So
+# "never let the concierge go down without anyone noticing" is only as reliable as the bridge. The live bridge
+# is the membrain-skynet-bridge daemon: it is fail-soft internally (its inbound/outbound loops retry board and
+# Slack I/O and do not crash on a transient error), but it runs as a bare process under no supervisor, so a
+# panic or a host reboot leaves it down with no auto-revive until the durable systemd role (dotfiles #153,
+# Restart=always) lands. This cron is that supervisor in the meantime — the same
+# decouple-a-critical-function-from-an-agent pattern as reap-leases.sh: every few minutes it checks the daemon
+# is up (exactly one instance) and revives it when it is gone, regardless of whether the v-slack-bridge agent
+# is running, raising a board alarm (surfaced by `fleet status`) whenever it had to act.
+#
+# SINGLETON is a correctness property, not just hygiene: two daemons = double Slack relay (a message relayed
+# twice, Frank answering twice). So this holds the daemon to exactly one — revive when none is up, and shed
+# the extras (keeping the oldest) when more than one is. A missing PROCESS is the only revive trigger; a stale
+# ~/.midway/cookie is NOT (the daemon starts fine without it and simply cannot post/read until it is
+# refreshed), so this never thrash-revives on a cookie expiry.
 #
 # Tracked at <repo>/fleet/, RUN from the hub copy `fleet up` materializes into <hub>/.claude/fleet/.
 set -uo pipefail
@@ -26,44 +31,79 @@ fi
 HUB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALARM="$HUB/slack-bridge-down.alarm"
 STAMP="$HUB/slack-bridge-guard.last-run"
-WORKTREES="$(cd "$HUB/../worktrees" 2>/dev/null && pwd || true)"
+now() { date -Is 2>/dev/null || echo now; }
 
-# Is a bridge worker already up? Match the SAME signal revive.sh keys on (`[b]ridge.js` — the live node impl;
-# the `[b]` trick keeps pgrep from matching itself). If up: clear any stale alarm + done (cheap common case).
-if pgrep -f '[b]ridge.js' >/dev/null 2>&1; then
+BRIDGE_DIR="${HOME}/membrain-skynet-bridge"
+BRIDGE_BIN="${BRIDGE_DIR}/target/debug/membrain-skynet-bridge"
+BOARD_API="http://127.0.0.1:8880/board/api"
+STATE_DIR="${HOME}/.local/state/membrain-skynet-bridge"
+
+# The live daemon's PIDs, counted PRECISELY. A process counts only if BOTH its argv carries the instance
+# anchor (`--bridge-instance membrain`) AND its executable IS the membrain binary — so a shell, an observer, a
+# `ps`/grep pipeline, or this guard's own pgrep that merely MENTIONS the string in its command line is never
+# miscounted. That precision matters: the count below drives a kill branch, and a false positive there would
+# terminate an innocent process.
+bridge_pids() {
+  local p exe
+  for p in $(pgrep -f -- '--bridge-instance membrain' 2>/dev/null || true); do
+    exe="$(readlink -f "/proc/$p/exe" 2>/dev/null || true)"
+    case "$exe" in
+      */membrain-skynet-bridge) printf '%s\n' "$p" ;;
+    esac
+  done
+}
+
+# Order PIDs oldest-first by kernel start time (/proc/<pid>/stat field 22), so a kill-extras keeps the
+# longest-running (most-established) instance and sheds the newer duplicates.
+oldest_first() {
+  local p st
+  for p in "$@"; do
+    st="$(awk '{print $22}' "/proc/$p/stat" 2>/dev/null || echo 0)"
+    printf '%s %s\n' "$st" "$p"
+  done | sort -n | awk '{print $2}'
+}
+
+mapfile -t PIDS < <(bridge_pids)
+COUNT="${#PIDS[@]}"
+
+if [ "$COUNT" -eq 1 ]; then
+  # Healthy: exactly one daemon. Clear any stale alarm + stamp.
   rm -f "$ALARM" 2>/dev/null || true
-  printf '%s bridge=up\n' "$(date -Is 2>/dev/null || echo now)" > "$STAMP" 2>/dev/null || true
+  printf '%s bridge=up pid=%s\n' "$(now)" "${PIDS[0]}" > "$STAMP" 2>/dev/null || true
   exit 0
 fi
 
-# Bridge DOWN → run the bridge's OWN idempotent revive.sh, detached. revive.sh is tracked in every worktree's
-# fleet/slack-bridge/; pick the freshest-HEAD one (least-stale launcher), same as reap-leases.sh picks the
-# freshest xtask binary. revive.sh self-derives the shared hub FLEET_DIR + reads ~/.cadenza-env for tokens,
-# so it works from any worktree; it re-checks liveness itself, so a concurrent bring-up is safe (idempotent).
-best="" best_ct=-1
-if [ -n "${WORKTREES:-}" ] && [ -d "$WORKTREES" ]; then
-  for wt in "$WORKTREES"/*/; do
-    r="${wt}fleet/slack-bridge/revive.sh"
-    [ -f "$r" ] || continue
-    ct="$(git -C "$wt" show -s --format=%ct HEAD 2>/dev/null || echo 0)"
-    if [ "$ct" -gt "$best_ct" ]; then best_ct="$ct"; best="$r"; fi
+if [ "$COUNT" -ge 2 ]; then
+  # More than one daemon → double relay. Keep the oldest, kill the rest (SIGTERM — the daemon exits cleanly).
+  mapfile -t ORDERED < <(oldest_first "${PIDS[@]}")
+  keep="${ORDERED[0]}"
+  killed=""
+  for p in "${ORDERED[@]:1}"; do
+    kill "$p" 2>/dev/null && killed="${killed}${killed:+,}${p}"
   done
+  printf '%s: slack-bridge had %s instances (double relay) — kept oldest pid %s, killed %s. A human/v-slack-bridge should check why a second instance started.\n' \
+    "$(now)" "$COUNT" "$keep" "${killed:-none}" > "$ALARM" 2>/dev/null || true
+  printf '%s bridge=MULTI kept=%s killed=%s\n' "$(now)" "$keep" "${killed:-none}" > "$STAMP" 2>/dev/null || true
+  exit 0
 fi
 
-if [ -n "$best" ]; then
-  # Close fd 9 (the singleton flock) for the launched revive.sh: revive.sh detaches a long-lived
-  # run.sh bridge supervisor, which would otherwise INHERIT fd 9 and hold this guard's lock for its
-  # whole lifetime — so every later guard fire would fail `flock -n 9` and skip before stamping,
-  # making `fleet status` report the guard STALE even though it fires every cron tick (the bridge
-  # supervisor holding the lock is not a reason for the guard to stay locked out). run.sh does not
-  # need the guard's singleton lock.
-  setsid bash "$best" >/dev/null 2>&1 </dev/null 9>&- &
-  printf '%s: slack-bridge DOWN — ran revive.sh (%s). The operator alert path (concierge-down #8931) routes through the bridge, so a human should confirm it recovered.\n' \
-    "$(date -Is 2>/dev/null || echo now)" "$best" > "$ALARM" 2>/dev/null || true
-  printf '%s bridge=DOWN ran-revive=%s\n' "$(date -Is 2>/dev/null || echo now)" "$best" > "$STAMP" 2>/dev/null || true
+# COUNT == 0 → the daemon is down. Revive it from its own directory, detached (it re-parents to init). Close
+# fd 9 so the launched daemon does NOT inherit + hold this guard's singleton lock — a launched long-lived
+# child holding fd 9 is exactly what wedged the prior node-bridge guard (every later fire then failed
+# `flock -n 9` and skipped before stamping, so `fleet status` read STALE while cron kept firing). A
+# missing/unbuilt binary means it cannot be revived here — alarm for a human.
+if [ -x "$BRIDGE_BIN" ]; then
+  ( cd "$BRIDGE_DIR" && setsid "$BRIDGE_BIN" \
+      --board-api "$BOARD_API" \
+      --bridge-instance membrain \
+      --state-dir "$STATE_DIR" \
+      >/dev/null 2>&1 </dev/null 9>&- & )
+  printf '%s: slack-bridge (membrain daemon) was DOWN — relaunched %s. The operator alert path (concierge-down #8931) routes through it, so a human should confirm it recovered.\n' \
+    "$(now)" "$BRIDGE_BIN" > "$ALARM" 2>/dev/null || true
+  printf '%s bridge=DOWN ran-revive=membrain\n' "$(now)" > "$STAMP" 2>/dev/null || true
 else
-  printf '%s: slack-bridge DOWN and NO worktree fleet/slack-bridge/revive.sh found — cannot auto-revive; a human must restart the bridge (the operator alert path is DOWN).\n' \
-    "$(date -Is 2>/dev/null || echo now)" > "$ALARM" 2>/dev/null || true
-  printf '%s bridge=DOWN no-revive-found\n' "$(date -Is 2>/dev/null || echo now)" > "$STAMP" 2>/dev/null || true
+  printf '%s: slack-bridge (membrain daemon) DOWN and %s is missing/not executable — cannot auto-revive; a human must restart the bridge (the operator alert path is DOWN).\n' \
+    "$(now)" "$BRIDGE_BIN" > "$ALARM" 2>/dev/null || true
+  printf '%s bridge=DOWN no-binary\n' "$(now)" > "$STAMP" 2>/dev/null || true
 fi
 exit 0
