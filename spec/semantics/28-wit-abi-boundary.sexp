@@ -12559,3 +12559,47 @@ cases
   (host-arg-received cadenza:platform/probe.push (q #record((= m 1) (= a 2))))
   (output 55)
   (live-objects 0))
+
+(case
+  "a mixed variant{a, b(tuple<bytes,s64>)} host-op arg declines coded (Bytes element in a tuple-payload variant case)"
+  (doc
+    "SHAPE 369 (v-wit-boundary) — the coverage-doc REMAINING 'Bytes/nested-compound tuple ELEMENT in a
+           tuple-payload variant'. A tuple-payload variant case whose tuple has a `Bytes` (rope-spilling) element
+           declines cleanly with the coded CDZ0903: the variant tuple-payload marshal handles SCALAR elements
+           (SHAPE 243 record / the scalar-tuple cases) but has no cursor-spill for a `Bytes` element, so the op
+           declines rather than miscompiling (decline-don't-miscompile). Tracked later slice: extend the variant
+           tuple-payload mem writer to spill a `Bytes`/nested-compound element at the cursor (like the record-field
+           Bytes arm). A coded decline is target-uniform — it fires at `first_unrepresentable_host_op` before any
+           backend emit.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (variant (a) (b (tuple (list (u8)) (s64))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (Tuple Bytes Int64)))
+      (effect probe (op push (-> Sig Int64)))
+      (def (run) (host (probe) (probe.push (Sig.B #tuple((Bytes.of #list(1 2 3)) 9)))))
+      (export run)))
+  (call run)
+  (error CDZ0903))
+
+(case
+  "a list<variant{a, b(tuple<bytes,s64>)}> host-op arg declines coded (Bytes tuple element declines at the mem/list position too)"
+  (doc
+    "SHAPE 370 (v-wit-boundary) — the mem/list-element twin of SHAPE 369. Unlike the list<record> compound
+           variant (SHAPE 348/351, which crosses at the mem/list position via `emit_variant_mixed_to_mem`), a
+           `Bytes` element inside a tuple-payload variant case declines coded CDZ0903 even at the LIST-element
+           position: the variant tuple-payload writer has no cursor-spill for the Bytes element at any position yet.
+           Pins that this shape declines EVERYWHERE it is placed (not a mem-crossing shape like the record case) —
+           a decline-don't-miscompile guard until the writer gains Bytes-element spilling.")
+  (wit-world
+    (world w (import cadenza:platform/probe
+      (member push (func (param m (list (variant (a) (b (tuple (list (u8)) (s64)))))) (result (s64)))))))
+  (input
+    (do
+      (type Sig (A) (B (Tuple Bytes Int64)))
+      (effect probe (op push (-> (List Sig) Int64)))
+      (def (run) (host (probe) (probe.push #list((Sig.B #tuple((Bytes.of #list(1 2 3)) 9)) (Sig.A)))))
+      (export run)))
+  (call run)
+  (error CDZ0903))
