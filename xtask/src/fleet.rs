@@ -3467,6 +3467,27 @@ if [ "${{FLEET_SKIP_ALLOC_BENCH_WARN:-}}" != "1" ]; then
     echo "  (Silence: FLEET_SKIP_ALLOC_BENCH_WARN=1.)" >&2
   fi
 fi
+
+# (10) CADENZA RE-EMIT / WIT-BOUNDARY BACKEND FILE → corpus-chapter-gate WARN (fail-open; v-corpus-harness
+# #346 gate ruling 2026-09-30). One corpus chapter drives four targets that share the SAME
+# spec/semantics/.gate-baseline — corpus-<ch> (wasm), corpus-cadenza-<ch> (re-emit), corpus-rust-<ch> +
+# corpus-rust-async-<ch> — but only the wasm one is in gate-local; the others are advisory. So a wasm-only
+# pass can mask a re-emit/rust trap on a baseline-`pass` case, and it lands latent on main (that is exactly
+# how SHAPE 342 sat on main across admin-merges). A backend change is chapter-AGNOSTIC — the hook cannot
+# derive the affected stem — so this NUDGES the fan-out helper rather than naming a chapter. Same
+# reminder-not-inline-run shape as (4)/(5)/(8)/(9). Silence: FLEET_SKIP_CADENZA_REEMIT_WARN=1.
+if [ "${{FLEET_SKIP_CADENZA_REEMIT_WARN:-}}" != "1" ]; then
+  if git diff --cached --name-only --diff-filter=ACM -- \
+       'implementation/seed/crates/rcdzc/src/backend/cadenza' \
+       'implementation/seed/crates/rcdzc/src/backend/wasm/serialize' 2>/dev/null | grep -q .; then
+    echo "⚠ fleet pre-commit: you touched a cadenza re-emit / wit-boundary backend file; before landing run" >&2
+    echo "  \`cargo xtask corpus-chapter-gate <stem>\` for the chapter(s) your change affects (e.g. 28-wit-abi-boundary" >&2
+    echo "  for wit-boundary emit) — it fans out to corpus-/corpus-cadenza-/corpus-rust-/corpus-rust-async-<stem>." >&2
+    echo "  The cadenza re-emit + rust targets share spec/semantics/.gate-baseline but are NOT in local-gate, so a" >&2
+    echo "  wasm-only pass can mask a re-emit/rust trap that then lands latent on main (#346, SHAPE 342)." >&2
+    echo "  (Silence: FLEET_SKIP_CADENZA_REEMIT_WARN=1.)" >&2
+  fi
+fi
 exit 0
 "##
     )
@@ -28820,6 +28841,13 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             !b.contains("cargo xtask bench"),
             "must not name the removed xtask bench arm"
         );
+        // Section (10): WARN (fail-open) when a cadenza re-emit / wit-boundary backend file is staged, nudging
+        // the corpus-chapter-gate fan-out (v-corpus-harness #346 ruling 2026-09-30; SHAPE 342 landed latent
+        // because corpus-cadenza-<ch> + corpus-rust[-async]-<ch> share .gate-baseline but are not in local-gate).
+        assert!(b.contains("FLEET_SKIP_CADENZA_REEMIT_WARN"));
+        assert!(b.contains("implementation/seed/crates/rcdzc/src/backend/cadenza"));
+        assert!(b.contains("implementation/seed/crates/rcdzc/src/backend/wasm/serialize"));
+        assert!(b.contains("cargo xtask corpus-chapter-gate"));
         // Fail-open: the script's LAST statement is `exit 0` (the warn sections never block a commit; only the
         // trunk-guard (1) and the baseline vanished-check (6) block, each on its own explicit `exit 1`).
         assert!(

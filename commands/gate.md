@@ -131,3 +131,15 @@ Gate Is The Promotion Bar", constitution §XII).
   coverage-regression check regenerated per build; it is gitignored, not a committed
   baseline (its coverage tags derive from citations in the gitignored
   `implementation/` code, so it is reproducible only where the build ran).
+- One corpus chapter is graded against a single `spec/semantics/.gate-baseline` by
+  **several execution targets**: the wasm corpus, the cadenza re-emit, and the rust and
+  rust-async backends. Only the wasm target is a `gate-local` constituent; the other
+  three are advisory, so a wasm-only pass can mask a re-emit or rust trap on a
+  baseline-`pass` case and let it land latent on main. For a landing that changes what
+  the cadenza or rust backend re-emits — host/peer/fusion/escape emit, and anything
+  under `rcdzc/src/backend/{cadenza,wasm/serialize}` — gate **all** the baseline-sharing
+  targets, not just wasm, with `cargo xtask corpus-chapter-gate <stem>` (it fans out to
+  `corpus-`/`corpus-cadenza-`/`corpus-rust-`/`corpus-rust-async-<stem>` and reds if any
+  reds; a bare chapter number expands to every stem in that chapter). The `fleet up`
+  pre-commit hook prints a reminder when a backend file in those paths is staged
+  (silence with `FLEET_SKIP_CADENZA_REEMIT_WARN=1`).
