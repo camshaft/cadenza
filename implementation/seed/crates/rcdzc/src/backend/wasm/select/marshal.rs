@@ -5180,143 +5180,45 @@ pub(super) fn emit_record_arg_marshal(
                     out.push(Lir::LocalGet(base_slot + k as u32));
                 }
             }
-            // An `option<record>` field whose payload record's fields are each a scalar OR a `Bytes`
-            // (`list<u8>`). It flattens to `(disc:i32, flatten(record))` = disc + the payload record's own
-            // flattened slots IN WIT DECLARATION ORDER (a scalar → one core slot, a `Bytes` → `(ptr,len)` = two,
-            // matching `reorder_record_fields_to_wit`'s recursion into the `Option(Record)` payload +
-            // `record_field_cref`'s `(option (record …))`). `BlockType` is single-value, so we scratch-flatten:
-            // on Some, RECURSIVELY marshal the payload via `emit_record_arg_marshal` (which pushes the N slots in
-            // WIT order, doing each scalar's arr-get+unbox and each `Bytes`'s rope→`mem` copy at the shared
-            // `cursor` — all the existing record-marshal logic) and capture the N pushed values into scratch (in
-            // REVERSE, since the last-pushed is on top); on None, zero-fill every slot; then push `disc` + the N
-            // slots after the `if`. Reusing `emit_record_arg_marshal` handles a `Bytes` payload field for free
-            // (its mem copy + `(ptr,len)`), not just scalars. MUST precede the option<scalar> arm (a record's
-            // `valtype_of` is `Some(I32)`). A nested-compound payload field is still a later slice (excluded by
-            // the guard, so this stays in strict agreement with `field_boundary_abi`).
-            None if crate::backend::wasm::host::option_payload_ty(db, fty).is_some_and(|p| {
-                matches!(p.strip_nominal(), Ty::Record(sub)
-                    if !sub.is_empty()
-                        && sub.values().all(|f| valtype_of(f).is_some()
-                            || matches!(f.strip_nominal(), Ty::Bytes)))
-            }) =>
+            // An `option<record>` field whose payload record is itself a boundary record
+            // (`is_boundary_record` — every field `field_boundary_abi`-representable AND register-flatten
+            // representable, INCLUDING a nested-compound field such as `option<scalar>`, a nested record/tuple, or
+            // a list). Delegate to the shared `emit_option_reg_flatten` (whose record branch derives each field's
+            // slot count from `field_boundary_abi` + `flatten_record_field_abi` and recurses
+            // `emit_record_arg_marshal` on the payload) — the SAME helper the top-level option<record> arg + the
+            // option<option>/option<variant> field arms use, so field + arg stay in lockstep for ANY boundary
+            // payload-field shape (a scalar/`Bytes` payload — SHAPE 124 — AND a nested-compound payload — SHAPE
+            // 360). The former bespoke arm counted payload slots with `valtype_of`, which is `Some(I32)` for an
+            // option/list/record HANDLE, so it UNDER-counted a nested `option<scalar>` field (1 slot vs the
+            // option's `(disc, payload)` = 2) and pushed a mismatched core arg (CDZ0910). MUST precede the
+            // option<scalar> arm (a record handle's `valtype_of` is `Some(I32)`).
+            None if crate::backend::wasm::host::option_payload_ty(db, fty)
+                .is_some_and(|p| crate::backend::wasm::host::is_boundary_record(db, &p)) =>
             {
-                let payload_ty = crate::backend::wasm::host::option_payload_ty(db, fty)
-                    .expect("option-shaped by the guard");
-                let Ty::Record(sub) = payload_ty.strip_nominal() else {
-                    unreachable!("record payload by the guard")
-                };
-                let sub = sub.clone();
-                // The payload's WIT record (declaration order) — the field's `fwit` is `option<record<…>>`.
-                let crate::wit_world::WitType::Option(inner) = fwit else {
-                    return Err(Reject::decline("an option field's WIT is not option<…>"));
-                };
-                let payload_wit = inner.as_ref();
-                let crate::wit_world::WitType::Record(pwit_fields) = payload_wit else {
-                    return Err(Reject::decline(
-                        "an option<record> payload WIT is not a record",
-                    ));
-                };
-                // The payload's flattened core-slot valtypes IN WIT ORDER (scalar → 1 slot, `Bytes` → `(ptr,len)`
-                // = two i32) — the exact sequence `emit_record_arg_marshal` pushes for this payload record, so
-                // the capture-into-scratch below matches slot-for-slot.
-                let names: Vec<String> = sub.keys().map(|s| s.name.to_string()).collect();
-                let mut slot_vts: Vec<ValType> = Vec::with_capacity(pwit_fields.len());
-                for (pfname, _) in pwit_fields {
-                    let idx = names.iter().position(|n| n == pfname).ok_or_else(|| {
-                        Reject::decline(
-                            "an option<record> payload WIT field is absent from the guest record",
-                        )
-                    })?;
-                    let fgty = sub.values().nth(idx).expect("name-lex index in range");
-                    // Check `Bytes` FIRST: `valtype_of(Bytes)` is `Some(I32)` (a byte-leaf handle), but a Bytes
-                    // field flattens to `(ptr,len)` = TWO slots (the recursive marshal copies its rope + pushes
-                    // both), not one — so a `valtype_of`-first test would under-count it and leave a value on the
-                    // stack.
-                    if matches!(fgty.strip_nominal(), Ty::Bytes) {
-                        slot_vts.push(ValType::I32); // ptr
-                        slot_vts.push(ValType::I32); // len
-                    } else if let Some(pv) = valtype_of(fgty) {
-                        slot_vts.push(pv);
-                    } else {
-                        return Err(Reject::decline(
-                            "an option<record> payload field is neither scalar nor Bytes",
-                        ));
-                    }
-                }
-                let n = slot_vts.len() as u32;
-                let some_disc = {
-                    let crate::ty::Ty::Sum { decl, .. } = fty.strip_nominal() else {
-                        unreachable!("option is a Sum")
-                    };
-                    let d = db.type_decl_by_occ(*decl).ok_or_else(|| {
-                        Reject::decline("the option field's sum decl was not found")
-                    })?;
-                    d.variants
-                        .iter()
-                        .position(|v| v.payloads.len() == 1)
-                        .ok_or_else(|| Reject::decline("the option field has no payload variant"))?
-                        as i32
-                };
-                let ans = work_base + 4; // option handle
-                let pay = work_base + 5; // payload record handle (i32, distinct from the typed payload slots)
-                let disc_out = work_base + 6;
-                let base_slot = work_base + 7; // first of N payload slots
-                scratch_ty.insert(ans, ValType::I32);
-                scratch_ty.insert(pay, ValType::I32);
-                scratch_ty.insert(disc_out, ValType::I32);
-                for (k, vt) in slot_vts.iter().enumerate() {
-                    scratch_ty.insert(base_slot + k as u32, *vt);
-                }
-                *high = (*high).max(base_slot + n);
-                let zero = |vt: ValType| match vt {
-                    ValType::I64 => Lir::ConstI64(0),
-                    ValType::F64 => Lir::F64ConstBits(0),
-                    ValType::F32 => Lir::F32ConstBits(0),
-                    _ => Lir::ConstI32(0),
-                };
+                let opt_slot = work_base;
+                scratch_ty.insert(opt_slot, ValType::I32);
+                *high = (*high).max(work_base + 1);
                 out.push(Lir::LocalGet(rec_slot));
                 out.push(Lir::ConstI32(i as i32));
                 out.push(Lir::CallImport(OP_ARR_GET)); // [option handle] (borrows rec)
-                out.push(Lir::LocalSet(ans));
-                out.push(Lir::LocalGet(ans));
-                out.push(Lir::CallImport(OP_SUM_DISC));
-                out.push(Lir::ConstI32(some_disc));
-                out.push(Lir::I32Eq);
-                out.push(Lir::If(BlockType::Empty)); // Some
-                out.push(Lir::ConstI32(1)); // WIT `option` some = 1
-                out.push(Lir::LocalSet(disc_out));
-                out.push(Lir::LocalGet(ans));
-                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload record handle]
-                out.push(Lir::LocalSet(pay));
-                // Recursively marshal the payload record: pushes its N slots in WIT order (scalars + Bytes copies
-                // at the shared cursor). Its work_base is ABOVE our scratch (base_slot + n) so it can't collide.
-                emit_record_arg_marshal(
+                out.push(Lir::LocalSet(opt_slot));
+                // `fwit` is the field's `option<record>` WIT; `emit_option_reg_flatten` wants the OPTION's
+                // inner-payload WIT (the `record`), so unwrap one `Option` layer.
+                let payload_wit = match fwit {
+                    crate::wit_world::WitType::Option(inner) => Some(inner.as_ref()),
+                    _ => None,
+                };
+                emit_option_reg_flatten(
                     db,
-                    pay,
-                    &sub,
+                    opt_slot,
+                    fty,
                     payload_wit,
                     cursor,
-                    base_slot + n,
+                    work_base + 1,
                     high,
                     scratch_ty,
                     out,
                 )?;
-                // Capture the N pushed slots into scratch (reverse: last-pushed is on top).
-                for k in (0..n).rev() {
-                    out.push(Lir::LocalSet(base_slot + k));
-                }
-                out.push(Lir::Else); // None → (0, zeros…)
-                out.push(Lir::ConstI32(0)); // WIT `option` none = 0
-                out.push(Lir::LocalSet(disc_out));
-                for (k, vt) in slot_vts.iter().enumerate() {
-                    out.push(zero(*vt));
-                    out.push(Lir::LocalSet(base_slot + k as u32));
-                }
-                out.push(Lir::End);
-                out.push(Lir::LocalGet(disc_out)); // push disc, then the N payload slots (WIT order)
-                for k in 0..n {
-                    out.push(Lir::LocalGet(base_slot + k));
-                }
             }
             // An `option<scalar>` field flattens (canonical variant flatten) to `(disc:i32, payload)`. Branch on
             // the value-heap Option's discriminant: Some (the guest decl's single-payload arm) → `(1, unbox(

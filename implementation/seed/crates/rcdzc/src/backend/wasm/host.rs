@@ -1594,12 +1594,7 @@ pub(crate) fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi>
                 // marshal recursively marshals the payload record (each scalar → one slot, each `Bytes` →
                 // `(ptr,len)` copied to `mem`). A nested-compound payload field is a later slice — MUST agree
                 // with the marshal arm's guard (`scalar OR Bytes`).
-                if let Ty::Record(sub) = payload.strip_nominal()
-                    && !sub.is_empty()
-                    && sub.values().all(|f| {
-                        abi_val_type(f).is_some() || matches!(f.strip_nominal(), Ty::Bytes)
-                    })
-                {
+                if is_boundary_record(db, payload.strip_nominal()) {
                     let inner = field_boundary_abi(db, &payload)?;
                     return Some(RecordFieldAbi::Option(Box::new(inner)));
                 }
