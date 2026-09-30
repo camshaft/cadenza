@@ -8907,6 +8907,36 @@
   (call main (: 1 Int64))
   (output (: 3 Int64)))
 
+; The CONST-FAILURE twin of the runtime mid-list case above (and the failing face of the const-succeeding
+; list-element case): here the middle `?` operand is a COMPILE-TIME `(: (None unit) (Option Int64))`, so the
+; const-failure fold short-circuits the whole `#list` do-value to None at compile time (the same fold that
+; passes the const-failure→resume case). `mk` folds to None, the match takes the None arm (-1); `(* k 0)`
+; keeps `main` from folding to a bare constant. Distinct from the runtime case (which hoists the `?` to a
+; runtime branch) and the const-SUCCESS list case (which builds the list).
+(case
+  "a constant-FAILING try mid LIST-literal short-circuits the whole list at compile time"
+  (doc
+    "The const-failure face of the collection-constructor try idiom: a compile-time-None `?` operand mid
+           `#list` (`(try (: (None unit) (Option Int64)))`) short-circuits `mk`'s do-value to None via the
+           const-failure fold — the same machinery as the const-failure→resume case — so `mk` folds to None and
+           the match takes the fallback arm (-1). The const twin of the runtime mid-list case above and the
+           failing twin of the const-succeeding list-element case.")
+  (input
+    (do
+      (def
+        (mk)
+        (:
+          (do
+            (def
+              xs
+              #list((try (Some 1)) (try (: (None unit) (Option Int64))) (try (Some 3))))
+            (Some (List.len xs)))
+          (Option Int64)))
+      (def (main (: k Int64)) (+ (* k 0) (match (mk) ((Option.Some v) v) ((Option.None _u) -1))))
+      (export main)))
+  (call main (: 1 Int64))
+  (output (: -1 Int64)))
+
 ; --- Handler-composition perimeter: per-recursion-level handles, def-bound performs beside a
 ; recursive performing loop, and closure-handle slot swapping through tail calls. ---
 (case
