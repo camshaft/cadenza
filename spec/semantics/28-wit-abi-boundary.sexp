@@ -12165,3 +12165,54 @@ cases
   (host-arg-received cadenza:platform/probe.push #tuple((b #list(#record((= x 1) (= y 2)))) 7))
   (output 55)
   (live-objects 0))
+
+(case
+  "a record-of-bools host-op ARGUMENT whose WIT param is flags{…} crosses as the WIT flags bitset"
+  (doc
+    "SHAPE 353 (v-wit-boundary) — the HOST-ARG (guest→host) direction of the WIT `flags` boundary, the pack twin
+           of SHAPE 113's export-side unpack. A guest models `flags` as a PRODUCT record-of-bools; when the imposed
+           WIT param is `flags{read,write,execute}`, the classifier's `HostParam::Flags` arm (guarded BEFORE the
+           generic record arm) PACKS the record's bools into `ceil(n/32)` = one i32 bitset word by label→bit
+           (`flags_field_bits`, by-NAME matching, so a guest field order that diverges from the WIT label order
+           still maps correctly), and the component boundary type is a `flags` DEFINED type. run() pushes
+           {read:true, write:false, execute:true}; the byte-exact `(host-arg-received … (flags read execute))`
+           pin proves write=false is dropped and the set is packed by name. A >32-label flags has no component
+           boundary form (the Component Model caps flags at 32) and declines cleanly (flags_field_bits None).")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param p (flags read write execute)) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: read Bool) (: write Bool) (: execute Bool)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= read true) (= write false) (= execute true)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push (flags read execute))
+  (output 55)
+  (live-objects 0))
+
+(case
+  "a record{perms: flags{r,w,x}, n: s64} host-op ARGUMENT crosses (a flags FIELD packed inside a record arg)"
+  (doc
+    "SHAPE 354 (v-wit-boundary) — the flags-as-a-record-FIELD position (the field twin of SHAPE 353's top-level
+           flags arg). A record host-op arg has a `perms` field that is itself a record-of-bools whose WIT field
+           is `flags{r,w,x}`. `reorder_record_fields_to_wit`'s flags arm (the ONLY site with both the field abi
+           and its WIT) converts the nested `Record`-of-bools abi into a `RecordFieldAbi::Flags` via
+           `flags_field_bits_from_abi` (by-NAME bit mapping); the field then flattens to one i32 bitset word and
+           its component type is a `flags` DEFINED type. run() pushes {perms:{r:true, w:false, x:true}, n:9}; the
+           byte-exact `(host-arg-received … (= perms (flags r x)) …)` pin proves the nested flags packs correctly
+           beside a plain scalar field.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member push (func (param p (record (= perms (flags r w x)) (= n (s64)))) (result (s64)))))))
+  (input
+    (do
+      (effect probe (op push (-> (Record (: perms (Record (: r Bool) (: w Bool) (: x Bool))) (: n Int64)) Int64)))
+      (def (run) (host (probe) (probe.push #record((= perms #record((= r true) (= w false) (= x true))) (= n 9)))))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.push (: 55 Int64)))
+  (host-calls (call cadenza:platform/probe.push))
+  (host-arg-received cadenza:platform/probe.push #record((= perms (flags r x)) (= n 9)))
+  (output 55)
+  (live-objects 0))
