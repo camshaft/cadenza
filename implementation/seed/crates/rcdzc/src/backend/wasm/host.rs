@@ -1929,9 +1929,9 @@ fn record_field_abi_reg_representable(abi: &RecordFieldAbi) -> bool {
             Some(VariantPayloadKind::RecordMem(_)) => false,
             _ => true,
         }),
-        RecordFieldAbi::Record(fields) => {
-            fields.iter().all(|(_, f)| record_field_abi_reg_representable(f))
-        }
+        RecordFieldAbi::Record(fields) => fields
+            .iter()
+            .all(|(_, f)| record_field_abi_reg_representable(f)),
         RecordFieldAbi::Option(inner) => record_field_abi_reg_representable(inner),
         RecordFieldAbi::Tuple(elems) => elems.iter().all(record_field_abi_reg_representable),
         RecordFieldAbi::List(elem) => record_field_abi_reg_representable(elem),
