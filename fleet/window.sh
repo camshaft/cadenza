@@ -135,7 +135,11 @@ VNOTE=""
 TICK="Run one tick of your role ($ROLE)$VNOTE: (1) 'fleet heartbeat' (stop cleanly if a stop-file \
 exists), AND — coexisting with the file hub, per the board-backed migration — refresh your BOARD presence \
 with the task-board MCP set_status (agent_id '$AGENT') to a one-line note of what this tick did; the board \
-MCP tools are in your session, so this is a normal tool call, BUT it is best-effort: if the board is \
+MCP tools are in your session, so this is a normal tool call (the board does NOT bind your session, and \
+re-registering does NOT rebind it — pass your identity EXPLICITLY on EVERY board call for the whole session, \
+compaction-resume included: agent_id on check_notifications/set_status/get_messages/list_tasks, from_agent on \
+send_message, author on comment_task, actor on update_task, created_by on create_task; a call that omits it \
+fails 'no identity for this session'), BUT it is best-effort: if the board is \
 unreachable, note it and continue — NEVER block or stall a tick on the board; (2) drain BOTH inboxes \
 oldest-first, acting on each message: your FILE-HUB inbox via 'fleet inbox' (the load-bearing transport + \
 RESOLVER — it prints the canonical HUB inbox path; NEVER ls a worktree-relative '.claude/fleet/inbox/...' \
