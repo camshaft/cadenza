@@ -51,7 +51,13 @@ if [ -n "${WORKTREES:-}" ] && [ -d "$WORKTREES" ]; then
 fi
 
 if [ -n "$best" ]; then
-  setsid bash "$best" >/dev/null 2>&1 </dev/null &
+  # Close fd 9 (the singleton flock) for the launched revive.sh: revive.sh detaches a long-lived
+  # run.sh bridge supervisor, which would otherwise INHERIT fd 9 and hold this guard's lock for its
+  # whole lifetime — so every later guard fire would fail `flock -n 9` and skip before stamping,
+  # making `fleet status` report the guard STALE even though it fires every cron tick (the bridge
+  # supervisor holding the lock is not a reason for the guard to stay locked out). run.sh does not
+  # need the guard's singleton lock.
+  setsid bash "$best" >/dev/null 2>&1 </dev/null 9>&- &
   printf '%s: slack-bridge DOWN — ran revive.sh (%s). The operator alert path (concierge-down #8931) routes through the bridge, so a human should confirm it recovered.\n' \
     "$(date -Is 2>/dev/null || echo now)" "$best" > "$ALARM" 2>/dev/null || true
   printf '%s bridge=DOWN ran-revive=%s\n' "$(date -Is 2>/dev/null || echo now)" "$best" > "$STAMP" 2>/dev/null || true
