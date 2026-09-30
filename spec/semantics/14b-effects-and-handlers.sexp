@@ -8850,7 +8850,12 @@
 (case
   "a constant-try helper that fails feeds the None arm's fallback into resume"
   (doc
-    "The failing face: the fold does NOT elide the short-circuit — the boundary block/break emit is its own pending brick, so this grades todo until it lands (oracle 95).")
+    "The failing face of the const-try fold: the const-failing `?` in the PURE helper's do-def value
+           `(def v (try (None …)))` short-circuits `get` to None (the const-failure fold + do-def-value hoist,
+           the same machinery that passes the sibling LIST-element cases below), so the `(Option.None …)` arm's
+           fallback (-5) is what feeds resume — the handler resumes -5 and returns -5 + 1*100 = 95. Passes on
+           wasm/rust/rust-async; the quote binary-AST round-trip still grades todo (a quote-reify gap, orthogonal
+           to the fold).")
   (input
     (do
       (effect Ask (op ask (-> Unit Int64)))
