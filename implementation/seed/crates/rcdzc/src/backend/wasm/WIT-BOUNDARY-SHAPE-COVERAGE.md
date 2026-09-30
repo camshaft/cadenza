@@ -692,8 +692,12 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   A WIT-ordered RECORD payload case whose WIT order diverges from guest name-lex order is now ✅ DONE — SHAPE 368
   (`emit_variant_mixed_to_mem`'s record arm re-resolves the record from the case WIT and lays it WIT-ordered +
   WIT-sized, so a divergent case crosses with a byte-exact host-arg; the WIT-ordered stride, not a guard-decline).
-  REMAINING: a Bytes/nested-compound tuple ELEMENT (in a tuple-payload variant); the
-  heterogeneous mix at a REGISTER record-field/tuple-element position (declines).
+  A Bytes/nested-compound tuple ELEMENT in a tuple-payload variant case DECLINES coded CDZ0903 at BOTH the
+  bare-ARG register AND the list-element mem position (pinned SHAPE 369/370, decline-don't-miscompile) — unlike the
+  list<record> compound variant (SHAPE 348/351, which crosses at mem), the variant tuple-payload writer has no
+  cursor-spill for a Bytes element at ANY position yet. Tracked fix: extend `emit_variant_mixed_to_mem`'s
+  tuple-payload arm to spill a Bytes/nested-compound element at the cursor (like the record-field Bytes arm).
+  REMAINING: the heterogeneous mix at a REGISTER record-field/tuple-element position (declines).
   A RECORD compound payload case in a MIXED variant is now ✅ DONE — SHAPE 367 (bare-ARG position, the record twin
   of the TUPLE payload case SHAPE 243, `VariantPayloadKind::Record`/`RecordMem`); the ≥3-payload-case mem join is
   ✅ DONE — SHAPE 242. (The mixed
