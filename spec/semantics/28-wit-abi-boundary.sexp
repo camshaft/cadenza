@@ -12294,3 +12294,27 @@ cases
   (host-arg-received cadenza:platform/probe.push (Some #record((= o (Some #record((= p 1) (= q 2)))) (= n 9))))
   (output 55)
   (live-objects 0))
+
+(case
+  "a host-op RESULT of variant{a, b(list<record>)} lifts (the RESULT-side twin of the SHAPE 348 arg shape)"
+  (doc
+    "SHAPE 358 (v-wit-boundary) — the RESULT side of the compound-variant-with-list<record> shape (SHAPE 348 was
+           its ARG side). The host RESPONDS with `(b [{x:1, y:2}])`; the guest LIFTS the component value into a
+           value-heap sum handle via the value-form walker (`result_is_liftable` / `emit_result_lift`), then
+           matches it. Unlike the register-flatten ARG position (which declines a list<compound> variant case,
+           SHAPE 348), the RESULT position crosses: the lift walker reconstructs the full nominal value from the
+           component value (it does NOT go through `record_field_cref`'s ABI-only flatten). run() matches the `b`
+           case and returns 99; live-objects=0 proves the lifted list<record> + variant are reclaimed with no leak.")
+  (wit-world
+    (world w (import cadenza:platform/probe (member get (func (result (variant (a) (b (list (record (= x (s32)) (= y (s64))))))))))))
+  (input
+    (do
+      (type Sig (A) (B (List (Record (: x Int32) (: y Int64)))))
+      (effect probe (op get (-> Unit Sig)))
+      (def (run) (match (host (probe) (probe.get unit)) ((A) 0) ((B _xs) 99)))
+      (export run)))
+  (call run)
+  (host-responses (respond probe.get (b #list(#record((= x 1) (= y 2))))))
+  (host-calls (call cadenza:platform/probe.get))
+  (output 99)
+  (live-objects 0))
