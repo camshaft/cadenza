@@ -219,6 +219,16 @@ enum Cmd {
         #[command(subcommand)]
         cmd: fleet::FleetCmd,
     },
+    /// Gate a corpus chapter across EVERY target that shares its `spec/semantics/.gate-baseline` — the
+    /// wasm corpus, the cadenza re-emit, and the rust + rust-async backends — reddening if ANY reds. Only
+    /// the wasm target is in `gate-local`; the other three are advisory, so a wasm-only pass can mask a
+    /// re-emit/rust trap that then lands latent (#346). `<chapter>` is a corpus file stem (e.g.
+    /// `28-wit-abi-boundary`) or a bare chapter number (e.g. `28`, which expands to every `28-*` stem);
+    /// the resolved stem list is printed before building.
+    CorpusChapterGate {
+        /// A corpus file stem (e.g. `28-wit-abi-boundary`) or a bare chapter number (e.g. `28`).
+        chapter: String,
+    },
     /// Any UNRECOGNIZED subcommand is forwarded to the nix app of the same name:
     /// `cargo xtask <cmd> [args…]` → `nix run <worktree-flake>#<cmd> -- [args…]`. This is the all-nix
     /// COMPAT bridge (operator 2026-08-28: `cargo run` migrates to nix as tools land) for xtask
@@ -294,6 +304,7 @@ fn main() {
         Cmd::Codegen { check } => codegen::run(&paths, check),
         Cmd::GuideWasm { store } => guide_wasm(&paths, store),
         Cmd::Fleet { cmd } => fleet::run(&paths, cmd),
+        Cmd::CorpusChapterGate { chapter } => corpus_chapter_gate::run(&paths, &chapter),
         Cmd::External(args) => run_external_subcommand(&args),
     }
 }
@@ -344,6 +355,7 @@ fn run_external_subcommand(args: &[String]) -> ! {
 }
 
 mod codegen;
+mod corpus_chapter_gate;
 mod fleet;
 mod gate_syntax;
 
