@@ -552,9 +552,9 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `I32ReinterpretF32` at the k==0 reverse-capture (Ok arm), the Err arm stores the err disc into slot 0 (widened
   to i64 for f64), `serialize` emits the join int for slot 0, and `result_tuple_enum` now admits a float first
   element (the SHAPE 206 slot-0 decline is lifted). SHAPE 211 (`tuple<f64,s64>`, `(param i32 i64 i64)`) + 212
-  (`tuple<f32,s64>`, `(param i32 i32 i64)`). REMAINING (result family): a FLOAT slot-0 field in a `result<record>`
-  (adds the WIT-reorder — the tuple slot-0 done here is the positional counterpart; the record twin is next).
-  `result<_, variant>` (err arm a variant) is ✅ DONE (#10170/#10172).
+  (`tuple<f32,s64>`, `(param i32 i32 i64)`). The record twin — a FLOAT slot-0 FIELD in a `result<record>` (adds the
+  WIT-reorder over this positional tuple case) — is ✅ DONE (SHAPE 213 no-reorder + 214 WIT-reorder; see the
+  `result<record>` entry above). `result<_, variant>` (err arm a variant) is ✅ DONE (#10170/#10172).
 - **[emit, MEM-path] a top-level `result<list<scalar>, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE 195/196).**
   The list-Ok sibling of the Bytes-Ok result: a new `HostParam::ResultList(err-cases)` (detector
   `result_list_enum`, admitting a `list<T>` whose ELEMENT is a scalar + a payloadless-enum Err; a `list<u8>` Ok is
