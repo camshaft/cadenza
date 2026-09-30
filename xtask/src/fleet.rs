@@ -12598,7 +12598,11 @@ fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
         "Run one tick of your role ({role}){vnote}: (1) `fleet heartbeat` (stop cleanly if a stop-file \
          exists), AND — coexisting with the file hub, per the board-backed migration — refresh your BOARD \
          presence with the task-board MCP set_status (agent_id '{name}') to a one-line note of what this \
-         tick did; the board MCP tools are in your session, but this is best-effort: if the board is \
+         tick did; the board MCP tools are in your session (the board does NOT bind your session, and \
+         re-registering does NOT rebind it — pass your identity EXPLICITLY on EVERY board call for the whole \
+         session, compaction-resume included: agent_id on check_notifications/set_status/get_messages/list_tasks, \
+         from_agent on send_message, author on comment_task, actor on update_task, created_by on create_task; a \
+         call that omits it fails 'no identity for this session'), but this is best-effort: if the board is \
          unreachable, note it and continue — NEVER block or stall a tick on the board; (2) drain BOTH \
          inboxes oldest-first, acting on each message: your FILE-HUB inbox via `fleet inbox` (the \
          load-bearing transport + RESOLVER — prints the canonical HUB inbox path; NEVER ls a \
@@ -23745,6 +23749,26 @@ mod tests {
         assert!(p.contains("set_status (agent_id 'fix-float-compare')"));
         assert!(p.contains("check_notifications (agent_id 'fix-float-compare')"));
         assert!(p.contains("NEVER block or stall a tick on the board"));
+        // task_336: the board never binds a native agent's session, and re-registering does NOT rebind it, so
+        // the tick recipe must tell the agent to pass its identity EXPLICITLY on EVERY call for the whole
+        // session (compaction-resume included) with the per-tool field map — the un-ported cadenza launch text
+        // kept tripping cadenza-launched agents (librarian) with "no identity for this session" on resume.
+        assert!(
+            p.contains("does NOT bind your session"),
+            "states the board never binds a native session (task_336)"
+        );
+        assert!(
+            p.contains("re-registering does NOT rebind"),
+            "re-register does not rebind — pass id explicitly"
+        );
+        assert!(
+            p.contains("compaction-resume included"),
+            "the contract holds across a compaction resume, not just spin-up"
+        );
+        assert!(
+            p.contains("from_agent on send_message"),
+            "names the per-tool identity field map incl send_message"
+        );
         // Step-2 must name the RESOLVER (`fleet inbox`), NOT a bare inbox path — handing a path invites a
         // worktree-relative glob that hits an empty shadow dir and silently stalls the drain (the v-syntax
         // report). And it must carry the anti-glob warning so the agent can't regress to it.
