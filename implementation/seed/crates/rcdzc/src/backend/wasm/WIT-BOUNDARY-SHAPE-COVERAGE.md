@@ -465,17 +465,20 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `get-*` — `get_op_ty` returns `get-float`/`get-float32` for a float — + `drop`), `serialize`, and `host_imports.rs`.
   NOT the cursor pre-scan and NOT `set_needs_memory` (no rope → no `mem`). The float reinterpret join is now DONE
   across all three carriers — `result<scalar>` (209/210), `result<tuple>` slot-0 (211/212), `result<record>`
-  slot-0 incl. WIT-reorder (213/214). REMAINING: `result<_, variant>` (variant err arm — every result detector
-  gates the err to a PAYLOADLESS enum; a variant err needs a new `HostParam` variant carrying the err variant's
-  payload ABIs + the multi-slot err-flatten join, where the Err payload contributes ≥2 slots (variant disc +
-  payload) so the result join is `[result-disc, join(ok-slot, variant-disc), variant-payload…]`). ⚠ TRAP
-  (verified tick, nix value gate): a `result<scalar, variant-err>` host-op ARG does NOT decline cleanly and does
-  NOT cross — it REIFIES via the resource-escape value-form envelope (the call returns a `#record((= kind
-  "effect/probe") (= payload b"cdzast…") (= schema_descriptor …))` instead of performing the host op). `xtask gate
-  --opt-sweep` is FOOLED: the reify record is consistent across O0..O3 so the case "checks", but the nix VALUE gate
-  catches it (expected 42, got the reify record). So a variant-err result reads as "checked" under opt-sweep yet is
-  NOT a real WIT crossing — always confirm a new result/variant boundary shape with the nix value gate, never
-  opt-sweep alone. See `[[wit-boundary-opt-sweep-fooled-by-reify-value-form-fallback]]`.
+  slot-0 incl. WIT-reorder (213/214). `result<_, variant>` err arm — RESOLVED at the register-arg position
+  (SHAPE 361/362, nix value gate): a NULLARY-case variant err arm CROSSES identically to the enum err arm (the
+  err flattens to a single disc slot regardless of the WIT `variant`/`enum` constructor — SHAPE 361), while a
+  PAYLOAD-carrying variant err arm DECLINES cleanly with the coded CDZ0903 (the err arm no longer flattens to a
+  single disc slot; a new multi-slot err-flatten join carrying the err variant's payload ABIs —
+  `[result-disc, join(ok-slot, variant-disc), variant-payload…]` — is a tracked later slice — SHAPE 362). ⚠ TRAP
+  (the opt-sweep-vs-value-gate lesson, still load-bearing): a host-op ARG whose shape is NOT boundary-representable
+  can REIFY via the resource-escape value-form envelope on the SOURCE-world path (the call returns a `#record((=
+  kind "effect/probe") (= payload b"cdzast…") (= schema_descriptor …))` instead of performing the host op) — and
+  `xtask gate --opt-sweep` is FOOLED because the reify record is consistent across O0..O3, so the case "checks"
+  while the nix VALUE gate catches it (expected 42, got the reify record). So a boundary shape can read as "checked"
+  under opt-sweep yet NOT be a real WIT crossing — always confirm a new result/variant boundary shape with the nix
+  value gate (and a byte-exact `host-arg-received`/`output` grade), never opt-sweep OR a bare `cdz compile` success
+  alone (the reflective fallback also emits wasm). See `[[wit-boundary-opt-sweep-fooled-by-reify-value-form-fallback]]`.
 - **[emit, register-path] a top-level `result<record-of-scalars, enum>` host-op ARG — ✅ DONE / TESTED (SHAPE
   189/190/191).** The record-Ok sibling of the scalar-Ok result: a new `HostParam::ResultRecord(ok-fields, err-
   cases)` (detector `result_record_enum`, admitting a record every field of which is a SCALAR + a payloadless-enum
