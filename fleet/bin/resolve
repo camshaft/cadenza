@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# resolve — resolve Slack entities through the running membrain-skynet-bridge daemon (which holds the Slack
+# creds), so a fleet agent never re-auths. This thin client just forwards the request to the daemon's
+# loopback resolve API and prints the result. No MCP, no per-call auth, no credentials in this file.
+#
+#   resolve permalink <slack-archive-url>   # a .../archives/<C>/p<ts> link -> the message/thread content
+#   resolve channel   <channel-id>          # C... -> channel name + topic
+#   resolve member    <email>               # email -> member id + <@id> mention (name lookup pending task_712)
+#
+# CONFIG (kept OUT of this committed script — this repo is public): the daemon's loopback address. Defaults to
+# 127.0.0.1:8766 (the daemon's --resolve-addr default); override via RESOLVE_ADDR in the environment or the
+# local, un-tracked config ${RESOLVE_CONF:-$HOME/.config/fleet/resolve.conf}. No credentials here — the daemon
+# holds them and the endpoint is loopback-only.
+set -euo pipefail
+
+usage() {
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+CONF="${RESOLVE_CONF:-${HOME:-}/.config/fleet/resolve.conf}"
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+ADDR="${RESOLVE_ADDR:-127.0.0.1:8766}"
+
+op="${1:-}"
+arg="${2:-}"
+case "$op" in
+  permalink|channel|member) ;;
+  *) echo "resolve: usage: resolve {permalink|channel|member} <arg> (try -h)" >&2; exit 2 ;;
+esac
+[ -n "$arg" ] || { echo "resolve: '$op' needs an argument (try -h)" >&2; exit 2; }
+
+command -v curl >/dev/null || { echo "resolve: curl not found on PATH" >&2; exit 3; }
+
+# Forward to the daemon's loopback resolve API. The arg rides a header, so no URL-encoding is needed. We do NOT
+# use curl -f: on an HTTP error we still want the daemon's plain-text reason, so capture the body + status code.
+code=0
+resp=$(curl -s -w $'\n%{http_code}' -H "X-Resolve-Arg: $arg" "http://${ADDR}/resolve/${op}") || code=$?
+if [ "$code" -ne 0 ]; then
+  echo "resolve: cannot reach the bridge daemon at ${ADDR} — is it running? (set RESOLVE_ADDR or $CONF)" >&2
+  exit 3
+fi
+http="${resp##*$'\n'}"
+payload="${resp%$'\n'*}"
+case "$http" in
+  2??) printf '%s\n' "$payload" ;;
+  *) echo "resolve: daemon returned HTTP $http" >&2; printf '%s\n' "$payload" >&2; exit 4 ;;
+esac
