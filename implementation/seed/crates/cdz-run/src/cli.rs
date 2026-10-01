@@ -691,10 +691,29 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             } else {
                 "store-resolved"
             };
-            eprintln!(
-                "{prog}: live-objects run on value-heap runtime {} ({src})",
-                content_address(rt)
-            );
+            let addr = content_address(rt);
+            eprintln!("{prog}: live-objects run on value-heap runtime {addr} ({src})");
+            // GUARDRAIL (task_434): the `live-objects` count is trustworthy ONLY on the debug-counters
+            // runtime. The shipped RELEASE runtime exports `live-objects` too but always returns 0 — a
+            // FALSE ZERO that has repeatedly been mistaken for a leak-free run (v-core-opt / v-effects /
+            // v-memory-safety) and nearly landed a wrong reclaim tighten. Refuse to print a count we cannot
+            // trust rather than emit a vacuous 0; a doc note alone did not stop the recurrence.
+            match classify_live_objects_runtime(&addr) {
+                LiveObjectsRuntime::DebugCounters => {}
+                LiveObjectsRuntime::ShippedRelease => anyhow::bail!(
+                    "{prog}: refusing --report-live-objects on the shipped release runtime {addr}: it has \
+                     no debug counters and its `live-objects` export always returns 0 (a false zero, not a \
+                     leak-free signal). Resolve the debug-counters runtime (`cargo xtask build`) or pass \
+                     `--runtime <debug-counters>.wasm`; the authoritative heap-balance census is the nix \
+                     debug-counters runtime."
+                ),
+                LiveObjectsRuntime::Unrecognized => eprintln!(
+                    "{prog}: WARNING: live-objects runtime {addr} is NOT the committed debug-counters \
+                     runtime — its count may be unfaithful; the only authoritative live-objects count is \
+                     the nix debug-counters runtime (a native build can drift). Treat the number below as \
+                     directional only."
+                ),
+            }
         }
         let (outcome, observed, _received_args, live) = run_with_live_objects(
             &component_bytes,
@@ -942,6 +961,82 @@ mod content_address_tests {
     fn content_address_is_deterministic_and_distinguishing() {
         assert_eq!(content_address(b"cadenza"), content_address(b"cadenza"));
         assert_ne!(content_address(b"cadenza"), content_address(b"cadenzb"));
+    }
+}
+
+/// Which value-heap runtime a `--report-live-objects` run resolved, judged by the content address of its
+/// bytes against the two committed hashes — the discriminator for whether the emitted `live-objects` count
+/// can be trusted (task_434).
+#[derive(Debug, PartialEq, Eq)]
+enum LiveObjectsRuntime {
+    /// The committed debug-counters runtime (`DEBUG_RUNTIME_HASH`): its `live-objects` export reports the
+    /// real heap balance, so the count is authoritative.
+    DebugCounters,
+    /// The shipped RELEASE runtime (`REQUIRED_RUNTIME_HASH`): it has no counters and its `live-objects`
+    /// export always returns 0, so a count read here is a FALSE ZERO, never a real leak-free signal.
+    ShippedRelease,
+    /// Any other runtime — e.g. a locally/natively built debug runtime whose bytes differ from the committed
+    /// nix hash, or an unrelated component. Its count is not known-authoritative, so warn rather than trust.
+    Unrecognized,
+}
+
+/// Classify the resolved runtime by content address so `--report-live-objects` can REFUSE on the shipped
+/// release runtime (whose count is a vacuous 0) or WARN on an unrecognized one, instead of silently printing
+/// a count that cannot be trusted. Pure over the two committed hashes (`cadenza_compile_abi`) so the guard
+/// decision is unit-tested directly, without a wasm fixture.
+fn classify_live_objects_runtime(addr: &str) -> LiveObjectsRuntime {
+    if addr == cadenza_compile_abi::runtime_hash::DEBUG_RUNTIME_HASH {
+        LiveObjectsRuntime::DebugCounters
+    } else if addr == cadenza_compile_abi::runtime_hash::REQUIRED_RUNTIME_HASH {
+        LiveObjectsRuntime::ShippedRelease
+    } else {
+        LiveObjectsRuntime::Unrecognized
+    }
+}
+
+#[cfg(test)]
+mod live_objects_runtime_guard_tests {
+    use super::{LiveObjectsRuntime, classify_live_objects_runtime};
+
+    /// The documented false-zero class: the shipped release runtime must be flagged as ShippedRelease so
+    /// `--report-live-objects` refuses it (its `live-objects` is always a vacuous 0, which has misled
+    /// reclaim/leak decisions). This is the guardrail task_434 exists to add.
+    #[test]
+    fn release_runtime_is_flagged_as_a_false_zero_source() {
+        assert_eq!(
+            classify_live_objects_runtime(cadenza_compile_abi::runtime_hash::REQUIRED_RUNTIME_HASH),
+            LiveObjectsRuntime::ShippedRelease
+        );
+    }
+
+    /// The committed debug-counters runtime is the one trusted source — it must classify as DebugCounters
+    /// so the guard lets the count through (the xtask gate composes exactly this runtime for a census).
+    #[test]
+    fn debug_counters_runtime_is_trusted() {
+        assert_eq!(
+            classify_live_objects_runtime(cadenza_compile_abi::runtime_hash::DEBUG_RUNTIME_HASH),
+            LiveObjectsRuntime::DebugCounters
+        );
+    }
+
+    /// Any other address (a native/local debug build, or an unrelated component) is Unrecognized → warn,
+    /// not refuse: a deliberate directional native-debug census stays possible, it is just flagged.
+    #[test]
+    fn an_unrecognized_runtime_is_not_trusted() {
+        assert_eq!(
+            classify_live_objects_runtime("not-a-real-runtime-content-address"),
+            LiveObjectsRuntime::Unrecognized
+        );
+    }
+
+    /// The guard can only tell a trusted debug count from a release false-zero if the two committed hashes
+    /// are distinct — pin that they are, so an accidental collision (e.g. a bad codegen) fails here.
+    #[test]
+    fn committed_release_and_debug_hashes_are_distinct() {
+        assert_ne!(
+            cadenza_compile_abi::runtime_hash::REQUIRED_RUNTIME_HASH,
+            cadenza_compile_abi::runtime_hash::DEBUG_RUNTIME_HASH
+        );
     }
 }
 
