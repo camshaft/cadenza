@@ -11018,9 +11018,9 @@ todo	a runtime-produced String argument crosses to a peer as its handle
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
 todo	a scalar quantity argument crosses to and from a peer as its inner scalar
 todo	a scalar tuple argument crosses INBOUND to a peer and both fields are summed there
-todo	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
-todo	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
-todo	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
+pass	a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted
+pass	a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted
+pass	a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted
 todo	a signature mismatch in ONE of several bound peers is rejected at compose time
 todo	a signature mismatch in a peer-into-peer (transitive chain) binding is rejected at compose time
 todo	a single component exports BOTH a list<u8>-result member and a list<u8>-param member of one interface (operator §2 two-export capstone)

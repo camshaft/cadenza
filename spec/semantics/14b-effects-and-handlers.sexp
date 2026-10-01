@@ -13558,8 +13558,9 @@
 ;    condition-level self-call pending temp AROUND the whole `if` — sound ONLY for a self-call on the cond's
 ;    UNCONDITIONAL strict spine. A self-call under a NESTED `if`/`and`/`or` in the cond/scrutinee runs on only
 ;    some paths, so hoisting its temp would make it run UNCONDITIONALLY (an eval-order MISCOMPILE). The mode
-;    gate `multivalue_leaves_threadable` rejects it → a clean CDZ0900 decline, never a miscompile or a leaked
-;    internal `#eff`/bodyless-spec name (the message-pin witnesses the clean text). The DIRECT-in-condition
+;    gate `multivalue_leaves_threadable` rejects it → a clean CDZ0907 (handler not reducible by the tail-
+;    resumptive fold) decline, never a miscompile or a leaked internal `#eff`/bodyless-spec name (the
+;    message-pin witnesses the clean text). The DIRECT-in-condition
 ;    shape `(< (walk …) 100)` (no nested gate) still folds — so this is a precise decline, not a blanket one.
 (case
   "a self-call gated behind a nested if IN an if-condition declines cleanly, never hoisted"
@@ -13575,7 +13576,7 @@
       (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
       (export main)))
   (call main)
-  (output (: 0 Int64)))
+  (error CDZ0907 (message "not reducible by the tail-resumptive fold")))
 
 (case
   "a self-call gated behind a nested if IN a match-scrutinee declines cleanly, never hoisted"
@@ -13592,7 +13593,7 @@
       (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
       (export main)))
   (call main)
-  (output (: 0 Int64)))
+  (error CDZ0907 (message "not reducible by the tail-resumptive fold")))
 
 (case
   "a self-call gated behind an and short-circuit in an if-condition declines cleanly, never hoisted"
@@ -13609,7 +13610,7 @@
       (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
       (export main)))
   (call main)
-  (output (: 0 Int64)))
+  (error CDZ0907 (message "not reducible by the tail-resumptive fold")))
 
 ; ── effect safe-rejects: escaping / captured-continuation / partial-application (migrated from rcdzc
 ;    tests/mod.rs, delanguaging handoff from v-rcdzc-test-shrink 2026-08-30). A performing closure or a
