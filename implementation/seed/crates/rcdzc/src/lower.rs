@@ -1094,15 +1094,25 @@ fn core_reaches_host_call(
     id: StructId,
     seen: &mut std::collections::HashSet<StructId>,
 ) -> bool {
+    // Memoize the verdict on id ALONE: it is a pure function of the immutable lowered Core subtree (see
+    // `Db::core_reaches_host_call_memo`). Un-memoized this is the `is_cse_shareable` pole — each caller
+    // (adv-62b `lower_let` force-keep, `runtime_ops` row-op materialization) passes a FRESH `seen` set, so on
+    // a deeply-nested chain the subtree walk re-runs per enclosing node → O(N²). The `seen` set stays for
+    // cycle-safety WHILE computing a verdict (a back-edge is an ancestor, not in this node's subtree, so its
+    // transient `false` is correct and is NOT cached); the memo write happens only after the full subtree
+    // verdict is computed. The recursion goes through THIS function, so every sub-node memoizes too.
+    if let Some(&v) = db.core_reaches_host_call_memo.get(&id) {
+        return v;
+    }
     if !seen.insert(id) {
         return false;
     }
-    if matches!(core_of(db, id), Core::HostCall { .. }) {
-        return true;
-    }
-    crate::backend::wasm::select::core_child_ids(db, id)
-        .into_iter()
-        .any(|child| core_reaches_host_call(db, child, seen))
+    let v = matches!(core_of(db, id), Core::HostCall { .. })
+        || crate::backend::wasm::select::core_child_ids(db, id)
+            .into_iter()
+            .any(|child| core_reaches_host_call(db, child, seen));
+    db.core_reaches_host_call_memo.insert(id, v);
+    v
 }
 
 /// The non-exhaustiveness fault of the match form `id`, if it has one — for the WELL-FORMEDNESS pass
