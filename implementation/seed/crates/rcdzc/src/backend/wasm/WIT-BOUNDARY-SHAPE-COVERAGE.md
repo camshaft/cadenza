@@ -25,8 +25,14 @@ A host operation (`(effect …)` op) crosses on one of three paths, selected ins
 `first_unrepresentable_host_op` (the master decline gate, `backend/wasm/host.rs`) by two booleans:
 
 - **bare** — a plain `(effect …)` with NO imposed world: `!allow_option_bytes && !peer_bound`.
-  Scalar/unit results only; scalar/unit/string/bytes arguments only. The compound envelope is NOT on
-  this path when no world is imposed.
+  Scalar/unit **plus `string`/`bytes`** results; scalar/unit/string/bytes arguments only. A `String`/`Bytes`
+  RESULT lifts via the SAME structure-driven spilled-result machinery the world path uses (`emit_hostcall`'s
+  `result_is_liftable` branch — retptr + `cabi_realloc` + `emit_result_lift`, with `spilled_result_wit_type`
+  supplying the result WIT when the world is absent; none of it depends on `allow_option_bytes`). Only the
+  decline gate (`first_unrepresentable_host_op`) blocked it; a `bare_text_bytes_result` arm opens the text/bytes
+  leaf (task_905: 14-effects `io.fetch:(->Unit String)` read-twice=506, 26-runtime-params String `@param`=10).
+  The broader COMPOUND envelope (record/list/tuple/variant results) is still NOT on this path when no world is
+  imposed — only the `string`/`bytes` leaf, whose bare-path component-type wiring is complete.
 - **world** — the world-driven path: `allow_option_bytes && !peer_bound`. `allow_option_bytes` (set in
   `backend/wasm/mod.rs`) engages when EITHER (a) a component + a `wit_world` with a bytes-crossing or
   typed-record EXPORT (the reducer / typed-interface path), OR (b) the imposed `wit_world` declares an

@@ -4042,11 +4042,22 @@ pub fn first_unrepresentable_host_op(
         // matching where the enum result's component type is wired). NOT spilled (never `result_is_liftable`).
         let enum_result_by_value =
             allow_option_bytes && !peer_bound && enum_cases(db, &result).is_some();
+        // A BARE-effect host op returning `String`/`Bytes` lifts via the SAME structure-driven spilled-result
+        // machinery the world-driven path uses — `emit_hostcall`'s `result_is_liftable` branch (NOT gated on
+        // `allow_option_bytes`) allocates the retptr, calls `(args…, retptr) -> ()`, and recurses
+        // `emit_result_lift` over the result WIT (which `spilled_result_wit_type` supplies when the world is
+        // absent). `String`/`Bytes` are the canonical `(ptr,len)` spilled leaf (`result_is_liftable` treats them
+        // identically), so a plain `(effect …)` op can return host text/bytes without an imposed world. Scoped to
+        // the text/bytes leaf (NOT every `result_is_liftable` compound, whose bare-path component-type wiring the
+        // world flag still gates) — the String-RESULT lift lane (task_905).
+        let bare_text_bytes_result =
+            !peer_bound && matches!(result.strip_nominal(), Ty::String | Ty::Bytes);
         if !matches!(result, Ty::Unit)
             && !ty_undetermined(&result)
             && !abi_ok(&result)
             && !result_is_liftable_spilled
             && !enum_result_by_value
+            && !bare_text_bytes_result
         {
             return Some((op.to_string(), "result", result.render_name(&db.name_ctx())));
         }
