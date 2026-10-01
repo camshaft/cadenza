@@ -78,13 +78,17 @@ build_meta() { # $1 desc $2 type $3 author $4 ts $5 source $6 tags_json
 # The single write path: create-or-version a memory document. New -> create + file at path; existing ->
 # version the body AND refresh the metadata in place (set_document_props), so a rewrite never leaves a stale
 # projected description/tags. $cb is the document author (provenance author) + the action actor.
+# acknowledge_banned=true on both create + version: a memory body is RAW HISTORICAL CONTENT (operator notes,
+# verbatim quotes, traps) that legitimately contains words on the board's style banned-list; memory must never
+# be degraded to pass a style lint, and acknowledge_banned is exactly for such intentional content. The style
+# gate still applies to board docs/comments/PRs -- just not to recorded memory bodies.
 do_write() { # $1 path $2 title $3 cb $4 meta_json $5 body
   local path="$1" title="$2" cb="$3" meta="$4" body="$5" id doc bj vj ts
   id="$(resolve_id "$path")"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [ -z "$id" ]; then
     bj="$(jq -nc --arg t "$title" --rawfile c <(printf '%s' "$body") --argjson m "$meta" --arg cb "$cb" \
-      '{title:$t, content:$c, created_by:$cb, metadata:$m, content_type:"text/markdown"}')"
+      '{title:$t, content:$c, created_by:$cb, metadata:$m, content_type:"text/markdown", acknowledge_banned:true}')"
     doc="$(api_post "/documents" "$bj")" || { echo "board-memory: create failed for $path" >&2; return 1; }
     id="$(printf '%s' "$doc" | jq -r '.id')"
     [ -n "$id" ] && [ "$id" != null ] || { echo "board-memory: create returned no id for $path: $doc" >&2; return 1; }
@@ -93,7 +97,7 @@ do_write() { # $1 path $2 title $3 cb $4 meta_json $5 body
     echo "created $path (doc_$id)"
   else
     vj="$(jq -nc --rawfile c <(printf '%s' "$body") --arg cb "$cb" --arg s "memory update $ts" \
-      '{content:$c, created_by:$cb, summary:$s, content_type:"text/markdown"}')"
+      '{content:$c, created_by:$cb, summary:$s, content_type:"text/markdown", acknowledge_banned:true}')"
     api_post "/documents/$id/versions" "$vj" >/dev/null \
       || { echo "board-memory: version failed for $path (doc_$id)" >&2; return 1; }
     api_patch "/documents/$id/props" "$(jq -nc --argjson m "$meta" --arg a "$cb" '{props:$m, actor:$a}')" >/dev/null \
