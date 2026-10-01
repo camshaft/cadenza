@@ -62,6 +62,23 @@ if timeout 300 nix build "$FLAKE#packages.aarch64-linux.cdz-shell-wrappers" --ou
   date +%s > "$STAMP" 2>/dev/null || true
 fi
 
+# task_812: pin a node >=20 for fleet-spawned MCP servers (e.g. amazon-sharepoint-mcp, whose wrapper runs
+# `exec aim mcp start-server …`, and `aim` needs node >=20). v-nix added `packages.<sys>.nodejs = nodejs_22`
+# to the FLEET flake (camshaft/fleet) — node is fleet-agent tooling, not a cadenza concern, so it lives there
+# and we build it from the FLEET flake ref, NOT from `$FLAKE` (= the cadenza worktree, which does not expose
+# nodejs). We use the github ref tracking fleet main rather than a local checkout because a local camshaft/fleet
+# clone is not guaranteed current on an agent host (and a stale clone predating the node output would just miss
+# it); tracking main also auto-propagates a future node bump. Link node/npx/npm onto ~/.local/bin, which
+# window.sh puts AHEAD of ~/.local/share/mise/shims on the agent PATH (task_812 / PR 10198) — so the nix node
+# wins over the mise-shim node regardless of the operator's mise global default. GC-rooted; fail-open +
+# timeout-bounded like the wrapper build above (a fetch/build miss just leaves the mise-shim node as fallback).
+NODE_ROOT="$HOME/.cdz-warm-roots/fleet-nodejs"
+if timeout 300 nix build "github:camshaft/fleet#packages.aarch64-linux.nodejs" --out-link "$NODE_ROOT" 2>/dev/null; then
+  for b in node npx npm corepack; do
+    [ -x "$NODE_ROOT/bin/$b" ] && ln -sf "$NODE_ROOT/bin/$b" "$BIN/$b" 2>/dev/null || true
+  done
+fi
+
 # all-nix cargo shim (operator 2026-08-28): install fleet/cargo-nix-shim as ~/.local/bin/cargo so
 # `cargo test -p CRATE` routes to the nix per-crate test (cached deps, top-crate recompile). ~/.local/bin
 # is BEFORE rustup's ~/.cargo/bin on the snapshot PATH, so this shadows the fleet's cargo. The shim is
