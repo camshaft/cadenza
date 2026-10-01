@@ -14,6 +14,7 @@
 #   board-memory write-batch [--base DIR] [--delay SECS] [MANIFEST]   # JSONL, one memory per line (see below)
 #   board-memory recall [--agent A] [--repo R]                        # the MEMORY.md-analog name+description index
 #   board-memory read   --slug SLUG (--agent A | --repo R | --path P) # print one memory's body
+#   board-memory get    --slug SLUG (--agent A | --repo R | --path P) # full doc JSON {path,title,metadata,body}
 #
 # --type is one of: user | feedback | project | reference  (doc_102 A2; default: project).
 # --author sets provenance.author AND the document author independently of --agent (which sets the path
@@ -122,7 +123,7 @@ derive_path() { # $1 slug $2 agent $3 repo $4 explicit_path
 }
 
 cmd="${1:-}"; shift || true
-case "$cmd" in write|write-batch|recall|read) : ;; -h|--help|help|"") usage; exit 0 ;; *) echo "board-memory: unknown command '$cmd' (write|write-batch|recall|read; -h for help)" >&2; exit 2 ;; esac
+case "$cmd" in write|write-batch|recall|read|get) : ;; -h|--help|help|"") usage; exit 0 ;; *) echo "board-memory: unknown command '$cmd' (write|write-batch|recall|read|get; -h for help)" >&2; exit 2 ;; esac
 
 case "$cmd" in
   write)
@@ -219,5 +220,20 @@ case "$cmd" in
     id="$(resolve_id "$path")"
     [ -n "$id" ] || { echo "board-memory read: no memory filed at $path" >&2; exit 4; }
     api_get "/documents/$id/content" | jq -r '.content'
+    ;;
+
+  get)
+    # Full-fidelity read for board->file reconstruction (the task_848 sync's board->file leg): emit the
+    # whole memory as JSON so a file can be rebuilt losslessly -- title (-> name), the metadata bag
+    # (-> frontmatter: description/type/provenance/tags), and the body. `read` prints just the body; `get`
+    # gives everything the frontmatter needs in one call (no N+1 metadata lookup).
+    slug="" agent="" repo="" epath=""
+    while [ $# -gt 0 ]; do case "$1" in --slug) slug="$2"; shift 2 ;; --agent) agent="$2"; shift 2 ;; --repo) repo="$2"; shift 2 ;; --path) epath="$2"; shift 2 ;; *) shift ;; esac; done
+    [ -z "$agent" ] && [ -z "$repo" ] && [ -z "$epath" ] && agent="$(default_agent)"
+    path="$(derive_path "$slug" "$agent" "$repo" "$epath")" || { echo "board-memory get: need --slug with --agent/--repo, or --path" >&2; exit 2; }
+    id="$(resolve_id "$path")"
+    [ -n "$id" ] || { echo "board-memory get: no memory filed at $path" >&2; exit 4; }
+    api_get "/documents/$id?include_body=true" \
+      | jq -c '{path, title, metadata, body, body_content_type}'
     ;;
 esac
