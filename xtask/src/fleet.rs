@@ -2119,70 +2119,6 @@ fn fleet_pr(_fleet: &Fleet, action: PrAction) {
 
 // ── up / down / status ────────────────────────────────────────────────────────────────────────
 
-/// The desired per-2min user-crontab line for the CPU-monitor daemon (#5571), tagged with the
-/// `# fleet:cpu-monitor` marker so [`reconcile_cpu_monitor_cron`] can find/heal it. Runs the HUB copy of
-/// `cpu-monitor.sh` (materialized by `up`), silently (a sampler tick never emits cron mail).
-fn cpu_monitor_cron_line(hub_script: &str) -> String {
-    format!("*/2 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:cpu-monitor")
-}
-
-/// Pure reconcile for the CPU-monitor crontab: given the CURRENT `crontab -l` text and the DESIRED line,
-/// return `Some(new_crontab)` iff a write is needed, or `None` if the desired line is already present
-/// verbatim (idempotent no-op). DRIFT-HEALS: any existing `# fleet:cpu-monitor` line (e.g. a stale hub
-/// path from a prior worktree) is dropped and replaced with `desired`, while EVERY other crontab entry is
-/// preserved in order. Split out so the "when do we rewrite the crontab" policy is unit-tested without
-/// touching the real crontab. Trailing newline included (crontab expects a final newline).
-fn reconcile_cpu_monitor_cron(current: &str, desired: &str) -> Option<String> {
-    // Already present verbatim → no-op (don't rewrite the crontab needlessly).
-    if current.lines().any(|l| l == desired) {
-        return None;
-    }
-    // Keep every non-marker line in order, then append the desired marker line (heal/install).
-    let mut kept: Vec<&str> = current
-        .lines()
-        .filter(|l| !l.contains("# fleet:cpu-monitor"))
-        .collect();
-    kept.push(desired);
-    let mut out = kept.join("\n");
-    out.push('\n');
-    Some(out)
-}
-
-/// Ensure the `# fleet:cpu-monitor` per-2min user-crontab entry exists + points at THIS hub's
-/// `cpu-monitor.sh` (concierge-greenlit fold-into-`up` 2026-08-29). Makes the CPU-monitor daemon survive
-/// relaunches automatically — the same re-arm-on-relaunch discipline as the other fleet self-crons —
-/// instead of a manual host-recipe re-add. Idempotent (verbatim-present → no write) + drift-heals a stale
-/// entry. FAIL-OPEN: no `crontab` binary, no materialized script yet, or ANY error → skip silently (never
-/// block `fleet up`). Runs AFTER `materialize_source`, so the hub `cpu-monitor.sh` is already in place.
-fn ensure_cpu_monitor_cron(fleet: &Fleet) {
-    use std::io::Write;
-    let script = fleet.root.join("cpu-monitor.sh");
-    if !script.exists() {
-        return; // not materialized (older tree) → nothing to schedule
-    }
-    let hub_script = script.display().to_string();
-    let desired = cpu_monitor_cron_line(&hub_script);
-    // Current crontab (empty string if the user has none). No `crontab` binary → fail-open skip.
-    let current = match Command::new("crontab").arg("-l").output() {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
-        Err(_) => return,
-    };
-    let Some(new_tab) = reconcile_cpu_monitor_cron(&current, &desired) else {
-        return; // already installed verbatim
-    };
-    // Install via `crontab -` (reads the new table from stdin). Fail-open on any spawn/write error.
-    if let Ok(mut child) = Command::new("crontab")
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(mut sin) = child.stdin.take() {
-            let _ = sin.write_all(new_tab.as_bytes());
-        }
-        let _ = child.wait();
-    }
-}
-
 /// The desired user-crontab lines for the disk/inode-hygiene safety-net scripts (concierge-greenlit
 /// 2026-08-29 — a SYSTEM-crontab driver replaces concierge's Claude-scheduler prune PROMPTS: it survives a
 /// concierge restart/wedge and offloads the recurring sweep off concierge's context). Each is tagged so
@@ -2242,7 +2178,7 @@ fn reconcile_tagged_crons(current: &str, desired: &[(&str, String)]) -> Option<S
 
 /// Ensure the disk/inode-hygiene safety-net crontab entries (`prune-tmp-inodes` + `prune-stale-targets`)
 /// exist + point at THIS hub's materialized scripts. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN
-/// discipline as [`ensure_cpu_monitor_cron`], and INDEPENDENT of it (a separate reconcile/write, run after
+/// discipline as [`ensure_warm_keep_cron`], and INDEPENDENT of it (a separate reconcile/write, run after
 /// it in `up`; each preserves the other's lines). Skips silently if the scripts aren't materialized yet
 /// (older tree) or `crontab` is absent/errs — never blocks `fleet up`. HANDOFF: once this system-cron is
 /// verified firing, concierge retires the two prune cron-PROMPTS it replaces (kept running until then —
@@ -2292,7 +2228,7 @@ fn warm_keep_cron_line(hub_script: &str) -> String {
 
 /// Ensure the `# fleet:warm-keep` hourly user-crontab entry exists + points at THIS hub's `warm-keep.sh`
 /// (v-nix+v-fleet-tooling 2026-08-30). Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
-/// [`ensure_cpu_monitor_cron`] / [`ensure_prune_crons`], and INDEPENDENT of them (a separate reconcile/write
+/// [`ensure_prune_crons`], and INDEPENDENT of them (a separate reconcile/write
 /// in `up`, each preserving the others' lines via [`reconcile_tagged_crons`]'s per-tag heal). Root cause it
 /// fixes: the periodic warm-keep invocation was never installed, so the corpus GC-roots went to ZERO all
 /// session (2026-08-30) and agents cold-swept the corpus (the daemon-wedge risk). v-nix owns the flake app
@@ -2344,7 +2280,7 @@ fn reap_orphans_cron_line(hub_script: &str) -> String {
 
 /// Ensure the `# fleet:reap-orphans` ~30-min user-crontab entry exists + points at THIS hub's
 /// `reap-wedged-nix-clients.sh` (concierge-greenlit 2026-08-31). Same re-arm-on-relaunch + drift-heal +
-/// FAIL-OPEN discipline as [`ensure_warm_keep_cron`] / [`ensure_cpu_monitor_cron`], and INDEPENDENT of them
+/// FAIL-OPEN discipline as [`ensure_warm_keep_cron`], and INDEPENDENT of them
 /// (a separate reconcile/write in `up`, each preserving the others' lines via [`reconcile_tagged_crons`]).
 /// Root cause it fixes: the orphan-leak reap was MANUAL-only (its script ran only on demand), so orphaned
 /// `.#checks` builds accumulated until someone ran it. Skips silently if the script isn't materialized yet
@@ -2562,7 +2498,7 @@ fn rearm_stale_cron_line(hub_script: &str, enabled: bool) -> String {
 
 /// Ensure the `# fleet:rearm-stale` entry exists + points at THIS hub's `rearm-stale.sh`, in the state
 /// [`REARM_STALE_ENABLED`] dictates (now ENABLED / LIVE under operator seq 1251). Same re-arm-on-relaunch, drift-heal,
-/// and FAIL-OPEN discipline as [`ensure_watchdog_cron`] / [`ensure_drain_nudge_cron`], and INDEPENDENT of the
+/// and FAIL-OPEN discipline as [`ensure_watchdog_cron`], and INDEPENDENT of the
 /// other fleet crons (its own reconcile/write in `up`, preserving their lines via [`reconcile_tagged_crons`]).
 /// Installing the DISABLED form makes the LANDED-BUT-OFF state self-healing and visible (a retained, greppable
 /// tag) instead of a mechanism that only exists in source, WITHOUT scheduling any run. Skips silently if the
@@ -2596,157 +2532,6 @@ fn ensure_rearm_stale_cron(fleet: &Fleet) {
     }
 }
 
-/// The desired every-3-min user-crontab line for the autonomous DRAIN-NUDGE heartbeat (v-fleet-tooling
-/// 2026-09-01, operator-GO'd wake-path hardening), tagged `# fleet:drain-nudge` so [`reconcile_tagged_crons`]
-/// can find/heal it. Runs the HUB copy of `drain-nudge.sh`, which runs a worktree's `xtask fleet drain-nudge
-/// --session main` — the strict-subset scan that nudges an idle agent with unconsumed actionable mail (no
-/// re-arm/restart). Every 3 min so an idle-with-mail agent self-drains fast (beating the concierge's */4
-/// watchdog cadence) WITHOUT waiting out its /loop interval — the fix for the wake-miss stall. Silent
-/// (`>/dev/null 2>&1`): a nudge tick never emits cron mail. Shares the watchdog's rate-limit marker, so
-/// overlapping the concierge's watchdog never double-nudges (the concierge drops its drain-nudge once this is
-/// live — the shared grace covers the cutover).
-fn drain_nudge_cron_line(hub_script: &str) -> String {
-    format!("*/3 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:drain-nudge")
-}
-
-/// Ensure the `# fleet:drain-nudge` per-3-min user-crontab entry exists + points at THIS hub's
-/// `drain-nudge.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
-/// [`ensure_warm_keep_cron`] / [`ensure_cpu_monitor_cron`], and INDEPENDENT of them (a separate
-/// reconcile/write in `up`, each preserving the others' lines via [`reconcile_tagged_crons`]'s per-tag
-/// heal). This is the SCHEDULER that makes drain-nudging autonomous + decoupled from the concierge-driven
-/// watchdog (the wake-miss durable fix). Skips silently if `drain-nudge.sh` isn't materialized yet (older
-/// tree) or `crontab` is absent/errs — never blocks `fleet up`.
-fn ensure_drain_nudge_cron(fleet: &Fleet) {
-    use std::io::Write;
-    let script = fleet.root.join("drain-nudge.sh");
-    if !script.exists() {
-        return; // not materialized (older tree) → nothing to schedule
-    }
-    let desired = [(
-        "# fleet:drain-nudge",
-        drain_nudge_cron_line(&script.display().to_string()),
-    )];
-    let current = match Command::new("crontab").arg("-l").output() {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
-        Err(_) => return, // no crontab binary → fail-open skip
-    };
-    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
-        return; // already installed verbatim
-    };
-    if let Ok(mut child) = Command::new("crontab")
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(mut sin) = child.stdin.take() {
-            let _ = sin.write_all(new_tab.as_bytes());
-        }
-        let _ = child.wait();
-    }
-}
-
-/// The desired EVERY-MINUTE user-crontab line for the autonomous LEAKED-LEASE reaper (v-fleet-tooling
-/// 2026-09-11, concierge coverage-hole), tagged `# fleet:reap-leases` so [`reconcile_tagged_crons`] can
-/// find/heal it. Runs the HUB copy of `reap-leases.sh` → a worktree's `xtask fleet reap-leases`.
-/// TIGHTENED */10 → */3 (2026-09-21) → EVERY-MINUTE (2026-09-27), each time on the SAME concierge
-/// recurring-toil signal: a leaked check-lease (dead-PID/TTL-stale, e.g. from a gate-local launcher the
-/// harness low-mem killer reaped mid-run — see #79845/#9081) STALLS the merge gate until reaped. At */3 the
-/// window was already below the concierge's ~4min maintenance tick, but under the dcQUIC PERF-PUSH nix
-/// contention the leak RATE rose so far that a sub-3min-old leak was STILL being caught + hand-reaped by the
-/// concierge "almost every tick" (2026-09-27 coord) — the toil the autonomous cron exists to remove. reap-leases
-/// is idempotent + no-op when clean + touches NO tmux window + flock-singleton-guarded (its own help text says
-/// it is safe to run frequently/spuriously) — the CHEAPEST cron in the fleet — while a leaked PRIORITY lease
-/// stalls EVERY vertical's merge gate, so the impact-per-miss is high and the cost-per-run is ~nil. At the cron
-/// floor (every minute) the reap reliably beats the leak-catch window, so the concierge stops hand-reaping and
-/// the worst-case gate stall drops to ≤1min. Especially relevant while the destructive watchdog is banned
-/// (nothing else reaps leases out-of-band).
-fn reap_leases_cron_line(hub_script: &str) -> String {
-    format!("* * * * * bash {hub_script} >/dev/null 2>&1 # fleet:reap-leases")
-}
-
-/// Ensure the `# fleet:reap-leases` per-3-min user-crontab entry exists + points at THIS hub's
-/// `reap-leases.sh`. Decouples leaked-check-lease reclaim from the window-touching `watchdog` (which an
-/// operator may disable to stop window-killing, leaving leaked leases with no reaper — concierge flag
-/// 2026-09-11). Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as [`ensure_drain_nudge_cron`],
-/// and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`). Skips silently if
-/// `reap-leases.sh` isn't materialized yet or `crontab` is absent/errs — never blocks `fleet up`.
-fn ensure_reap_leases_cron(fleet: &Fleet) {
-    use std::io::Write;
-    let script = fleet.root.join("reap-leases.sh");
-    if !script.exists() {
-        return; // not materialized (older tree) → nothing to schedule
-    }
-    let desired = [(
-        "# fleet:reap-leases",
-        reap_leases_cron_line(&script.display().to_string()),
-    )];
-    let current = match Command::new("crontab").arg("-l").output() {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
-        Err(_) => return, // no crontab binary → fail-open skip
-    };
-    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
-        return; // already installed verbatim
-    };
-    if let Ok(mut child) = Command::new("crontab")
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(mut sin) = child.stdin.take() {
-            let _ = sin.write_all(new_tab.as_bytes());
-        }
-        let _ = child.wait();
-    }
-}
-
-/// The desired every-3-min user-crontab line for the autonomous UNLEASED-HEAVY-BUILD THROTTLE (concierge
-/// policy call + v-nix concurrence 2026-09-24), tagged `# fleet:throttle-unleased-nix` so
-/// [`reconcile_tagged_crons`] can find/heal it. Runs the HUB copy of `throttle-unleased-nix.sh --apply`:
-/// renice the process TREE of any own-user `nix build .#checks` client that is UNLEASED (no
-/// CDZ_LEASED_NIX=1) and older than ~8m, so a raw build that BYPASSED the check-lease (CDZ_CHECK_LEASE_MAX /
-/// `fleet with-lease`) yields the nix pool instead of starving gate-locals fleet-wide (the #083916 gap).
-/// NON-DESTRUCTIVE (renice only, reversible) → safe on a frequent cron like `# fleet:reap-leases`; the
-/// destructive early-REAP alternative stays OPERATOR-GATED (concierge policy). ENABLED (unlike the disabled
-/// watchdog/rearm-stale lines, which send-keys into agent windows — this touches only nix build processes).
-/// */3 matches the sibling reap crons + beats a starving build's damage window.
-fn throttle_unleased_nix_cron_line(hub_script: &str) -> String {
-    format!("*/3 * * * * bash {hub_script} --apply >/dev/null 2>&1 # fleet:throttle-unleased-nix")
-}
-
-/// Ensure the `# fleet:throttle-unleased-nix` per-3-min user-crontab entry exists + points at THIS hub's
-/// `throttle-unleased-nix.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
-/// [`ensure_reap_leases_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`).
-/// Skips silently if the script isn't materialized yet (older tree) or `crontab` is absent/errs — never
-/// blocks `fleet up`.
-fn ensure_throttle_unleased_nix_cron(fleet: &Fleet) {
-    use std::io::Write;
-    let script = fleet.root.join("throttle-unleased-nix.sh");
-    if !script.exists() {
-        return; // not materialized (older tree) → nothing to schedule
-    }
-    let desired = [(
-        "# fleet:throttle-unleased-nix",
-        throttle_unleased_nix_cron_line(&script.display().to_string()),
-    )];
-    let current = match Command::new("crontab").arg("-l").output() {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
-        Err(_) => return, // no crontab binary → fail-open skip
-    };
-    let Some(new_tab) = reconcile_tagged_crons(&current, &desired) else {
-        return; // already installed verbatim
-    };
-    if let Ok(mut child) = Command::new("crontab")
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(mut sin) = child.stdin.take() {
-            let _ = sin.write_all(new_tab.as_bytes());
-        }
-        let _ = child.wait();
-    }
-}
-
 /// The desired every-30-min user-crontab line for the Midway AEA-cookie refresh (operator note-709,
 /// approved 2026-09-13), tagged `# fleet:aea-refresh` so [`reconcile_tagged_crons`] can find/heal it. Runs
 /// the HUB copy of `aea-refresh.sh` → `mwinit --refresh-aea`, silently re-minting the ~2h AEA cookie from a
@@ -2758,7 +2543,7 @@ fn aea_refresh_cron_line(hub_script: &str) -> String {
 
 /// Ensure the `# fleet:aea-refresh` per-30-min user-crontab entry exists + points at THIS hub's
 /// `aea-refresh.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
-/// [`ensure_reap_leases_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`).
+/// [`ensure_warm_keep_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`).
 /// Skips silently if `aea-refresh.sh` isn't materialized yet or `crontab` is absent/errs — never blocks
 /// `fleet up`. `mwinit --refresh-aea` re-mints from the existing valid session (no OTP), so the cron is a
 /// benign no-op when the cookie is already fresh.
@@ -2803,7 +2588,7 @@ fn disk_guard_cron_line(hub_script: &str) -> String {
 
 /// Ensure the `# fleet:disk-guard` per-15-min user-crontab entry exists + points at THIS hub's
 /// `disk-guard.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
-/// [`ensure_reap_leases_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`).
+/// [`ensure_warm_keep_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`).
 /// Skips silently if `disk-guard.sh` isn't materialized yet or `crontab` is absent/errs — never blocks
 /// `fleet up`. The guard only ever reads `df` + writes an alarm stamp + (on a fresh escalation) sends one
 /// note, so it is safe to run frequently + spuriously.
@@ -2849,7 +2634,7 @@ fn slack_bridge_guard_cron_line(hub_script: &str) -> String {
 
 /// Ensure the `# fleet:slack-bridge-guard` per-5-min user-crontab entry exists + points at THIS hub's
 /// `slack-bridge-guard.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
-/// [`ensure_reap_leases_cron`], INDEPENDENT of the other fleet crons. Skips silently if the script isn't
+/// [`ensure_warm_keep_cron`], INDEPENDENT of the other fleet crons. Skips silently if the script isn't
 /// materialized yet or `crontab` is absent/errs — never blocks `fleet up`.
 fn ensure_slack_bridge_guard_cron(fleet: &Fleet) {
     use std::io::Write;
@@ -2893,7 +2678,7 @@ fn compact_nudge_cron_line(hub_script: &str) -> String {
 
 /// Ensure the `# fleet:compact-nudge` per-5-min user-crontab entry exists + points at THIS hub's
 /// `compact-nudge.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
-/// [`ensure_drain_nudge_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`,
+/// [`ensure_warm_keep_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`,
 /// preserving the others via [`reconcile_tagged_crons`]'s per-tag heal). This is the SCHEDULER that makes
 /// concierge compaction autonomous + decoupled from the concierge tick (the structural fix for the
 /// concierge-can't-self-compact wall). Skips silently if `compact-nudge.sh` isn't materialized yet (older
@@ -3015,9 +2800,6 @@ fn up(fleet: &Fleet, crons_only: bool) {
     // `xtask setup`; `up` is the fleet's checkout-bootstrap home, so a fresh clone gets skills/commands
     // wired without a separate command). Idempotent, never clobbers a real dir, fail-open.
     ensure_claude_symlinks(fleet);
-    // Re-arm the CPU-monitor user-crontab (idempotent + drift-heals) so the daemon survives relaunches
-    // without a manual host-recipe re-add — same re-arm-on-relaunch discipline as the other self-crons.
-    ensure_cpu_monitor_cron(fleet);
     // Re-arm the disk/inode-hygiene prune crontab entries (prune-tmp-inodes + prune-stale-targets) — a
     // system-crontab driver replacing concierge's Claude-scheduler prune prompts (survives a concierge
     // restart, offloads the sweep off its context). Independent of the cpu-monitor reconcile; fail-open.
@@ -3039,30 +2821,11 @@ fn up(fleet: &Fleet, crons_only: bool) {
     // stages `oracle-check` at `<hub>/.claude/fleet/oracle-lean` so cdz-smith's type-differential sweep can
     // run (else it skips for want of a fresh oracle). Cache-stable no-op most nights; bounded + fail-open.
     ensure_oracle_lean_cron(fleet);
-    // Re-arm the every-3-min autonomous DRAIN-NUDGE cron (operator-GO'd 2026-09-01 wake-path hardening) —
-    // runs `drain-nudge.sh` → `xtask fleet drain-nudge`, the strict-subset scan that nudges an idle agent
-    // with unconsumed actionable mail (no re-arm/restart). Decouples drain-nudging from the concierge's */4
-    // watchdog so an idle-with-mail agent self-drains fast even if the concierge is slow/stalled — the fix
-    // for the wake-miss stall. Independent of the other self-crons; fail-open + drift-healed. Shares the
-    // watchdog's rate-limit marker, so overlapping the concierge's watchdog never double-nudges.
-    ensure_drain_nudge_cron(fleet);
     // The out-of-band CONCIERGE COMPACTION cron: `compact-nudge.sh` → `xtask fleet compact-nudge`, which
     // sends the idle concierge a pre-wall `/compact` (or restarts it at the wall) that the in-tick watchdog
     // structurally cannot (it runs DURING the concierge tick → always mid-tick). Independent + fail-open +
     // drift-healed; shares the watchdog's COMPACT_NUDGE_GRACE/WEDGE_RESTART_GRACE stamps so no double-action.
     ensure_compact_nudge_cron(fleet);
-    // The out-of-band LEAKED-LEASE reaper cron: `reap-leases.sh` → `xtask fleet reap-leases`, which reclaims
-    // dead-PID/TTL-stale check-leases WITHOUT touching any window — so leaked leases (a leaked priority lease
-    // stalls the whole merge gate) are cleared even when the destructive watchdog is disabled (concierge
-    // coverage-hole 2026-09-11). Independent + fail-open + drift-healed.
-    ensure_reap_leases_cron(fleet);
-    // The unleased-heavy-build THROTTLE cron: `throttle-unleased-nix.sh --apply` renices the process tree of
-    // any own-user `nix build .#checks` client that is UNLEASED (no CDZ_LEASED_NIX=1) and older than ~8m, so
-    // a raw build that bypassed the check-lease yields the nix pool instead of starving gate-locals fleet-wide
-    // (concierge #083916 + v-nix concurrence 2026-09-24). NON-DESTRUCTIVE (renice, not kill — the destructive
-    // early-reap stays operator-gated), so it ships ENABLED like reap-leases. Independent + fail-open +
-    // drift-healed. Runs in the `--crons-only` path too (before the bringup return below).
-    ensure_throttle_unleased_nix_cron(fleet);
     // The Midway AEA-cookie refresh cron: `aea-refresh.sh` → `mwinit --refresh-aea` every 30 min, silently
     // re-minting the ~2h AEA cookie from the still-valid session so it never lapses mid-session (operator
     // note-709). Independent + fail-open + drift-healed; does not extend the session past its ceiling.
@@ -22600,16 +22363,16 @@ mod tests {
             MATERIALIZED_FLEET_FILES.contains(&"setup-nix-builder-peer.sh"),
             "the peer-setup runbook referenced by the fleet-status hint must be materialized to the hub"
         );
-        // Regression guard (2026-09-21): every SELF-CRON / self-heal driver builds its script path as
-        // `fleet.root.join("<name>.sh")` (the HUB copy) and its `ensure_*_cron` EARLY-RETURNS when that path
-        // is absent (`if !script.exists() { return; }`). So if a cron script silently drops out of
-        // MATERIALIZED_FLEET_FILES, `fleet up` stops materializing it → the hub path never exists → the cron
-        // is NEVER installed, with NO other failure (the deploy set still materializes fine, the ensure just
-        // no-ops). The whole-const loop above proves "everything IN the const materializes"; this pins the
-        // other direction — the scripts the cron drivers DEPEND ON are actually in the const. A rename or
-        // accidental removal of any of these now fails HERE instead of shipping a silently-dead cron. When a
-        // new `ensure_*_cron` driver lands, add its script here too. (Kept in sync with the
-        // `fleet.root.join("<name>.sh")` references in the ensure_*_cron / self-heal functions.)
+        // Regression guard (2026-09-21): each of these scripts is run by a SCHEDULED job that depends on the
+        // HUB copy existing — either a crontab self-cron (its `ensure_*_cron` builds `fleet.root.join("<name>.sh")`
+        // and EARLY-RETURNS when that path is absent, `if !script.exists() { return; }`) or a flake-managed
+        // systemd timer (its ExecStart `test -x "$FLEET_RT/<name>.sh"` fail-cleans to a no-op when the script is
+        // absent). So if a scheduled script silently drops out of MATERIALIZED_FLEET_FILES, `fleet up` stops
+        // materializing it → the hub path never exists → the job NEVER runs, with NO other failure (the deploy
+        // set still materializes fine, the job just no-ops). The whole-const loop above proves "everything IN the
+        // const materializes"; this pins the other direction — the scripts the scheduled jobs DEPEND ON are
+        // actually in the const. A rename or accidental removal of any of these now fails HERE instead of
+        // shipping a silently-dead job. When a new scheduled script lands (self-cron or timer), add it here too.
         for cron_script in [
             "watchdog.sh",
             "rearm-stale.sh",
@@ -24224,40 +23987,6 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
-    fn reconcile_cpu_monitor_cron_installs_heals_and_is_idempotent() {
-        let want = cpu_monitor_cron_line("/hub/.claude/fleet/cpu-monitor.sh");
-        // Empty crontab → install the line (with a trailing newline for crontab).
-        let out = reconcile_cpu_monitor_cron("", &want).expect("installs when absent");
-        assert!(out.contains(&want));
-        assert!(out.ends_with('\n'));
-        // Verbatim already present → no-op (None), so `up` never rewrites the crontab needlessly.
-        assert!(reconcile_cpu_monitor_cron(&format!("{want}\n"), &want).is_none());
-        // Unrelated entries preserved + a STALE fleet:cpu-monitor line (old hub path) drift-healed.
-        let existing = "0 5 * * * /usr/bin/backup\n\
-                        */2 * * * * bash /OLD/hub/cpu-monitor.sh >/dev/null 2>&1 # fleet:cpu-monitor\n\
-                        @reboot /usr/bin/thing";
-        let healed = reconcile_cpu_monitor_cron(existing, &want).expect("heals a stale entry");
-        assert!(
-            healed.contains("/usr/bin/backup"),
-            "preserves unrelated entries"
-        );
-        assert!(
-            healed.contains("@reboot /usr/bin/thing"),
-            "preserves unrelated entries"
-        );
-        assert!(healed.contains(&want), "installs the current hub path");
-        assert!(!healed.contains("/OLD/hub/"), "drops the stale hub path");
-        assert_eq!(
-            healed
-                .lines()
-                .filter(|l| l.contains("# fleet:cpu-monitor"))
-                .count(),
-            1,
-            "exactly one fleet:cpu-monitor line after heal (no duplicates)"
-        );
-    }
-
-    #[test]
     fn claude_link_action_links_absent_heals_stale_refuses_realdir_and_is_idempotent() {
         use ClaudeLinkAction::*;
         let want = PathBuf::from("../skills");
@@ -24409,46 +24138,6 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         assert!(
             line.ends_with("# fleet:oracle-lean"),
             "carries the reconcile tag: {line}"
-        );
-    }
-
-    #[test]
-    fn drain_nudge_cron_line_is_every_3min_silent_and_tagged() {
-        let line = drain_nudge_cron_line("/hub/drain-nudge.sh");
-        // Every 3 min (beats the concierge's */4 watchdog cadence), runs the hub script, silent, tagged.
-        assert!(
-            line.starts_with("*/3 * * * * bash /hub/drain-nudge.sh"),
-            "every-3-min, invoking the hub script: {line}"
-        );
-        assert!(
-            line.contains(">/dev/null 2>&1"),
-            "silent — a nudge tick never emits cron mail: {line}"
-        );
-        assert!(
-            line.ends_with("# fleet:drain-nudge"),
-            "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
-        );
-    }
-
-    #[test]
-    fn reap_leases_cron_line_is_every_minute_silent_and_tagged() {
-        let line = reap_leases_cron_line("/hub/reap-leases.sh");
-        // EVERY MINUTE (tightened */10 → */3 2026-09-21 → */1 2026-09-27: under the perf-push nix contention
-        // the leak RATE rose so far that even a sub-3min-old leak was caught + hand-reaped by the concierge
-        // ~every tick; reap-leases is the cheapest cron in the fleet — idempotent, no-op when clean, no window
-        // action, flock-guarded — while a leaked priority lease stalls every vertical's merge gate, so run it
-        // at the cron floor), runs the hub script, silent, tagged for reconcile/heal.
-        assert!(
-            line.starts_with("* * * * * bash /hub/reap-leases.sh"),
-            "every-minute, invoking the hub script: {line}"
-        );
-        assert!(
-            line.contains(">/dev/null 2>&1"),
-            "silent — a reap tick never emits cron mail: {line}"
-        );
-        assert!(
-            line.ends_with("# fleet:reap-leases"),
-            "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
         );
     }
 
@@ -24869,27 +24558,6 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             None
         );
         assert_eq!(parse_cron_line("# fleet:watchdog just a note"), None);
-    }
-
-    #[test]
-    fn throttle_unleased_nix_cron_is_live_and_every_3_min() {
-        // The throttle cron ships ENABLED (renice is non-destructive, unlike the disabled watchdog/rearm
-        // lines) at */3, running the script with --apply so it actually renices.
-        let line = throttle_unleased_nix_cron_line("/hub/.claude/fleet/throttle-unleased-nix.sh");
-        assert!(line.contains("# fleet:throttle-unleased-nix"));
-        assert!(
-            line.contains("--apply"),
-            "the cron must renice, not dry-run"
-        );
-        assert!(
-            !line.trim_start().starts_with('#'),
-            "must be a LIVE line, not a commented/disabled one"
-        );
-        // cron-health sees a live 3-min fleet cron keyed on the SCRIPT stem (so it is tracked, not STALE).
-        assert_eq!(
-            parse_cron_line(&line),
-            Some((180, "throttle-unleased-nix".to_string()))
-        );
     }
 
     // NB: this test does NOT assert on the WATCHDOG_ENABLED const itself. `assert!(!WATCHDOG_ENABLED)` would
