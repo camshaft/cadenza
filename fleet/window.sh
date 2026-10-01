@@ -26,6 +26,83 @@ set -euo pipefail
 # exist on this host is harmless (the shell just skips it).
 export PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME:-}/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
 
+# task_596: install a `paste_create` helper on PATH so an agent can turn text into an Amazon Paste Tool
+# share link (api.paste.tools.amazon.dev) straight from its Bash tool — no MCP, no daemon, no per-instance
+# process; the host's Midway session (~/.midway/cookie) is the only credential and the service scales on the
+# AWS side (the operator constraint is that a shared capability must scale to thousands of agents, so a
+# remote REST service with no local tooling is the right shape — cameron's call: shell helper only, no MCP
+# tool). The API is NOT secret-scanned, so the helper defaults to `restricted` visibility; an agent redacts
+# and opts into a wider audience explicitly. It is WRITTEN HERE rather than shipped as a separate repo file
+# so it travels wherever window.sh is deployed, and placed on PATH BEFORE `exec claude` so claude and every
+# Bash-tool shell inherit it (the same inheritance mechanism the PATH guard above relies on).
+FLEET_BIN="${HOME:-/tmp}/.fleet/bin"
+if mkdir -p "$FLEET_BIN" 2>/dev/null; then
+  cat > "$FLEET_BIN/paste_create" <<'PASTE_CREATE_EOF'
+#!/usr/bin/env bash
+# paste_create — turn text into an Amazon Paste Tool share link (api.paste.tools.amazon.dev).
+# Pipe content in (or pass a FILE). The host's Midway session (~/.midway/cookie) is the credential —
+# no MCP, no daemon, no per-instance process. Prints the browserUrl on success.
+#
+#   some-command 2>&1 | paste_create [-t TITLE] [-v VIS] [-u alias1,alias2] [-k TTLDAYS] [-s SRCURL] [FILE]
+#
+#   -v VIS    restricted (DEFAULT) | private | public
+#   -u LIST   comma-separated aliases allowed to read (only meaningful with restricted)
+#   -k TTL    1 | 7 | 30 | 365 | -1 (never)   [default 7]
+#   -t TITLE  paste title
+#   -s URL    internal https:// provenance link
+#
+# WARNING: this API is NOT secret-scanned — it stores exactly what you send. Default is `restricted`;
+# redact secrets yourself and never use `public` without a named reason.
+set -euo pipefail
+
+API="https://api.paste.tools.amazon.dev/api/paste"
+COOKIE="${HOME:-}/.midway/cookie"
+title="" ; vis="restricted" ; ttl="7" ; users="" ; src="${PASTE_SOURCE:-}"
+
+while getopts "t:v:u:k:s:h" opt; do
+  case "$opt" in
+    t) title="$OPTARG" ;;
+    v) vis="$OPTARG" ;;
+    u) users="$OPTARG" ;;
+    k) ttl="$OPTARG" ;;
+    s) src="$OPTARG" ;;
+    h) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "paste_create: bad option (try -h)" >&2; exit 2 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+infile="/dev/stdin"
+[ "${1:-}" != "" ] && { [ -f "$1" ] || { echo "paste_create: no such file: $1" >&2; exit 2; }; infile="$1"; }
+
+[ -f "$COOKIE" ] || { echo "paste_create: no Midway cookie at $COOKIE — run 'mwinit' on the host" >&2; exit 3; }
+command -v jq   >/dev/null || { echo "paste_create: jq not found on PATH" >&2; exit 3; }
+command -v curl >/dev/null || { echo "paste_create: curl not found on PATH" >&2; exit 3; }
+
+# Build the request body with jq --rawfile (never string-interpolate content — newlines/quotes break JSON).
+body=$(jq -n --rawfile content "$infile" \
+  --arg vis "$vis" --argjson ttl "$ttl" --arg title "$title" --arg users "$users" --arg src "$src" \
+  '{ content: $content, visibility: $vis, ttlDays: $ttl }
+    + (if $title != "" then { title: $title }                       else {} end)
+    + (if $users != "" then { allowedUsers: ($users | split(",")) } else {} end)
+    + (if $src   != "" then { sourceUrl: $src }                     else {} end)')
+
+resp=$(curl -sS -L -b "$COOKIE" -c "$COOKIE" -X POST "$API" -H 'Content-Type: application/json' -d "$body")
+url=$(printf '%s' "$resp" | jq -r '.browserUrl // empty' 2>/dev/null || true)
+
+if [ -n "$url" ]; then
+  printf '%s\n' "$url"
+else
+  echo "paste_create: no share link in response (Midway session lapsed? run 'mwinit'). API said:" >&2
+  printf '%s' "$resp" | head -c 400 >&2
+  echo >&2
+  exit 4
+fi
+PASTE_CREATE_EOF
+  chmod +x "$FLEET_BIN/paste_create" 2>/dev/null || true
+  export PATH="$FLEET_BIN:$PATH"
+fi
+
 AGENT="${1:?usage: window.sh <agent-name>}"
 # The hub root: this script sits at <hub>/.claude/fleet/window.sh, so dirname is <hub>/.claude/fleet
 # and ../.. climbs the two levels (fleet → .claude → <hub>) up to the hub.
