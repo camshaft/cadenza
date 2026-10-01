@@ -78,6 +78,26 @@ newest_first() {
   done | sort -rn | awk '{print $2}'
 }
 
+# Confirm a pid is ACTUALLY dead before we revive or start a replacement (task_866). The caller has already
+# sent SIGTERM; a kill that false-negatived (a slow or SIGTERM-ignoring process) would otherwise let a live
+# daemon keep relaying ALONGSIDE a freshly-revived one — the exact double-relay this guard exists to prevent.
+# `kill -0 <pid>` checks liveness DIRECTLY (does the pid still exist?), immune to the deleted-inode false
+# negative an exe-scan hits on a rebuilt binary. Poll ~5s, escalate to SIGKILL, poll a ~3s grace. Returns 0
+# once the pid is gone, 1 if it is STILL alive after SIGKILL — in which case the caller must NOT revive.
+confirm_dead() { # $1 = pid
+  local pid="$1" i
+  for ((i = 0; i < 25; i++)); do          # ~5s at 200ms — the daemon exits cleanly on SIGTERM, so usually <1s
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -KILL "$pid" 2>/dev/null || true    # SIGTERM ignored/too slow — escalate
+  for ((i = 0; i < 15; i++)); do           # ~3s grace after SIGKILL
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  return 1
+}
+
 mapfile -t PIDS < <(bridge_pids)
 COUNT="${#PIDS[@]}"
 
@@ -98,7 +118,17 @@ if [ "$COUNT" -eq 1 ]; then
     # epoch acts. The revive block writes the authoritative stamp/alarm; the journal line records the reason.
     echo "$(now): slack-bridge pid ${PIDS[0]} WEDGED (health.json idle $(( $(date +%s) - hd_updated ))s > ${HEALTH_STALE_SECS}s) — killing + reviving"
     kill "${PIDS[0]}" 2>/dev/null || true
-    # (deliberately NO exit — fall through to the COUNT==0 revive block)
+    # CONFIRM it actually died before falling through to revive (task_866): if the SIGTERM false-negatived or
+    # the wedged process is slow/ignoring it, reviving now would run TWO instances = double relay. If it will
+    # not die even after SIGKILL, DO NOT revive (a second live instance is worse than a wedged one); alarm and
+    # leave it for a human.
+    if ! confirm_dead "${PIDS[0]}"; then
+      printf '%s: slack-bridge pid %s is WEDGED and would NOT die (survived SIGTERM+SIGKILL) — NOT reviving, a second instance would double-relay. A human/v-slack-bridge must intervene.\n' \
+        "$(now)" "${PIDS[0]}" > "$ALARM" 2>/dev/null || true
+      printf '%s bridge=WEDGED-UNKILLABLE pid=%s\n' "$(now)" "${PIDS[0]}" > "$STAMP" 2>/dev/null || true
+      exit 0
+    fi
+    # (confirmed dead — fall through to the COUNT==0 revive block)
   elif [ "$hd_degraded" = "true" ]; then
     # DEGRADED but alive + ticking: raise an ops status, do NOT revive — the daemon is up; reviving won't fix an
     # expired auth / rate-limit and would only thrash. A human / v-slack-bridge acts on the reason.
@@ -122,7 +152,11 @@ if [ "$COUNT" -ge 2 ]; then
   keep="${ORDERED[0]}"
   killed=""
   for p in "${ORDERED[@]:1}"; do
-    kill "$p" 2>/dev/null && killed="${killed}${killed:+,}${p}"
+    kill "$p" 2>/dev/null || true
+    # Confirm each shed extra actually died (task_866). Lower-risk than the WEDGED branch (this branch never
+    # revives, so a survivor just lingers until the next fire rather than racing a relaunch), but a kill that
+    # false-negatived leaves the double relay running until then — so verify, and flag any that would not die.
+    if confirm_dead "$p"; then killed="${killed}${killed:+,}${p}"; else killed="${killed}${killed:+,}${p}(still-alive)"; fi
   done
   printf '%s: slack-bridge had %s instances (double relay) — kept newest pid %s, killed %s. A human/v-slack-bridge should check why a second instance started.\n' \
     "$(now)" "$COUNT" "$keep" "${killed:-none}" > "$ALARM" 2>/dev/null || true
