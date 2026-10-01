@@ -15,6 +15,17 @@
 
 set -euo pipefail
 
+# task_347: GUARANTEE a known-good PATH for the agent process and every shell it spawns. A fleet agent's Bash
+# tool-calls intermittently spawned with a stripped PATH (coreutils / git / curl / nix all "command not found",
+# recoverable only via absolute /usr/bin/... paths) - a per-invocation tax seen across agents + days
+# (corroborated). The tmux window can inherit a minimal/empty PATH from the launching daemon, and a tool shell
+# that then fails to source a login profile has no usable PATH. APPENDING the standard system + nix-profile bin
+# dirs here (before `exec claude`, so claude and all its child shells inherit it) makes the baseline PATH always
+# complete while leaving any existing entries FIRST (a repo-/user-preferred tool still wins); the essentials are
+# guaranteed present as a fallback, so a bare `git`/`curl`/`nix`/coreutil always resolves. A dir that does not
+# exist on this host is harmless (the shell just skips it).
+export PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME:-}/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
+
 AGENT="${1:?usage: window.sh <agent-name>}"
 # The hub root: this script sits at <hub>/.claude/fleet/window.sh, so dirname is <hub>/.claude/fleet
 # and ../.. climbs the two levels (fleet → .claude → <hub>) up to the hub.
