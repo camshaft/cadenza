@@ -72,11 +72,14 @@ resolve_id() { # $1 = exact path
 # cross-links are NOT stored here -- the board derives the link graph from the body's [[links]] automatically
 # (verified in the task_826 migration pilot), so an explicit links array would be redundant.
 build_meta() { # $1 desc $2 type $3 author $4 ts $5 source $6 tags_json
+  # Every memory doc ALWAYS carries the reserved "agent-memory" tag (operator directive, cameron 2026-10-01):
+  # it is what lets the board exclude memory docs from the operator's document feed (tag- or path-prefix-based)
+  # so the ~3169 migrated memories do not flood it. Unioned with any caller tags, deduped.
   jq -nc --arg desc "$1" --arg type "$2" --arg author "$3" --arg ts "$4" --arg source "$5" \
     --argjson tags "$6" \
     '{description:$desc, type:$type,
       provenance:{author:$author, timestamp:$ts, source:$source, operator_verbatim:false},
-      tags:$tags}'
+      tags:(($tags + ["agent-memory"]) | unique)}'
 }
 
 # The single write path: create-or-version a memory document. New -> create + file at path; existing ->
