@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# paste_create — turn text into a shareable paste link via a REST paste service.
+# Pipe content in (or pass a FILE). An auth cookie is the credential — no MCP, no daemon, no per-instance
+# process. Prints the paste's browser URL on success.
+#
+#   some-command 2>&1 | paste_create [-t TITLE] [-v VIS] [-u user1,user2] [-k TTLDAYS] [-s SRCURL] [FILE]
+#
+#   -v VIS    restricted (DEFAULT) | private | public
+#   -u LIST   comma-separated users allowed to read (only meaningful with restricted)
+#   -k TTL    1 | 7 | 30 | 365 | -1 (never)   [default 7]
+#   -t TITLE  paste title
+#   -s URL    provenance link
+#
+# CONFIG (kept OUT of this committed script — this repo is public, so the concrete service endpoint and
+# cookie path are NOT hardcoded here). The helper sources a LOCAL, un-tracked config file if present and
+# reads two values from the environment:
+#   PASTE_API_URL      the paste service create endpoint (required)
+#   PASTE_COOKIE_PATH  path to the auth cookie file (required)
+# Provide them via the local config `${PASTE_CONF:-$HOME/.config/fleet/paste.conf}` (not committed) or the
+# environment. If neither is set the helper exits with a clear message rather than guessing.
+#
+# WARNING: the service is NOT secret-scanned — it stores exactly what you send. Default is `restricted`;
+# redact secrets yourself and never use `public` without a named reason.
+set -euo pipefail
+
+# Pull the deployment-specific endpoint + cookie path from a local (un-tracked) config, then the environment.
+CONF="${PASTE_CONF:-${HOME:-}/.config/fleet/paste.conf}"
+[ -f "$CONF" ] && . "$CONF"
+
+API="${PASTE_API_URL:-}"
+COOKIE="${PASTE_COOKIE_PATH:-}"
+title="" ; vis="restricted" ; ttl="7" ; users="" ; src="${PASTE_SOURCE:-}"
+
+while getopts "t:v:u:k:s:h" opt; do
+  case "$opt" in
+    t) title="$OPTARG" ;;
+    v) vis="$OPTARG" ;;
+    u) users="$OPTARG" ;;
+    k) ttl="$OPTARG" ;;
+    s) src="$OPTARG" ;;
+    h) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "paste_create: bad option (try -h)" >&2; exit 2 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+infile="/dev/stdin"
+[ "${1:-}" != "" ] && { [ -f "$1" ] || { echo "paste_create: no such file: $1" >&2; exit 2; }; infile="$1"; }
+
+[ -n "$API" ]    || { echo "paste_create: PASTE_API_URL is not set (configure $CONF or the environment)" >&2; exit 3; }
+[ -n "$COOKIE" ] || { echo "paste_create: PASTE_COOKIE_PATH is not set (configure $CONF or the environment)" >&2; exit 3; }
+[ -f "$COOKIE" ] || { echo "paste_create: no auth cookie at $COOKIE — refresh your auth session" >&2; exit 3; }
+command -v jq   >/dev/null || { echo "paste_create: jq not found on PATH" >&2; exit 3; }
+command -v curl >/dev/null || { echo "paste_create: curl not found on PATH" >&2; exit 3; }
+
+# Build the request body with jq --rawfile (never string-interpolate content — newlines/quotes break JSON).
+body=$(jq -n --rawfile content "$infile" \
+  --arg vis "$vis" --argjson ttl "$ttl" --arg title "$title" --arg users "$users" --arg src "$src" \
+  '{ content: $content, visibility: $vis, ttlDays: $ttl }
+    + (if $title != "" then { title: $title }                       else {} end)
+    + (if $users != "" then { allowedUsers: ($users | split(",")) } else {} end)
+    + (if $src   != "" then { sourceUrl: $src }                     else {} end)')
+
+resp=$(curl -sS -L -b "$COOKIE" -c "$COOKIE" -X POST "$API" -H 'Content-Type: application/json' -d "$body")
+url=$(printf '%s' "$resp" | jq -r '.browserUrl // empty' 2>/dev/null || true)
+
+if [ -n "$url" ]; then
+  printf '%s\n' "$url"
+else
+  echo "paste_create: no share link in response (auth session lapsed? refresh it). Service said:" >&2
+  printf '%s' "$resp" | head -c 400 >&2
+  echo >&2
+  exit 4
+fi
