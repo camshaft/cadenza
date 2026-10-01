@@ -2229,6 +2229,16 @@ pub struct Db {
     /// (the emit path holds `&mut Db`) so the parallel test harness cannot pollute it.
     #[cfg(test)]
     pub(crate) is_cse_shareable_uncached_calls: u64,
+    /// Test-only compile-cost counter: how many times [`crate::lower::core_reaches_host_call`] ran its inner
+    /// compute (a query that MISSED the `Self::core_reaches_host_call_memo`). Surfaced via
+    /// `CompileOutput::core_reaches_host_call_uncached_calls` for the regression guard
+    /// (`core_reaches_host_call_stays_linear_on_a_nested_expression`) to assert LINEAR (not quadratic) growth —
+    /// the adv-62b `lower_let` force-keep and the `runtime_ops` row-op materialization each call it with a
+    /// FRESH `seen` set, so without the id-keyed memo a deeply-nested expression re-walks overlapping subtrees
+    /// per enclosing node (O(N²)+). Scoped to one `Db` (the lowering path holds `&mut Db`) so the parallel test
+    /// harness cannot pollute it.
+    #[cfg(test)]
+    pub(crate) core_reaches_host_call_uncached_calls: u64,
     /// Test-only compile-cost counter: how many times the `referenced_closure_codes` set was BUILT (a full
     /// whole-program walk). The lazy memo builds it ONCE per compile (or once per `lifted`-count change), so
     /// this stays O(1) in the def count — the regression guard `def_funcref_taken_stays_linear_...` asserts
@@ -3511,6 +3521,8 @@ impl Db {
             param_apply_extra_handled_calls: 0,
             #[cfg(test)]
             is_cse_shareable_uncached_calls: 0,
+            #[cfg(test)]
+            core_reaches_host_call_uncached_calls: 0,
             #[cfg(test)]
             referenced_closure_codes_builds: 0,
             #[cfg(test)]

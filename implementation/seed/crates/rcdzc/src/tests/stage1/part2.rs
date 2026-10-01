@@ -3139,6 +3139,59 @@ fn is_cse_shareable_stays_linear_on_a_nested_expression() {
 }
 
 #[test]
+fn core_reaches_host_call_stays_linear_on_a_nested_expression() {
+    // REGRESSION (perf): `lower::core_reaches_host_call` recurses over a node's whole LOWERED Core subtree,
+    // and its callers (the adv-62b `lower_let` force-keep + the `runtime_ops` row-op materialization) query it
+    // with a FRESH `seen` set per enclosing node — so WITHOUT the `Db::core_reaches_host_call_memo` a
+    // deeply-nested expression re-walks overlapping subtrees per enclosing node → O(N²)+ (a `cdz compile`
+    // probe on a nested single-use `let` chain showed it at ~50% and compile climbing ~N^1.3→N^1.8 while the
+    // wasm output stayed LINEAR; the id-keyed memo cut compile 1.79× at N=800, byte-identical — PR-10191). The
+    // memo keys on id ALONE (the verdict is a pure function of the immutable lowered subtree), so the inner
+    // runs once per distinct node → O(N) misses. `CORE_REACHES_HOST_CALL_UNCACHED_CALLS` counts inner
+    // (memo-miss) evaluations — the noise-free signal (a wall-clock ratio is diluted by the rest of lowering).
+    // A right-nested single-use `let` chain, each binder derived from the previous (runtime-rooted at `p`).
+    fn nested(depth: usize) -> String {
+        let mut s = format!("x{depth}");
+        for i in (1..=depth).rev() {
+            let prev = if i == 1 {
+                "p".to_string()
+            } else {
+                format!("x{}", i - 1)
+            };
+            s = format!("(let ((x{i} (+ {prev} 1))) {s})");
+        }
+        format!("(module m (def (main (: p Int64)) {s}) (export main))")
+    }
+    fn uncached_calls(src: &str) -> u64 {
+        // Drive `compile` directly (the lowering path fills the per-`Db` counter, surfaced via CompileOutput)
+        // on the bumped compiler-stack worker — the deeply-nested chain overflows the default cargo-test
+        // thread stack otherwise (as the sibling deep-recursion tests do).
+        crate::host::run_with_compiler_stack(|| {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    crate::codec::encode(&crate::testkit::parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.core_reaches_host_call_uncached_calls
+        })
+    }
+    // Depth 40→80 is a 2× nest; with the memo the inner runs once per distinct node (~linear ~2×), without it
+    // the per-enclosing-node re-walk is O(N²) (~4×). Require < 3× (between the regimes, margin for constants).
+    let n40 = uncached_calls(&nested(40));
+    let n80 = uncached_calls(&nested(80));
+    let ratio = n80 as f64 / (n40.max(1)) as f64;
+    assert!(
+        n40 > 0 && ratio < 3.0,
+        "core_reaches_host_call must stay O(N) uncached evaluations on a nested expression, not O(N²) (the \
+             id-keyed memo linearizes the per-enclosing-node subtree re-walk): depth 40→80 grew uncached \
+             calls {ratio:.1}× (n40={n40}, n80={n80}); linear is ~2×, the un-memoized re-walk was ~4×"
+    );
+}
+
+#[test]
 fn newtype_underlying_reads_the_erased_structural_type() {
     // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
     // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the

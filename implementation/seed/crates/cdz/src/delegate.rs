@@ -534,6 +534,8 @@ pub fn run_query_over_inputs(
         param_apply_extra_handled_calls: 0,
         // Same: no in-process emit ran, so the is_cse_shareable counter is 0.
         is_cse_shareable_uncached_calls: 0,
+        // Same: no in-process emit ran, so the core_reaches_host_call counter is 0.
+        core_reaches_host_call_uncached_calls: 0,
         // Same: no in-process emit ran, so the referenced-closure-code memo was never built.
         referenced_closure_codes_builds: 0,
     }
@@ -553,6 +555,8 @@ fn empty_output() -> cadenza_compile_abi::CompileOutput {
         param_apply_extra_handled_calls: 0,
         // Same: no in-process emit ran, so the is_cse_shareable counter is 0.
         is_cse_shareable_uncached_calls: 0,
+        // Same: no in-process emit ran, so the core_reaches_host_call counter is 0.
+        core_reaches_host_call_uncached_calls: 0,
         // Same: no in-process emit ran, so the referenced-closure-code memo was never built.
         referenced_closure_codes_builds: 0,
     }
