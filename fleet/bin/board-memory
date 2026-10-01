@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# board-memory - read / write / recall agent memory as task-board documents (board-backed memory, task_825).
+#
+# A thin convention-enforcing wrapper over the board REST API. It derives the canonical document path,
+# assembles the metadata + provenance block, stamps the writing agent (single-writer convention: an agent
+# owns its agents/<agent>/* docs; a project memory lives at repos/<repo>/<slug>), and recalls via the
+# path-prefix wiki index. The memory migration (task_826) and the dream pass (task_827) call this same
+# wrapper, so the slug/path/provenance conventions live in one place instead of each agent hand-rolling the
+# board primitives. Talks REST (not the board MCP) on purpose: REST reflects the live board, so a long-lived
+# session with a stale MCP tools/list still writes + recalls (the task_795 tools/list-cache trap does not bite).
+#
+#   board-memory write  --slug SLUG [--agent A | --repo R] [--name NAME] [--desc TEXT] [--type T] \
+#                       [--tags a,b] [--links x,y] [--source SRC] [--project N] [FILE]   # body: FILE or stdin
+#   board-memory recall [--agent A] [--repo R]                      # the MEMORY.md-analog name+description index
+#   board-memory read   --slug SLUG [--agent A | --repo R]          # print one memory's body
+#
+# --type is one of: user | feedback | project | reference  (doc_102 A2; default: project).
+#
+# CONFIG (kept OUT of this committed script - this repo is public, so no concrete endpoint is hardcoded).
+# The board REST base URL is read from a local un-tracked config `${FLEET_CONF:-$HOME/.config/fleet/board.conf}`
+# or the environment:
+#   BOARD_API_URL   the board REST API base, e.g. http://HOST:PORT/board/api   (required)
+# The writing agent defaults to $MEMORY_AGENT, else the tmux window name, else `whoami`; override with --agent.
+# For a project-scoped memory pass --repo (or it derives from the git `origin` remote's basename).
+set -euo pipefail
+
+CONF="${FLEET_CONF:-${HOME:-}/.config/fleet/board.conf}"
+[ -f "$CONF" ] && . "$CONF"
+API="${BOARD_API_URL:-}"
+
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in write|recall|read) : ;; -h|--help|help|"") usage; exit 0 ;; *) echo "board-memory: unknown command '$cmd' (write|recall|read; -h for help)" >&2; exit 2 ;; esac
+
+slug="" ; agent="" ; repo="" ; name="" ; desc="" ; mtype="project" ; tags="" ; links="" ; source="" ; project=""
+file=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --slug) slug="$2"; shift 2 ;;
+    --agent) agent="$2"; shift 2 ;;
+    --repo) repo="$2"; shift 2 ;;
+    --name) name="$2"; shift 2 ;;
+    --desc) desc="$2"; shift 2 ;;
+    --type) mtype="$2"; shift 2 ;;
+    --tags) tags="$2"; shift 2 ;;
+    --links) links="$2"; shift 2 ;;
+    --source) source="$2"; shift 2 ;;
+    --project) project="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) echo "board-memory: bad option '$1' (try -h)" >&2; exit 2 ;;
+    *) file="$1"; shift ;;
+  esac
+done
+[ $# -gt 0 ] && [ -z "$file" ] && { file="$1"; }
+
+command -v curl >/dev/null || { echo "board-memory: curl not found on PATH" >&2; exit 3; }
+command -v jq   >/dev/null || { echo "board-memory: jq not found on PATH" >&2; exit 3; }
+[ -n "$API" ] || { echo "board-memory: BOARD_API_URL is not set (configure $CONF or the environment)" >&2; exit 3; }
+API="${API%/}"
+
+# Resolve the writing agent: --agent, else $MEMORY_AGENT, else the tmux window name, else whoami.
+if [ -z "$agent" ]; then
+  agent="${MEMORY_AGENT:-}"
+  if [ -z "$agent" ] && [ -n "${TMUX:-}" ] && command -v tmux >/dev/null; then
+    agent="$(tmux display-message -p '#W' 2>/dev/null || true)"
+  fi
+  [ -z "$agent" ] && agent="$(whoami 2>/dev/null || echo unknown)"
+fi
+# Derive the repo basename from the git origin remote when --repo is omitted but a repo scope is wanted.
+derive_repo() { git remote get-url origin 2>/dev/null | sed -E 's#.*[/:]([^/]+/[^/]+?)(\.git)?$#\1#'; }
+
+# The canonical path for a slug under the chosen scope. --repo wins (project memory); else agent-scoped.
+scope_path() { # $1 = slug
+  if [ -n "$repo" ]; then printf 'repos/%s/%s' "$repo" "$1"
+  else printf 'agents/%s/%s' "$agent" "$1"; fi
+}
+
+api_get()  { curl -fsS "$API$1"; }
+api_post() { curl -fsS -X POST -H 'content-type: application/json' -d "$2" "$API$1"; }
+
+# Find the document id already filed at an exact wiki path (empty output = none).
+resolve_id() { # $1 = exact path
+  api_get "/wiki?prefix=$(jq -rn --arg p "$1" '$p|@uri')" \
+    | jq -r --arg p "$1" 'map(select(.path==$p)) | (.[0].id // empty)'
+}
+
+case "$cmd" in
+  write)
+    [ -n "$slug" ] || { echo "board-memory write: --slug is required" >&2; exit 2; }
+    name="${name:-$slug}"
+    path="$(scope_path "$slug")"
+    # Body from FILE or stdin; refuse an empty memory.
+    src_in="${file:-/dev/stdin}"
+    [ "$src_in" != "/dev/stdin" ] && [ ! -f "$src_in" ] && { echo "board-memory write: no such file: $src_in" >&2; exit 2; }
+    body="$(cat "$src_in")"
+    [ -n "$body" ] || { echo "board-memory write: refusing to write an empty memory body" >&2; exit 2; }
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    meta="$(jq -nc \
+      --arg name "$name" --arg desc "$desc" --arg type "$mtype" \
+      --arg author "$agent" --arg ts "$ts" --arg source "$source" \
+      --arg tags "$tags" --arg links "$links" \
+      '{ name: $name, description: $desc, type: $type,
+         provenance: { author: $author, timestamp: $ts, source: $source, operator_verbatim: false },
+         tags:  ($tags  | if .=="" then [] else split(",") end),
+         links: ($links | if .=="" then [] else split(",") end) }')"
+    id="$(resolve_id "$path")"
+    if [ -z "$id" ]; then
+      # New memory: create the document (title = name, metadata = the A2 block), then file it at its path.
+      body_json="$(jq -nc --arg t "$name" --rawfile c <(printf '%s' "$body") --argjson m "$meta" \
+        --arg cb "$agent" '{ title:$t, content:$c, created_by:$cb, metadata:$m, content_type:"text/markdown" }')"
+      doc="$(api_post "/documents" "$body_json")"
+      id="$(printf '%s' "$doc" | jq -r '.id')"
+      [ -n "$id" ] && [ "$id" != null ] || { echo "board-memory write: create failed: $doc" >&2; exit 4; }
+      api_post "/documents/$id/path" "$(jq -nc --arg p "$path" --arg a "$agent" '{path:$p, actor:$a}')" >/dev/null
+      echo "wrote $path (doc_$id, new)"
+    else
+      # Existing memory: publish a new content version (history preserved). NOTE: the board REST API has no
+      # metadata-update endpoint (update_document sets only the title), so description/tags/provenance keep
+      # their create-time values on a rewrite; a metadata-refresh path is a board follow-on (raised to v-task-board).
+      ver_json="$(jq -nc --rawfile c <(printf '%s' "$body") --arg cb "$agent" --arg s "memory update $ts" \
+        '{ content:$c, created_by:$cb, summary:$s, content_type:"text/markdown" }')"
+      api_post "/documents/$id/versions" "$ver_json" >/dev/null
+      echo "wrote $path (doc_$id, new version)"
+    fi
+    ;;
+
+  recall)
+    # The MEMORY.md-analog index: name + description for every memory under the scope prefix(es), no body read.
+    prefixes=()
+    [ -n "$repo" ] && prefixes+=("repos/$repo")
+    if [ -z "$repo" ]; then prefixes+=("agents/$agent"); fi
+    for p in "${prefixes[@]}"; do
+      echo "# $p"
+      api_get "/wiki?prefix=$(jq -rn --arg p "$p" '$p|@uri')" \
+        | jq -r '.[] | "- \(.title)" + (if (.description // "")=="" then "" else " - \(.description)" end) + "  (\(.path))"'
+    done
+    ;;
+
+  read)
+    [ -n "$slug" ] || { echo "board-memory read: --slug is required" >&2; exit 2; }
+    path="$(scope_path "$slug")"
+    id="$(resolve_id "$path")"
+    [ -n "$id" ] || { echo "board-memory read: no memory filed at $path" >&2; exit 4; }
+    # /content returns a JSON envelope {content, cid, ...}; emit just the memory body.
+    api_get "/documents/$id/content" | jq -r '.content'
+    ;;
+esac
