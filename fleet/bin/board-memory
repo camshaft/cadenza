@@ -44,9 +44,13 @@ command -v jq   >/dev/null || { echo "board-memory: jq not found on PATH" >&2; e
 [ -n "$API" ] || { echo "board-memory: BOARD_API_URL is not set (configure $CONF or the environment)" >&2; exit 3; }
 API="${API%/}"
 
+# The JSON payload goes to curl via STDIN (--data-binary @-), NOT a -d CLI arg: a memory body over ~128KB
+# (the vertical-log archives) would exceed Linux MAX_ARG_STRLEN as a single argv arg and fail with
+# "Argument list too long". printf is a shell builtin, so it carries the large string without an exec-arg
+# ceiling, and stdin has no size limit.
 api_get()   { curl -fsS "$API$1"; }
-api_post()  { curl -fsS -X POST  -H 'content-type: application/json' -d "$2" "$API$1"; }
-api_patch() { curl -fsS -X PATCH -H 'content-type: application/json' -d "$2" "$API$1"; }
+api_post()  { printf '%s' "$2" | curl -fsS -X POST  -H 'content-type: application/json' --data-binary @- "$API$1"; }
+api_patch() { printf '%s' "$2" | curl -fsS -X PATCH -H 'content-type: application/json' --data-binary @- "$API$1"; }
 
 # Resolve the default authoring agent: $MEMORY_AGENT, else the tmux window name, else whoami.
 default_agent() {
