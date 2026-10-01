@@ -40,6 +40,11 @@ BRIDGE_DIR="${HOME}/membrain-skynet-bridge"
 BRIDGE_BIN="${BRIDGE_DIR}/target/debug/membrain-skynet-bridge"
 BOARD_API="http://127.0.0.1:8880/board/api"
 STATE_DIR="${HOME}/.local/state/membrain-skynet-bridge"
+# task_499 guard-side: the daemon rewrites this health file every tick (updated_epoch + a degraded flag).
+HEALTH="$STATE_DIR/health.json"
+# How long health.json may go un-updated before a still-UP process counts as WEDGED (alive but not ticking).
+# Generous (5 min >> the per-tick write cadence) so a brief hiccup never trips it; env-overridable.
+HEALTH_STALE_SECS="${CDZ_BRIDGE_HEALTH_STALE_SECS:-300}"
 
 # The live daemon's PIDs, counted PRECISELY. A process counts only if BOTH its argv carries the instance
 # anchor (`--bridge-instance membrain`) AND its executable IS the membrain binary — so a shell, an observer, a
@@ -77,10 +82,37 @@ mapfile -t PIDS < <(bridge_pids)
 COUNT="${#PIDS[@]}"
 
 if [ "$COUNT" -eq 1 ]; then
-  # Healthy: exactly one daemon. Clear any stale alarm + stamp.
-  rm -f "$ALARM" 2>/dev/null || true
-  printf '%s bridge=up pid=%s\n' "$(now)" "${PIDS[0]}" > "$STAMP" 2>/dev/null || true
-  exit 0
+  # One daemon is UP — but "up" is not "healthy" (task_499 guard-side). Cross-check its health.json: the daemon
+  # rewrites $HEALTH every tick with updated_epoch + a degraded flag. FAIL-SAFE: act ONLY on a cleanly-parsed
+  # signal — a missing / unreadable / unparseable health.json falls through to the original "one daemon =
+  # healthy" path, so a parse hiccup never kills or false-alarms a live daemon.
+  hd_updated=""; hd_degraded=""
+  if [ -r "$HEALTH" ] && command -v jq >/dev/null 2>&1; then
+    hd_updated="$(jq -r '.updated_epoch // empty' "$HEALTH" 2>/dev/null || true)"
+    hd_degraded="$(jq -r '.degraded // empty' "$HEALTH" 2>/dev/null || true)"
+  fi
+  if [[ "$hd_updated" =~ ^[0-9]+$ ]] && [ "$(( $(date +%s) - hd_updated ))" -gt "$HEALTH_STALE_SECS" ]; then
+    # WEDGED: the process is alive (COUNT==1) but health.json stopped advancing — stuck, not ticking (a
+    # process-count check alone misreads this as healthy). Kill it and FALL THROUGH to the revive block below
+    # (relaunch), i.e. treat it as COUNT==0. Numeric-gated + a generous threshold, so only a genuinely stale
+    # epoch acts. The revive block writes the authoritative stamp/alarm; the journal line records the reason.
+    echo "$(now): slack-bridge pid ${PIDS[0]} WEDGED (health.json idle $(( $(date +%s) - hd_updated ))s > ${HEALTH_STALE_SECS}s) — killing + reviving"
+    kill "${PIDS[0]}" 2>/dev/null || true
+    # (deliberately NO exit — fall through to the COUNT==0 revive block)
+  elif [ "$hd_degraded" = "true" ]; then
+    # DEGRADED but alive + ticking: raise an ops status, do NOT revive — the daemon is up; reviving won't fix an
+    # expired auth / rate-limit and would only thrash. A human / v-slack-bridge acts on the reason.
+    reason="$(jq -r '.degraded_reason // "unspecified"' "$HEALTH" 2>/dev/null || echo unspecified)"
+    printf '%s: slack-bridge pid %s reports DEGRADED (%s) — up but unhealthy; NOT auto-revived (would thrash). A human/v-slack-bridge should check.\n' \
+      "$(now)" "${PIDS[0]}" "$reason" > "$ALARM" 2>/dev/null || true
+    printf '%s bridge=DEGRADED pid=%s reason=%s\n' "$(now)" "${PIDS[0]}" "$reason" > "$STAMP" 2>/dev/null || true
+    exit 0
+  else
+    # Healthy: one daemon, ticking (fresh health.json — or none to parse, the fail-safe case), not degraded.
+    rm -f "$ALARM" 2>/dev/null || true
+    printf '%s bridge=up pid=%s\n' "$(now)" "${PIDS[0]}" > "$STAMP" 2>/dev/null || true
+    exit 0
+  fi
 fi
 
 if [ "$COUNT" -ge 2 ]; then
