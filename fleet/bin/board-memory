@@ -12,6 +12,8 @@
 #   board-memory write  --slug SLUG (--agent A | --repo R | --path P) [--name NAME] [--desc TEXT] \
 #                       [--type T] [--tags a,b] [--author ORIG] [--source SRC] [--project N] [FILE]
 #   board-memory write-batch [--base DIR] [--delay SECS] [MANIFEST]   # JSONL, one memory per line (see below)
+#       --delay SECS throttles between memories (DEFAULT 0.5s so a bulk import never bursts the board/CAS;
+#       raise it to be gentler, or --delay 0 to disable). A big import = many creates + CAS adds, so pace it.
 #   board-memory recall [--agent A] [--repo R]                        # the MEMORY.md-analog name+description index
 #   board-memory read   --slug SLUG (--agent A | --repo R | --path P) # print one memory's body
 #   board-memory get    --slug SLUG (--agent A | --repo R | --path P) # full doc JSON {path,title,metadata,body}
@@ -155,7 +157,7 @@ case "$cmd" in
     ;;
 
   write-batch)
-    base="." delay="0" manifest=""
+    base="." delay="0.5" manifest=""   # DEFAULT throttle: pace a bulk import so it never bursts the board/CAS (--delay 0 disables)
     while [ $# -gt 0 ]; do
       case "$1" in
         --base) base="$2"; shift 2 ;; --delay) delay="$2"; shift 2 ;;
