@@ -24,7 +24,15 @@ set -euo pipefail
 # complete while leaving any existing entries FIRST (a repo-/user-preferred tool still wins); the essentials are
 # guaranteed present as a fallback, so a bare `git`/`curl`/`nix`/coreutil always resolves. A dir that does not
 # exist on this host is harmless (the shell just skips it).
-export PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME:-}/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
+#
+# task_812: ALSO append the Amazon toolbox + mise tool dirs. An MCP server the agent spawns via a bare-command
+# wrapper (e.g. amazon-sharepoint-mcp -> `exec aim ...`, which in turn needs a mise-managed `node`) failed with
+# CONNECTION_CLOSED because `aim`/`mise`/`node` were not on the stripped agent PATH -- the same class as above.
+# `.toolbox/bin` resolves `aim` + the builder toolbox CLIs; `.local/bin` resolves `mise`; the mise `shims` dir
+# resolves `node`/`npx` to the mise-active version. Appended (so a user-preferred tool still wins); absent dirs
+# are skipped harmlessly. (NB: the mise shim resolves node to the GLOBAL default version -- a server needing a
+# newer node than that default is an operator mise-version decision, not a PATH gap.)
+export PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME:-}/.nix-profile/bin:/nix/var/nix/profiles/default/bin:${HOME:-}/.toolbox/bin:${HOME:-}/.local/bin:${HOME:-}/.local/share/mise/shims"
 
 # task_781 / task_596: put the fleet's shared live bin dir on PATH so a CLI materialized into it
 # (paste_create, the `fleet` binary, and any future tool) is callable by THIS agent AND by every
