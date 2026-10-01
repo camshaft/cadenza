@@ -1104,6 +1104,13 @@ fn core_reaches_host_call(
     if let Some(&v) = db.core_reaches_host_call_memo.get(&id) {
         return v;
     }
+    // Per-`Db` compile-cost counter (a memo MISS) — surfaced via
+    // `CompileOutput::core_reaches_host_call_uncached_calls` for the regression guard; scoped to one `Db` so
+    // the parallel test harness can't pollute it.
+    #[cfg(test)]
+    {
+        db.core_reaches_host_call_uncached_calls += 1;
+    }
     if !seen.insert(id) {
         return false;
     }

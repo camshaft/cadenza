@@ -368,6 +368,16 @@ pub struct CompileOutput {
     /// bound — a future un-memoization flips it back to quadratic. `0` outside `rcdzc`'s emit path.
     /// Always-present (same cross-crate-`#[cfg(test)]` reason as the metrics above) — 8 harmless bytes.
     pub is_cse_shareable_uncached_calls: u64,
+    /// A DIAGNOSTIC METRIC: the `rcdzc` Db's `core_reaches_host_call_uncached_calls` count from this compile —
+    /// how many times `lower::core_reaches_host_call` ran its inner compute (a query that MISSED the
+    /// `core_reaches_host_call_memo`). The adv-62b `lower_let` force-keep and the `runtime_ops` row-op
+    /// materialization each query it with a FRESH `seen` set, and it recurses over the node's whole lowered
+    /// Core subtree, so without the id-keyed memo a deeply-nested expression re-walks overlapping subtrees per
+    /// enclosing node → O(N²)+ lowering; the memo makes inner-runs ~O(nodes). Surfaced here (the `Db` is
+    /// dropped before returning) for the regression-guard test to assert a LINEAR bound — a future
+    /// un-memoization flips it back to quadratic. `0` outside `rcdzc`'s lowering path. Always-present (same
+    /// cross-crate-`#[cfg(test)]` reason as the metrics above) — 8 harmless bytes.
+    pub core_reaches_host_call_uncached_calls: u64,
     /// A DIAGNOSTIC METRIC: how many times this compile BUILT the `rcdzc` Db's `referenced_closure_codes`
     /// set (the lazy whole-program walk behind `backend::wasm::select::def_funcref_taken`). The set is a
     /// whole-program fact cached on first demand and reused, so this stays O(1) in the def count; a broken
