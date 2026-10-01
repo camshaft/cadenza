@@ -1744,6 +1744,24 @@ pub struct Db {
     /// identical → identical emitted wasm.
     pub(crate) is_cse_shareable_memo: crate::fxhash::FxHashMap<StructId, bool>,
 
+    /// Memo of `lower::core_reaches_host_call` — "does the LOWERED core subtree of this node reach a
+    /// `Core::HostCall`?" — keyed by node id ALONE. The verdict is a pure function of the immutable lowered
+    /// Core subtree (reached via `core_child_ids`, following inlined callee bodies), so it is memoizable on
+    /// id. Un-memoized it is the `is_cse_shareable` pole again: the force-keep decision in `lower_let`
+    /// (adv-62b) and the row-op materialization query (`runtime_ops`) each call it with a FRESH `seen` set, so
+    /// on a deeply-nested `let`/arith chain the subtree walk re-runs for every enclosing node → O(N²) (a
+    /// `cdz compile` probe on a nested single-use `let` chain showed `core_reaches_host_call` at ~50%
+    /// inclusive, compile-time climbing ~N^1.3→N^1.8 while wasm output stayed linear). Caching linearizes it.
+    /// Compile-lifetime, byte-neutral (the SAME bool is computed, just once → every force-keep decision is
+    /// identical → identical lowered core and emitted wasm). NO in_progress/tainted needed: the per-call
+    /// `seen` set returns `false` on a back-edge (an ANCESTOR, never in the node's own subtree), and a node is
+    /// written to this memo only AFTER its full subtree verdict is computed, so a cyclic inlined region
+    /// (shared/recursive core) can never cache a premature value — the same acyclic reasoning
+    /// [`Self::is_cse_shareable_memo`] and `escape_verdict_memo` rely on. Safe at lower time because a given
+    /// node id maps to ONE lowered `core_of` (the #8419 order-sensitivity is about `core_of`'s OWN memo, not a
+    /// per-id reachability verdict, which is stable once the node is lowered).
+    pub(crate) core_reaches_host_call_memo: crate::fxhash::FxHashMap<StructId, bool>,
+
     /// Memo of "does this compound type have a free var?" keyed by the payload's shared `Rc` address — for
     /// the `infer::type_of` memoization guard (`!t.has_free_var()`), which runs on EVERY node's solved type.
     /// A wide `Ty::Record`/`Ty::Tuple` (an N-field record) referenced from N nodes had the guard walk its
@@ -3442,6 +3460,7 @@ impl Db {
             payload_sites_memo: crate::fxhash::FxHashMap::default(),
             captured_occ_memo: crate::fxhash::FxHashMap::default(),
             is_cse_shareable_memo: crate::fxhash::FxHashMap::default(),
+            core_reaches_host_call_memo: crate::fxhash::FxHashMap::default(),
             ty_has_free_var: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
