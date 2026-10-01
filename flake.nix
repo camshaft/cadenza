@@ -10081,6 +10081,31 @@
             program = "${wrapper}/bin/cdz-fmt";
           };
 
+        # apps.miri — the no_std cdz-runtime Miri UB-freedom check as a nix-native app (task_731). A THIN
+        # passthrough to the committed implementation/seed/crates/cdz-runtime/miri.sh (v-runtime's verified
+        # recipe, #10189); `nix run .#miri -- [TEST_FILTER]`. The script self-locates the repo root from its own
+        # path and sets MIRIFLAGS + RUST_MIN_STACK=67108864 itself, so the wrapper only resolves the invoking
+        # worktree (to find the IN-TREE script — like apps.world-artifact) and execs it with an optional
+        # test-filter passthrough. NOT an xtask subcommand (miri is a shell recipe, not a clap arm), so no
+        # xtaskBin and no cargo→nix redirect to remove — there was never a `cargo xtask miri`. miri itself needs
+        # the host's rustup nightly + miri component (a documented dev-env assumption in MIRI.md; this is a dev
+        # UB-check, NOT the frozen nix build), inherited from the caller's PATH; the wrapper adds only git.
+        apps.miri =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-miri";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                exec bash "$root/implementation/seed/crates/cdz-runtime/miri.sh" "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-miri";
+          };
+
         # apps.world-artifact — the WIT-world artifact utility as a nix-native app backed by the crane-built
         # `cdzWorldArtifactBin` (v-xtask-decompose). `nix run .#world-artifact -- [world]`. Replaces the old
         # `cargo xtask world-artifact` (which cargo-BUILT cdz-world-artifact then shelled out — a bare cargo
