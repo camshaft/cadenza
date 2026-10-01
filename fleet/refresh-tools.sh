@@ -104,9 +104,15 @@ fi
 # location to find the fleet worktrees dir, and it `readlink -f`s itself back to the hub, so a symlink
 # resolves correctly whereas a copy in ~/.local/bin (no `worktrees/` ancestor) could not. Unlike the
 # cargo/nix/git shims this shadows NO existing command (nothing else is named `fleet`), so a missing/broken
-# link is harmless — agents keep using `cargo xtask fleet …` until the tick-prompt cutover. Idempotent.
+# link is harmless. CEDES TO THE NIX FLAKE: once `install-fleet-daemons` has pointed ~/.local/bin/fleet at the
+# flake-built store binary, this refresh must NOT re-point it back at the hub worktree (that would revert the
+# store binary on every refresh). So skip the re-link when ~/.local/bin/fleet already resolves into /nix/store;
+# until the flake flips it, the target is the hub worktree and this re-links exactly as before. Idempotent.
 FLEET_CMD_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/fleet"
 if [ -f "$FLEET_CMD_SRC" ]; then
-  ln -sf "$FLEET_CMD_SRC" "$BIN/fleet" 2>/dev/null || true
+  case "$(readlink -f "$BIN/fleet" 2>/dev/null)" in
+    /nix/store/*) : ;;  # the flake owns this shim now — leave the store binary in place
+    *) ln -sf "$FLEET_CMD_SRC" "$BIN/fleet" 2>/dev/null || true ;;
+  esac
 fi
 exit 0
