@@ -49,7 +49,13 @@ STATE_DIR="${HOME}/.local/state/membrain-skynet-bridge"
 bridge_pids() {
   local p exe
   for p in $(pgrep -f -- '--bridge-instance membrain' 2>/dev/null || true); do
-    exe="$(readlink -f "/proc/$p/exe" 2>/dev/null || true)"
+    # /proc/<pid>/exe is an absolute symlink to the running binary. Use PLAIN `readlink` (not -f): after a
+    # rebuild the target reads ".../membrain-skynet-bridge (deleted)", and `readlink -f` canonicalizes a
+    # non-existent target to EMPTY — which silently dropped a live daemon running an older binary from the
+    # count, so the guard could neither see it nor shed it: an invisible DOUBLE RELAY. Strip a trailing
+    # " (deleted)" before the basename match so a fresh AND a rebuilt-binary daemon are both counted.
+    exe="$(readlink "/proc/$p/exe" 2>/dev/null || true)"
+    exe="${exe% (deleted)}"
     case "$exe" in
       */membrain-skynet-bridge) printf '%s\n' "$p" ;;
     esac
