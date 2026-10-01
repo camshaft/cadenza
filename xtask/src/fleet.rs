@@ -416,33 +416,55 @@ impl Fleet {
         // each tick so a current worktree re-materializes momentarily. Uses the SAME purely-behind predicate
         // `sync` uses. FAIL-OPEN: any git hiccup (origin/main unfetched, not a repo) → both checks false →
         // predicate false → proceed (never block bootstrap on a git error).
-        if let Some(wt) = self.src.parent() {
-            let anc = |a: &str, b: &str| {
-                Command::new("git")
-                    .current_dir(wt)
-                    .args(["merge-base", "--is-ancestor", a, b])
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false)
-            };
-            if sync_head_should_fast_forward_to_origin_main(
-                anc("HEAD", "origin/main"),
-                anc("origin/main", "HEAD"),
-            ) {
-                eprintln!(
-                    "fleet: SKIP materialize — this worktree is purely BEHIND origin/main (stale checkout); \
-                     not reverting the hub's newer fleet/ files. A synced worktree re-materializes each tick."
-                );
-                return;
-            }
+        // DEPLOY-SOURCE FRESHNESS (task_591). Materialize normally deploys fleet/ from the INVOKING worktree
+        // (`self.src`). A worktree PURELY BEHIND origin/main is a stale checkout: deploying its files REVERTS
+        // the hub's newer launcher/tools (the materialize-revert bug), so the old guard SKIPPED. But under
+        // pr-sync-down (trunk lags origin/main for weeks) a window.sh/tool change LANDED to origin/main reaches
+        // the hub from NO worktree — the stale checkout skips, and the documented `fleet up` remedy re-deploys
+        // the SAME stale copy because its source lags too (the agent had to hand-run `git show origin/main:`).
+        // So when the invoking worktree is purely behind origin/main, deploy the runtime-launched files FROM
+        // origin/main (`git show origin/main:fleet/<f>`) — the same origin/main-preference `fleet sync`/`add`/
+        // `up` already use when behind. A synced worktree (HEAD at/ahead of origin/main, including a dirty one
+        // testing an un-landed local fleet/ edit — that is at origin/main + dirty, not "behind") deploys from
+        // the worktree as before. FAIL-OPEN: any git hiccup (origin/main unfetched, not a repo) → predicate
+        // false → deploy from the worktree.
+        let from_origin_main = self
+            .src
+            .parent()
+            .map(|wt| {
+                let anc = |a: &str, b: &str| {
+                    Command::new("git")
+                        .current_dir(wt)
+                        .args(["merge-base", "--is-ancestor", a, b])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                };
+                sync_head_should_fast_forward_to_origin_main(
+                    anc("HEAD", "origin/main"),
+                    anc("origin/main", "HEAD"),
+                )
+            })
+            .unwrap_or(false);
+        if from_origin_main {
+            eprintln!(
+                "fleet: this worktree is purely BEHIND origin/main (stale checkout, pr-sync-down) — \
+                 materializing the runtime launcher + tools FROM origin/main so a landed change still \
+                 reaches the hub (task_591)."
+            );
         }
-        let loops_dst = self.root.join("loops");
-        std::fs::create_dir_all(&loops_dst).ok();
-        if let Ok(rd) = std::fs::read_dir(self.src.join("loops")) {
-            for e in rd.filter_map(Result::ok) {
-                let p = e.path();
-                if p.extension().is_some_and(|x| x == "md") {
-                    let _ = std::fs::copy(&p, loops_dst.join(e.file_name()));
+        // Loops/*.md are a HUMAN-reference snapshot (windows read role bodies from their OWN worktree, not the
+        // hub — see this fn's doc), so when behind we SKIP the loops copy rather than revert the hub snapshot
+        // from the stale worktree. The runtime-launched files below are what actually need origin/main content.
+        if !from_origin_main {
+            let loops_dst = self.root.join("loops");
+            std::fs::create_dir_all(&loops_dst).ok();
+            if let Ok(rd) = std::fs::read_dir(self.src.join("loops")) {
+                for e in rd.filter_map(Result::ok) {
+                    let p = e.path();
+                    if p.extension().is_some_and(|x| x == "md") {
+                        let _ = std::fs::copy(&p, loops_dst.join(e.file_name()));
+                    }
                 }
             }
         }
@@ -452,21 +474,43 @@ impl Fleet {
         // own location in `<hub>/.claude/fleet/`, so the tracked source must be deployed here (like
         // window.sh) rather than run in place. Any `.sh` we materialize gets the executable bit.
         for f in MATERIALIZED_FLEET_FILES {
-            let src = self.src.join(f);
-            if src.exists() {
-                let dst = self.root.join(f);
-                // A subpath entry (e.g. `bin/fleet`) needs its parent dir in the hub before the copy —
-                // `std::fs::copy` does NOT create it. Harmless for flat entries (parent = the fleet root).
-                if let Some(parent) = dst.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::copy(&src, &dst);
-                #[cfg(unix)]
-                if f.ends_with(".sh") || f.starts_with("bin/") {
-                    // `.sh` shims AND the `bin/` command (`fleet`, no extension) must be executable.
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
-                }
+            // Pick the content source: origin/main when the invoking worktree is a stale checkout (task_591),
+            // else the worktree file. `git show origin/main:fleet/<f>` reads the landed content without a synced
+            // checkout. `materialize_file_bytes` enforces the no-revert invariant: when behind and the git show
+            // fails (file not on origin/main yet, origin/main unfetched), it yields None → SKIP this file,
+            // never falling back to the stale worktree copy (which would revert the hub's newer file).
+            let origin_main_bytes = || {
+                self.src.parent().and_then(|wt| {
+                    Command::new("git")
+                        .current_dir(wt)
+                        .args(["show", &format!("origin/main:fleet/{f}")])
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| o.stdout)
+                })
+            };
+            let worktree_bytes = || {
+                let src = self.src.join(f);
+                src.exists().then(|| std::fs::read(&src).ok()).flatten()
+            };
+            let Some(bytes) =
+                materialize_file_bytes(from_origin_main, origin_main_bytes, worktree_bytes)
+            else {
+                continue;
+            };
+            let dst = self.root.join(f);
+            // A subpath entry (e.g. `bin/fleet`) needs its parent dir in the hub before the write —
+            // write does NOT create it. Harmless for flat entries (parent = the fleet root).
+            if let Some(parent) = dst.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&dst, &bytes);
+            #[cfg(unix)]
+            if f.ends_with(".sh") || f.starts_with("bin/") {
+                // `.sh` shims AND the `bin/` command (`fleet`, no extension) must be executable.
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
             }
         }
     }
@@ -13020,6 +13064,25 @@ fn sync_head_should_fast_forward_to_origin_main(
     om_ancestor_of_head: bool,
 ) -> bool {
     head_ancestor_of_om && !om_ancestor_of_head
+}
+
+/// Pick the bytes to materialize for one runtime-launched fleet file (task_591). When the invoking worktree
+/// is purely behind origin/main (`from_origin_main`), take origin/main's content so a landed-to-main change
+/// reaches the hub even under pr-sync-down — and if that content is unavailable (the `git show` failed, or the
+/// file is not on origin/main yet) yield `None` to SKIP the file, NEVER falling back to the stale worktree
+/// copy (which would revert the hub's newer file — the materialize-revert bug). Otherwise take the worktree
+/// file. The two sources are lazy so the `git show` runs only when behind. Pure over its inputs (the closures
+/// do the I/O); split out so the no-revert invariant is unit-tested without git.
+fn materialize_file_bytes(
+    from_origin_main: bool,
+    origin_main_bytes: impl FnOnce() -> Option<Vec<u8>>,
+    worktree_bytes: impl FnOnce() -> Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    if from_origin_main {
+        origin_main_bytes()
+    } else {
+        worktree_bytes()
+    }
 }
 
 fn sync_base_prefers_origin_main(
@@ -25630,6 +25693,31 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // At/over the threshold — the pause's tens-to-hundreds lag → paused (emit direct-to-main guidance).
         assert!(pr_sync_paused_by_trunk_lag(PR_SYNC_PAUSED_TRUNK_LAG));
         assert!(pr_sync_paused_by_trunk_lag(500));
+    }
+
+    #[test]
+    fn materialize_file_bytes_prefers_origin_main_when_behind_and_never_reverts() {
+        // task_591: when the invoking worktree is purely behind origin/main, materialize must take
+        // origin/main's content so a landed-to-main window.sh/tool change reaches the hub — and must NEVER
+        // fall back to the stale worktree copy (which would revert the hub's newer file).
+        let fresh = || Some(b"fresh-from-origin-main".to_vec());
+        let stale = || Some(b"stale-worktree".to_vec());
+        let missing = || None;
+        // Behind: take origin/main's content, not the stale worktree copy.
+        assert_eq!(
+            materialize_file_bytes(true, fresh, stale).as_deref(),
+            Some(&b"fresh-from-origin-main"[..])
+        );
+        // Behind + origin/main content unavailable (git show failed / file not on origin/main yet): SKIP
+        // (None) — the no-revert invariant, NOT a fallback to the stale worktree copy.
+        assert_eq!(materialize_file_bytes(true, missing, stale), None);
+        // Not behind: deploy the worktree file (the normal path, incl. a dirty un-landed local edit).
+        assert_eq!(
+            materialize_file_bytes(false, fresh, stale).as_deref(),
+            Some(&b"stale-worktree"[..])
+        );
+        // Not behind + no worktree file for this entry: nothing to deploy.
+        assert_eq!(materialize_file_bytes(false, fresh, missing), None);
     }
 
     #[test]
