@@ -11,9 +11,13 @@
 #
 #   board-memory write  --slug SLUG (--agent A | --repo R | --path P) [--name NAME] [--desc TEXT] \
 #                       [--type T] [--tags a,b] [--author ORIG] [--source SRC] [--project N] [FILE]
-#   board-memory write-batch [--base DIR] [--delay SECS] [MANIFEST]   # JSONL, one memory per line (see below)
+#   board-memory write-batch [--base DIR] [--delay SECS] [--max-rate N] [MANIFEST]  # JSONL, one memory/line
 #       --delay SECS throttles between memories (DEFAULT 0.5s so a bulk import never bursts the board/CAS;
 #       raise it to be gentler, or --delay 0 to disable). A big import = many creates + CAS adds, so pace it.
+#       --max-rate N caps throughput at N writes/sec (a minimum interval of 1/N measured from the previous
+#       write's START, so it accounts for how long each write took -- a true rate ceiling, not a fixed gap);
+#       when set it supersedes --delay. Every request also BACKS OFF ON PRESSURE (board/CAS 429 or 5xx is
+#       retried with capped exponential backoff -- see api_send), so an import rides out a transient push-back.
 #   board-memory recall [--agent A] [--repo R]                        # the MEMORY.md-analog name+description index
 #   board-memory read   --slug SLUG (--agent A | --repo R | --path P) # print one memory's body
 #   board-memory get    --slug SLUG (--agent A | --repo R | --path P) # full doc JSON {path,title,metadata,body}
@@ -51,9 +55,46 @@ API="${API%/}"
 # (the vertical-log archives) would exceed Linux MAX_ARG_STRLEN as a single argv arg and fail with
 # "Argument list too long". printf is a shell builtin, so it carries the large string without an exec-arg
 # ceiling, and stdin has no size limit.
-api_get()   { curl -fsS "$API$1"; }
-api_post()  { printf '%s' "$2" | curl -fsS -X POST  -H 'content-type: application/json' --data-binary @- "$API$1"; }
-api_patch() { printf '%s' "$2" | curl -fsS -X PATCH -H 'content-type: application/json' --data-binary @- "$API$1"; }
+#
+# Every request is sent through api_send, which BACKS OFF ON PRESSURE: a board/CAS 429 or any 5xx (or a
+# curl transport failure, surfaced as code 000) is a transient signal -- the board or its content store
+# pushed back -- so the request is retried with capped exponential backoff instead of failing the whole
+# run or hammering a struggling backend. This is what lets the recurring bulk write paths ride out a
+# transient push-back without a hand-tuned delay, since the migration (task_826), the file->board sync
+# (task_848), and the dream pass (task_827) all share this one write path. A 4xx other than 429 is a real
+# client error (bad payload, missing doc) that a retry cannot fix, so it fails fast. On a 2xx the response
+# body is printed to stdout, exactly as the earlier plain curl calls did (callers are unchanged).
+# Tunables (environment; defaults chosen for a multi-thousand-memory import):
+#   BM_MAX_RETRIES   retries after the first attempt on a retryable status (default 4)
+#   BM_BACKOFF_BASE  seconds; wait before retry = base * 2^attempt, capped at BM_BACKOFF_CAP (default 0.5)
+#   BM_BACKOFF_CAP   maximum per-retry wait in seconds (default 8)
+api_send() { # $1 method  $2 path  [$3 body for POST/PATCH] -- prints 2xx body to stdout, nonzero on hard fail
+  local method="$1" path="$2" body="${3:-}" attempt=0 code wait tmp
+  local max="${BM_MAX_RETRIES:-4}" base="${BM_BACKOFF_BASE:-0.5}" cap="${BM_BACKOFF_CAP:-8}"
+  tmp="$(mktemp)"
+  while :; do
+    # -sS (no -f): curl returns 0 for a 4xx/5xx so we can read the status via -w and decide ourselves;
+    # the body is written to $tmp. A transport failure (curl nonzero) is treated as code 000 = retryable.
+    if [ "$method" = GET ]; then
+      code="$(curl -sS -o "$tmp" -w '%{http_code}' "$API$path")" || code=000
+    else
+      code="$(printf '%s' "$body" | curl -sS -o "$tmp" -w '%{http_code}' -X "$method" \
+        -H 'content-type: application/json' --data-binary @- "$API$path")" || code=000
+    fi
+    code="${code:-000}"
+    if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then cat "$tmp"; rm -f "$tmp"; return 0; fi
+    if { [ "$code" = 429 ] || [ "$code" -ge 500 ] || [ "$code" = 000 ]; } && [ "$attempt" -lt "$max" ]; then
+      wait="$(awk -v b="$base" -v a="$attempt" -v c="$cap" 'BEGIN{w=b*(2^a); if(w>c)w=c; print w}')"
+      echo "board-memory: $method $path -> HTTP $code (pressure); retry $((attempt+1))/$max in ${wait}s" >&2
+      sleep "$wait"; attempt=$((attempt+1)); continue
+    fi
+    echo "board-memory: $method $path -> HTTP $code (gave up after $attempt retries): $(head -c 400 "$tmp")" >&2
+    rm -f "$tmp"; return 1
+  done
+}
+api_get()   { api_send GET   "$1"; }
+api_post()  { api_send POST  "$1" "$2"; }
+api_patch() { api_send PATCH "$1" "$2"; }
 
 # Resolve the default authoring agent: $MEMORY_AGENT, else the tmux window name, else whoami.
 default_agent() {
@@ -157,10 +198,12 @@ case "$cmd" in
     ;;
 
   write-batch)
-    base="." delay="0.5" manifest=""   # DEFAULT throttle: pace a bulk import so it never bursts the board/CAS (--delay 0 disables)
+    # DEFAULT throttle: pace a bulk import so it never bursts the board/CAS (--delay 0 disables). --max-rate
+    # (writes/sec) supersedes --delay when set. Env defaults BM_DELAY / BM_MAX_RATE let a host tune without flags.
+    base="." delay="${BM_DELAY:-0.5}" maxrate="${BM_MAX_RATE:-}" last_start="" manifest=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --base) base="$2"; shift 2 ;; --delay) delay="$2"; shift 2 ;;
+        --base) base="$2"; shift 2 ;; --delay) delay="$2"; shift 2 ;; --max-rate) maxrate="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;; --) shift; break ;;
         -*) echo "board-memory write-batch: bad option '$1'" >&2; exit 2 ;; *) manifest="$1"; shift ;;
       esac
@@ -194,8 +237,18 @@ case "$cmd" in
       fi
       [ -n "$body" ] || { echo "line $n ($path): empty body, skipped" >&2; fail=$((fail+1)); continue; }
       meta="$(build_meta "$desc" "$mtype" "$author" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$source" "$tags_json")"
+      # Pace BEFORE the write. --max-rate holds each write to a minimum interval of 1/N seconds measured
+      # from the previous write's START, so slow writes shrink the extra wait and throughput never exceeds
+      # N/sec. --delay (the fixed between-write sleep) is used only when --max-rate is unset.
+      if [ -n "$maxrate" ]; then
+        if [ -n "$last_start" ]; then
+          gap="$(awk -v n="$(date +%s.%N)" -v l="$last_start" -v r="$maxrate" 'BEGIN{d=(1.0/r)-(n-l); printf "%.3f",(d>0?d:0)}')"
+          [ "$gap" != "0.000" ] && sleep "$gap"
+        fi
+        last_start="$(date +%s.%N)"
+      fi
       if do_write "$path" "$name" "$author" "$meta" "$body"; then ok=$((ok+1)); else fail=$((fail+1)); fi
-      [ "$delay" != "0" ] && sleep "$delay"
+      [ -z "$maxrate" ] && [ "$delay" != "0" ] && sleep "$delay"
     done < "$man_in"
     echo "write-batch: $n lines, $ok ok, $fail failed"
     [ "$fail" = "0" ]
