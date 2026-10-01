@@ -98,17 +98,19 @@ if [ "$COUNT" -ge 2 ]; then
   exit 0
 fi
 
-# COUNT == 0 → the daemon is down. Revive it from its own directory, detached (it re-parents to init). Close
-# fd 9 so the launched daemon does NOT inherit + hold this guard's singleton lock — a launched long-lived
-# child holding fd 9 is exactly what wedged the prior node-bridge guard (every later fire then failed
-# `flock -n 9` and skipped before stamping, so `fleet status` read STALE while cron kept firing). A
-# missing/unbuilt binary means it cannot be revived here — alarm for a human.
+# COUNT == 0 → the daemon is down. Revive it from its own directory, detached (it re-parents to init). The
+# subshell CLOSES fd 9 FIRST (`exec 9>&-`) so neither the subshell NOR the launched daemon inherits + holds
+# this guard's singleton lock. A child holding fd 9 is exactly what wedged the guard: the revive's subshell
+# OUTLIVED the fire still holding the lock, so every later `flock -n 9` failed and the guard skipped before
+# stamping (`fleet status` read STALE while cron kept firing, and duplicate daemons piled up). Closing fd 9 at
+# the SUBSHELL level (not only on the setsid command, which left the subshell itself holding it — the leaked
+# holder observed) is the fix. A missing/unbuilt binary means it cannot be revived here — alarm for a human.
 if [ -x "$BRIDGE_BIN" ]; then
-  ( cd "$BRIDGE_DIR" && setsid "$BRIDGE_BIN" \
+  ( exec 9>&- 2>/dev/null; cd "$BRIDGE_DIR" && setsid "$BRIDGE_BIN" \
       --board-api "$BOARD_API" \
       --bridge-instance membrain \
       --state-dir "$STATE_DIR" \
-      >/dev/null 2>&1 </dev/null 9>&- & )
+      >/dev/null 2>&1 </dev/null & )
   printf '%s: slack-bridge (membrain daemon) was DOWN — relaunched %s. The operator alert path (concierge-down #8931) routes through it, so a human should confirm it recovered.\n' \
     "$(now)" "$BRIDGE_BIN" > "$ALARM" 2>/dev/null || true
   printf '%s bridge=DOWN ran-revive=membrain\n' "$(now)" > "$STAMP" 2>/dev/null || true
