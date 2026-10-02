@@ -45,6 +45,11 @@ HEALTH="$STATE_DIR/health.json"
 # How long health.json may go un-updated before a still-UP process counts as WEDGED (alive but not ticking).
 # Generous (5 min >> the per-tick write cadence) so a brief hiccup never trips it; env-overridable.
 HEALTH_STALE_SECS="${CDZ_BRIDGE_HEALTH_STALE_SECS:-300}"
+# task_1070: the board-ref link-root the daemon rewrites to the current tunnel. WITHOUT passing this on the
+# revive below, a crash/reboot relaunch falls back to the daemon's baked-in DEFAULT_LINK_ROOT (the stale
+# green-machine host) and silently regresses every linkified board ref — so the guard MUST pass it on every
+# revive, not just the manual launch. Env-overridable for a future tunnel move.
+LINK_ROOT="${CDZ_BRIDGE_LINK_ROOT:-bythewc-membrain-board.w.tunnels.lab.aws.dev/board}"
 
 # The live daemon's PIDs, counted PRECISELY. A process counts only if BOTH its argv carries the instance
 # anchor (`--bridge-instance membrain`) AND its executable IS the membrain binary — so a shell, an observer, a
@@ -176,6 +181,7 @@ if [ -x "$BRIDGE_BIN" ]; then
       --board-api "$BOARD_API" \
       --bridge-instance membrain \
       --state-dir "$STATE_DIR" \
+      --link-root "$LINK_ROOT" \
       >/dev/null 2>&1 </dev/null & )
   printf '%s: slack-bridge (membrain daemon) was DOWN — relaunched %s. The operator alert path (concierge-down #8931) routes through it, so a human should confirm it recovered.\n' \
     "$(now)" "$BRIDGE_BIN" > "$ALARM" 2>/dev/null || true
