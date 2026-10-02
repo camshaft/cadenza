@@ -4264,7 +4264,7 @@ pub fn closure_resource_core_module(
     imports: &[&RtOp],
     export_abs: u32,
     arg_vts: &[ValType],
-    ret_vt: ValType,
+    ret_vt: Option<ValType>,
     make_param_vts: &[ValType],
     lifted_type_idx: u32,
     layout: &Layout,
@@ -4292,7 +4292,7 @@ pub fn closure_resource_core_module_borrow(
     imports: &[&RtOp],
     export_abs: u32,
     arg_vts: &[ValType],
-    ret_vt: ValType,
+    ret_vt: Option<ValType>,
     make_param_vts: &[ValType],
     lifted_type_idx: u32,
     layout: &Layout,
@@ -6466,7 +6466,7 @@ pub fn multi_closure_resource_core_module_borrow(
         makes,
         plain,
         arg_vts,
-        ret_vt,
+        Some(ret_vt),
         lifted_type_idx,
         layout,
         call_borrow,
@@ -6500,7 +6500,7 @@ pub fn multi_closure_resource_core_module_with_host(
         makes,
         plain,
         arg_vts,
-        ret_vt,
+        Some(ret_vt),
         lifted_type_idx,
         layout,
         false,
@@ -6527,7 +6527,9 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
     makes: &[ClosureMake],
     plain: &[PlainExport],
     arg_vts: &[ValType],
-    ret_vt: ValType,
+    // The closure's result core valtype, or `None` for a `Unit` (zero-result) closure result: the `call`
+    // method functype then carries an empty result vector (task_968). Non-closure/scalar results pass `Some`.
+    ret_vt: Option<ValType>,
     lifted_type_idx: u32,
     layout: &Layout,
     call_borrow: bool,
@@ -6583,14 +6585,20 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
-    // call `(i32 self, args…) -> R` — shared across all makes (same closure signature).
+    // call `(i32 self, args…) -> R` — shared across all makes (same closure signature). A `Unit` closure
+    // result is a ZERO-RESULT `call` (`ret_vt = None`): the component boundary admits a func with no result,
+    // matching the lifted lambda's own zero-result functype (`functype` emits `0x60 <params> <>` for a Unit
+    // body), so the method functype carries an empty result vector (task_968).
     let call_type_idx = make_type_base + nmk;
     {
         let mut params = vec![wasm_abi::CORE_I32]; // self rep
         params.extend(arg_vts.iter().map(|v| vt_byte(*v)));
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         t.extend_from_slice(&wasm_vec(params.len(), &params));
-        t.extend_from_slice(&wasm_vec(1, &[vt_byte(ret_vt)]));
+        match ret_vt {
+            Some(vt) => t.extend_from_slice(&wasm_vec(1, &[vt_byte(vt)])),
+            None => t.extend_from_slice(&wasm_vec(0, &[])),
+        }
         type_items.extend_from_slice(&t);
     }
     let total_types = defined_type_base + n + nmk + 1;

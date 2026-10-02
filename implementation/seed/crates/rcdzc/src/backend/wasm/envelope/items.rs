@@ -267,6 +267,31 @@ pub(super) fn closure_call_functype(
     item
 }
 
+/// The `call` functype for a `Unit` (zero-result) closure result: `(self: own/borrow<t>, args…)` with NO
+/// result (task_968). Identical to [`closure_call_functype`] but the component-model result list is the
+/// EMPTY named-results form `0x01 0x00` (zero results) instead of the single-unnamed-result `0x00 <byte>`,
+/// matching the core `call`'s empty result vector. The host calls it for its (absent) side effect.
+pub(super) fn closure_call_zero_result_functype(
+    self_handle_type_idx: u32,
+    arg_bytes: &[u8],
+) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    param_items.extend_from_slice(&uleb_bytes("self".len() as u64));
+    param_items.extend_from_slice(b"self");
+    param_items.extend_from_slice(&owned_valtype(self_handle_type_idx));
+    for (i, &vt) in arg_bytes.iter().enumerate() {
+        let pname = format!("p{i}");
+        param_items.extend_from_slice(&uleb_bytes(pname.len() as u64));
+        param_items.extend_from_slice(pname.as_bytes());
+        param_items.push(vt);
+    }
+    item.extend_from_slice(&wasm_vec(1 + arg_bytes.len(), &param_items));
+    // Zero results — the named-results form with an empty vec (component-model `resultlist` case `0x01`).
+    item.extend_from_slice(&[0x01, 0x00]);
+    item
+}
+
 /// The `call` functype for a COMPOUND-RESULT closure: `(self: own<t>, args…) -> list<u8>` — like
 /// [`closure_call_functype`] but the result references the `list<u8>` DEFINED type by index (not an inline
 /// scalar byte). `self_handle_type_idx` is the `own<t>` defined type; `list_type_idx` the `list<u8>` type

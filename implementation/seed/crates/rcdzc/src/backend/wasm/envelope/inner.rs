@@ -124,6 +124,7 @@ pub(super) fn resource_inner_component_closure_borrow(
         &[],
         None,
         None,
+        false, // ret_is_unit: the non-tuple wrapper is not on the Unit zero-result path (task_968)
     )
 }
 
@@ -149,6 +150,10 @@ pub(super) fn resource_inner_component_closure_borrow_tuple(
     tuple_suffix_bytes: &[u8],
     tuple_shape: Option<&[TupleFieldShape]>,
     call_arg_slots: Option<&[ArgSlot]>,
+    // TRUE when the closure result is `Unit`: `call`'s functype carries NO result (the empty named-results
+    // form) on BOTH the import and export side of this re-export component, matching the outer lift and the
+    // core's empty result vector (task_968). Only the scalar-arg single-export path threads `true`.
+    ret_is_unit: bool,
 ) -> Vec<u8> {
     // `call`'s self handle type: a `borrow<idx>` (repeatable) or `own<idx>` (single-use) defined-type item.
     let call_handle = |idx: u32| -> Vec<u8> {
@@ -234,6 +239,11 @@ pub(super) fn resource_inner_component_closure_borrow_tuple(
             )); // type 5
             call_import_ty_idx = 5;
             n_items = 3;
+        } else if ret_is_unit {
+            // A `Unit` (zero-result) closure result: the imported `call` functype carries no result (task_968).
+            items.extend_from_slice(&closure_call_zero_result_functype(3, arg_bytes)); // type 4
+            call_import_ty_idx = 4;
+            n_items = 2;
         } else {
             items.extend_from_slice(&closure_call_functype(3, arg_bytes, result_byte)); // type 4
             call_import_ty_idx = 4;
@@ -319,6 +329,14 @@ pub(super) fn resource_inner_component_closure_borrow_tuple(
             ));
             call_export_ty_idx = tup_ty + 1; // 11
             n_items = 3;
+        } else if ret_is_unit {
+            // A `Unit` (zero-result) closure result: the re-exported `call` functype carries no result (task_968).
+            items.extend_from_slice(&closure_call_zero_result_functype(
+                call_handle_ty,
+                arg_bytes,
+            ));
+            call_export_ty_idx = call_handle_ty + 1; // 9
+            n_items = 2;
         } else {
             items.extend_from_slice(&closure_call_functype(
                 call_handle_ty,
