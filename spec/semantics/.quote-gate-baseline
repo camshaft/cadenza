@@ -1474,6 +1474,7 @@ pass	a closure returning an EMPTY List
 pass	a closure returning an empty Bytes crosses as the empty list
 pass	a closure returning an empty String crosses as the empty list
 pass	a closure stored as a MAP value is looked up by a runtime key and applied
+pass	a closure taking Unit as its argument crosses the boundary — the Unit param is elided (should-work)
 pass	a closure taking a Result Bool Bool ARG crosses the direct-call boundary
 pass	a closure taking a Result Int64 Int64 ARG — Err crosses the direct-call boundary
 pass	a closure taking a Result Int64 Int64 ARG — Ok crosses the direct-call boundary
