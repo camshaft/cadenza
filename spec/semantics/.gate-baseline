@@ -11424,7 +11424,7 @@ todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a bare (module …) used as the whole program declines CDZ0201 (a program-FORM gap, not member-type resolution; canonical is do-wrapped)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
-todo	a closure taking Unit as its argument crosses the boundary — the Unit param is elided (should-work)
+pass	a closure taking Unit as its argument crosses the boundary — the Unit param is elided (should-work)
 todo	a delegated perform with no recorded host response traps
 todo	a dependent utf8 size from an arithmetic expression over a byte binder decodes
 todo	a macro reads a caller-scope LOCAL via Eval.in-caller — caller-environment capture (inc-3 slice 2, deferred)

@@ -4008,7 +4008,7 @@ fn run_closure_resource(
             .map(|(_, t)| t.clone())
             .collect();
         let arg_types = param_types.get(1..).unwrap_or(&[]);
-        let coerced = coerce_args(&arg_strs[n_make..], arg_types)?;
+        let coerced = coerce_closure_call_args(&arg_strs[n_make..], arg_types)?;
         let mut call_args = vec![handle[0].clone()];
         call_args.extend(coerced);
         let mut out = [Val::Bool(false)];
@@ -4019,7 +4019,7 @@ fn run_closure_resource(
         // A `(then …)` continuation: call `call-g<n>` a SECOND time on the SAME handle (repeatable under
         // `borrow<t>`), rendering the pair as a tuple.
         if let Some(args2) = second_call {
-            let coerced2 = coerce_args(args2, arg_types)?;
+            let coerced2 = coerce_closure_call_args(args2, arg_types)?;
             let mut call_args2 = vec![handle[0].clone()];
             call_args2.extend(coerced2);
             let mut out2 = [Val::Bool(false)];
@@ -4096,7 +4096,7 @@ fn run_closure_resource(
         .map(|(_, t)| t.clone())
         .collect();
     let arg_types = param_types.get(1..).unwrap_or(&[]);
-    let coerced = coerce_args(&arg_strs[n_make..], arg_types)?;
+    let coerced = coerce_closure_call_args(&arg_strs[n_make..], arg_types)?;
     let mut call_args = vec![handle[0].clone()];
     call_args.extend(coerced);
     // Size the result buffer by `call`'s declared result count: a `Unit`-returning closure is a ZERO-RESULT
@@ -4111,7 +4111,7 @@ fn run_closure_resource(
     // it live across calls — an `own<t>` one would trap "unknown handle index" here), rendering the pair
     // as a tuple. Covers both the bare single-export `make`/`call` and the multi-export `make-<name>`/`call`.
     if let Some(args2) = second_call {
-        let coerced2 = coerce_args(args2, arg_types)?;
+        let coerced2 = coerce_closure_call_args(args2, arg_types)?;
         let mut call_args2 = vec![handle[0].clone()];
         call_args2.extend(coerced2);
         let mut out2 = vec![Val::Bool(false); call.results(&*store).len()];
@@ -4221,7 +4221,7 @@ fn run_resource_escape(
         .map(|(_, t)| t.clone())
         .collect();
     let member_arg_types = member_param_types.get(1..).unwrap_or(&[]);
-    let coerced = coerce_args(&args[n_make..], member_arg_types)?;
+    let coerced = coerce_closure_call_args(&args[n_make..], member_arg_types)?;
     let mut call_args = vec![handle[0].clone()];
     call_args.extend(coerced);
     let mut out = [Val::Bool(false)];
@@ -4377,6 +4377,24 @@ fn coerce_args(raw: &[String], types: &[Type]) -> Result<Vec<Val>> {
         .zip(types)
         .map(|(s, t)| coerce_one(s, t))
         .collect()
+}
+
+/// Coerce a closure `call`'s args, DROPPING any `unit`-valued arg string first. The component `call` ELIDES a
+/// `Unit` parameter — wasm has no `Unit` valtype (`valtype_of(Unit) = None`), so a Unit arg occupies no slot
+/// and the host passes nothing — but the corpus drives a Unit arg as the explicit value token `unit` (e.g.
+/// `(call mk (: unit Unit))`), which the type-blind [`coerce_args`] would otherwise count against the reduced
+/// (elided) declared `types` and reject as an arg-count mismatch. This is the ARGUMENT-side companion to
+/// sizing the result buffer by `call.results().len()` for a zero-result `Unit` closure (task_968): there the
+/// absent result slot is dropped, here the absent arg slot is. A non-`Unit` value never renders as the bare
+/// token `unit`, and a `Unit` arg is always elided from `types`, so dropping every `unit` token aligns the
+/// count while preserving the order of the remaining (non-elided) args (task_1145).
+fn coerce_closure_call_args(raw: &[String], types: &[Type]) -> Result<Vec<Val>> {
+    let filtered: Vec<String> = raw
+        .iter()
+        .filter(|s| s.as_str() != "unit")
+        .cloned()
+        .collect();
+    coerce_args(&filtered, types)
 }
 
 /// Coerce the raw `--arg` strings against the export's component param `types`, BUT for a param the guest
