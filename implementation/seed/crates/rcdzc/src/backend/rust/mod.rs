@@ -910,24 +910,19 @@ fn emit_export(
     // the same name for the declaration + every call.
     if let Some(code) = peelable_export_lambda(db, e, mode) {
         let lam = layout.lifted[code].clone();
-        // A Unit-RESULT eta-peeled closure export DECLINES — mirroring the wasm target, where an exported
-        // closure whose result is `Unit` has no host-boundary form (`closure_boundary_byte(Unit) = None`):
-        // a Unit-result closure only makes sense as an effect callback, and effect-escaping closures are
-        // forbidden, so a `Unit` result has no boundary role. Without this, the eta-peel emits a
-        // `pub fn mk(x) -> ()` the gate driver cannot call as a closure-resource export (E0061). This is
-        // the EXPORT-boundary twin of the internal-lift Unit exception in `lower_lambda_value`: an INTERNAL
-        // Unit-result closure (boxed, applied via a runtime dispatch) compiles on every backend; only the
-        // exported-to-host closure declines. Both faces agree with the wasm target now.
-        if matches!(lam.ret_ty, crate::ty::Ty::Unit) {
-            return Err(Reject::decline(
-                "a closure returning Unit does not cross the Rust export boundary — a Unit-result \
-                 closure has no host-boundary form (only an effect callback returns Unit, and \
-                 effect-escaping closures are forbidden), matching the wasm target's decline",
-            ));
-        }
-        // A Unit-ARGUMENT eta-peeled closure export DECLINES too — the ARG twin of the Unit-result decline
-        // above, mirroring the wasm target (`a closure argument of type Unit has no scalar host-boundary
-        // representation`). A `(def (main) (m.get))` where the module-member convention makes `main` a
+        // A Unit-RESULT eta-peeled closure export CROSSES — a `-> Unit` closure returns `()` and emits as
+        // `pub fn mk(x…) -> ()`, the native equivalent of a wasm ZERO-RESULT functype. A Unit result is
+        // PURE (vacuous, not an escaping effect callback — CDZ0406 does not apply), so nothing forbidden
+        // crosses; the result simply occupies no slot. Falling through routes `mk` into the same
+        // `emit_signature` path a plain `(def (main) unit)` Unit-result export already uses — which crosses
+        // and renders `unit` on both backends — so no Unit-result special-case is needed here. (Corpus
+        // `21-host-closures`, "a closure returning Unit crosses the boundary — unit is a zero-result".) The
+        // Unit-ARGUMENT decline just below is a SEPARATE boundary role and still stands: a Unit arg has no
+        // slot for the host to supply, whereas a Unit result just produces nothing.
+        //
+        // A Unit-ARGUMENT eta-peeled closure export DECLINES — unlike the Unit RESULT above (which now
+        // crosses as a zero-result), a Unit ARG still has no boundary form, mirroring the wasm target
+        // (`a closure argument of type Unit has no scalar host-boundary representation`). A `(def (main) (m.get))` where the module-member convention makes `main` a
         // `Unit -> T` closure emits `pub fn main(u: ())`; the gate driver calls the export with ZERO args
         // (`prog::main()`), so a `()` parameter is an un-buildable artifact (rustc E0061 "takes 1 argument
         // but 0 were supplied") — a case the backend cannot honestly cross MUST decline, never emit source
