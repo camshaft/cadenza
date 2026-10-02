@@ -147,7 +147,12 @@ pub(super) fn emit_multi_closure_resource(
     // multi list<u8> envelope thread the `TupleArgRebuild`. No result-shape decline remains for a multi-export
     // tuple arg. (A compound-arg-alongside-others / variable-length-field compound arg still declines at
     // detection.)
-    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
+    // A `Unit` (zero-result) closure result crosses by value as a zero-result `call` (an empty result list) —
+    // the component boundary admits a func with no result, so it is NOT a CDZ0901 scalar decline (task_968).
+    // Like the list-returning paths `result_byte` is an unused dummy 0; the emit reads `ret_is_unit` to build
+    // the zero-result functype + a `call_indirect` that consumes no result value.
+    let ret_is_unit = matches!(ret_ty.strip_nominal(), crate::ty::Ty::Unit);
+    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection || ret_is_unit {
         0 // unused by the list-returning paths; `call` returns list<u8>
     } else {
         closure_boundary_byte(&ret_ty)
@@ -846,7 +851,12 @@ pub(super) fn emit_mixed_closure_resource(
     // multi list<u8> tuple envelope thread the `TupleArgRebuild`, and the plain (non-closure) exports ride
     // alongside unaffected. No result-shape decline remains for a mixed tuple arg. (A compound-arg-alongside-
     // others / variable-length-field compound arg still declines at detection.)
-    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
+    // A `Unit` (zero-result) closure result crosses by value as a zero-result `call` (an empty result list) —
+    // the component boundary admits a func with no result, so it is NOT a CDZ0901 scalar decline (task_968).
+    // Like the list-returning paths `result_byte` is an unused dummy 0; the emit reads `ret_is_unit` to build
+    // the zero-result functype + a `call_indirect` that consumes no result value.
+    let ret_is_unit = matches!(ret_ty.strip_nominal(), crate::ty::Ty::Unit);
+    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection || ret_is_unit {
         0 // unused by the list-returning paths; `call` returns list<u8>
     } else {
         closure_boundary_byte(&ret_ty)

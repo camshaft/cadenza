@@ -3192,7 +3192,12 @@ fn emit_closure_resource(
     // rebuilt tuple, and the suffix scalars for the scalar AND the three list-result (`bytes`/value-form/
     // value-encode) cores alike, and the envelope emits the interleaved `call` functype. (The MULTI/MIXED/
     // DISTINCT-SIG among-scalars list-result paths remain a follow-on and decline in their own emit fns.)
-    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
+    // A `Unit` (zero-result) closure result crosses by value as a zero-result `call` (an empty result list) —
+    // the component boundary admits a func with no result, so it is NOT a CDZ0901 scalar decline (task_968).
+    // Like the list-returning paths `result_byte` is an unused dummy 0; the emit reads `ret_is_unit` to build
+    // the zero-result functype + a `call_indirect` that consumes no result value.
+    let ret_is_unit = matches!(ret_ty.strip_nominal(), crate::ty::Ty::Unit);
+    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection || ret_is_unit {
         0 // unused by the list-returning paths; `call` returns list<u8>, not a scalar byte
     } else {
         closure_boundary_byte(&ret_ty)
