@@ -7645,7 +7645,7 @@ todo	a GENERIC recursive sum branching through a tuple folds at a concrete insta
 todo	a GENERIC scalar newtype instantiated at Int64 escapes a param'd export as a valid module
 todo	a GENERIC user sum ((Box Int64)) as op result — nominal tag + instantiated payload cross resume
 todo	a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols
-todo	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
+todo	a GENUINELY-recursive pqueue insert (recursion taken) folds to the earlier head's wake instant, never the later-inserted entry
 todo	a HANDLE as a NON-FINAL multi-binding let init completes before the sibling binding
 todo	a HANDLE of an undeclared effect in an uncalled def is rejected
 todo	a HEAP handler seed stays readable in the body after performs advance the state

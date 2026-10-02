@@ -10885,7 +10885,7 @@ todo	a BLOCK-wrapped branch perform in a NESTED handler-arm resume-value threads
 todo	a DEPTH-3 nested-op chain whose deepest resume performs the outer effect threads the advance (post-observer)
 todo	a DIRECT branch perform in a NESTED handler-arm resume-value threads the outer advance (adv-69 a3-direct)
 todo	a FLOAT32-key Map.to-list with an undetermined value is rejected CDZ0203, not a codeless decline
-todo	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
+todo	a GENUINELY-recursive pqueue insert (recursion taken) folds to the earlier head's wake instant, never the later-inserted entry
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a MODULE-exported closure that performs a delegated effect cannot cross the host boundary
 todo	a SCALAR-param export returning a RECORD lifts the result (not a raw handle) (via an imposed WIT world)
