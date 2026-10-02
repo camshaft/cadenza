@@ -429,7 +429,19 @@ pub fn reduce_handle(
             // is not applyable"). The deferred-resume-thunk shape this pass targets is a 4-part arm whose
             // resume is buried in a compound-stored closure, never a `cont: Some` arm.
             let rb = if a.cont.is_none() {
-                reduce_arm_deferred_resume(db, a.body, &ctx)
+                let generic = reduce_arm_deferred_resume(db, a.body, &ctx);
+                // The generic exposure is ARG-INDEPENDENT. An arm whose resume stays BURIED (not on the strict
+                // spine) because a recursion guard pivots on the OP-ARGUMENT gets a PER-SITE retry: when the op
+                // is performed exactly once with a constant arg, substitute it and re-expose so the wired
+                // static iterated-unfold can fold the now-concrete guard. Otherwise keep the generic body.
+                if generic == a.body
+                    && count_resumes(db, a.body) > 0
+                    && !resume_on_strict_spine(db, a.body)
+                {
+                    per_site_expose_deferred_resume(db, k, a, body, &ctx).unwrap_or(generic)
+                } else {
+                    generic
+                }
             } else {
                 a.body
             };
@@ -2140,11 +2152,20 @@ pub(crate) fn rewrite_recursive_base_arm_call(
         // the unfolded body is `(let ((kb …)) (match q …))` — fold the match THROUGH the leading `let`
         // wrappers (kept around the folded arm, preserving the one-shot binding).
         && let Some(folded) = fold_ctor_match_through_lets(db, unfolded)
-        // ACCEPT only if the base arm was taken — no residual self-call to the callee. A non-base concrete
-        // arg (recursion actually needed) leaves the self-call in the folded body → DISCARD (clean decline).
-        && !body_calls_def(db, folded, callee)
     {
-        return Some(folded);
+        // ACCEPT when the base arm was taken — no residual self-call to the callee. A non-base concrete
+        // arg (recursion actually needed) leaves the self-call in the folded body.
+        if !body_calls_def(db, folded, callee) {
+            return Some(folded);
+        }
+        // RECURSION TAKEN: the one-level unfold still self-calls. When a CONCRETE ordering guard decides the
+        // recursion STATICALLY (a per-site-specialized `Instant` makes `(before? …)` constant), finish it
+        // with the bounded iterated unfold — const-fold the guard, re-unfold the surviving self-call, repeat
+        // to a base arm. A symbolic/unbounded guard makes no progress and declines cleanly inside, so the
+        // former unconditional decline is preserved for every genuinely-runtime recursive queue.
+        if let Some(resolved) = finish_static_recursion_unfold(db, folded, callee) {
+            return Some(resolved);
+        }
     }
     // Otherwise recurse into children, rebuilding the first branch that rewrites.
     if let Struct::List(children) = db.ast.get(node).clone() {
@@ -2157,6 +2178,309 @@ pub(crate) fn rewrite_recursive_base_arm_call(
         }
     }
     None
+}
+
+/// A compile-time constant literal [`reduce_pure_to_const`] reduces a PURE guard expression to — an
+/// integer or a boolean. Only these two kinds: the deferred-resume recursion-unfold's ordering guard is
+/// a boolean COMPARISON over integer `Instant`s, so an `Int` (an operand) or a `Bool` (the comparison
+/// result / an `if` condition) is all the guard-fold needs. A value that is neither — a string, a
+/// compound, a non-constant — is not representable here, so the reducer returns `None` and the guard
+/// stays symbolic (the unfold then declines cleanly, never a wrong fold).
+#[derive(Clone, Copy, Debug)]
+enum PureLit {
+    Int(i64),
+    Bool(bool),
+}
+
+/// Reduce the PURE expression at `node` to a compile-time [`PureLit`], or `None` if it does not fold to
+/// one. Composes the existing pure reducers rather than adding a general evaluator: it follows
+/// `Ref`/`Annot` wrappers, reads an integer literal, const-folds a COMPARISON prim over two integer
+/// operands (the one new AST-level const-fold — the comparison head is recognized through
+/// [`crate::eval::meta_apply_of`], which reads `<`'s `(meta apply)` channel as `Prim::Lt`, NOT through
+/// `prim_of` which sees only the comparison RECORD), unfolds a NON-recursive user def one level
+/// (`apply_lambda`, which returns `Err` for a recursive callee so there is no unbounded unroll), and
+/// folds a constructor-`match` ([`fold_ctor_match_through_lets`]). Every step is pure and bounded; a step
+/// that does not reduce to a literal returns `None`. The integer compare is by `to_i64`, so an operand
+/// outside the `i64` range does not fold (`None`) — SOUND: a value too wide to read declines rather than
+/// risk a wrong ordering. Used by [`const_fold_literal_guard_ifs`] to decide a recursion-guard `if`.
+fn reduce_pure_to_const(db: &mut Db, node: StructId) -> Option<PureLit> {
+    match resolved_of(db, node) {
+        Resolved::Int(v) => v.to_i64().map(PureLit::Int),
+        Resolved::Ref { value } => reduce_pure_to_const(db, value),
+        Resolved::Annot { expr, .. } => reduce_pure_to_const(db, expr),
+        Resolved::Apply { head, args } => {
+            // (a) a COMPARISON prim over two integer operands → a boolean. Recognized via `meta_apply_of`
+            // (the `(meta apply)` channel) — `prim_of` alone returns `None` for the comparison RECORD a bare
+            // `<` resolves to. The signed/unsigned/float refinement `lower_comparison` performs on the
+            // GENERIC `Prim::Lt` is irrelevant here: two concrete non-negative `i64` operands compare the
+            // same either way, and a wider/negative operand already declined at the `to_i64` read above.
+            if let Some(p) = crate::eval::meta_apply_of(db, head)
+                && p.is_comparison()
+                && args.len() == 2
+            {
+                let (a, b) = (
+                    reduce_pure_to_const(db, args[0])?,
+                    reduce_pure_to_const(db, args[1])?,
+                );
+                if let (PureLit::Int(x), PureLit::Int(y)) = (a, b) {
+                    return Some(PureLit::Bool(match p {
+                        crate::resolved::Prim::Lt => x < y,
+                        crate::resolved::Prim::Le => x <= y,
+                        crate::resolved::Prim::Gt => x > y,
+                        crate::resolved::Prim::Ge => x >= y,
+                        crate::resolved::Prim::Eq => x == y,
+                        _ => return None,
+                    }));
+                }
+                return None;
+            }
+            // (b) a NON-recursive user-def application (`before?`, `inst-ns`) → β-reduce one level, then
+            // re-resolve (the copied-ref hygiene `rewrite_recursive_base_arm_call` documents) and recurse.
+            // A non-lambda head (`Ok(None)`) or a recursive callee (`Err`) does not match → `None`.
+            let args_v = args.to_vec();
+            if let Ok(Some(reduced)) = crate::eval::apply_lambda(db, head, &args_v) {
+                crate::resolve::forget_subtree(db, reduced);
+                return reduce_pure_to_const(db, reduced);
+            }
+            None
+        }
+        // (c) a constructor-`match` (`(match (Instant n) ((Instant k) k))`) → fold the matched arm, recurse.
+        Resolved::Match { .. } => {
+            let folded = fold_ctor_match_through_lets(db, node)?;
+            reduce_pure_to_const(db, folded)
+        }
+        _ => None,
+    }
+}
+
+/// Walk `node`, replacing any `if` whose CONDITION reduces to a constant boolean ([`reduce_pure_to_const`])
+/// with its TAKEN branch (itself recursively guard-folded), and recursing into every other child. Returns
+/// the rebuilt node, or `node` unchanged when nothing folded. This is the recursion-GUARD fold: a sorted-
+/// insert's `(if (before? a b) …)` whose operands are concrete `Instant`s collapses to the single branch
+/// the order selects, so the iterated unfold then sees whether a residual self-call survives (recursion
+/// taken) or not (base reached).
+fn const_fold_literal_guard_ifs(db: &mut Db, node: StructId) -> StructId {
+    if let Resolved::If { cond, then_, else_ } = resolved_of(db, node)
+        && let Some(PureLit::Bool(b)) = reduce_pure_to_const(db, cond)
+    {
+        let taken = if b { then_ } else { else_ };
+        return const_fold_literal_guard_ifs(db, taken);
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        let mut new_children = Vec::with_capacity(children.len());
+        let mut changed = false;
+        for &c in children.iter() {
+            let nc = const_fold_literal_guard_ifs(db, c);
+            changed |= nc != c;
+            new_children.push(nc);
+        }
+        if changed {
+            return db.push_list(new_children);
+        }
+    }
+    node
+}
+
+/// Unfold ONE residual self-call to `callee` found anywhere in `node`, one level, WITHOUT the base-arm
+/// accept gate `rewrite_recursive_base_arm_call` imposes — so a RECURSION-TAKEN call (whose unfold still
+/// self-calls) is advanced rather than refused. Finds the first `(callee …)` application, β-reduces it one
+/// level ([`apply_lambda_one_level_recursive`]), re-resolves the copy (the copied-ref hygiene), and folds
+/// its ctor-`match`; otherwise recurses into children and rebuilds the first branch that unfolds. `None`
+/// when no self-call is present (the iterated unfold then stops). Bounded by its caller's depth cap.
+fn unfold_self_call_one_level(db: &mut Db, node: StructId, callee: usize) -> Option<StructId> {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && callee_def_index_of(db, head) == Some(callee)
+        && let args_v = args.to_vec()
+        && let Some(unfolded) = crate::eval::apply_lambda_one_level_recursive(db, head, &args_v)
+            .ok()
+            .flatten()
+    {
+        crate::resolve::forget_subtree(db, unfolded);
+        return Some(fold_ctor_match_through_lets(db, unfolded).unwrap_or(unfolded));
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for (i, &c) in children.iter().enumerate() {
+            if let Some(rc) = unfold_self_call_one_level(db, c, callee) {
+                let mut new_children = children.clone();
+                new_children[i] = rc;
+                return Some(db.push_list(new_children));
+            }
+        }
+    }
+    None
+}
+
+/// Finish a RECURSION-TAKEN base-arm unfold statically: a sorted-insert whose ordering guard is decided by
+/// CONCRETE operands (a per-site-specialized `Instant`) folds to the directly-built queue the deferred-
+/// resume fold then pops. Starting from the once-unfolded `folded` body that STILL self-calls `callee`,
+/// iterate: const-fold the recursion-guard `if`s ([`const_fold_literal_guard_ifs`]) to collapse the branch
+/// the static order selects; if no residual self-call remains, accept; else unfold the surviving self-call
+/// one more level ([`unfold_self_call_one_level`]) and repeat. BOUNDED by a depth cap and by requiring each
+/// round to resolve at least one guard — a guard that stays SYMBOLIC (a genuinely runtime/unbounded queue)
+/// makes no progress and DECLINES cleanly (the "never fold the wrong entry, decline the unbounded case"
+/// requirement). `None` = decline (no static resolution); `Some(body)` = the fully-unfolded base body.
+fn finish_static_recursion_unfold(
+    db: &mut Db,
+    folded: StructId,
+    callee: usize,
+) -> Option<StructId> {
+    // A static sorted-insert over a seed queue resolves in a handful of levels; the cap only fences a
+    // non-terminating unfold (an unbounded/non-static queue, which must decline rather than unroll).
+    const DEPTH_BOUND: usize = 64;
+    let mut cur = folded;
+    for _ in 0..DEPTH_BOUND {
+        let g = const_fold_literal_guard_ifs(db, cur);
+        let guard_changed = g != cur;
+        if !body_calls_def(db, g, callee) {
+            // The static order collapsed every recursion guard down to a base arm — accept. Inline the
+            // eval-once `let`s `apply_lambda` left around the resume-closure args so the result is the bare
+            // directly-constructed form (`(PQCons …)`, not `(let … (PQCons …))`) the downstream pop-fold
+            // can see through — otherwise the buried `let` hides the ctor and the pop never fires.
+            return Some(inline_single_use_lets(db, g));
+        }
+        if !guard_changed {
+            // A residual self-call remains but NO guard resolved this round → the recursion is not
+            // statically decided here (symbolic op-arg / genuinely runtime queue) → clean decline.
+            return None;
+        }
+        cur = unfold_self_call_one_level(db, g, callee)?;
+    }
+    None
+}
+
+/// Inline every `let` binding used AT MOST ONCE in its body — bottom-up, dropping the `let` when all its
+/// bindings inline. A binding used ≤1 time runs its init exactly once wherever it is inlined (or zero times
+/// if the single use is in a branch the fold later drops), so inlining neither duplicates an effect nor
+/// reorders — sound even for a non-simple init (unlike [`inline_pure_lets`], which inlines only atom/name
+/// inits). This NORMALIZES the `(sched-step (let ((kb <KBox>)) (PQCons … (: kb KBox) …)))` the static
+/// recursion-unfold leaves — `apply_lambda` eval-once-binds the resume-closure arg — into the bare
+/// `(sched-step (PQCons … <KBox> …))` the downstream pop-fold can see through, so the pop fires and the
+/// unfired tail entry is discarded (otherwise the buried `let` hides the ctor and both stored continuations
+/// survive → a false multi-shot decline). Substitutes on BOTH the binding NAME and its VALUE occurrence (a
+/// body ref resolves through a `Ref` to the value node), after a re-resolve so the refs bind to these binders.
+fn inline_single_use_lets(db: &mut Db, node: StructId) -> StructId {
+    let children = match db.ast.get(node).clone() {
+        Struct::List(c) => c,
+        Struct::Atom(_) => return node,
+    };
+    let new_children: Vec<StructId> = children
+        .iter()
+        .map(|&c| inline_single_use_lets(db, c))
+        .collect();
+    let node = if new_children != children {
+        let r = db.push_list(new_children);
+        crate::resolve::resolve_subtree(db, r);
+        r
+    } else {
+        node
+    };
+    let Some(tail) = db.ast.as_form(node, "let").map(<[StructId]>::to_vec) else {
+        return node;
+    };
+    if tail.len() != 2 {
+        return node;
+    }
+    let body = tail[1];
+    let Struct::List(pairs) = db.ast.get(tail[0]).clone() else {
+        return node;
+    };
+    // Re-bind the body's references to THESE binders before counting/inlining (the copied-ref hygiene the
+    // recursion-unfold documents — a forgotten resolution would read zero refs and drop a binding unsubstituted).
+    crate::resolve::forget_subtree(db, node);
+    crate::resolve::resolve_subtree(db, node);
+    let mut subst: HashMap<StructId, StructId> = HashMap::default();
+    let mut kept: Vec<StructId> = Vec::new();
+    for &pair in &pairs {
+        if let Struct::List(kv) = db.ast.get(pair).clone()
+            && kv.len() == 2
+            && count_param_refs(db, body, kv[0]) + count_param_refs(db, body, kv[1]) <= 1
+        {
+            subst.insert(kv[0], kv[1]);
+            subst.insert(kv[1], kv[1]);
+        } else {
+            kept.push(pair);
+        }
+    }
+    if subst.is_empty() {
+        return node;
+    }
+    let new_body = crate::eval::beta_reduce(db, body, &subst);
+    let result = if kept.is_empty() {
+        new_body
+    } else {
+        let let_head = db.push_name("let");
+        let bindings = db.push_list(kept);
+        db.push_list(vec![let_head, bindings, new_body])
+    };
+    crate::resolve::resolve_subtree(db, result);
+    result
+}
+
+/// Collect, into `out`, the FIRST argument of every perform of operation `key` anywhere in `node` — a
+/// structural walk recording each `(op <arg> …)` whose head `is_perform`s to `key`. Used by the per-site
+/// deferred-resume exposure to find whether an operation is performed with a single constant argument.
+fn collect_op_perform_args(
+    db: &mut Db,
+    node: StructId,
+    key: (u32, u32),
+    ctx: &HandlerCtx,
+    out: &mut Vec<StructId>,
+) {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && is_perform(db, head, ctx) == Some(key)
+        && let Some(&arg0) = args.first()
+    {
+        out.push(arg0);
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for &c in children.iter() {
+            collect_op_perform_args(db, c, key, ctx, out);
+        }
+    }
+}
+
+/// PER-PERFORM-SITE deferred-resume exposure. The GENERIC [`reduce_arm_deferred_resume`] exposes an arm
+/// body ARG-INDEPENDENTLY (one body reused for every perform of the op), so an arm whose resume stays buried
+/// because a recursion guard depends on the OP-ARGUMENT (`(sleep (wake) s …)` whose sorted-insert pivots on
+/// `wake`) never surfaces — `wake` is the symbolic arm parameter at generic exposure. When that op is
+/// performed EXACTLY ONCE in the handle `body` with a COMPILE-TIME-constant argument, specialize: β-substitute
+/// the constant into the arm body and re-run the generic exposure. With the argument concrete, the wired
+/// [`finish_static_recursion_unfold`] can const-fold the guard and unfold to the base arm. Returns the
+/// specialized EXPOSED body, or `None` to keep the generic (unchanged) arm — a clean decline.
+///
+/// SOUND because the specialized body is valid only for that one perform, and the single-constant-perform
+/// gate guarantees there is exactly one. A single op param (the op-argument) is required; a differing or
+/// multiple perform, a non-pure argument, or an exposure that still surfaces nothing all keep the generic arm.
+fn per_site_expose_deferred_resume(
+    db: &mut Db,
+    key: (u32, u32),
+    arm: &HandleArm,
+    body: StructId,
+    ctx: &HandlerCtx,
+) -> Option<StructId> {
+    // A single-argument operation (`(sleep (wake) …)`); the op-argument binds the sole arm param.
+    if arm.params.len() != 1 {
+        return None;
+    }
+    let mut perform_args = Vec::new();
+    collect_op_perform_args(db, body, key, ctx, &mut perform_args);
+    // Exactly ONE perform of this op, with a pure (duplication-safe, substitutable) constant argument.
+    let [arg] = perform_args[..] else {
+        return None;
+    };
+    if !strongly_pure(db, arg, ctx) {
+        return None;
+    }
+    let mut subst: HashMap<StructId, StructId> = HashMap::default();
+    subst.insert(crate::eval::param_name_occ(db, arm.params[0]), arg);
+    let specialized = crate::eval::beta_reduce(db, arm.body, &subst);
+    let exposed = reduce_arm_deferred_resume(db, specialized, ctx);
+    // Use the specialized arm ONLY if the concrete argument actually SURFACED A TAIL RESUME the generic pass
+    // could not. Requiring an exposed tail resume (not merely a changed body) keeps this per-site retry
+    // scoped to the buried-deferred-resume shape it targets: an arm the specialization merely rewrites
+    // without exposing a resume (e.g. a multi-op payload-threading arm the downstream handler fold would
+    // otherwise fold) is LEFT at its generic body, so this never diverts a case that already folds.
+    (exposed != specialized && tail_resume(db, exposed).is_some()).then_some(exposed)
 }
 
 /// Collect every bare-name binder in a match PATTERN (recursing compounds; skipping the ctor/alias head,

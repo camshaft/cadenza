@@ -1273,15 +1273,19 @@
   (output (: 5000000000 UInt64)))
 
 (case
-  "a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry"
+  "a GENUINELY-recursive pqueue insert (recursion taken) folds to the earlier head's wake instant, never the later-inserted entry"
   (doc
     "The complement of the base-arm pin: a genuinely-recursive insert where the recursion is actually
            TAKEN. `pins` is handed a NON-empty queue whose head has an EARLIER waketime (Instant 1) than the
            inserted continuation's (wake = 5e9), so `before? wake 1` is false and the `(pins r t kb)` self-call
-           fires — the entry is placed AFTER the head. The recursion-unfold accept guard must REFUSE this: a
-           one-level unfold would drop the remaining insertions and pop the WRONG entry (a miscompile), so the
-           fold declines cleanly. It must NEVER fold to the later inserted 5e9 entry; if a future increment
-           folds it, it must pop the earlier head (waketime 1) and read 1.")
+           fires — the entry is placed AFTER the head. The static iterated-unfold decides the recursion at
+           compile time: with the `sleep` op-argument specialized to its single concrete perform (wake = 5e9),
+           the ordering guard `before? 5e9 1` const-folds to false and the surviving `(pins …)` self-call
+           unfolds to the base arm, building the directly-constructed two-entry queue [1, 5e9]. `sched-step`
+           then pops the HEAD (waketime 1), applies its continuation, and discards the later 5e9 entry — so the
+           clock advances to 1 and `(Sim.now)` reads 1. It MUST pop the earlier head, NEVER the later-inserted
+           5e9 entry (that would be the wrong-entry miscompile the recursion-unfold's static-termination bound
+           and head-selection guard exist to prevent).")
   (input
     (do
       (type Instant (Instant UInt64))
