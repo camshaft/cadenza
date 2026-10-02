@@ -7632,9 +7632,12 @@
            closure is PURE (performs no effect), so it is not an escaping effect-callback, merely vacuous, and
            vacuous is not forbidden (v-rust-backend ruling, correcting the old `no machine representation`
            reason). `make` mints the borrow handle, `call(0)` returns no value (rendered `unit`), and the
-           `(drop)` clause reclaims the handle so live-objects is 0. Crosses on all four backends: task_968
-           lifted the closure-boundary scalar-result guard for Unit and mapped a Unit closure result to a
-           zero-result `call` functype (the internal-closure path already did).")
+           `(drop)` clause reclaims the handle so live-objects is 0. Crosses on wasm, plain rust, and the
+           cadenza re-emit: task_968 lifted the closure-boundary scalar-result guard for Unit and mapped a
+           Unit closure result to a zero-result `call` functype (the internal-closure path already did). The
+           rust-async host-closure path still declines a Unit result with CDZ0900 (the S2/S3 non-scalar gate
+           rejects it before the plain-rust arm runs), so this case declines on rust-async pending the
+           rust-async CDZ0900 lift (routed to the Rust backend owner); its rust-async baseline is a decline.")
   (input (do (def (mk) (fn ((: x Int64)) unit)) (export mk)))
   (call mk (: 0 Int64))
   (drop)
