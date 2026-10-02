@@ -3516,7 +3516,7 @@ fn closure_resource_core_module_is_structurally_valid() {
         &imports,
         export_abs,
         &[ValType::I64],
-        ValType::I64,
+        Some(ValType::I64),
         &[], // nullary export → make() has no params
         lifted_type_idx,
         &layout,
@@ -3661,7 +3661,7 @@ fn closure_tuple_arg_resource_core_rebuilds_the_cell_and_validates() {
         }],
         &[],
         &[ValType::I64, ValType::I64], // the FLATTENED tuple fields
-        ValType::I64,
+        Some(ValType::I64),
         lifted_type_idx,
         &layout,
         false,
