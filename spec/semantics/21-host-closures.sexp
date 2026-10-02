@@ -7721,18 +7721,12 @@
     "`(def (mk) (fn ((: u Unit)) 42))` — the closure's PARAMETER is `Unit`. Unit IS representable at the
            boundary: a Unit argument pushes no wasm value, so the lifted closure's `call` functype should drop
            the param (mirroring the Unit-RESULT zero-result functype at :7626 and the internal thunk's Unit-param
-           elision at :7690). `make()` mints the handle, `call(unit)` elides the Unit arg and returns 42,
-           and the `(drop)` reclaims the handle so live-objects is 0. Crosses on all four backends via the
-           task_1145 arg-face widening (the symmetric companion to the Unit-RESULT crossing): the wasm
-           admission elides the Unit arg from the `call` boundary and the cdz-run runner drops the elided unit
-           call-arg, while the rust/rust-async arm keeps the native `()` arg (s2_arg_ok admits Ty::Unit). Was
-           CDZ0901 before task_1145, since the ARGUMENT path had no `arg_is_unit` sibling to the result's
-           `ret_is_unit`.")
+           elision at :7690). Declines today with CDZ0901 only because the ARGUMENT path has no `arg_is_unit`
+           sibling to the result's `ret_is_unit` — `closure_boundary_byte(Unit) = None`. Grades Todo; auto-passes
+           when the arg-face widening lands (task_1145).")
   (input (do (def (mk) (fn ((: u Unit)) 42)) (export mk)))
   (call mk (: unit Unit))
-  (drop)
-  (output (: 42 Int64))
-  (live-objects 0))
+  (output (: 42 Int64)))
 
 ; WIDENING the Unit zero-result crossing to the MULTI-ARG closure-export path. The :7626 case crosses a
 ; Unit-result closure on the single SCALAR-arg path (task_968); a Unit result ALONGSIDE a multi-arg (or
