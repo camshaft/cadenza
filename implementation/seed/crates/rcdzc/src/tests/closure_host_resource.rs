@@ -5080,104 +5080,16 @@ fn a_closure_export_delegating_a_build_time_effect_emits_a_valid_component() {
     );
 }
 
-/// A host operation with a STRING (or compound) RESULT has no component boundary form this compiler
-/// emits yet — its result was collected as `result: None` (indistinguishable from a Unit result), then
-/// selection hit the INTERNAL "not in the host-import set" path, a message documented as "a compiler
-/// bug" surfacing for a VALID-but-unsupported program. It now declines HONESTLY at emit, naming the
-/// operation, the offending position (`result`), the type, and the feature limitation — never the
-/// internal-invariant message. (A scalar/unit result stays on the emit path — verified separately.)
-#[test]
-fn a_host_op_with_a_string_result_declines_with_an_honest_message() {
-    use crate::testkit::parse;
-    // A host op with a STRING RESULT whose value is CONSUMED to a scalar (so the EXPORT is a scalar, and
-    // the program flows through the main `emit` path, not the value-escape resource path): `String.len`
-    // of the host's String result. The op still has no scalar boundary form for its String result.
-    let src = "(do (effect ask (op greet (-> Unit String))) \
-                   (def (main) (host (ask) (String.byte-len (ask.greet)))) (export main))";
-    let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a host op returning a String has no boundary form yet — must decline");
-    assert!(
-        err.message.contains("greet")
-            && err.message.contains("result")
-            && err.message.contains("String")
-            && err.message.contains("no component"),
-        "expected an honest feature-limitation decline naming the op/position/type, got: {}",
-        err.message
-    );
-    assert!(
-        !err.message.contains("not in the host-import set"),
-        "must NOT surface the internal-invariant \"compiler bug\" message, got: {}",
-        err.message
-    );
-    // The SAME honest decline covers a String-result op used AS THE EXPORT (routes to the value-escape
-    // path, `emit_runtime_resource`) — the representability guard is hoisted to the TOP of `emit`, before
-    // any escape/closure/main dispatch, so BOTH routings decline honestly (not the internal message).
-    let as_export = "(do (effect ask (op greet (-> Unit String))) \
-                   (def (main) (host (ask) (ask.greet))) (export main))";
-    let err2 = crate::compile::compile_component(&crate::codec::encode(&parse(as_export)))
-        .expect_err("a host op returning a String, used as the export, must also decline");
-    assert!(
-        err2.message.contains("greet") && err2.message.contains("no component"),
-        "the used-as-export routing must also decline honestly, got: {}",
-        err2.message
-    );
-    assert!(
-        !err2.message.contains("not in the host-import set"),
-        "the used-as-export routing must NOT surface the internal message, got: {}",
-        err2.message
-    );
-    // A host op with a DETERMINED COMPOUND ARGUMENT declines honestly too (the guard checks args as
-    // well as the result), with the grammatical article "an argument" — never silently dropping the arg.
-    let compound_arg = "(do (effect ask (op send (-> (Tuple Int64 Int64) Int64))) \
-                   (def (main) (host (ask) (ask.send (tuple 1 2)))) (export main))";
-    let err3 = crate::compile::compile_component(&crate::codec::encode(&parse(compound_arg)))
-        .expect_err("a host op taking a compound argument has no boundary form yet — must decline");
-    assert!(
-        err3.message.contains("send")
-            && err3.message.contains("an argument")
-            && err3.message.contains("no component"),
-        "a compound-argument host op must decline honestly with the correct article, got: {}",
-        err3.message
-    );
-    // A SCALAR-result host op still compiles (the honest decline must not over-reject).
-    let ok = "(do (effect ask (op ask (-> Unit Int64))) \
-                  (def (main) (host (ask) (+ (ask.ask) 1))) (export main))";
-    crate::compile::compile_component(&crate::codec::encode(&parse(ok)))
-        .expect("a scalar-result host op still compiles (the honest decline is result-type-gated)");
-}
+// Behavior MOVED to the executable-semantics corpus (operator corpus-not-host-tests directive): a
+// host op with a STRING RESULT now CROSSES on wasm (PR-10213), so the former "String result must
+// decline" assertions here were stale. The remaining decline-vs-cross outcomes this test asserted —
+// a COMPOUND-argument host op declines CDZ0903, and a SCALAR-result host op crosses — are language
+// behaviors and belong in spec/semantics/ (the 14-effects chapter), not a Rust `#[test]`.
 
-/// PATH-PARITY diagnostic honesty (breaker tick 380): a bare-effect `Bytes` RESULT has no bare-path
-/// wasm boundary emit yet — the `list<u8>` lift (`select::emit_result_lift`) is wired only on the
-/// WORLD-DRIVEN / bytes-provider path (gated by `allow_option_bytes`), so the bare guard correctly
-/// declines rather than emit invalid wasm. The PRIOR message self-contradicted: it listed `list<u8>`
-/// (Bytes) as a supported RESULT form in the same breath it rejected a Bytes result. It now declines
-/// HONESTLY — names the op/result/type, keeps `no component`, and points to the world-driven
-/// `(wit-world …)` path instead of claiming a bare `list<u8>` result is supported. (The RUST backend
-/// emits this natively as a `Vec<u8>`; this guard is the WASM boundary path only.)
-#[test]
-fn a_bare_effect_bytes_result_declines_pointing_to_the_world_driven_path() {
-    use crate::testkit::parse;
-    let src = "(do (effect H (op seed (-> Unit Bytes))) \
-                   (def (main) (host (H) (Bytes.len (H.seed)))) (export main))";
-    let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a bare-effect Bytes result has no bare-path boundary emit — must decline");
-    assert!(
-        err.message.contains("seed")
-            && err.message.contains("result")
-            && err.message.contains("Bytes")
-            && err.message.contains("no component")
-            && err.message.contains("WORLD-DRIVEN"),
-        "expected an honest decline that points to the world-driven path, got: {}",
-        err.message
-    );
-    // Must NOT self-contradict by listing a bare `list<u8>` RESULT as supported (the old wording did).
-    assert!(
-        !err.message
-            .contains("RESULTS cross as: a scalar/unit, a `list<u8>`"),
-        "must not list a bare `list<u8>` result as supported (the self-contradicting wording), got: {}",
-        err.message
-    );
-}
+// Behavior MOVED to the executable-semantics corpus: a bare-effect `Bytes` host RESULT now CROSSES on
+// wasm (PR-10213 wired the spilled `list<u8>` result lift onto the bare path, not just the world-driven
+// one). The decline-vs-cross outcome is a language behavior, so it is pinned in spec/semantics/, not in a
+// Rust `#[test]` (operator corpus-not-host-tests directive). No bare-effect Bytes-RESULT decline remains.
 
 /// MULTI-EXPORT closures COMPILE for the same-signature (one resource type, shared `call`), the
 /// DISTINCT-signature (N resource types, per-group `call-g<n>`), AND the MIXED shape (closures ALONGSIDE
