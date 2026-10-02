@@ -2313,9 +2313,11 @@ pub fn enum_cases(db: &mut Db, ty: &Ty) -> Option<Vec<String>> {
 /// a value-heap byte-rope handle — identical layout, so `emit_result_lift`'s `Ty::Bytes | Ty::String` arm and
 /// `ty_natural_wit`'s `string`→`WitType::String` mapping already handle both); a `List<T>` of a liftable
 /// element (so `list<list<u8>>` = graph.neighbors, and `list<tuple<list<u8>,list<u8>>>` = kv.prefix-scan); a
-/// `Tuple` of liftable fields; and an option-shaped sum over `Bytes` (`option<list<u8>>` = kv.get). A
-/// `Record`/general-`Sum`/scalar leaf is NOT yet admitted here — a record/variant/enum component type must be
-/// NAMED+exported (not anonymous), a later slice; a scalar is not spilled. This is the GENERAL admit predicate
+/// `Tuple` of liftable fields; an all-liftable-fields `Record` (the `Ty::Record` arm below, lifted field-by-field
+/// at its host WIT offset into a name-lex value-heap record and emitted as a DEFINED+EXPORTED component `record`);
+/// an option-shaped sum over `Bytes` (`option<list<u8>>` = kv.get); and a result-shaped sum (`result<list<u8>, enum>`
+/// = run.run). A GENERAL (non-option, non-result) `Sum`/variant and a scalar leaf are NOT admitted — a general
+/// variant component type is a later slice, and a scalar is not spilled. This is the GENERAL admit predicate
 /// that supersedes the three per-shape checks: a new structural shape composes without a new branch.
 pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
     match ty.strip_nominal() {
@@ -3975,13 +3977,18 @@ pub fn set_needs_memory(imports: &[HostImport]) -> bool {
     })
 }
 
-/// The first host operation the subtree at `id` performs whose BOUNDARY SIGNATURE this increment cannot
-/// yet emit — returns `Some((op, "result"|"argument", type-name))` for an HONEST feature-limitation
+/// The first host operation the subtree at `id` performs whose BOUNDARY SIGNATURE the compiler cannot
+/// emit — returns `Some((op, "result"|"argument", type-name))` for an HONEST feature-limitation
 /// decline, or `None` when every reached host op is representable. A `Core::HostCall`'s result is emittable
-/// when it is `Unit` or a scalar (`abi_val_type`); a NON-scalar non-Unit result (a `String`, a compound)
-/// is NOT — a `String`/`list<u8>` result needs the memory + list-lifting envelope the closure-`Bytes`
-/// path has but the plain host envelope does not (a later increment). An ARGUMENT is emittable when it is
-/// `Unit`, a `String` (crosses `(ptr,len)`), or a scalar; a compound argument is likewise deferred.
+/// when it is `Unit`, a scalar (`abi_val_type`), UNDETERMINED (`Ty::Any`/a free var — selection decides it),
+/// a bare `String`/`Bytes` leaf (crosses the spilled `(ptr,len)` lift, task_905), or — on the typed/host-fused
+/// path (`allow_option_bytes && !peer_bound`) — a spilled-liftable compound (`result_is_liftable`) or a
+/// payloadless `enum` crossing by value. An ARGUMENT is emittable when it is `Unit`, a `String`/`Bytes`
+/// (both cross `(ptr,len)` as `list<u8>`-shaped shared memory), a scalar, or — on that same typed/host-fused
+/// path — an all-scalar RECORD (flattened per field), a payloadless `enum`, or a marshalable `list<T>`. A
+/// PEER-BOUND effect widens both sides further: a compound crosses as its opaque runtime handle
+/// (`extern_abi_val_type`). The genuinely-unrepresentable remainder declines here. Each inline predicate
+/// below documents the exact crossing it admits.
 /// Without this, an unrepresentable result silently collected `result: None` (indistinguishable from a
 /// Unit result), then `select` hit the INTERNAL "not in the host-import set" path — a message documented
 /// as "a compiler bug" surfacing for a valid-but-unsupported program. Diagnosing it here names the real
