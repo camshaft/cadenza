@@ -143,3 +143,11 @@ Gate Is The Promotion Bar", constitution §XII).
   reds; a bare chapter number expands to every stem in that chapter). The `fleet up`
   pre-commit hook prints a reminder when a backend file in those paths is staged
   (silence with `FLEET_SKIP_CADENZA_REEMIT_WARN=1`).
+- For a **decline-flip** landing — a change that edits a backend decline predicate AND
+  flips a `.gate-baseline` entry to `pass` — add `--with-lib-tests` to the chapter gate
+  (`cargo xtask corpus-chapter-gate --with-lib-tests <stem>`). The four corpus attrs build
+  only the execution targets, not the `rcdzc` lib unit tests, so a stale "must-decline"
+  `#[test]` that the flip just invalidated stays red in the workspace test derivation (a
+  `gate-local` constituent downstream of this fast loop) and reds main for the next agent.
+  The flag runs `cargo test -p rcdzc` after a green corpus build (native, no nix, fast on a
+  warm tree) so the orphan is caught in the same pre-land loop.

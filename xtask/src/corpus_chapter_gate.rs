@@ -106,9 +106,11 @@ fn current_system() -> String {
 
 /// Run the chapter gate: resolve `<chapter>` to its stem(s), PRINT the resolved list up front (so an
 /// expansion is never silent), then one `nix build --no-link` over every stem's four baseline-sharing
-/// check attrs. A multi-attr `nix build` fails if ANY attr reds — the natural fan-out — and this process
-/// exits with nix's code. Never returns.
-pub(crate) fn run(paths: &Paths, chapter: &str) -> ! {
+/// check attrs. A multi-attr `nix build` fails if ANY attr reds — the natural fan-out. When
+/// `with_lib_tests` is set and the corpus build is GREEN, it then runs `cargo test -p rcdzc` — the guard
+/// a decline-flip land needs, since the four corpus attrs never build the rcdzc lib tests where a stale
+/// "must-decline" `#[test]` lives (#982). This process exits with the first RED stage's code. Never returns.
+pub(crate) fn run(paths: &Paths, chapter: &str, with_lib_tests: bool) -> ! {
     let available = available_stems(paths);
     let stems = match resolve_stems(chapter, &available) {
         Ok(s) => s,
@@ -120,9 +122,14 @@ pub(crate) fn run(paths: &Paths, chapter: &str) -> ! {
     let system = current_system();
     eprintln!(
         "corpus-chapter-gate {chapter} -> gating {} chapter(s): {} \
-         [x4 targets each: corpus-/corpus-cadenza-/corpus-rust-/corpus-rust-async-<stem>]",
+         [x4 targets each: corpus-/corpus-cadenza-/corpus-rust-/corpus-rust-async-<stem>]{}",
         stems.len(),
-        stems.join(", ")
+        stems.join(", "),
+        if with_lib_tests {
+            " + cargo test -p rcdzc"
+        } else {
+            ""
+        }
     );
     let attrs: Vec<String> = stems.iter().flat_map(|s| chapter_target_attrs(s)).collect();
     let mut build_args: Vec<String> = vec!["build".to_string(), "--no-link".to_string()];
@@ -135,6 +142,22 @@ pub(crate) fn run(paths: &Paths, chapter: &str) -> ! {
             eprintln!("xtask corpus-chapter-gate: could not invoke `nix build`: {e}");
             std::process::exit(1);
         });
+    // A red corpus build is the whole result — exit now, before the (slower) lib-test stage.
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    if with_lib_tests {
+        eprintln!("+ cargo test -p rcdzc");
+        let test_status = Command::new("cargo")
+            .args(["test", "-p", "rcdzc"])
+            .current_dir(&paths.repo)
+            .status()
+            .unwrap_or_else(|e| {
+                eprintln!("xtask corpus-chapter-gate: could not invoke `cargo test -p rcdzc`: {e}");
+                std::process::exit(1);
+            });
+        std::process::exit(test_status.code().unwrap_or(1));
+    }
     std::process::exit(status.code().unwrap_or(1));
 }
 

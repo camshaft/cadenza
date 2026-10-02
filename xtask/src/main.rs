@@ -228,6 +228,14 @@ enum Cmd {
     CorpusChapterGate {
         /// A corpus file stem (e.g. `28-wit-abi-boundary`) or a bare chapter number (e.g. `28`).
         chapter: String,
+        /// Also run the `rcdzc` lib unit tests (`cargo test -p rcdzc`) after the corpus build. OFF by
+        /// default so monitor/non-flip gating stays cheap. Pass this on a DECLINE-FLIP land — a change
+        /// that edits a backend decline predicate AND flips a `.gate-baseline` entry to `pass` — because
+        /// the chapter gate builds only the corpus EXECUTION attrs, not the rcdzc lib tests where a stale
+        /// "must-decline" `#[test]` lives; such a test stays red in the workspace test derivation (a
+        /// gate-local constituent downstream of this fast loop) and reds main for the next agent (#982).
+        #[arg(long)]
+        with_lib_tests: bool,
     },
     /// Any UNRECOGNIZED subcommand is forwarded to the nix app of the same name:
     /// `cargo xtask <cmd> [args…]` → `nix run <worktree-flake>#<cmd> -- [args…]`. This is the all-nix
@@ -304,7 +312,10 @@ fn main() {
         Cmd::Codegen { check } => codegen::run(&paths, check),
         Cmd::GuideWasm { store } => guide_wasm(&paths, store),
         Cmd::Fleet { cmd } => fleet::run(&paths, cmd),
-        Cmd::CorpusChapterGate { chapter } => corpus_chapter_gate::run(&paths, &chapter),
+        Cmd::CorpusChapterGate {
+            chapter,
+            with_lib_tests,
+        } => corpus_chapter_gate::run(&paths, &chapter, with_lib_tests),
         Cmd::External(args) => run_external_subcommand(&args),
     }
 }
