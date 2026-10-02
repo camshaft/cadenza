@@ -304,6 +304,13 @@ fn s3_result_ok(t: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     match t.strip_nominal() {
         Ty::Int(_) | Ty::Bool | Ty::Float(_) => true,
+        // A UNIT closure RESULT crosses as a ZERO-RESULT: the factory's returned closure is `Fn(…) -> ()`,
+        // the harness applies it and renders `()` as `unit` (the same `(: unit Unit)` value a plain
+        // `(def (main) unit)` export produces). This is the FACTORY/async analogue of the sync eta-peel
+        // Unit-result arm (`emit_export` mod.rs:914): sync peels `mk` to `pub fn mk(x) -> ()`, but async
+        // keeps it a factory (`peelable_export_lambda` bails on `is_async`), so the Unit result reaches
+        // this gate instead. (Corpus `21-host-closures`, "a closure returning Unit crosses the boundary".)
+        Ty::Unit => true,
         // A String/Bytes RESULT crosses the host boundary AS `list<u8>` — the gate harness renders a factory
         // String/Bytes result as the byte-int list `(104 105)` (`cdz_render_bytes_list`), the observable form
         // the wasm `call` method produces (it copies the handle into linear memory + returns list<u8>). NOT
