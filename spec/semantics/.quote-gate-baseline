@@ -1242,7 +1242,7 @@ pass	a big-endian runtime construction read back through an le pattern crosses t
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
 pass	a bin pattern must consume the whole scrutinee or it does not match
-pass	a bin pattern over a Bytes scrutinee is NOT a type error (declines only on the non-scalar param boundary)
+pass	a bin pattern over a Bytes scrutinee is NOT a type error (it matches and binds the leading byte)
 pass	a bin pattern over a List scrutinee is a type error
 pass	a bin pattern over a String scrutinee is a type error
 pass	a bin pattern over an Int64 scrutinee is a type error
