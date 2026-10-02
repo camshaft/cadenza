@@ -3506,7 +3506,7 @@ fn emit_closure_resource(
             &[],  // single-tuple suffix unused
             None, // single-tuple nested shape unused
             Some(slots),
-            ret_is_unit, // false here — a Unit result with a compound arg declined upstream
+            ret_is_unit, // a Unit (zero-result) result threads to a zero-result functype on the N-arg core (task_1053)
         ));
     }
     // A SOLE `(Option scalar)`/`(Result scalar scalar)` closure ARG with a SCALAR result: the sum crosses as a
@@ -3551,7 +3551,7 @@ fn emit_closure_resource(
             &[],  // suffix unused
             None, // nested shape unused
             Some(std::slice::from_ref(slot)),
-            ret_is_unit, // false here — a Unit result with a sum arg declined upstream
+            ret_is_unit, // a Unit (zero-result) result threads to a zero-result functype on the sum-arg core (task_1053)
         ));
     }
     // A SUM arg with a LIST result (byte-rope / value-form / value-encode) DECLINES cleanly: the three
@@ -3710,7 +3710,7 @@ fn emit_closure_resource(
             tsuf,        // suffix scalar bytes
             None,        // an all-scalar-field tuple — no nested shape
             None,        // single flat tuple → the tuple_arg_bytes path, not the N-slot model
-            ret_is_unit, // false here — a Unit result with a tuple arg declined upstream
+            ret_is_unit, // a Unit (zero-result) result threads to a zero-result functype on the tuple-arg core (task_1053)
         ));
     }
     // DIRECT-CALL NESTED COMPOUND ARG (single-export, SCALAR result): a SOLE fixed-shape compound arg with a
@@ -3753,7 +3753,7 @@ fn emit_closure_resource(
             nsuf,
             Some(shape),
             None,        // single (nested) tuple → the tuple_shape path, not the N-slot model
-            ret_is_unit, // false here — a Unit result with a nested tuple arg declined upstream
+            ret_is_unit, // a Unit (zero-result) result threads to a zero-result functype on the nested-tuple-arg core (task_1053)
         ));
     }
     // A SCALAR single-export closure `call` takes `borrow<t>` — the host KEEPS the handle across calls (a

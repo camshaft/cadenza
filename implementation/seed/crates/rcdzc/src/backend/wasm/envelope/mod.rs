@@ -7037,40 +7037,66 @@ pub fn assemble_closure_resource_borrow_tuple(
         if let Some(slots) = call_arg_slots {
             // N-COMPOUND-ARGS: mint every tuple slot's type(s) starting at type 5 (after the handle at 4), in
             // arg order; the `call` functype references each by index (a scalar slot inlines its byte). The
-            // functype sits right after all the minted tuple types.
+            // functype sits right after all the minted tuple types. A `Unit` result carries no result value, so
+            // the functype is the zero-result form over the same params (task_968, widened to compound args).
             let mut next_type = 5u32;
             let tup_idxs = mint_call_arg_tuple_types(slots, &mut next_type, &mut items);
-            items.extend_from_slice(&closure_call_functype_slots(
-                4,
-                slots,
-                &tup_idxs,
-                result_byte,
-            ));
+            if ret_is_unit {
+                items.extend_from_slice(&closure_call_zero_result_functype_slots(
+                    4, slots, &tup_idxs,
+                ));
+            } else {
+                items.extend_from_slice(&closure_call_functype_slots(
+                    4,
+                    slots,
+                    &tup_idxs,
+                    result_byte,
+                ));
+            }
             call_ft_idx = next_type;
             n_items = 1 + call_arg_tuple_type_count(slots) as usize + 1; // handle + tuple types + functype
         } else if let Some(shape) = tuple_shape {
             // NESTED tuple arg: mint the (possibly multi-level) tuple types starting at type 5; the OUTERMOST
-            // tuple index is what the `call` functype references. `nested_tuple_type_count` types precede it.
+            // tuple index is what the `call` functype references. `nested_tuple_type_count` types precede it. A
+            // `Unit` result makes the functype the zero-result form over the same params (task_968, widened).
             let mut next_type = 5u32;
             let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
-            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
-                4,
-                tuple_prefix_bytes,
-                outer_tup,
-                tuple_suffix_bytes,
-                result_byte,
-            ));
+            if ret_is_unit {
+                items.extend_from_slice(&closure_call_zero_result_tuple_arg_functype_interleaved(
+                    4,
+                    tuple_prefix_bytes,
+                    outer_tup,
+                    tuple_suffix_bytes,
+                ));
+            } else {
+                items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                    4,
+                    tuple_prefix_bytes,
+                    outer_tup,
+                    tuple_suffix_bytes,
+                    result_byte,
+                ));
+            }
             call_ft_idx = next_type; // the functype sits right after all the tuple types
             n_items = 1 + nested_tuple_type_count(shape) as usize + 1; // handle + tuple types + functype
         } else if let Some(fields) = tuple_arg_bytes {
             items.extend_from_slice(&tuple_defined_type(fields)); // type 5
-            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
-                4,
-                tuple_prefix_bytes,
-                5,
-                tuple_suffix_bytes,
-                result_byte,
-            )); // type 6
+            if ret_is_unit {
+                items.extend_from_slice(&closure_call_zero_result_tuple_arg_functype_interleaved(
+                    4,
+                    tuple_prefix_bytes,
+                    5,
+                    tuple_suffix_bytes,
+                )); // type 6
+            } else {
+                items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                    4,
+                    tuple_prefix_bytes,
+                    5,
+                    tuple_suffix_bytes,
+                    result_byte,
+                )); // type 6
+            }
             call_ft_idx = 6;
             n_items = 3;
         } else if ret_is_unit {
