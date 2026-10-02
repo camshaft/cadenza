@@ -10924,6 +10924,9 @@ todo	a closed literal closure forwarded through const-wrapper hops is not a fals
 pass	a closure returning Unit crosses the boundary — unit is a zero-result (should-work)
 todo	a closure taking Unit as its argument crosses the boundary — the Unit param is elided (should-work)
 pass	a multi-argument closure returning Unit crosses as a two-param zero-result (should-work)
+pass	a Tuple-arg closure returning Unit crosses as a zero-result (should-work)
+pass	a NESTED-Tuple-arg closure returning Unit crosses as a zero-result (should-work)
+pass	an Option-arg closure returning Unit crosses as a zero-result (should-work)
 todo	a compound built from two distinct peers escapes the entrypoint as a resource
 todo	a compound-result borrowed closure handle is called twice on the same handle (repeatable)
 pass	a constant-try helper that fails feeds the None arm's fallback into resume

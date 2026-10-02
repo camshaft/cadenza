@@ -7752,6 +7752,47 @@
   (output (: unit Unit))
   (live-objects 0))
 
+; COVERAGE for the compound-ARG + Unit-result emit cores the task_1053 widening admitted. The multi-arg case
+; above exercises only the multi-scalar-arg path; camshaft/cadenza#10225 also extended the zero-result emit to
+; the TUPLE, NESTED-TUPLE, and SUM arg cores (a Unit result alongside each used to decline). Each closure below
+; takes a host-supplied COMPOUND arg over the direct-call boundary and returns Unit, crossing as a ZERO-RESULT
+; `call` whose params are the flattened arg: the arg side already crosses on all four backends (the non-Unit
+; tuple :4290, nested-tuple :4177, and Option :6536 cases) and the Unit result is a zero-result on each, so the
+; whole closure crosses. These lock the arg-shape coverage of the Unit-result widening so a regression on any
+; one compound-arg core's zero-result emit is caught.
+(case
+  "a Tuple-arg closure returning Unit crosses as a zero-result (should-work)"
+  (doc
+    "`(def (mk) (fn ((: p (Tuple Int64 Int64))) unit))` — a fixed-shape scalar `(Tuple Int64 Int64)` arg
+           the host supplies over the direct-call boundary (crosses as `tuple<s64,s64>` flattened to scalar
+           core params + rebuilt in-guest, :4290) with a `Unit` result (a ZERO-RESULT `call`). `make()` mints
+           the handle, `call((3, 4))` returns no value (rendered `unit`). Exercises the tuple-arg core's
+           zero-result emit (task_1053).")
+  (input (do (def (mk) (fn ((: p (Tuple Int64 Int64))) unit)) (export mk)))
+  (call mk (: #tuple(3 4) (Tuple Int64 Int64)))
+  (output (: unit Unit)))
+
+(case
+  "a NESTED-Tuple-arg closure returning Unit crosses as a zero-result (should-work)"
+  (doc
+    "`(def (mk) (fn ((: p (Tuple (Tuple Int64 Int64) Int64))) unit))` — a NESTED fixed-shape tuple arg
+           (crosses flattened + rebuilt in-guest, the nested analogue of :4290) with a `Unit` result.
+           `call(((3, 4), 5))` returns `unit`. Exercises the nested-tuple-arg core's zero-result emit
+           (task_1053).")
+  (input (do (def (mk) (fn ((: p (Tuple (Tuple Int64 Int64) Int64))) unit)) (export mk)))
+  (call mk (: #tuple(#tuple(3 4) 5) (Tuple (Tuple Int64 Int64) Int64)))
+  (output (: unit Unit)))
+
+(case
+  "an Option-arg closure returning Unit crosses as a zero-result (should-work)"
+  (doc
+    "`(def (mk) (fn ((: o (Option Int64))) unit))` — a sum `(Option Int64)` arg the host supplies (crosses
+           as `option<s64>` flattened to `(disc, payload)` + rebuilt in-guest, :6536) with a `Unit` result.
+           `call(Some(42))` returns `unit`. Exercises the sum-arg core's zero-result emit (task_1053).")
+  (input (do (def (mk) (fn ((: o (Option Int64))) unit)) (export mk)))
+  (call mk (: (Some 42) (Option Int64)))
+  (output (: unit Unit)))
+
 (case
   "closures built one per iteration each capture their OWN loop value"
   (doc
