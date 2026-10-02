@@ -6569,6 +6569,7 @@ pass	an Option carrying a Result is matched across two different sum types
 pass	an Option pipeline chains the SAME fallible step twice and reports WHICH step failed
 pass	an Option pipeline short-circuits on the first None
 pass	an Option-arg closure returning Unit crosses as a zero-result (should-work)
+pass	a Record-arg closure returning Unit crosses as a zero-result (should-work)
 pass	an Option-of-HEAP handler state transitions None to Some and grows the payload
 pass	an Option-of-Option classifies three ways at RUNTIME through one compiled match
 pass	an Option-of-Option survives a Map VALUE cell with its exact nesting

@@ -7794,6 +7794,21 @@
   (output (: unit Unit)))
 
 (case
+  "a Record-arg closure returning Unit crosses as a zero-result (should-work)"
+  (doc
+    "`(def (mk) (fn ((: r (Record (: a Int64) (: b Int64)))) unit))` — a fixed-shape scalar
+           `(Record a b)` arg the host supplies (crosses as the record flattened to its sorted-key fields +
+           rebuilt in-guest, :4295) with a `Unit` result. `call(#record(3 4))` returns `unit`, and the
+           `(drop)` reclaims the borrow handle so live-objects is 0 — the record-arg cell is not retained.
+           Exercises the record-arg core's zero-result emit (task_1053), the record sibling of the
+           tuple / nested-tuple / sum cases above; it carries the leak assertion those omit.")
+  (input (do (def (mk) (fn ((: r (Record (: a Int64) (: b Int64)))) unit)) (export mk)))
+  (call mk (: #record(3 4) (Record (: a Int64) (: b Int64))))
+  (drop)
+  (output (: unit Unit))
+  (live-objects 0))
+
+(case
   "closures built one per iteration each capture their OWN loop value"
   (doc
     "N distinct closures from ONE recursive build (vs the pinned one-closure-applied-N-times
