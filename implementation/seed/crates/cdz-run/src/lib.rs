@@ -4099,7 +4099,10 @@ fn run_closure_resource(
     let coerced = coerce_args(&arg_strs[n_make..], arg_types)?;
     let mut call_args = vec![handle[0].clone()];
     call_args.extend(coerced);
-    let mut out = [Val::Bool(false)];
+    // Size the result buffer by `call`'s declared result count: a `Unit`-returning closure is a ZERO-RESULT
+    // `call` (task_968), so its buffer is empty (`out.first()` is None → rendered `unit`); a scalar result
+    // keeps the one slot. Mirrors the plain-export path's `func.results().len()` sizing.
+    let mut out = vec![Val::Bool(false); call.results(&*store).len()];
     if let Err(e) = call.call(&mut *store, &call_args, &mut out) {
         return Ok(Outcome::Trap(trap_message(&e)));
     }
@@ -4111,7 +4114,7 @@ fn run_closure_resource(
         let coerced2 = coerce_args(args2, arg_types)?;
         let mut call_args2 = vec![handle[0].clone()];
         call_args2.extend(coerced2);
-        let mut out2 = [Val::Bool(false)];
+        let mut out2 = vec![Val::Bool(false); call.results(&*store).len()];
         return match call.call(&mut *store, &call_args2, &mut out2) {
             Ok(()) => {
                 let _ = call.post_return(&mut *store);
