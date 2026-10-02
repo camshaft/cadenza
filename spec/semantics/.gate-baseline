@@ -11413,6 +11413,7 @@ todo	a bare Bytes entry param bin-matches on rust (Vec<u8> marshal, #8302) but t
 todo	a bin pattern over a Bytes scrutinee is NOT a type error (declines only on the non-scalar param boundary)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 pass	a closure returning Unit crosses the boundary — unit is a zero-result (should-work)
+todo	a closure taking Unit as its argument crosses the boundary — the Unit param is elided (should-work)
 pass	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a delegated perform with no recorded host response traps
 todo	a dependent utf8 size from an arithmetic expression over a byte binder decodes

@@ -7706,6 +7706,28 @@
       (export main)))
   (output (: 42 Int64)))
 
+; The Unit-ARGUMENT host-closure face — the companion of the Unit-RESULT crossing above (:7626, task_968). A
+; closure whose PARAMETER is `Unit` is exported; the host calls `mk` for the closure handle, then applies it to
+; `unit`. A Unit argument occupies no wasm value (`valtype_of(Unit) = None`), so like a Unit result it carries no
+; machine slot — the host passes nothing and the lifted closure's `call` functype should ELIDE the param, exactly
+; as the internal boxed thunk `Susp(Unit -> Int64)` above (:7690) already elides it. It DECLINES today (CDZ0901 "a
+; closure argument of type Unit has no scalar host-boundary representation"): `closure_boundary_byte` admits only
+; aliased-width scalars, with no Unit special-case on the ARGUMENT path — the symmetric companion gap task_968's
+; `ret_is_unit` left on the RESULT path. Grades `todo`; flips to `pass` across all four backends when the
+; `arg_is_unit` admission/emit widening lands (task_1145). Intended value: `mk()` applied to `unit` → 42.
+(case
+  "a closure taking Unit as its argument crosses the boundary — the Unit param is elided (should-work)"
+  (doc
+    "`(def (mk) (fn ((: u Unit)) 42))` — the closure's PARAMETER is `Unit`. Unit IS representable at the
+           boundary: a Unit argument pushes no wasm value, so the lifted closure's `call` functype should drop
+           the param (mirroring the Unit-RESULT zero-result functype at :7626 and the internal thunk's Unit-param
+           elision at :7690). Declines today with CDZ0901 only because the ARGUMENT path has no `arg_is_unit`
+           sibling to the result's `ret_is_unit` — `closure_boundary_byte(Unit) = None`. Grades Todo; auto-passes
+           when the arg-face widening lands (task_1145).")
+  (input (do (def (mk) (fn ((: u Unit)) 42)) (export mk)))
+  (call mk (: unit Unit))
+  (output (: 42 Int64)))
+
 (case
   "closures built one per iteration each capture their OWN loop value"
   (doc
