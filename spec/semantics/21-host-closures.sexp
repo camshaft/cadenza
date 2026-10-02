@@ -7728,6 +7728,30 @@
   (call mk (: unit Unit))
   (output (: 42 Int64)))
 
+; WIDENING the Unit zero-result crossing to the MULTI-ARG closure-export path. The :7626 case crosses a
+; Unit-result closure on the single SCALAR-arg path (task_968); a Unit result ALONGSIDE a multi-arg (or
+; tuple / sum) `call` shape crosses the same way — as a ZERO-RESULT `call` whose params are the arg shape.
+; The arg side is already admitted independently: two scalar args cross as a two-Int64 `call` (:177), and the
+; rust/rust-async closure-arg gate admits scalar args, so the only machinery the Unit result adds is carrying
+; `ret_vt = None` (the zero-result convention task_968 established) through the multi-arg emit. A two-arg
+; closure returning Unit therefore crosses as a two-param zero-result `call` on all four backends.
+(case
+  "a multi-argument closure returning Unit crosses as a two-param zero-result (should-work)"
+  (doc
+    "`(def (mk) (fn (a b) unit))` — a TWO-ARG closure returning `Unit`. The arg side already crosses (a
+           two-Int64 `call`, :177) and `Unit` is a ZERO-RESULT (`valtype_of(Unit) = None`; the serializer
+           emits `0x60 <params> <>`), so the whole closure crosses as a two-param zero-result `call`: `make()`
+           mints the borrow handle, `call(3, 4)` returns no value (rendered `unit`), and the `(drop)` clause
+           reclaims the handle so live-objects is 0. Widens the :7626 single-scalar-arg Unit crossing to the
+           multi-arg path by carrying `ret_vt = None` through the multi-arg emit; the rust / rust-async arms
+           already cross (scalar args, and the Unit result via `s3_result_ok` / task_1062), so this is a
+           wasm-side admission + emit widening that flips the case from a clean decline to a crossing.")
+  (input (do (def (mk) (fn ((: a Int64) (: b Int64)) unit)) (export mk)))
+  (call mk (: 3 Int64) (: 4 Int64))
+  (drop)
+  (output (: unit Unit))
+  (live-objects 0))
+
 (case
   "closures built one per iteration each capture their OWN loop value"
   (doc

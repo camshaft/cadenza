@@ -1274,6 +1274,58 @@ pub(super) fn closure_call_functype_slots(
     item
 }
 
+/// The `call` functype for a `Unit` (zero-result) closure result over the N-arg slot model: identical params
+/// to [`closure_call_functype_slots`] (scalars + fixed-shape tuples interleaved by the `ArgSlot` model) but the
+/// component-model result list is the EMPTY named-results form `0x01 0x00` (zero results) instead of the
+/// single-unnamed-result `0x00 <byte>`, matching the core `call`'s empty result vector. This is the compound-
+/// and multi-arg generalization of [`closure_call_zero_result_functype`] (task_968, widened to compound args).
+pub(super) fn closure_call_zero_result_functype_slots(
+    self_handle_type_idx: u32,
+    slots: &[ArgSlot],
+    tuple_type_idxs: &[Option<u32>],
+) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    // `self` — the receiver handle (own/borrow<t>), a defined type referenced by index.
+    param_items.extend_from_slice(&uleb_bytes("self".len() as u64));
+    param_items.extend_from_slice(b"self");
+    param_items.extend_from_slice(&owned_valtype(self_handle_type_idx));
+    for (pn, (slot, tup_idx)) in slots.iter().zip(tuple_type_idxs).enumerate() {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        match (slot, tup_idx) {
+            (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
+            (
+                ArgSlot::Tuple(_)
+                | ArgSlot::OptionScalar(_)
+                | ArgSlot::Result(_, _)
+                | ArgSlot::OptionCompound(_)
+                | ArgSlot::ResultCompound(_, _),
+                Some(idx),
+            ) => param_items.extend_from_slice(&owned_valtype(*idx)),
+            (
+                ArgSlot::Tuple(_)
+                | ArgSlot::OptionScalar(_)
+                | ArgSlot::Result(_, _)
+                | ArgSlot::OptionCompound(_)
+                | ArgSlot::ResultCompound(_, _),
+                None,
+            ) => {
+                unreachable!("a Tuple/Option slot must carry a minted defined-type index")
+            }
+            // A mem-leaf/value-form param crosses only on the resource-`make` path, never a closure call.
+            (ArgSlot::MemLeaf { .. }, _) => {
+                unreachable!("a mem-leaf make param does not occur on the closure-call path")
+            }
+        }
+    }
+    item.extend_from_slice(&wasm_vec(1 + slots.len(), &param_items));
+    // Zero results — the named-results form with an empty vec (component-model `resultlist` case `0x01`).
+    item.extend_from_slice(&[0x01, 0x00]);
+    item
+}
+
 /// The `list<u8>`-result counterpart of [`closure_call_functype_slots`]: `(self: <handle<t>>, p0: <slot0>, …)
 /// -> list<u8>`. The param list is identical (scalars + fixed-shape tuples interleaved by the `ArgSlot`
 /// model); only the result references the `list<u8>` DEFINED type by index instead of an inline scalar byte.
@@ -1373,6 +1425,55 @@ pub(super) fn closure_call_tuple_arg_functype_interleaved(
     ));
     // One result — the closure's return valtype (a scalar boundary byte).
     item.extend_from_slice(&[0x00, result_byte]);
+    item
+}
+
+/// The `call` functype for a `Unit` (zero-result) closure result over ONE fixed-shape scalar tuple arg among
+/// scalars: identical params to [`closure_call_tuple_arg_functype_interleaved`] (`(self: <handle<t>>, <prefix
+/// scalars…>, p: tuple<…>, <suffix scalars…>)`) but the component-model result list is the EMPTY named-results
+/// form `0x01 0x00` (zero results) instead of `0x00 <byte>`, matching the core `call`'s empty result vector
+/// (task_968, widened to a Unit result alongside a flat/nested tuple arg).
+pub(super) fn closure_call_zero_result_tuple_arg_functype_interleaved(
+    self_handle_type_idx: u32,
+    prefix_bytes: &[u8],
+    tuple_type_idx: u32,
+    suffix_bytes: &[u8],
+) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    // `self` — the receiver handle (own/borrow<t>), a defined type referenced by index.
+    param_items.extend_from_slice(&uleb_bytes("self".len() as u64));
+    param_items.extend_from_slice(b"self");
+    param_items.extend_from_slice(&owned_valtype(self_handle_type_idx));
+    let mut pn = 0usize; // positional param name counter (cosmetic)
+    for &vt in prefix_bytes {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.push(vt);
+        pn += 1;
+    }
+    // the tuple argument, a defined type referenced by index.
+    {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.extend_from_slice(&owned_valtype(tuple_type_idx));
+        pn += 1;
+    }
+    for &vt in suffix_bytes {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.push(vt);
+        pn += 1;
+    }
+    item.extend_from_slice(&wasm_vec(
+        1 + prefix_bytes.len() + 1 + suffix_bytes.len(),
+        &param_items,
+    ));
+    // Zero results — the named-results form with an empty vec (component-model `resultlist` case `0x01`).
+    item.extend_from_slice(&[0x01, 0x00]);
     item
 }
 

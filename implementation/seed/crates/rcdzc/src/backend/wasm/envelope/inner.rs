@@ -203,40 +203,66 @@ pub(super) fn resource_inner_component_closure_borrow_tuple(
         let n_items: usize;
         if let Some(slots) = call_arg_slots {
             // N-COMPOUND-ARGS: mint every tuple slot's type(s) starting at type 4 (after handle 3), in arg
-            // order; the `call` functype references each by index (a scalar slot inlines its byte).
+            // order; the `call` functype references each by index (a scalar slot inlines its byte). A `Unit`
+            // result carries no result value, so the functype is the zero-result form over the same params.
             let mut next_type = 4u32;
             let tup_idxs = mint_call_arg_tuple_types(slots, &mut next_type, &mut items);
-            items.extend_from_slice(&closure_call_functype_slots(
-                3,
-                slots,
-                &tup_idxs,
-                result_byte,
-            ));
+            if ret_is_unit {
+                items.extend_from_slice(&closure_call_zero_result_functype_slots(
+                    3, slots, &tup_idxs,
+                ));
+            } else {
+                items.extend_from_slice(&closure_call_functype_slots(
+                    3,
+                    slots,
+                    &tup_idxs,
+                    result_byte,
+                ));
+            }
             call_import_ty_idx = next_type;
             n_items = 1 + call_arg_tuple_type_count(slots) as usize + 1;
         } else if let Some(shape) = tuple_shape {
             // NESTED tuple arg: mint the tuple types starting at type 4 (after handle 3); the OUTERMOST tuple
-            // index is what the `call` functype references, and the functype sits right after all of them.
+            // index is what the `call` functype references, and the functype sits right after all of them. A
+            // `Unit` result makes the functype the zero-result form over the same params.
             let mut next_type = 4u32;
             let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
-            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
-                3,
-                tuple_prefix_bytes,
-                outer_tup,
-                tuple_suffix_bytes,
-                result_byte,
-            ));
+            if ret_is_unit {
+                items.extend_from_slice(&closure_call_zero_result_tuple_arg_functype_interleaved(
+                    3,
+                    tuple_prefix_bytes,
+                    outer_tup,
+                    tuple_suffix_bytes,
+                ));
+            } else {
+                items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                    3,
+                    tuple_prefix_bytes,
+                    outer_tup,
+                    tuple_suffix_bytes,
+                    result_byte,
+                ));
+            }
             call_import_ty_idx = next_type;
             n_items = 1 + nested_tuple_type_count(shape) as usize + 1;
         } else if let Some(fields) = tuple_arg_bytes {
             items.extend_from_slice(&tuple_defined_type(fields)); // type 4
-            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
-                3,
-                tuple_prefix_bytes,
-                4,
-                tuple_suffix_bytes,
-                result_byte,
-            )); // type 5
+            if ret_is_unit {
+                items.extend_from_slice(&closure_call_zero_result_tuple_arg_functype_interleaved(
+                    3,
+                    tuple_prefix_bytes,
+                    4,
+                    tuple_suffix_bytes,
+                )); // type 5
+            } else {
+                items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                    3,
+                    tuple_prefix_bytes,
+                    4,
+                    tuple_suffix_bytes,
+                    result_byte,
+                )); // type 5
+            }
             call_import_ty_idx = 5;
             n_items = 3;
         } else if ret_is_unit {
@@ -294,39 +320,66 @@ pub(super) fn resource_inner_component_closure_borrow_tuple(
         let n_items: usize;
         if let Some(slots) = call_arg_slots {
             // N-COMPOUND-ARGS: mint every tuple slot's type(s) right after the export-side handle, in arg
-            // order; the re-typed `call` functype references each by index against the exported resource.
+            // order; the re-typed `call` functype references each by index against the exported resource. A
+            // `Unit` result carries no result value, so the functype is the zero-result form over the params.
             let mut next_type = call_handle_ty + 1;
             let tup_idxs = mint_call_arg_tuple_types(slots, &mut next_type, &mut items);
-            items.extend_from_slice(&closure_call_functype_slots(
-                call_handle_ty,
-                slots,
-                &tup_idxs,
-                result_byte,
-            ));
+            if ret_is_unit {
+                items.extend_from_slice(&closure_call_zero_result_functype_slots(
+                    call_handle_ty,
+                    slots,
+                    &tup_idxs,
+                ));
+            } else {
+                items.extend_from_slice(&closure_call_functype_slots(
+                    call_handle_ty,
+                    slots,
+                    &tup_idxs,
+                    result_byte,
+                ));
+            }
             call_export_ty_idx = next_type;
             n_items = 1 + call_arg_tuple_type_count(slots) as usize + 1;
         } else if let Some(shape) = tuple_shape {
             let mut next_type = call_handle_ty + 1;
             let outer_tup = mint_tuple_type_nested(shape, &mut next_type, &mut items);
-            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
-                call_handle_ty,
-                tuple_prefix_bytes,
-                outer_tup,
-                tuple_suffix_bytes,
-                result_byte,
-            ));
+            if ret_is_unit {
+                items.extend_from_slice(&closure_call_zero_result_tuple_arg_functype_interleaved(
+                    call_handle_ty,
+                    tuple_prefix_bytes,
+                    outer_tup,
+                    tuple_suffix_bytes,
+                ));
+            } else {
+                items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                    call_handle_ty,
+                    tuple_prefix_bytes,
+                    outer_tup,
+                    tuple_suffix_bytes,
+                    result_byte,
+                ));
+            }
             call_export_ty_idx = next_type;
             n_items = 1 + nested_tuple_type_count(shape) as usize + 1;
         } else if let Some(fields) = tuple_arg_bytes {
             let tup_ty = call_handle_ty + 1; // 10
             items.extend_from_slice(&tuple_defined_type(fields));
-            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
-                call_handle_ty,
-                tuple_prefix_bytes,
-                tup_ty,
-                tuple_suffix_bytes,
-                result_byte,
-            ));
+            if ret_is_unit {
+                items.extend_from_slice(&closure_call_zero_result_tuple_arg_functype_interleaved(
+                    call_handle_ty,
+                    tuple_prefix_bytes,
+                    tup_ty,
+                    tuple_suffix_bytes,
+                ));
+            } else {
+                items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                    call_handle_ty,
+                    tuple_prefix_bytes,
+                    tup_ty,
+                    tuple_suffix_bytes,
+                    result_byte,
+                ));
+            }
             call_export_ty_idx = tup_ty + 1; // 11
             n_items = 3;
         } else if ret_is_unit {
