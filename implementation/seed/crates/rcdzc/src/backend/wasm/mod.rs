@@ -3267,23 +3267,13 @@ fn emit_closure_resource(
             .collect::<Result<_, _>>()?
     };
     // A `Unit` (zero-result) closure result crosses as a zero-result `call` (`ret_vt = None`): the serializer
-    // emits an empty result vector and the envelope a no-result method functype (task_968). Supported on the
-    // SCALAR-arg single-export path. A Unit result ALONGSIDE a compound (tuple/sum/record/multi) arg would need
-    // the zero-result emit on each compound-arg core (a later widening), so it declines here rather than falling
-    // through to the scalar `call` with a mismatched (compound) argument.
+    // emits an empty result vector and the envelope a no-result method functype (task_968). This holds for
+    // every argument shape — a scalar, a compound (tuple/sum/record) arg, or a multi-arg `call` — because a
+    // `Unit` result occupies no wasm value regardless of what the `call` takes. The compound-arg emit cores
+    // thread this same `ret_is_unit` to a zero-result functype + a no-result `call_indirect`, so admission
+    // sets `ret_vt = None` here without regard to `tuple_arg` / `nested_tuple` / `multi_args` / `sum_arg`.
     let ret_is_unit = matches!(ret_ty.strip_nominal(), crate::ty::Ty::Unit);
     let ret_vt: Option<crate::backend::wasm::lir::ValType> = if ret_is_unit {
-        if tuple_arg.is_some()
-            || nested_tuple.is_some()
-            || multi_args.is_some()
-            || sum_arg.is_some()
-        {
-            return Err(Reject::unsupported(
-                "a closure returning Unit (a zero-result closure) is supported only with scalar arguments; a \
-                 Unit result alongside a compound (tuple, sum, or record) argument does not cross the \
-                 host-closure boundary",
-            ));
-        }
         None
     } else {
         Some(
