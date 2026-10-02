@@ -934,18 +934,42 @@ fn emit_export(
         // and renders `unit` on both backends — so no Unit-result special-case is needed here. (Corpus
         // `21-host-closures`, "a closure returning Unit crosses the boundary — unit is a zero-result".)
         //
-        // A Unit-ARGUMENT eta-peeled closure export ALSO crosses (task_1145) — the argument analogue of the
-        // Unit RESULT above. A Unit value crosses as the native Rust `()`: `(def (mk) (fn ((: u Unit)) 42))`
-        // peels to `pub fn mk(u: ()) -> i64 { 42 }`, and the gate driver applies the explicit `(: unit Unit)`
-        // argument as `prog::mk(())` (`cdz-rust-render::rust_call_arg` renders the Unit value as `()`), so the
-        // one-param signature and the one-arg call agree. BEFORE task_1145 this declined — but the decline was
-        // calibrated for a DIFFERENT drive (a module-member `(def (main) (m.get))` whose closure the driver
-        // calls with ZERO args, `prog::main()`, where a `u: ()` param is unfilled → rustc E0061, breaker
-        // zmz1/#8317). breaker's :7719 passes an EXPLICIT unit arg, so the one-arg `prog::mk(())` call fills
-        // the `()` param and there is no E0061; the real blocker was only that the Unit value marshaled to the
-        // bare token `unit` (now fixed to `()`). A `()` is zero-sized, so this agrees with the wasm target's
-        // elided-slot crossing observationally. (The module-member nullary-convention zero-arg drive is a
-        // separate shape, routed separately; it is not among task_1145's cases.)
+        // A Unit-ARGUMENT eta-peeled closure export crosses when the Unit param is an EXPLICIT user lambda
+        // parameter (task_1145) — the argument analogue of the Unit RESULT above. A Unit value crosses as the
+        // native Rust `()`: `(def (mk) (fn ((: u Unit)) 42))` peels to `pub fn mk(u: ()) -> i64 { 42 }`, and
+        // the corpus drives it with an EXPLICIT `(: unit Unit)` arg → `prog::mk(())` (`rust_call_arg` renders
+        // the Unit value as `()`), so the one-param signature and the one-arg call agree. A `()` is zero-sized,
+        // so this agrees with the wasm target's elided-slot crossing observationally. (Corpus :7719.)
+        //
+        // BUT a Unit param SYNTHESIZED by the module-member nullary-argument convention still DECLINES. The
+        // convention (`modules.rs`) rewrites a nullary member `(def (get) 42)` referenced as `(m.get)` into a
+        // `Unit -> T` thunk `(fn ((: _$u Unit)) 42)`, so `(def (main) (m.get))` eta-peels to the SAME
+        // `pub fn main(u: ()) -> i64` emit as an explicit lambda — but it is driven as a NULLARY ENTRY: the
+        // gate calls `prog::main()` with ZERO args, so a `()` parameter is unfilled → rustc E0061 "takes 1
+        // argument but 0 were supplied" (breaker zmz1/#8317, pinned by `a_unit_arg_eta_peeled_closure_export_
+        // declines_not_e0061` + corpus `11-modules` :485). The host supplies no value for the synthetic arg,
+        // so decline rather than emit an un-buildable artifact. The convention's param name `_$u` is a
+        // reserved synthetic that never collides with a user binder (`modules.rs`: `$` is not a user-ident
+        // char), so it reliably distinguishes the implicit convention arg from an explicit user `Unit` param —
+        // the ONE emit-visible signal, since both shapes are a nullary def whose body is a `Unit -> T` closure.
+        // (When the `(m.get)` → value root fold lands upstream — v-core-opt, 11-0028 — `main` stops being a
+        // Unit-arg closure and this decline no longer fires; the case then folds to 42 and crosses.)
+        // Coded CDZ0901 (`ClosureAcrossAbiUnsupported`) to MATCH the wasm target's code for the same
+        // Unit-closure-arg boundary decline — a user-facing refusal carries a code (CDZ0900-elimination), and
+        // the uniform code lets the shared corpus guard (11-modules :485, a TODO `(output 42)`) read the same
+        // refusal on wasm + rust rather than an uncoded one.
+        if lam.params.iter().any(|(binder, ty)| {
+            matches!(ty.strip_nominal(), crate::ty::Ty::Unit)
+                && db.ast.as_name(*binder) == Some("_$u")
+        }) {
+            return Err(Reject::coded(
+                crate::diag::Code::ClosureAcrossAbiUnsupported,
+                "a closure taking a Unit argument does not cross the Rust export boundary — the Unit \
+                 parameter is the module-member nullary-argument convention's synthetic arg, which the host \
+                 supplies no value for (the export is driven as a nullary entry, so a `()` parameter would be \
+                 an un-buildable artifact); an explicit user Unit parameter crosses",
+            ));
+        }
         return emit_signature(
             db,
             &e.name,
