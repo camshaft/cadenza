@@ -5009,7 +5009,7 @@
 (case
   "a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes"
   (doc
-    "The String-entry-arg family (13-strings — wasm declines the entry marshal, a sound todo; rust
+    "The String-entry-arg family (13-strings — both targets now marshal the String entry arg: wasm via the bare envelope, rust
            computes) composed with EFFECTS: the boundary `s` is concatenated into a runtime rope, performed
            as the String ARGUMENT of `Log.emit`, and the handler arm reads the arg's byte length —
            byte-len(\"xy\"+\"abc\") = 5. Pins the full entry→rope→op-arg→arm chain on the targets that
