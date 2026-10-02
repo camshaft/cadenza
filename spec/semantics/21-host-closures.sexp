@@ -7616,13 +7616,13 @@
   (call app (: 5 Int64))
   (output (: (Some #list(5 6)) (Option (List Int64)))))
 
-; The UNIT closure boundary: a closure ARGUMENT or RESULT of type `Unit` has no machine slot
-; (`valtype_of(Unit) = None` — Unit occupies no wasm value, so a lifted lambda taking/returning it cannot be
-; represented), so it declines at lambda-lift ("a closure's result type has no machine representation"),
-; BEFORE the resource envelope. A `Unit`-returning closure is a pure side-effecting callback — only
-; meaningful once a closure may perform an effect (which the scope fence CDZ0406 forbids crossing today), so
-; there is nothing for it to DO across the boundary. Declines (pinned `(declines)`) — a documented boundary,
-; not a miscompile.
+; The UNIT closure RESULT boundary: a closure RESULT of type `Unit` occupies no wasm value
+; (`valtype_of(Unit) = None`), so it CROSSES as a ZERO-RESULT — the serializer emits `0x60 <params> <>`,
+; exactly as a plain `(def (main) unit)` export already does. task_968 (#10218) lifted the closure-boundary
+; scalar-result guard for Unit (a `ret_is_unit` sibling flag) and mapped a Unit closure result to a
+; zero-result `call` functype; the Unit-ARGUMENT face elides the param (see the Unit-PARAM thunk below). A
+; `Unit`-returning closure is a pure, vacuous callback — CDZ0406 does NOT apply, since it performs no effect
+; — so it crosses rather than declining. A documented crossing, not a miscompile.
 (case
   "a closure returning Unit crosses the boundary — unit is a zero-result (should-work)"
   (doc
@@ -7632,22 +7632,21 @@
            closure is PURE (performs no effect), so it is not an escaping effect-callback, merely vacuous, and
            vacuous is not forbidden (v-rust-backend ruling, correcting the old `no machine representation`
            reason). `make` mints the borrow handle, `call(0)` returns no value (rendered `unit`), and the
-           `(drop)` clause reclaims the handle so live-objects is 0. Crosses on wasm, plain rust, and the
-           cadenza re-emit: task_968 lifted the closure-boundary scalar-result guard for Unit and mapped a
-           Unit closure result to a zero-result `call` functype (the internal-closure path already did). The
-           rust-async host-closure path still declines a Unit result with CDZ0900 (the S2/S3 non-scalar gate
-           rejects it before the plain-rust arm runs), so this case declines on rust-async pending the
-           rust-async CDZ0900 lift (routed to the Rust backend owner); its rust-async baseline is a decline.")
+           `(drop)` clause reclaims the handle so live-objects is 0. Crosses on all four backends — wasm,
+           plain rust, rust-async, and the cadenza re-emit: task_968 lifted the closure-boundary scalar-result
+           guard for Unit and mapped a Unit closure result to a zero-result `call` functype (the
+           internal-closure path already did), and task_1062 added the rust-async arm (`Ty::Unit` in
+           `s3_result_ok`) so the async factory result crosses as a zero-result like plain rust.")
   (input (do (def (mk) (fn ((: x Int64)) unit)) (export mk)))
   (call mk (: 0 Int64))
   (drop)
   (output (: unit Unit))
   (live-objects 0))
 
-; CONTRAST — the INTERNAL boxed Unit-result closure COMPILES. The sound decline above is about EXPORTING
-; a Unit-result closure to the HOST (the host `call` boundary needs a scalar result). But a Unit-result
-; closure boxed in a GUEST sum, extracted by a match, and applied via `call_indirect` crosses no host
-; boundary — it is an ordinary internal runtime closure. `valtype_of(Unit) = None`, but a Unit result is a
+; COMPANION — the INTERNAL boxed Unit-result closure. The case above EXPORTS a Unit-result closure to the
+; HOST (crossing as a host-boundary zero-result, task_968); this one boxes a Unit-result closure in a GUEST
+; sum, extracts it by a match, and applies it via `call_indirect` — crossing no host boundary, an ordinary
+; internal runtime closure. `valtype_of(Unit) = None`, but a Unit result is a
 ; ZERO-RESULT wasm functype (the serializer already emits `0x60 <params> <>` for a Unit-returning
 ; function), so the lift guard / `closure_type_index` / the unreached-lift stub must map Unit to a
 ; zero-result functype, NOT decline. Was a MISCOMPILE-adjacent DECLINE (Copilot PR #388): the whole program
@@ -7663,9 +7662,9 @@
            even though the serializer already treats a Unit result as a ZERO-RESULT functype. The fix maps
            a Unit result to a zero-result functype in the lift guard, `closure_type_index`, and the
            unreached-lift stub (a Unit stub body is EMPTY, not `const 0`). `main` runs the boxed Unit
-           closure for its (absent) effect, then returns 42. Contrast the sound decline above: EXPORTING a
-           Unit-result closure to the HOST still declines (the host `call` needs a scalar); only the
-           INTERNAL boxed path compiles.")
+           closure for its (absent) effect, then returns 42. The case above is the companion host-boundary
+           crossing: EXPORTING a Unit-result closure to the HOST also crosses now (task_968), as a
+           zero-result; this is the INTERNAL boxed path.")
   (input
     (do
       (type Box (C (-> Int64 Unit)))
