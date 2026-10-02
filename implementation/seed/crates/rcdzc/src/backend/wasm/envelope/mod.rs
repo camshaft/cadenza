@@ -6835,6 +6835,7 @@ pub fn assemble_closure_resource(
         arg_bytes,
         result_byte,
         false,
+        false, // ret_is_unit: the own-path wrapper never carries a Unit zero-result (task_968)
     )
 }
 
@@ -6856,6 +6857,8 @@ pub fn assemble_closure_resource_borrow(
     arg_bytes: &[u8],
     result_byte: u8,
     call_borrow: bool,
+    // TRUE for a `Unit` (zero-result) closure result — the `call` method functype carries no result (task_968).
+    ret_is_unit: bool,
 ) -> Vec<u8> {
     assemble_closure_resource_borrow_tuple(
         main_core,
@@ -6871,6 +6874,7 @@ pub fn assemble_closure_resource_borrow(
         &[],
         None,
         None,
+        ret_is_unit,
     )
 }
 
@@ -6906,6 +6910,10 @@ pub fn assemble_closure_resource_borrow_tuple(
     // `None` reproduces the single-tuple (or scalar) path byte-for-byte. Only the single-export scalar-result
     // path threads a `Some` (with ≥2 tuple slots); every other caller passes `None`.
     call_arg_slots: Option<&[ArgSlot]>,
+    // TRUE when the closure result is `Unit` (a ZERO-RESULT `call`): the `call` method functype carries NO
+    // result (the empty named-results form) instead of `result_byte`, matching the core's empty result vector
+    // (task_968). Only the SCALAR-arg single-export path threads `true`; every other caller passes `false`.
+    ret_is_unit: bool,
 ) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
@@ -7065,6 +7073,11 @@ pub fn assemble_closure_resource_borrow_tuple(
             )); // type 6
             call_ft_idx = 6;
             n_items = 3;
+        } else if ret_is_unit {
+            // A `Unit` (zero-result) closure result: the `call` method functype carries no result (task_968).
+            items.extend_from_slice(&closure_call_zero_result_functype(4, arg_bytes)); // type 5
+            call_ft_idx = 5;
+            n_items = 2;
         } else {
             items.extend_from_slice(&closure_call_functype(4, arg_bytes, result_byte)); // type 5
             call_ft_idx = 5;
@@ -7092,6 +7105,7 @@ pub fn assemble_closure_resource_borrow_tuple(
             tuple_suffix_bytes,
             tuple_shape,
             call_arg_slots,
+            ret_is_unit,
         ),
     ));
     out.extend_from_slice(&section(

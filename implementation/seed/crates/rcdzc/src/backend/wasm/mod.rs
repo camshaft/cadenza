@@ -3192,7 +3192,12 @@ fn emit_closure_resource(
     // rebuilt tuple, and the suffix scalars for the scalar AND the three list-result (`bytes`/value-form/
     // value-encode) cores alike, and the envelope emits the interleaved `call` functype. (The MULTI/MIXED/
     // DISTINCT-SIG among-scalars list-result paths remain a follow-on and decline in their own emit fns.)
-    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
+    // A `Unit` (zero-result) closure result crosses by value as a zero-result `call` (an empty result list) —
+    // the component boundary admits a func with no result, so it is NOT a CDZ0901 scalar decline (task_968).
+    // Like the list-returning paths `result_byte` is an unused dummy 0; the emit reads `ret_is_unit` to build
+    // the zero-result functype + a `call_indirect` that consumes no result value.
+    let ret_is_unit = matches!(ret_ty.strip_nominal(), crate::ty::Ty::Unit);
+    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection || ret_is_unit {
         0 // unused by the list-returning paths; `call` returns list<u8>, not a scalar byte
     } else {
         closure_boundary_byte(&ret_ty)
@@ -3261,8 +3266,31 @@ fn emit_closure_resource(
             })
             .collect::<Result<_, _>>()?
     };
-    let ret_vt = valtype_of(&ret_ty)
-        .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
+    // A `Unit` (zero-result) closure result crosses as a zero-result `call` (`ret_vt = None`): the serializer
+    // emits an empty result vector and the envelope a no-result method functype (task_968). Supported on the
+    // SCALAR-arg single-export path. A Unit result ALONGSIDE a compound (tuple/sum/record/multi) arg would need
+    // the zero-result emit on each compound-arg core (a later widening), so it declines here rather than falling
+    // through to the scalar `call` with a mismatched (compound) argument.
+    let ret_is_unit = matches!(ret_ty.strip_nominal(), crate::ty::Ty::Unit);
+    let ret_vt: Option<crate::backend::wasm::lir::ValType> = if ret_is_unit {
+        if tuple_arg.is_some()
+            || nested_tuple.is_some()
+            || multi_args.is_some()
+            || sum_arg.is_some()
+        {
+            return Err(Reject::unsupported(
+                "a closure returning Unit (a zero-result closure) is supported only with scalar arguments; a \
+                 Unit result alongside a compound (tuple, sum, or record) argument does not cross the \
+                 host-closure boundary",
+            ));
+        }
+        None
+    } else {
+        Some(
+            valtype_of(&ret_ty)
+                .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?,
+        )
+    };
 
     // The EXPORT's parameters (C-HOST-2): `make` forwards them so the host computes a distinct closure per
     // input (`(def (adder k) …)` → `make(k)`). Each must have a scalar boundary ABI type this increment.
@@ -3488,6 +3516,7 @@ fn emit_closure_resource(
             &[],  // single-tuple suffix unused
             None, // single-tuple nested shape unused
             Some(slots),
+            ret_is_unit, // false here — a Unit result with a compound arg declined upstream
         ));
     }
     // A SOLE `(Option scalar)`/`(Result scalar scalar)` closure ARG with a SCALAR result: the sum crosses as a
@@ -3532,6 +3561,7 @@ fn emit_closure_resource(
             &[],  // suffix unused
             None, // nested shape unused
             Some(std::slice::from_ref(slot)),
+            ret_is_unit, // false here — a Unit result with a sum arg declined upstream
         ));
     }
     // A SUM arg with a LIST result (byte-rope / value-form / value-encode) DECLINES cleanly: the three
@@ -3686,10 +3716,11 @@ fn emit_closure_resource(
             result_byte,
             false,
             Some(field_bytes),
-            tpre, // prefix scalar bytes (empty for a sole-tuple arg)
-            tsuf, // suffix scalar bytes
-            None, // an all-scalar-field tuple — no nested shape
-            None, // single flat tuple → the tuple_arg_bytes path, not the N-slot model
+            tpre,        // prefix scalar bytes (empty for a sole-tuple arg)
+            tsuf,        // suffix scalar bytes
+            None,        // an all-scalar-field tuple — no nested shape
+            None,        // single flat tuple → the tuple_arg_bytes path, not the N-slot model
+            ret_is_unit, // false here — a Unit result with a tuple arg declined upstream
         ));
     }
     // DIRECT-CALL NESTED COMPOUND ARG (single-export, SCALAR result): a SOLE fixed-shape compound arg with a
@@ -3731,7 +3762,8 @@ fn emit_closure_resource(
             npre, // prefix scalar bytes (empty for a sole nested tuple, non-empty when among scalars)
             nsuf,
             Some(shape),
-            None, // single (nested) tuple → the tuple_shape path, not the N-slot model
+            None,        // single (nested) tuple → the tuple_shape path, not the N-slot model
+            ret_is_unit, // false here — a Unit result with a nested tuple arg declined upstream
         ));
     }
     // A SCALAR single-export closure `call` takes `borrow<t>` — the host KEEPS the handle across calls (a
@@ -3762,6 +3794,7 @@ fn emit_closure_resource(
         &arg_bytes,
         result_byte,
         true,
+        ret_is_unit, // a Unit (zero-result) closure result → no-result `call` method functype (task_968)
     ))
 }
 

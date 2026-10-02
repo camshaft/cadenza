@@ -7631,12 +7631,15 @@
            `(def (main) unit)` export already crosses + passes on both backends). CDZ0406 does NOT apply — this
            closure is PURE (performs no effect), so it is not an escaping effect-callback, merely vacuous, and
            vacuous is not forbidden (v-rust-backend ruling, correcting the old `no machine representation`
-           reason). Declines today only because the closure-LIFT guard does not yet map a Unit closure-result
-           to a zero-result functype (the internal-closure path already does). Grades Todo; auto-passes when the
-           lift guard is fixed.")
+           reason). `make` mints the borrow handle, `call(0)` returns no value (rendered `unit`), and the
+           `(drop)` clause reclaims the handle so live-objects is 0. Crosses on all four backends: task_968
+           lifted the closure-boundary scalar-result guard for Unit and mapped a Unit closure result to a
+           zero-result `call` functype (the internal-closure path already did).")
   (input (do (def (mk) (fn ((: x Int64)) unit)) (export mk)))
   (call mk (: 0 Int64))
-  (output (: unit Unit)))
+  (drop)
+  (output (: unit Unit))
+  (live-objects 0))
 
 ; CONTRAST — the INTERNAL boxed Unit-result closure COMPILES. The sound decline above is about EXPORTING
 ; a Unit-result closure to the HOST (the host `call` boundary needs a scalar result). But a Unit-result

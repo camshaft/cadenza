@@ -176,7 +176,11 @@ pub(super) fn emit_distinct_sig_resource(
                 crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
             };
         let ret_is_list = ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some();
-        let result_byte = if ret_is_list {
+        // A `Unit` (zero-result) group result is admitted by value as a zero-result `call` (task_968): not a
+        // CDZ0901 scalar decline. `result_byte` is an unused dummy 0 like the list paths; the emit reads
+        // `ret_is_unit`. Kept OUT of `ret_is_list` so it does not disturb the sum-arg classification below.
+        let ret_is_unit = matches!(ret_ty.strip_nominal(), crate::ty::Ty::Unit);
+        let result_byte = if ret_is_list || ret_is_unit {
             0
         } else {
             closure_boundary_byte(&ret_ty)
@@ -1217,7 +1221,13 @@ pub(super) fn emit_distinct_sig_roundtrip_resource(
                 .ok_or_else(|| closure_boundary_reject("argument", &dom, &db.name_ctx()))?;
             cur = *rng;
         }
-        valtype_of(&cur).ok_or_else(|| closure_boundary_reject("result", &cur, &db.name_ctx()))?;
+        // A `Unit` (zero-result) closure result is representable in-guest as a zero-result `call_indirect`
+        // (an empty result list), so it is NOT a CDZ0901 decline here (task_968); only a non-Unit result needs
+        // a machine valtype. (`valtype_of(Ty::Unit)` is `None`, which would otherwise reject a sound Unit.)
+        if !matches!(cur.strip_nominal(), crate::ty::Ty::Unit) {
+            valtype_of(&cur)
+                .ok_or_else(|| closure_boundary_reject("result", &cur, &db.name_ctx()))?;
+        }
     }
 
     // Per export: its make/consume spec + which group. Collected before the build moves the layout.
@@ -1341,7 +1351,14 @@ pub(super) fn emit_distinct_sig_roundtrip_resource(
                 // returns `None` for a scalar or unrenderable shape. (A fixed-shape compound took `ret_template`.)
                 crate::lower::sum_shape_descriptor(db, e.result.strip_nominal())
             };
-            let result_byte = if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some()
+            // A `Unit` (zero-result) consumer result is admitted by value as a zero-result `call` (task_968):
+            // not a CDZ0901 scalar decline. `result_byte` is an unused dummy 0 like the list paths; the emit
+            // detects Unit via the `ret_vt: Option<ValType>` carriage (None for Unit), not this byte.
+            let ret_is_unit = matches!(e.result.strip_nominal(), crate::ty::Ty::Unit);
+            let result_byte = if ret_is_bytes
+                || ret_template.is_some()
+                || ret_descriptor.is_some()
+                || ret_is_unit
             {
                 0 // unused by the list-returning paths; the consumer returns list<u8>
             } else {
