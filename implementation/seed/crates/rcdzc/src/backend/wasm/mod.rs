@@ -3016,6 +3016,31 @@ fn emit_closure_resource(
         cur = *rng;
     }
     let ret_ty = cur;
+    // A Unit closure ARGUMENT crosses only when it is an EXPLICIT user parameter (`:7719`,
+    // `(def (mk) (fn ((: u Unit)) 42))`). The module-member nullary-argument convention synthesizes
+    // `(fn ((: _$u Unit)) V)` for a nullary member `(def (m) V)`, so `(def (main) (m.get))` eta-peels to the
+    // SAME `Unit -> T` closure (corpus `11-modules` :485/:1343/0028). The host supplies no value for that
+    // synthetic arg (a Unit occupies no slot), so an exported closure whose Unit arg is the convention's
+    // `_$u` binder must DECLINE CDZ0901 — matching the Rust target's `emit_export` discriminator and the
+    // pre-task_1145 wasm decline — rather than elide the arg and emit a resource the cadenza re-emit then
+    // leaks (an un-dropped handle, `live-objects` 1). `_$u` is a reserved synthetic (`$` is not a user-ident
+    // char, see `modules.rs`), so it reliably distinguishes the convention arg from an explicit user `Unit`
+    // parameter; the discriminator keys off the BINDER NAME, not the type (both are `Unit`). (task_1145
+    // re-land — the wasm twin of the rust narrowing.)
+    if layout.lifted.iter().any(|l| {
+        l.params.iter().any(|(binder, ty)| {
+            matches!(ty.strip_nominal(), crate::ty::Ty::Unit)
+                && db.ast.as_name(*binder) == Some("_$u")
+        })
+    }) {
+        return Err(Reject::coded(
+            crate::diag::Code::ClosureAcrossAbiUnsupported,
+            "a closure taking a Unit argument does not cross the host boundary when that parameter is the \
+             module-member nullary-argument convention's synthetic arg, which the host cannot supply (a Unit \
+             occupies no slot, so there is nothing to pass); an explicit user Unit parameter crosses"
+                .to_string(),
+        ));
+    }
     // A closure that PERFORMS AN EFFECT cannot cross to the host (operator decision 2026-07-13). A
     // closure's handler context is the `(handle …)`/`(host …)` frame that was OPEN when the closure was
     // built; that frame is gone by the time the host later invokes `call()`, so an effect performed inside
