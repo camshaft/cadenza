@@ -104,15 +104,6 @@ fn s2_arg_ok(ncx: &crate::ty::NameCtx, t: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     match t.strip_nominal() {
         Ty::Int(_) | Ty::Bool | Ty::Float(_) => true,
-        // A UNIT closure ARG crosses — the direct argument analogue of `s3_result_ok`'s `Ty::Unit => true`
-        // (which made a Unit RESULT cross). A Unit value is zero-width: it crosses as the native Rust `()`,
-        // the host-boundary form the gate driver supplies (`(: unit Unit)` marshals to `()`, see
-        // `cdz-rust-render::rust_call_arg`). On the rust-async factory path the returned closure keeps its
-        // native `()` arg and the driver applies it (`handle.call(&mut env, ()).await`); so a sole-Unit-arg
-        // factory `(def (mk) (fn ((: u Unit)) 42))` crosses with no emit change beyond admitting the shape
-        // here. (The SYNC eta-peel path emits a plain `pub fn mk(u: ()) -> i64 { 42 }` and the driver calls
-        // `prog::mk(())` — see `emit_export`'s peelable arm, which no longer declines a Unit param.)
-        Ty::Unit => true,
         // A String/Bytes closure ARG is fine when the closure is APPLIED IN-GUEST with a literal/constructed
         // value the emitter already lowers (`(g "hello")` — the consumer builds the `String` in its own body,
         // no host-supplied String crosses the boundary). `rust_call_arg` renders a String literal natively,
@@ -932,20 +923,30 @@ fn emit_export(
         // crosses; the result simply occupies no slot. Falling through routes `mk` into the same
         // `emit_signature` path a plain `(def (main) unit)` Unit-result export already uses — which crosses
         // and renders `unit` on both backends — so no Unit-result special-case is needed here. (Corpus
-        // `21-host-closures`, "a closure returning Unit crosses the boundary — unit is a zero-result".)
+        // `21-host-closures`, "a closure returning Unit crosses the boundary — unit is a zero-result".) The
+        // Unit-ARGUMENT decline just below is a SEPARATE boundary role and still stands: a Unit arg has no
+        // slot for the host to supply, whereas a Unit result just produces nothing.
         //
-        // A Unit-ARGUMENT eta-peeled closure export ALSO crosses (task_1145) — the argument analogue of the
-        // Unit RESULT above. A Unit value crosses as the native Rust `()`: `(def (mk) (fn ((: u Unit)) 42))`
-        // peels to `pub fn mk(u: ()) -> i64 { 42 }`, and the gate driver applies the explicit `(: unit Unit)`
-        // argument as `prog::mk(())` (`cdz-rust-render::rust_call_arg` renders the Unit value as `()`), so the
-        // one-param signature and the one-arg call agree. BEFORE task_1145 this declined — but the decline was
-        // calibrated for a DIFFERENT drive (a module-member `(def (main) (m.get))` whose closure the driver
-        // calls with ZERO args, `prog::main()`, where a `u: ()` param is unfilled → rustc E0061, breaker
-        // zmz1/#8317). breaker's :7719 passes an EXPLICIT unit arg, so the one-arg `prog::mk(())` call fills
-        // the `()` param and there is no E0061; the real blocker was only that the Unit value marshaled to the
-        // bare token `unit` (now fixed to `()`). A `()` is zero-sized, so this agrees with the wasm target's
-        // elided-slot crossing observationally. (The module-member nullary-convention zero-arg drive is a
-        // separate shape, routed separately; it is not among task_1145's cases.)
+        // A Unit-ARGUMENT eta-peeled closure export DECLINES — unlike the Unit RESULT above (which now
+        // crosses as a zero-result), a Unit ARG still has no boundary form, mirroring the wasm target
+        // (`a closure argument of type Unit has no scalar host-boundary representation`). A `(def (main) (m.get))` where the module-member convention makes `main` a
+        // `Unit -> T` closure emits `pub fn main(u: ())`; the gate driver calls the export with ZERO args
+        // (`prog::main()`), so a `()` parameter is an un-buildable artifact (rustc E0061 "takes 1 argument
+        // but 0 were supplied") — a case the backend cannot honestly cross MUST decline, never emit source
+        // that fails to compile (breaker zmz1/#8317). Independent of the module-member nullary CONVENTION
+        // ruling (routed separately): whichever way that lands, an EXPORTED closure taking a Unit arg has no
+        // host-boundary form (a Unit occupies no slot; the host cannot supply it), exactly as wasm declines.
+        if lam
+            .params
+            .iter()
+            .any(|(_, ty)| matches!(ty.strip_nominal(), crate::ty::Ty::Unit))
+        {
+            return Err(Reject::decline(
+                "a closure taking a Unit argument does not cross the Rust export boundary — a Unit \
+                 argument has no host-boundary form (a Unit occupies no slot, so the host cannot supply \
+                 it), matching the wasm target's decline",
+            ));
+        }
         return emit_signature(
             db,
             &e.name,

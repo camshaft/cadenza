@@ -3139,14 +3139,8 @@ fn emit_closure_resource(
     {
         Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args/sum_arg, not arg_bytes
     } else {
-        // A `Unit` argument occupies no wasm value (`valtype_of(Unit) = None`), so the host passes nothing
-        // for it: it is ELIDED from the `call` boundary param list, mirroring the Unit-RESULT zero-result
-        // crossing and the internal boxed thunk's Unit-param elision. The lifted closure body already binds a
-        // Unit parameter as zero-width, and the emit drops it from the `call` method functype + the core
-        // `call_indirect` in lockstep (task_1145).
         arg_tys
             .iter()
-            .filter(|t| !matches!(t.strip_nominal(), crate::ty::Ty::Unit))
             .map(|t| {
                 closure_boundary_byte(t)
                     .ok_or_else(|| closure_boundary_reject("argument", t, &db.name_ctx()))
@@ -3265,12 +3259,8 @@ fn emit_closure_resource(
         vts.extend(payload_vts.iter().copied());
         vts
     } else {
-        // Elide a `Unit` arg (zero-width) from the core `call` signature too, in lockstep with `arg_bytes`
-        // above — the lifted body is `(…) -> R` with no slot for the Unit param, so the core `call` has no
-        // param for it either (task_1145).
         arg_tys
             .iter()
-            .filter(|t| !matches!(t.strip_nominal(), crate::ty::Ty::Unit))
             .map(|t| {
                 valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
             })

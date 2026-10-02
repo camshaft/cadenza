@@ -114,14 +114,6 @@ pub fn rust_call_arg(val: &str) -> String {
         "-inf" => return "f64::NEG_INFINITY".to_string(),
         _ => {}
     }
-    // A UNIT value (`unit`) — the canonical value text of a `Unit` ENTRY/closure arg (`(: unit Unit)`). The
-    // Rust unit value is `()`, not an identifier named `unit`; emitting the bare word verbatim leaks `unit`
-    // into the driver source → rustc E0425 "cannot find value `unit` in this scope" (task_1145, breaker's
-    // :7719 Unit-ARGUMENT host-closure case, surfaced on the rust-async explicit-Unit-arg marshal). A Unit
-    // arg crosses as the zero-sized `()`, matching the emitted closure/export's `()` parameter.
-    if v == "unit" {
-        return "()".to_string();
-    }
     // A CHAR literal (`#\a`, `#\space`, `#\newline`, `#\λ`, `#\u+0041`) — the canonical value form of a
     // `Char` ENTRY arg. The emitted export's parameter is `c: char`, so decode the `#\<word>` (exactly as
     // the front-end's `char_leaf`: a single scalar / a named special / a `u+HHHH` code point) and cross it
