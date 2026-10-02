@@ -176,6 +176,7 @@ if [ -x "$BRIDGE_BIN" ]; then
       --board-api "$BOARD_API" \
       --bridge-instance membrain \
       --state-dir "$STATE_DIR" \
+      --link-root bythewc-membrain-board.w.tunnels.lab.aws.dev/board \
       >/dev/null 2>&1 </dev/null & )
   printf '%s: slack-bridge (membrain daemon) was DOWN — relaunched %s. The operator alert path (concierge-down #8931) routes through it, so a human should confirm it recovered.\n' \
     "$(now)" "$BRIDGE_BIN" > "$ALARM" 2>/dev/null || true
