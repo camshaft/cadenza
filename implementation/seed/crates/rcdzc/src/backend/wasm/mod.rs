@@ -3279,9 +3279,9 @@ fn emit_closure_resource(
             || sum_arg.is_some()
         {
             return Err(Reject::unsupported(
-                "a closure returning Unit (zero-result) alongside a compound (tuple/sum/record) argument needs \
-                 the zero-result emit on the compound-arg path (a later widening); a Unit-returning closure \
-                 with scalar arguments crosses today",
+                "a closure returning Unit (a zero-result closure) is supported only with scalar arguments; a \
+                 Unit result alongside a compound (tuple, sum, or record) argument does not cross the \
+                 host-closure boundary",
             ));
         }
         None
