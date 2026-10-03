@@ -7131,6 +7131,40 @@
   (call mk (: (Err 5) (Result (Tuple Int64 Int64) Int64)))
   (output (: -5 Int64)))
 
+; DIFFERING PER-POSITION JOIN WIDTH (idealistic pin, arg_boundary.rs:273/373/534/542 later-widening): the
+; same-width cases above (:7099 `(Result (Tuple Int64 Int64) Int64)`, :7134 both-compound) read the joined
+; slots directly and CROSS on ALL FOUR backends; this case adds a NARROWER (Int32) tuple leaf and a shared
+; joined position of DIFFERING width. `mk : (-> (Result (Tuple Int32 Int32) Int64) Int64)`: the Ok payload
+; tuple<s32,s32> flattens to leaves j0,j1 = i32,i32; the Err scalar s64 joins at j0 = i64, so joined position
+; j0 differs (ok i32 vs err i64). OBSERVED (corpus-chapter-gate 21, 2026-10-03): this DECLINES on ALL FOUR
+; backends → scored `todo` uniformly (NOT an asymmetry — the earlier same-width cases cross everywhere, so the
+; narrow-leaf/differing-width combination is the unhandled bit on every target). On the WASM joined-slot ABI the
+; cause is concrete: rebuilding the Ok tuple would need a per-leaf i32-from-i64 narrow at j0 INSIDE the compound
+; rebuild (the compound analogue of the scalar arm's `SumArgArm.wrap_join`, which only wraps a whole scalar arm)
+; and that per-leaf wrap is not threaded. The rust/rust-async path declines the same shape too (its exact cause
+; not pinned here — the same-width i64 compound Result arg crosses on rust, so it is the Int32-leaf/differing-
+; width combination). Idealistic value: driving Ok((3,4)), (+ (. p 0) (. p 1)) → 7; flips todo→pass per-backend
+; as each lands the narrow-leaf compound-Result-arg rebuild. (v-wit-boundary deferral-audit pin, 2026-10-03.)
+(case
+  "COMPOUND RESULT PAYLOAD: differing per-position join width (Result (Tuple Int32 Int32) Int64) arg, drive Ok"
+  (doc
+    "`mk : (-> (Result (Tuple Int32 Int32) Int64) Int64)`. The Ok payload is a 2-field s32 tuple, the Err a
+           bare s64; the shared joined position j0 has DIFFERING width (ok i32 vs err i64). Declines on all four
+           backends today (todo): rebuilding the Ok tuple needs a per-leaf i32-from-i64 narrow at j0 inside the
+           compound rebuild — not threaded on the wasm joined-slot ABI, and the rust/rust-async compound-Result-
+           arg path declines the narrow-leaf shape as well (the same-width i64 compound Result arg at :7099
+           crosses on all four). Idealistic: driving `Ok((3,4))`: `(+ (. p 0) (. p 1))` → 7.")
+  (input
+    (do
+      (def
+        (mk)
+        (fn
+          ((: r (Result (Tuple Int32 Int32) Int64)))
+          (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err e) (- 0 e)))))
+      (export mk)))
+  (call mk (: (Ok #tuple(3 4)) (Result (Tuple Int32 Int32) Int64)))
+  (output (: 7 Int64)))
+
 (case
   "COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound"
   (doc
