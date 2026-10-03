@@ -721,3 +721,25 @@
   (call main (: 5 Int64))
   (host-responses (respond param.label (: "hello" String)))
   (output (: 10 Int64)))
+
+; psx2: the BYTES face of the @!param accessor — the byte-sequence sibling of the String psx1 above. The
+; accessor generates (op label (-> Unit Bytes)) and its Bytes RESULT crosses the host boundary the same way
+; the String result does (both are host-byte-sequence results lifted into a value-heap handle), distinct
+; from a bare (effect …) Bytes result with no accessor (still declines per the CDZ0900 matrix). Pins that
+; the crossing covers the Bytes result face, not only String. (breaker probe psx2; the corpus-rust
+; host-response Bytes shim arm that unblocked the rust column landed camshaft/cadenza#10237.)
+(case
+  "a Bytes-typed @param accessor crosses (byte-sequence sibling of psx1)"
+  (doc
+    "`(pragma param … (: label Bytes))` generates `(op label (-> Unit Bytes))`; the host supplies
+           `#list(1 2 3)` as the Bytes value and the accessor's Bytes RESULT crosses, like the String psx1.
+           `Bytes.len` of the supplied bytes is 3, + n=5 = 8. Pins the Bytes result face of the @!param
+           accessor crossing, the sibling of the String face above.")
+  (input
+    (do
+      (pragma param (param (: widget textbox)) (: label Bytes))
+      (def (main (: n Int64)) (host (Param) (+ (Bytes.len (Param.label)) n)))
+      (export main)))
+  (call main (: 5 Int64))
+  (host-responses (respond param.label (: #list(1 2 3) Bytes)))
+  (output (: 8 Int64)))
