@@ -1396,6 +1396,7 @@ pass	a String-returning closure alongside a parameterized plain export — the p
 pass	a String-to-String op transforms a rope arg in the arm and its RESULT feeds the next perform
 pass	a String-to-String transformer op — a rope argument crosses in, a wrapped rope crosses back
 pass	a String-typed @param accessor crosses once the world-driven result path lands
+pass	a Bytes-typed @param accessor crosses (byte-sequence sibling of psx1)
 pass	a String.at result then reuse of the source does not double-free
 pass	a String.slice VIEW built in the ARM crosses back through resume — the body measures it
 pass	a String.slice view returned from a helper OUTLIVES the helper's local parent
@@ -11206,4 +11207,5 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
+pass	an explicit-Unit closure export whose body reaches a module member's _$u thunk still crosses (should-work)
 todo	COMPOUND RESULT PAYLOAD: differing per-position join width (Result (Tuple Int32 Int32) Int64) arg, drive Ok

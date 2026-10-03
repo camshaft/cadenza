@@ -567,6 +567,28 @@ fn cdz_render_bytes_list(ty: &str) -> String {
     )
 }
 
+/// Parse a canonical `#list(b0 b1 …)` Bytes value (the host-RESPONSE / entry form — byte ints, space-
+/// separated; `#list()` is empty) into the owning Rust `Vec<u8>` literal a host-shim returns: `vec![b0u8,
+/// b1u8, …]`, or `Vec::<u8>::new()` when empty (a bare `vec![]` has no inferable element type at that
+/// position). The INVERSE of `cdz_render_bytes_list` (which renders a `Vec<u8>` result back to this text).
+fn render_bytes_list_vec(val: &str) -> String {
+    let inner = val
+        .trim()
+        .strip_prefix("#list(")
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or("")
+        .trim();
+    if inner.is_empty() {
+        return "Vec::<u8>::new()".to_string();
+    }
+    let elems = inner
+        .split_whitespace()
+        .map(|b| format!("{b}u8"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("vec![{elems}]")
+}
+
 /// Kebab-normalize an EFFECT name (matching the backend's `canonical_host_op_key`): CamelCase / `_` / `-`
 /// runs collapse to single `-`, lowercased, no leading/trailing `-`.
 pub fn kebab_effect(name: &str) -> String {
@@ -696,30 +718,45 @@ pub fn build_rust_host_shims(
         match by_ident.get(fn_name) {
             Some((op, values)) => {
                 // RETURN TYPE keyed on the recorded response value text (matches the backend's per-result-
-                // kind read): a quoted "…" → `String`; a `.`-bearing non-bool → `f64`; else `i64` (bool
-                // true/false → 1/0). The `__V` response table is that type; the shim hands out one per call.
+                // kind read): a quoted "…" → `String`; a canonical `#list(b0 b1 …)` byte compound → `Vec<u8>`
+                // (a Bytes result); a `.`-bearing non-bool → `f64`; else `i64` (bool true/false → 1/0). The
+                // `__V` response table is that type; the shim hands out one per call.
                 let all_quoted = values.iter().all(|v| {
                     let t = v.trim();
                     t.starts_with('"') && t.ends_with('"') && t.len() >= 2
                 });
+                // A Bytes host-RESPONSE value is the canonical `#list(b0 b1 …)` byte-int compound (the twin of
+                // the entry-arg Bytes marshal in `cdz-rust-render` and the host-closure Bytes RESULT render in
+                // `cdz_render_bytes_list`): the shim returns an owned `Vec<u8>`, so parse the byte ints and
+                // cross each as `vec![b0u8, b1u8, …]`. Without this the `#list(…)` fell through to the `i64`
+                // pass-through arm and leaked `#list(1 2 3)` verbatim into the driver's Rust source → `error:
+                // expected one of ! or [, found list` (a no-build, breaker-found; the Bytes host-RESPONSE twin
+                // of the fixed String/Symbol/Bytes ENTRY-arg marshals).
+                let all_bytes_list = !all_quoted
+                    && values
+                        .iter()
+                        .all(|v| v.trim().starts_with("#list(") && v.trim().ends_with(')'));
                 let is_float = !all_quoted
+                    && !all_bytes_list
                     && values
                         .iter()
                         .any(|v| v.trim().contains('.') && v.trim() != "true" && v.trim() != "false");
-                let (ret_ty, arr, is_owned) = if all_quoted {
+                let (ret_ty, exprs, is_owned): (String, Vec<String>, bool) = if all_quoted {
                     (
                         "String".to_string(),
-                        values
-                            .iter()
-                            .map(|v| format!("{}.to_string()", v.trim()))
-                            .collect::<Vec<_>>()
-                            .join(", "),
+                        values.iter().map(|v| format!("{}.to_string()", v.trim())).collect(),
+                        true,
+                    )
+                } else if all_bytes_list {
+                    (
+                        "Vec<u8>".to_string(),
+                        values.iter().map(|v| render_bytes_list_vec(v.trim())).collect(),
                         true,
                     )
                 } else if is_float {
                     (
                         "f64".to_string(),
-                        values.iter().map(|v| v.trim().to_string()).collect::<Vec<_>>().join(", "),
+                        values.iter().map(|v| v.trim().to_string()).collect(),
                         false,
                     )
                 } else {
@@ -732,19 +769,19 @@ pub fn build_rust_host_shims(
                                 "false" => "0".to_string(),
                                 other => other.to_string(),
                             })
-                            .collect::<Vec<_>>()
-                            .join(", "),
+                            .collect(),
                         false,
                     )
                 };
                 let n = values.len();
+                let arr = exprs.join(", ");
                 if is_owned {
                     // An owned (String/Vec) response can't live in a `static` array (non-const); build a
                     // fresh owned value per call, indexed by the call counter via a match.
-                    let arms = values
+                    let arms = exprs
                         .iter()
                         .enumerate()
-                        .map(|(k, v)| format!("{k} => {}.to_string(),", v.trim()))
+                        .map(|(k, e)| format!("{k} => {e},"))
                         .collect::<Vec<_>>()
                         .join(" ");
                     out.push_str(&format!(
@@ -873,6 +910,29 @@ mod tests {
         let shims = build_rust_host_shims(m, &[("ask.name".into(), "\"hi\"".into())], &[]);
         assert!(shims.contains("-> String"), "quoted → String: {shims}");
         assert!(shims.contains(".to_string()"));
+    }
+
+    #[test]
+    fn a_bytes_list_response_returns_owned_vec_u8_via_match() {
+        // A `#list(b0 b1 …)` Bytes host-RESPONSE must cross as an owned `Vec<u8>`, not fall through to the
+        // `i64` pass-through arm (which leaked the `#list(…)` token verbatim → `error: expected one of ! or
+        // [, found list`, a no-build; breaker-found). An empty `#list()` crosses as `Vec::<u8>::new()`.
+        let m = "crate::__cdz_host_param_label();";
+        let shims = build_rust_host_shims(m, &[("Param.label".into(), "#list(1 2 3)".into())], &[]);
+        assert!(shims.contains("-> Vec<u8>"), "#list → Vec<u8>: {shims}");
+        assert!(
+            shims.contains("vec![1u8, 2u8, 3u8]"),
+            "renders the bytes: {shims}"
+        );
+        assert!(
+            !shims.contains("#list"),
+            "no raw #list token leaks: {shims}"
+        );
+        let empty = build_rust_host_shims(m, &[("Param.label".into(), "#list()".into())], &[]);
+        assert!(
+            empty.contains("Vec::<u8>::new()"),
+            "empty → Vec::new: {empty}"
+        );
     }
 
     #[test]

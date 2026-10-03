@@ -228,14 +228,20 @@ enum Cmd {
     CorpusChapterGate {
         /// A corpus file stem (e.g. `28-wit-abi-boundary`) or a bare chapter number (e.g. `28`).
         chapter: String,
-        /// Also run the `rcdzc` lib unit tests (`cargo test -p rcdzc`) after the corpus build. OFF by
-        /// default so monitor/non-flip gating stays cheap. Pass this on a DECLINE-FLIP land — a change
-        /// that edits a backend decline predicate AND flips a `.gate-baseline` entry to `pass` — because
-        /// the chapter gate builds only the corpus EXECUTION attrs, not the rcdzc lib tests where a stale
-        /// "must-decline" `#[test]` lives; such a test stays red in the workspace test derivation (a
-        /// gate-local constituent downstream of this fast loop) and reds main for the next agent (#982).
+        /// FORCE the `rcdzc` lib unit tests (`cargo test -p rcdzc`) to run after the corpus build, even if
+        /// the diff does not look like a decline flip. Normally you do not need this: the gate AUTO-runs the
+        /// lib suite when it detects a decline-flip-shaped diff (see below), so this is only an explicit
+        /// override. The lib suite is where a stale "must-decline" `#[test]` lives; the chapter gate builds
+        /// only the corpus EXECUTION attrs, so without this stage such a test stays red in the workspace test
+        /// derivation (a gate-local constituent downstream of this fast loop) and reds main for the next
+        /// agent (#982).
         #[arg(long)]
         with_lib_tests: bool,
+        /// FORCE-SKIP the lib-test stage even when the diff looks like a decline flip. Use for a change that
+        /// touches a `.gate-baseline` for a non-flip reason (a pure sort/format rewrite with no outcome
+        /// change). Mutually overrides the auto-detect; `--with-lib-tests` wins if both are passed.
+        #[arg(long)]
+        no_lib_tests: bool,
     },
     /// Any UNRECOGNIZED subcommand is forwarded to the nix app of the same name:
     /// `cargo xtask <cmd> [args…]` → `nix run <worktree-flake>#<cmd> -- [args…]`. This is the all-nix
@@ -315,7 +321,8 @@ fn main() {
         Cmd::CorpusChapterGate {
             chapter,
             with_lib_tests,
-        } => corpus_chapter_gate::run(&paths, &chapter, with_lib_tests),
+            no_lib_tests,
+        } => corpus_chapter_gate::run(&paths, &chapter, with_lib_tests, no_lib_tests),
         Cmd::External(args) => run_external_subcommand(&args),
     }
 }
@@ -3732,11 +3739,14 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
         .iter()
         .flat_map(|file| read_corpus(&tools.corpus, file))
         .collect();
-    let (checked, skipped, divergences) = {
+    let (checked, skip_declines, skip_host, skip_not_swept, divergences) = {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
         let checked = AtomicU32::new(0);
-        let skipped = AtomicU32::new(0);
+        // Skips are tallied PER REASON so the summary names the real cause, not one shared label (#1433).
+        let skip_declines = AtomicU32::new(0);
+        let skip_host = AtomicU32::new(0);
+        let skip_not_swept = AtomicU32::new(0);
         let divergences: Mutex<Vec<String>> = Mutex::new(Vec::new());
         let cursor = AtomicUsize::new(0);
         let workers = std::thread::available_parallelism()
@@ -3745,10 +3755,23 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
             .max(1);
         std::thread::scope(|scope| {
             for _ in 0..workers {
-                let (cursor, checked, skipped, divergences, records, tools, store, target) = (
+                let (
+                    cursor,
+                    checked,
+                    skip_declines,
+                    skip_host,
+                    skip_not_swept,
+                    divergences,
+                    records,
+                    tools,
+                    store,
+                    target,
+                ) = (
                     &cursor,
                     &checked,
-                    &skipped,
+                    &skip_declines,
+                    &skip_host,
+                    &skip_not_swept,
                     &divergences,
                     &records,
                     &tools,
@@ -3762,8 +3785,13 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
                             break;
                         }
                         match sweep_one_case(tools, store, &records[i], &LEVELS, target) {
-                            SweepOutcome::Skipped => {
-                                skipped.fetch_add(1, Ordering::Relaxed);
+                            SweepOutcome::Skipped(reason) => {
+                                let counter = match reason {
+                                    SkipReason::DeclinesAtDefault => skip_declines,
+                                    SkipReason::HostResponseUnsupported => skip_host,
+                                    SkipReason::TargetNotSwept => skip_not_swept,
+                                };
+                                counter.fetch_add(1, Ordering::Relaxed);
                             }
                             SweepOutcome::Checked(diffs) => {
                                 checked.fetch_add(1, Ordering::Relaxed);
@@ -3778,13 +3806,33 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
         });
         (
             checked.into_inner(),
-            skipped.into_inner(),
+            skip_declines.into_inner(),
+            skip_host.into_inner(),
+            skip_not_swept.into_inner(),
             divergences.into_inner().unwrap(),
         )
     };
 
+    // Name each skip reason that actually occurred, so a host-response/not-swept skip is never read as a
+    // genuine decline (#1433). Only non-zero reasons are listed, keeping the line terse on the common path.
+    let skipped = skip_declines + skip_host + skip_not_swept;
+    let mut skip_breakdown: Vec<String> = Vec::new();
+    for (n, reason) in [
+        (skip_declines, SkipReason::DeclinesAtDefault),
+        (skip_host, SkipReason::HostResponseUnsupported),
+        (skip_not_swept, SkipReason::TargetNotSwept),
+    ] {
+        if n > 0 {
+            skip_breakdown.push(format!("{n} {}", reason.label()));
+        }
+    }
+    let skip_detail = if skip_breakdown.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", skip_breakdown.join(", "))
+    };
     println!(
-        "\ngate --opt-sweep: {checked} checked ({skipped} skipped: declines-at-default), {} divergence(s) across O0..O3",
+        "\ngate --opt-sweep: {checked} checked ({skipped} skipped{skip_detail}), {} divergence(s) across O0..O3",
         divergences.len()
     );
     if !divergences.is_empty() {
@@ -3797,12 +3845,63 @@ fn gate_opt_sweep(paths: &Paths, profile: &str, opts: &GateOpts) {
     println!("all checked cases run to the SAME outcome at every optimization level ✓");
 }
 
-/// The per-case result of the opt-sweep: either the case was skipped (multi-file package, or it declines
-/// at the default tier — a decline is level-independent), or it was checked and yielded zero-or-more
-/// divergence messages (a level whose observable outcome differs from O1's).
+/// The per-case result of the opt-sweep: either the case was skipped (with the REASON it was skipped), or
+/// it was checked and yielded zero-or-more divergence messages (a level whose observable outcome differs
+/// from O1's).
 enum SweepOutcome {
-    Skipped,
+    Skipped(SkipReason),
     Checked(Vec<String>),
+}
+
+/// Why the opt-sweep SKIPPED a case. Kept distinct so the summary names the real cause: a probing agent read
+/// the one shared "declines-at-default" label as a genuine cross-backend decline when the case was in fact
+/// un-drivable by the harness, nearly routing a false asymmetry finding (#1433). `DeclinesAtDefault` is a
+/// real compiler decline (level-independent, so there is nothing to sweep); the other two are HARNESS
+/// limitations, NOT a statement about whether the case compiles.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SkipReason {
+    /// The case genuinely DECLINED at the default (O1) tier — a decline is level-independent.
+    DeclinesAtDefault,
+    /// A `(host-responses …)` / `(host-calls …)` case the rust/rust-async opt-sweep pipeline cannot drive
+    /// (host_calls is not threaded through its run path). It did NOT decline — the harness just can't run it.
+    HostResponseUnsupported,
+    /// The target is not part of the optimization-level-equivalence sweep at all (cadenza re-emit is graded
+    /// by its own `--target cadenza` gate, run without `--opt-sweep`).
+    TargetNotSwept,
+}
+
+impl SkipReason {
+    /// The human-readable summary label — the string the gate prints so the skip's real cause is named.
+    fn label(self) -> &'static str {
+        match self {
+            SkipReason::DeclinesAtDefault => "declines-at-default",
+            SkipReason::HostResponseUnsupported => {
+                "host-response case not drivable by the opt-sweep harness"
+            }
+            SkipReason::TargetNotSwept => {
+                "target not swept (its own gate, not opt-level-equivalence)"
+            }
+        }
+    }
+}
+
+/// Why the opt-sweep cannot CHECK this case on `target` without even running it — a HARNESS limitation known
+/// up front, distinct from a genuine compiler decline (which is only known after the O1 run and is reported
+/// as [`SkipReason::DeclinesAtDefault`]). `None` means the case is drivable and must be run. Cadenza is never
+/// swept here; a `(host-responses)`/`(host-calls)` case cannot be driven on the rust/rust-async opt-sweep
+/// pipeline because host_calls is not threaded through its run path. Pure — unit-tested.
+fn opt_sweep_skip_reason(
+    has_host_responses: bool,
+    has_host_calls: bool,
+    target: GateTarget,
+) -> Option<SkipReason> {
+    match target {
+        GateTarget::Cadenza => Some(SkipReason::TargetNotSwept),
+        GateTarget::Rust | GateTarget::RustAsync if has_host_responses || has_host_calls => {
+            Some(SkipReason::HostResponseUnsupported)
+        }
+        _ => None,
+    }
 }
 
 /// Sweep ONE corpus case across all optimization `levels`: for each trial (`(call …)`, or one implicit
@@ -3822,8 +3921,21 @@ fn sweep_one_case(
     // cross-module/inlining Core pass could mis-optimize. (A case that DECLINES at the default tier is
     // still skipped below — level-independent.) Each trial (a `(call …)`, or the single no-call trial) is
     // run at every level and compared. The run path follows `--target`: wasm (default) drives the wasm
-    // pipeline, rust/rust-async the rustc pipeline (a host-delegating case declines under rust, so it is
-    // skipped as level-independent just like a default decline).
+    // pipeline, rust/rust-async the rustc pipeline.
+    //
+    // A case the harness cannot DRIVE on this target is skipped up front with its OWN reason — distinct
+    // from a genuine compiler decline — so the summary never mislabels a harness skip as a decline (#1433):
+    // cadenza is not part of this sweep, and a (host-responses)/(host-calls) case cannot be driven on the
+    // rust/rust-async opt-sweep pipeline (host_calls is not threaded through its run path). A case is
+    // host-delegating if it records responses OR calls (a unit-result effect op records a call but no
+    // response — H8).
+    if let Some(reason) = opt_sweep_skip_reason(
+        !rec.host_responses.is_empty(),
+        !rec.host_calls.is_empty(),
+        target,
+    ) {
+        return SweepOutcome::Skipped(reason);
+    }
     let calls: Vec<Option<&Call>> = if rec.trials.is_empty() {
         vec![None]
     } else {
@@ -3844,20 +3956,8 @@ fn sweep_one_case(
                 rec.component_name.as_deref(),
                 LiveObjectsCheck::Off, // the opt sweep looks for a tier divergence, not a heap-balance regression
             ),
-            // A host-delegating case is level-independent in its host protocol (the opt sweep looks for a
-            // TIER divergence, not a host-boundary regression), so it declines here and is skipped below —
-            // exactly as a default decline is. A case is host-delegating if it records responses OR calls
-            // (a unit-result effect op records a call but no response — H8). Mirror the normal-gate dispatch.
-            GateTarget::Rust | GateTarget::RustAsync
-                if !rec.host_responses.is_empty() || !rec.host_calls.is_empty() =>
-            {
-                Ran::Declined {
-                    code: None,
-                    message: String::new(),
-                }
-            }
             GateTarget::Rust => {
-                // Host cases declined above (level-independent) → no responses/calls reach here → `&[]`.
+                // Host cases were skipped above (opt_sweep_skip_reason) → no responses/calls reach here → `&[]`.
                 run_program_rust(
                     tools,
                     &rec.program,
@@ -3879,12 +3979,9 @@ fn sweep_one_case(
                 &[],
                 &[],
             ),
-            // The cadenza round-trip is not part of the optimization-level-equivalence sweep (it is its own
-            // `--target cadenza` gate, run without `--opt-sweep`) → decline here so it is skipped.
-            GateTarget::Cadenza => Ran::Declined {
-                code: None,
-                message: String::new(),
-            },
+            // Cadenza is skipped before `run_at` (opt_sweep_skip_reason returns TargetNotSwept), so it never
+            // reaches here.
+            GateTarget::Cadenza => unreachable!("cadenza is skipped before the opt-sweep run"),
         }
     };
     let mut diffs = Vec::new();
@@ -3894,7 +3991,7 @@ fn sweep_one_case(
         // A decline at the default tier means the case doesn't compile — skip it (level-independent).
         let default_idx = levels.iter().position(|l| *l == "O1").unwrap_or(0);
         if matches!(&runs[default_idx], Ran::Declined { .. }) {
-            return SweepOutcome::Skipped;
+            return SweepOutcome::Skipped(SkipReason::DeclinesAtDefault);
         }
         checked_any = true;
         let base = sweep_outcome_key(&runs[default_idx]);
@@ -3912,7 +4009,8 @@ fn sweep_one_case(
     if checked_any {
         SweepOutcome::Checked(diffs)
     } else {
-        SweepOutcome::Skipped
+        // No trial drove a run (every trial's O1 was a decline handled above) — a default decline.
+        SweepOutcome::Skipped(SkipReason::DeclinesAtDefault)
     }
 }
 
@@ -5590,6 +5688,62 @@ mod trap_grading_tests {
     /// metric-counter contamination.) A poisoned lock (a panicking sibling) is recovered — the env is
     /// restored by each test's own cleanup, so a stale poison must not wedge the rest.
     static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // ── opt-sweep skip-reason classification (#1433): a host-response skip must NOT read as a decline ──
+    #[test]
+    fn opt_sweep_host_response_case_skips_as_unsupported_not_decline_on_non_wasm() {
+        // The #1433 footgun: a (host-responses)/(host-calls) case on rust/rust-async cannot be driven by
+        // the opt-sweep harness, but was reported under the SAME label as a genuine compiler decline, so a
+        // prober read it as a real cross-backend decline. It must now classify as HostResponseUnsupported.
+        for target in [GateTarget::Rust, GateTarget::RustAsync] {
+            assert_eq!(
+                opt_sweep_skip_reason(true, false, target),
+                Some(SkipReason::HostResponseUnsupported),
+                "a host-RESPONSE case must skip as unsupported on {target:?}, not as a decline"
+            );
+            assert_eq!(
+                opt_sweep_skip_reason(false, true, target),
+                Some(SkipReason::HostResponseUnsupported),
+                "a host-CALLS case (unit-result effect op, H8) must skip as unsupported on {target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn opt_sweep_non_host_case_is_drivable_on_wasm_and_rust() {
+        // No host responses/calls → nothing stops the sweep from driving the case; a genuine decline (if
+        // any) is detected only AFTER the O1 run, reported separately as DeclinesAtDefault.
+        for target in [GateTarget::Wasm, GateTarget::Rust, GateTarget::RustAsync] {
+            assert_eq!(opt_sweep_skip_reason(false, false, target), None);
+        }
+        // A host case on WASM is drivable too — wasm threads host_responses through its run path.
+        assert_eq!(opt_sweep_skip_reason(true, true, GateTarget::Wasm), None);
+    }
+
+    #[test]
+    fn opt_sweep_cadenza_is_never_swept_regardless_of_host_shape() {
+        // The cadenza re-emit has its own `--target cadenza` gate; it is never part of opt-level-equivalence.
+        for (resp, calls) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert_eq!(
+                opt_sweep_skip_reason(resp, calls, GateTarget::Cadenza),
+                Some(SkipReason::TargetNotSwept)
+            );
+        }
+    }
+
+    #[test]
+    fn opt_sweep_skip_labels_are_distinct() {
+        // The whole point of #1433: a host-response skip must not share the decline label.
+        assert_ne!(
+            SkipReason::HostResponseUnsupported.label(),
+            SkipReason::DeclinesAtDefault.label()
+        );
+        assert_ne!(
+            SkipReason::TargetNotSwept.label(),
+            SkipReason::DeclinesAtDefault.label()
+        );
+        assert_eq!(SkipReason::DeclinesAtDefault.label(), "declines-at-default");
+    }
 
     // ── collect_warnings: ALL warning diagnostics off a clean-compile stderr (inc2, operator seq353) ─
     #[test]

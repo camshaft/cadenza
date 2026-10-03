@@ -7768,6 +7768,33 @@
   (output (: 42 Int64))
   (live-objects 0))
 
+; A module nullary-member's synthetic `_$u` thunk REACHED FROM an EXPLICIT-Unit closure export — the export
+; still crosses. The Unit `_$u` eta-peel decline (task_1145: a top-level eta-peeled Unit-arg EXPORT whose
+; param is the module-member nullary convention's synthetic `_$u` binder declines CDZ0901, since the host
+; cannot supply it) is scoped to the EXPORTED closure's OWN lifted lambda, NOT program-wide (task_1311). Here
+; `mk`'s own parameter is an EXPLICIT user `u`, so it crosses exactly like :7719 — even though its BODY reaches
+; the module member `get`, whose convention thunk is `(fn ((: _$u Unit)) 5)`. Regression pin for the
+; program-wide-over-decline edge: the earlier whole-program `_$u` scan wrongly declined this explicit-Unit
+; export (the reached member thunk tripped it); scoping the scan to `mk`'s own lambda fixes it. The reached-ref
+; shape is load-bearing — a DEAD `(m.get)` reference is pruned and never trips the scan.
+(case
+  "an explicit-Unit closure export whose body reaches a module member's _$u thunk still crosses (should-work)"
+  (doc
+    "`(def (mk) (fn ((: u Unit)) ((m.get) unit)))` exported — `mk`'s PARAMETER is an EXPLICIT user `Unit`
+           (`u`), so it crosses the host-closure boundary exactly like :7719; its body applies the module
+           nullary-member `(m.get)` — which the convention synthesizes as `(fn ((: _$u Unit)) 5)` — to `unit`,
+           folding to 5. `make()` mints the handle, `call(unit)` elides `mk`'s Unit arg and returns 5, and the
+           `(drop)` reclaims the handle so live-objects is 0. The Unit `_$u` eta-peel decline is scoped to the
+           EXPORTED closure's OWN lifted lambda (both backends — wasm `emit_closure_resource`, rust
+           `emit_export`), so a reached module-member `_$u` thunk does NOT make the explicit-Unit export
+           decline. Pins the task_1311 precision fix: before it, the wasm program-wide `layout.lifted` scan
+           over-declined this (the reached `_$u` thunk tripped it).")
+  (input (do (module m (def (get) 5)) (def (mk) (fn ((: u Unit)) ((m.get) unit))) (export mk)))
+  (call mk (: unit Unit))
+  (drop)
+  (output (: 5 Int64))
+  (live-objects 0))
+
 ; WIDENING the Unit zero-result crossing to the MULTI-ARG closure-export path. The :7626 case crosses a
 ; Unit-result closure on the single SCALAR-arg path (task_968); a Unit result ALONGSIDE a multi-arg (or
 ; tuple / sum) `call` shape crosses the same way — as a ZERO-RESULT `call` whose params are the arg shape.

@@ -1460,6 +1460,7 @@ pass	a String-returning closure alongside a parameterized plain export — the p
 pass	a String-to-String op transforms a rope arg in the arm and its RESULT feeds the next perform
 pass	a String-to-String transformer op — a rope argument crosses in, a wrapped rope crosses back
 pass	a String-typed @param accessor crosses once the world-driven result path lands
+pass	a Bytes-typed @param accessor crosses (byte-sequence sibling of psx1)
 pass	a String.at extracted view consumed ONCE into a HEAP result that does not carry the view out reclaims its Some shell (heap-result single-consume completion)
 pass	a String.at extracted view consumed ONCE with a scalar result reclaims its Some shell (single-consume completion)
 pass	a String.at extracted view consumed THREE times mints two dups against one payload (N-consume, no double-free)
@@ -11457,4 +11458,5 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 todo	two length-prefixed dependent frames chain at runtime
 todo	xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?
+pass	an explicit-Unit closure export whose body reaches a module member's _$u thunk still crosses (should-work)
 todo	COMPOUND RESULT PAYLOAD: differing per-position join width (Result (Tuple Int32 Int32) Int64) arg, drive Ok

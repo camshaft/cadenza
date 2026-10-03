@@ -702,13 +702,15 @@
   (host-calls (call param.width))
   (output (: 4007 Int64)))
 
-; psx1: a STRING-typed @!param — the accessor generates (op label (-> Unit String)), but a String
-; RESULT has no component boundary form on a bare effect (the detailed CDZ0900 explains the matrix:
-; bare-effect results cross as scalar/unit; a bytes/string-ish result needs the WORLD-DRIVEN path,
-; an imposed (wit-world …) that lifts host bytes into a value-heap handle). Scalar params (Int64/
-; Float64/Bool above) cross today; the string face DECLINES. Idealistic TODO: with the host
-; supplying "hello", byte-len + n = 10 at n=5. Flips when the world-driven result path (or a bare-
-; effect string-result form) reaches @!param accessors. (breaker probe ps1, tick 1508.)
+; psx1: a STRING-typed @!param — the accessor generates (op label (-> Unit String)). The String
+; RESULT of the @!param accessor CROSSES the host boundary today: with the host supplying "hello",
+; byte-len + n = 10 at n=5 (the scalar params Int64/Float64/Bool above cross as well). Crossing
+; verified by corpus-chapter-gate 26 (baseline pass on all four columns, 2026-10-03). Distinguish
+; this from the bare (effect …) matrix in the detailed CDZ0900: a bare-effect result that is a plain
+; String/compound — with NO @!param accessor and NO imposed (wit-world …) — has no component
+; boundary form and still declines (a bytes/string-ish bare-effect result needs the WORLD-DRIVEN
+; path, an imposed (wit-world …) that lifts host bytes into a value-heap handle). (breaker probe
+; ps1, tick 1508.)
 (case
   "a String-typed @param accessor crosses once the world-driven result path lands"
   (input
@@ -719,3 +721,25 @@
   (call main (: 5 Int64))
   (host-responses (respond param.label (: "hello" String)))
   (output (: 10 Int64)))
+
+; psx2: the BYTES face of the @!param accessor — the byte-sequence sibling of the String psx1 above. The
+; accessor generates (op label (-> Unit Bytes)) and its Bytes RESULT crosses the host boundary the same way
+; the String result does (both are host-byte-sequence results lifted into a value-heap handle), distinct
+; from a bare (effect …) Bytes result with no accessor (still declines per the CDZ0900 matrix). Pins that
+; the crossing covers the Bytes result face, not only String. (breaker probe psx2; the corpus-rust
+; host-response Bytes shim arm that unblocked the rust column landed camshaft/cadenza#10237.)
+(case
+  "a Bytes-typed @param accessor crosses (byte-sequence sibling of psx1)"
+  (doc
+    "`(pragma param … (: label Bytes))` generates `(op label (-> Unit Bytes))`; the host supplies
+           `#list(1 2 3)` as the Bytes value and the accessor's Bytes RESULT crosses, like the String psx1.
+           `Bytes.len` of the supplied bytes is 3, + n=5 = 8. Pins the Bytes result face of the @!param
+           accessor crossing, the sibling of the String face above.")
+  (input
+    (do
+      (pragma param (param (: widget textbox)) (: label Bytes))
+      (def (main (: n Int64)) (host (Param) (+ (Bytes.len (Param.label)) n)))
+      (export main)))
+  (call main (: 5 Int64))
+  (host-responses (respond param.label (: #list(1 2 3) Bytes)))
+  (output (: 8 Int64)))
