@@ -3025,12 +3025,30 @@ fn emit_closure_resource(
     // pre-task_1145 wasm decline — rather than elide the arg and emit a resource the cadenza re-emit then
     // leaks (an un-dropped handle, `live-objects` 1). `_$u` is a reserved synthetic (`$` is not a user-ident
     // char, see `modules.rs`), so it reliably distinguishes the convention arg from an explicit user `Unit`
-    // parameter; the discriminator keys off the BINDER NAME, not the type (both are `Unit`). (task_1145
-    // re-land — the wasm twin of the rust narrowing.)
-    if layout.lifted.iter().any(|l| {
-        l.params.iter().any(|(binder, ty)| {
-            matches!(ty.strip_nominal(), crate::ty::Ty::Unit)
-                && db.ast.as_name(*binder) == Some("_$u")
+    // parameter; the discriminator keys off the BINDER NAME, not the type (both are `Unit`).
+    //
+    // Scope the check to THIS export's OWN lifted lambda, resolved from the export body's `Core::Closure`
+    // slot — NOT program-wide `layout.lifted` (= `db.lifted`), which also carries lambdas lifted from an
+    // UNRELATED module nullary-member elsewhere in the unit (possibly dead/unreached). Scanning all of them
+    // over-declined a legitimate explicit-Unit `:7719`-style export that merely co-exists with such a member.
+    // The exported closure IS the lambda the export body's `Core::Closure { code }` names (the same slot the
+    // Rust eta-peel reads via `peelable_export_lambda`). (task_1145 re-land + task_1311 scoping — the wasm twin
+    // of the rust narrowing.)
+    let exported_closure_code: Option<usize> = layout
+        .exports
+        .iter()
+        .find(|e| e.def == export_def)
+        .map(|e| e.body)
+        .and_then(|body| match crate::lower::core_of(db, body) {
+            crate::core::Core::Closure { code, .. } => Some(code),
+            _ => None,
+        });
+    if exported_closure_code.is_some_and(|code| {
+        layout.lifted.get(code).is_some_and(|l| {
+            l.params.iter().any(|(binder, ty)| {
+                matches!(ty.strip_nominal(), crate::ty::Ty::Unit)
+                    && db.ast.as_name(*binder) == Some("_$u")
+            })
         })
     }) {
         return Err(Reject::coded(
