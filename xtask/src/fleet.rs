@@ -2882,14 +2882,27 @@ fn up(fleet: &Fleet, crons_only: bool) {
         println!("fleet: no agents (empty roster + registry). Add one with `fleet add`.");
         return;
     }
-    if !in_tmux() {
+    // Resolve the target session and host it. Inside tmux this is the current (or $CDZ_FLEET_SESSION)
+    // session, unchanged. A boot/systemd invocation has no attached session, so `up` creates the fleet
+    // session detached and reconstitutes the whole roster into it — this is what makes `fleet up` the
+    // single post-reboot recovery command rather than one that needs a human to open a session first.
+    let in_tmux = in_tmux();
+    let current = in_tmux.then(tmux_current_session);
+    let fleet_session_env = std::env::var("CDZ_FLEET_SESSION").ok();
+    let (session, needs_create) =
+        up_target_session(in_tmux, current.as_deref(), fleet_session_env.as_deref());
+    if needs_create && !ensure_detached_session(fleet, &session) {
         eprintln!(
-            "fleet up: not inside a tmux session (no $TMUX). Start/attach one first — the fleet\n\
-             lives as named windows in your current session."
+            "fleet up: no attached tmux session and could not create one — install tmux or start a \
+             session, then re-run."
         );
         std::process::exit(1);
     }
-    let session = tmux_current_session();
+    if !in_tmux {
+        println!(
+            "  (reconstituted into detached session '{session}' — `tmux attach -t {session}` to view.)"
+        );
+    }
     for a in &reg.agents {
         if a.status != "active" {
             continue;
@@ -14263,6 +14276,68 @@ fn tmux_current_session() -> String {
         .unwrap_or_else(|| "0".to_string())
 }
 
+/// The tmux session `fleet up` targets, and whether it must be created detached first. The name mirrors
+/// `restart_all`'s resolution so the whole control plane agrees on one session: `$CDZ_FLEET_SESSION` if set,
+/// else the current session when invoked inside tmux, else `main`. The second element is whether the caller
+/// must create the session detached before launching windows: it is already present only when invoked inside
+/// tmux and the chosen name is the current session, so a boot-time invocation (no `$TMUX`) resolves to the
+/// fleet session and creates it, which is what lets `fleet up` reconstitute the whole roster after a reboot
+/// without a human first opening a session. Pure so the precedence is unit-tested without tmux.
+fn up_target_session(
+    in_tmux: bool,
+    current: Option<&str>,
+    fleet_session_env: Option<&str>,
+) -> (String, bool) {
+    let chosen = fleet_session_env
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            in_tmux
+                .then(|| current.filter(|s| !s.is_empty()).map(str::to_string))
+                .flatten()
+        })
+        .unwrap_or_else(|| "main".to_string());
+    let already_in = in_tmux && current.is_some_and(|c| c == chosen);
+    (chosen, !already_in)
+}
+
+/// Ensure a detached tmux session `name` exists, creating it (starting the tmux server if none is running)
+/// when absent, so a `fleet up` invoked with no attached session — a boot/systemd reconstitution — still has
+/// a session to host the roster's windows. Idempotent: an existing session is left untouched (checked with
+/// `has-session`). Returns `false` when tmux is missing or the create failed, so the caller fails loud rather
+/// than launching windows into a session that does not exist. The session starts in the hub repo so its
+/// default shell lands in a sensible cwd.
+fn ensure_detached_session(fleet: &Fleet, name: &str) -> bool {
+    let present = Command::new("tmux")
+        .args(["has-session", "-t", name])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if present {
+        return true;
+    }
+    match Command::new("tmux")
+        .args(["new-session", "-d", "-s", name])
+        .current_dir(&fleet.repo)
+        .status()
+    {
+        Ok(s) if s.success() => {
+            println!(
+                "fleet up: created detached tmux session '{name}' (no attached session — boot/offline bringup)."
+            );
+            true
+        }
+        Ok(_) => {
+            eprintln!("fleet up: `tmux new-session -d -s {name}` failed");
+            false
+        }
+        Err(e) => {
+            eprintln!("fleet up: could not run tmux (is it installed?): {e}");
+            false
+        }
+    }
+}
+
 /// The window names live in `session`.
 fn tmux_windows(session: &str) -> Vec<String> {
     tmux_windows_checked(session).unwrap_or_default()
@@ -22123,6 +22198,41 @@ mod tests {
         assert_eq!(parse_interval_secs("30m"), 1800);
         assert_eq!(parse_interval_secs("2h"), 7200);
         assert_eq!(parse_interval_secs("1d"), 86400);
+    }
+
+    #[test]
+    fn up_target_session_uses_current_in_tmux_and_creates_the_fleet_session_at_boot() {
+        // Interactive (inside tmux, no override): target the current session, already present — no create,
+        // so an operator's `fleet up` never spawns a stray detached session.
+        assert_eq!(
+            up_target_session(true, Some("dev"), None),
+            ("dev".to_string(), false)
+        );
+        // Boot/systemd (no $TMUX, no override): resolve to `main` and CREATE it detached — the reboot-recovery
+        // path that was previously a hard exit.
+        assert_eq!(
+            up_target_session(false, None, None),
+            ("main".to_string(), true)
+        );
+        // $CDZ_FLEET_SESSION wins over the current session, and is ensured when it is not the one we are in.
+        assert_eq!(
+            up_target_session(false, None, Some("fleet")),
+            ("fleet".to_string(), true)
+        );
+        assert_eq!(
+            up_target_session(true, Some("dev"), Some("fleet")),
+            ("fleet".to_string(), true)
+        );
+        // Override naming the session we are already in: no redundant create.
+        assert_eq!(
+            up_target_session(true, Some("fleet"), Some("fleet")),
+            ("fleet".to_string(), false)
+        );
+        // An empty override/current is ignored (falls through to the next precedence rung).
+        assert_eq!(
+            up_target_session(true, Some(""), Some("")),
+            ("main".to_string(), true)
+        );
     }
 
     #[test]
