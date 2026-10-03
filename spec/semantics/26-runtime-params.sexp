@@ -702,13 +702,15 @@
   (host-calls (call param.width))
   (output (: 4007 Int64)))
 
-; psx1: a STRING-typed @!param — the accessor generates (op label (-> Unit String)), but a String
-; RESULT has no component boundary form on a bare effect (the detailed CDZ0900 explains the matrix:
-; bare-effect results cross as scalar/unit; a bytes/string-ish result needs the WORLD-DRIVEN path,
-; an imposed (wit-world …) that lifts host bytes into a value-heap handle). Scalar params (Int64/
-; Float64/Bool above) cross today; the string face DECLINES. Idealistic TODO: with the host
-; supplying "hello", byte-len + n = 10 at n=5. Flips when the world-driven result path (or a bare-
-; effect string-result form) reaches @!param accessors. (breaker probe ps1, tick 1508.)
+; psx1: a STRING-typed @!param — the accessor generates (op label (-> Unit String)). The String
+; RESULT of the @!param accessor CROSSES the host boundary today: with the host supplying "hello",
+; byte-len + n = 10 at n=5 (the scalar params Int64/Float64/Bool above cross as well). Crossing
+; verified by corpus-chapter-gate 26 (baseline pass on all four columns, 2026-10-03). Distinguish
+; this from the bare (effect …) matrix in the detailed CDZ0900: a bare-effect result that is a plain
+; String/compound — with NO @!param accessor and NO imposed (wit-world …) — has no component
+; boundary form and still declines (a bytes/string-ish bare-effect result needs the WORLD-DRIVEN
+; path, an imposed (wit-world …) that lifts host bytes into a value-heap handle). (breaker probe
+; ps1, tick 1508.)
 (case
   "a String-typed @param accessor crosses once the world-driven result path lands"
   (input
