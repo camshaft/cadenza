@@ -144,10 +144,20 @@ Gate Is The Promotion Bar", constitution §XII).
   pre-commit hook prints a reminder when a backend file in those paths is staged
   (silence with `FLEET_SKIP_CADENZA_REEMIT_WARN=1`).
 - For a **decline-flip** landing — a change that edits a backend decline predicate AND
-  flips a `.gate-baseline` entry to `pass` — add `--with-lib-tests` to the chapter gate
-  (`cargo xtask corpus-chapter-gate --with-lib-tests <stem>`). The four corpus attrs build
-  only the execution targets, not the `rcdzc` lib unit tests, so a stale "must-decline"
-  `#[test]` that the flip just invalidated stays red in the workspace test derivation (a
-  `gate-local` constituent downstream of this fast loop) and reds main for the next agent.
-  The flag runs `cargo test -p rcdzc` after a green corpus build (native, no nix, fast on a
-  warm tree) so the orphan is caught in the same pre-land loop.
+  flips a `.gate-baseline` entry to `pass` — the chapter gate **auto-runs** `cargo test -p
+  rcdzc` after a green corpus build: no flag to remember. It inspects the pre-land diff (vs
+  the integration base) and fires the lib suite when a changed file is a backend decline
+  predicate (`rcdzc/src/backend/<x>/mod.rs`) or a shared execution baseline
+  (`.gate-baseline`, `.gate-baseline-rust`, `.gate-baseline-rust-async`). This exists because
+  the four corpus attrs build only the execution targets, not the `rcdzc` lib unit tests, so a
+  stale "must-decline" `#[test]` that the flip just invalidated stays red in the workspace test
+  derivation (a `gate-local` constituent downstream of this fast loop) and reds main for the
+  next agent; the native lib run (no nix, fast on a warm tree) catches the orphan in the same
+  pre-land loop. Non-flip gating stays cheap — a diff touching neither path runs no lib tests.
+  Overrides: `--with-lib-tests` forces the suite on even when the diff does not look like a
+  flip; `--no-lib-tests` forces it off for a baseline touch that is a pure sort/format rewrite
+  with no outcome change (`--with-lib-tests` wins if both are passed). If the diff cannot be
+  inspected (no base resolves), the gate fails safe and runs the suite rather than risk missing
+  a flip. The durable end-state is migrating the decline-asserting `rcdzc` `#[test]`s into the
+  corpus baseline so a baseline flip flips the assertion atomically; this guard is the backstop
+  until then.

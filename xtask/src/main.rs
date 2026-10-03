@@ -228,14 +228,20 @@ enum Cmd {
     CorpusChapterGate {
         /// A corpus file stem (e.g. `28-wit-abi-boundary`) or a bare chapter number (e.g. `28`).
         chapter: String,
-        /// Also run the `rcdzc` lib unit tests (`cargo test -p rcdzc`) after the corpus build. OFF by
-        /// default so monitor/non-flip gating stays cheap. Pass this on a DECLINE-FLIP land — a change
-        /// that edits a backend decline predicate AND flips a `.gate-baseline` entry to `pass` — because
-        /// the chapter gate builds only the corpus EXECUTION attrs, not the rcdzc lib tests where a stale
-        /// "must-decline" `#[test]` lives; such a test stays red in the workspace test derivation (a
-        /// gate-local constituent downstream of this fast loop) and reds main for the next agent (#982).
+        /// FORCE the `rcdzc` lib unit tests (`cargo test -p rcdzc`) to run after the corpus build, even if
+        /// the diff does not look like a decline flip. Normally you do not need this: the gate AUTO-runs the
+        /// lib suite when it detects a decline-flip-shaped diff (see below), so this is only an explicit
+        /// override. The lib suite is where a stale "must-decline" `#[test]` lives; the chapter gate builds
+        /// only the corpus EXECUTION attrs, so without this stage such a test stays red in the workspace test
+        /// derivation (a gate-local constituent downstream of this fast loop) and reds main for the next
+        /// agent (#982).
         #[arg(long)]
         with_lib_tests: bool,
+        /// FORCE-SKIP the lib-test stage even when the diff looks like a decline flip. Use for a change that
+        /// touches a `.gate-baseline` for a non-flip reason (a pure sort/format rewrite with no outcome
+        /// change). Mutually overrides the auto-detect; `--with-lib-tests` wins if both are passed.
+        #[arg(long)]
+        no_lib_tests: bool,
     },
     /// Any UNRECOGNIZED subcommand is forwarded to the nix app of the same name:
     /// `cargo xtask <cmd> [args…]` → `nix run <worktree-flake>#<cmd> -- [args…]`. This is the all-nix
@@ -315,7 +321,8 @@ fn main() {
         Cmd::CorpusChapterGate {
             chapter,
             with_lib_tests,
-        } => corpus_chapter_gate::run(&paths, &chapter, with_lib_tests),
+            no_lib_tests,
+        } => corpus_chapter_gate::run(&paths, &chapter, with_lib_tests, no_lib_tests),
         Cmd::External(args) => run_external_subcommand(&args),
     }
 }
