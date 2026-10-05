@@ -44,7 +44,9 @@ dies or after a cron's 7-day auto-expiry — so verify them each tick and RE-CRE
    line: (a) **drain your inbox** (route asks — surface genuine operator-decisions via
    Slack via the bridge, answer clear-default ones yourself; append backlogs; note notes; move handled
    to `processed/`; leave a real operator-ask in place if the operator isn't around), (b) **watchdog
-   (DRY-RUN only)**: `cd .claude/worktrees/pr-sync && cargo xtask fleet watchdog` — report-only. NEVER
+   (dry-run only)**: `cd .claude/worktrees/pr-sync && cargo xtask fleet watchdog --dry-run`. Always pass
+   `--dry-run`: the bare form is not report-only, it recreates a window for every agent it reads as active,
+   and it does not read the board's lifecycle intent, so it relaunches paused agents (task_1720). NEVER
    pass `--nudge-drain-stalls`: it is OPERATOR-BANNED since 2026-09-10 (it auto-nudged/reaped ACTIVE
    agents mid-workstream and lost work). For an agent the dry-run flags stale, take the SAFE targeted
    action instead: `cargo xtask fleet reissue-loop <agent>` (pane-gated — only re-arms a genuinely idle
