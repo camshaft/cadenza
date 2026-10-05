@@ -286,7 +286,7 @@ fn default_effort() -> String {
 /// known alias passes through unchanged (so a full id or a future model still works).
 fn resolve_model(alias: &str) -> String {
     match alias {
-        "opus" => "us.anthropic.claude-opus-4-8[1m]".to_string(),
+        "opus" => "us.anthropic.claude-opus-5-5[1m]".to_string(),
         "fable" => "us.anthropic.claude-fable-5[1m]".to_string(),
         other => other.to_string(),
     }
@@ -23694,7 +23694,7 @@ mod tests {
         // window.sh hands the resolved id to `claude --model`. A wrong mapping runs every agent on the
         // wrong model, so pin the two aliases and the pass-through (a full id / future model is used
         // verbatim, never mangled).
-        assert_eq!(resolve_model("opus"), "us.anthropic.claude-opus-4-8[1m]");
+        assert_eq!(resolve_model("opus"), "us.anthropic.claude-opus-5-5[1m]");
         assert_eq!(resolve_model("fable"), "us.anthropic.claude-fable-5[1m]");
         // A non-alias (already a full id, or an unknown/future model) passes through unchanged.
         assert_eq!(
