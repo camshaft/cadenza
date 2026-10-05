@@ -9836,7 +9836,10 @@
         # FIX: this runs ONLY the touched crate's per-crate checks (test-<crate> + clippy-<crate>, or
         # crate-cdz for cdz), warm-cached = seconds-to-~2min, giving fast feedback WITHOUT the full battery.
         # It auto-detects touched crates from `git diff --name-only` (vs origin/main by default, override
-        # with an explicit arg list of crate names). fmt is whole-tree + cheap so it always runs.
+        # with an explicit arg list of crate names). fmt is whole-tree + cheap so it always runs; the
+        # repo-wide mechanizable-mandate scan (file-size 512 KiB cap + the other static mandates, the
+        # identical `mandate-lint` check CI folds into its land-gate fail-set) ALSO always runs — even when
+        # no gated crate is touched — so fast-gate is never LOOSER than CI on a repo-wide mandate (task_874).
         #
         # NOT A MERGE GATE: this is NARROWER by design — it does NOT run the integration checks (guide,
         # codegen, bench, gate, native, hash-parity, cross-crate dependents beyond the touched crate), so a
@@ -9917,21 +9920,36 @@
                     [ -n "$got" ] && checks="$checks $got"
                   done < <(git diff --name-only "$base" 2>/dev/null)
                 fi
-                # Dedup the check set.
-                checks="$(echo "$checks" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')"
+                # Dedup the check set. The trailing `|| true` is load-bearing under `set -euo
+                # pipefail`: when $checks is empty (no touched gated crate — now a real, gated path
+                # since the always-run gates below must still run), `grep -v '^$'` matches nothing and
+                # exits 1, pipefail propagates that, and set -e would abort the whole script here BEFORE
+                # the always-run fmt + mandate-lint ever build. `|| true` keeps checks="" and lets the
+                # empty path fall through. (Do not remove: the empty-checks fall-through is the task_874 fix.)
+                checks="$(echo "$checks" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ' || true)"
                 if [ -z "$checks" ]; then
-                  echo "cdz fast-gate: no touched gated crate or corpus file detected — nothing to build (a non-crate/non-corpus edit, e.g. docs, is not covered by a fast check; use the full localGate for those)."
-                  exit 0
+                  echo "cdz fast-gate: no touched gated crate or corpus file detected — running the always-on repo-wide gates (fmt + mandate scan) only (a non-crate/non-corpus edit, e.g. docs, is not covered by a per-crate fast check; use the full localGate for those)."
+                else
+                  echo "cdz fast-gate: building touched-crate checks (warm-cached):$checks"
                 fi
-                echo "cdz fast-gate: building touched-crate checks (warm-cached):$checks"
                 # shellcheck disable=SC2086
                 attrs=""; for c in $checks; do attrs="$attrs .#checks.${system}.$c"; done
                 # fmt is whole-tree + cheap — always include it so a formatting slip is caught fast.
                 attrs="$attrs .#checks.${system}.fmt"
+                # The mechanizable-mandate scan (file-size 512 KiB cap + the other static mandates) is
+                # REPO-WIDE, not per-crate: an over-cap or mandate-violating file reds the whole fleet
+                # land-gate (mandateLintCheck is in localGate's fail-set), and it can live in a path that maps
+                # to NO gated crate (the empty catch-all above), so a per-crate-only fast-gate was LOOSER than
+                # CI on it (task_874) — the over-cap file lands fast-green, then reds everyone's land-gate.
+                # Run the IDENTICAL check UNCONDITIONALLY, every invocation, regardless of which crates (if
+                # any) are touched. Reuses the warm-cached xtask-mandates binary (zero added build weight) so
+                # it honors FILE_SIZE_ALLOWLIST — never hand-roll `find -size +524288c`, which ignores the
+                # allowlist and would false-red stricter than CI. (Same shape as the clippy gap task_720 closed.)
+                attrs="$attrs .#checks.${system}.mandate-lint"
                 # shellcheck disable=SC2086
                 if nix build $attrs --print-build-logs; then
                   echo ""
-                  echo "cdz fast-gate: GREEN — the touched crate(s)/corpus file(s) pass their checks + fmt."
+                  echo "cdz fast-gate: GREEN — the touched crate(s)/corpus file(s) pass their checks + fmt + the repo-wide mandate scan (file-size cap + static mandates)."
                   echo "⚠ NOT MERGE-SAFE: this is the NARROW inner-loop gate (touched crate + touched-corpus-file"
                   echo "  coarse+roundtrip only). It does NOT"
                   echo "  run integration checks (guide/codegen/bench/gate/native/hash-parity) or cross-crate"
