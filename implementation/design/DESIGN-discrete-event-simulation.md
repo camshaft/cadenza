@@ -9,7 +9,7 @@ general-continuation primitive this vertical is the forcing consumer of — see
 **Status:** 🟡 **IN DESIGN — API RESOLVED.** The two hard forks are LOCKED with the operator:
 **one-shot resumable continuations** and **`UInt64`-nanosecond time in a newtype `Instant`**
 (operator-ruled, §3.2). The bach API is now RESOLVED against the cloned repo
-(`/local/home/bythewc/Projects/camshaft/bach`, §7) — bach is async/await, and `.await` maps 1:1 onto
+(`camshaft/bach`, §7) — bach is async/await, and `.await` maps 1:1 onto
 Cadenza `perform`; `Sim` core = `sleep`/`spawn`(joinable)/`join`/`now`; sim runs until PRIMARY tasks
 complete. Same-time tie-break confirmed **FIFO** (bach `push_back`/`pop_front`, §3.4). Partial-order
 reduction / coop scheduling are **out of scope** (operator: "just get a task system in place"). Written
@@ -286,7 +286,7 @@ the moment v-effects' E5 step 3 is green, co-verified against increment 3's repr
 
 ---
 
-## 7. The bach API surface — RESOLVED (repo studied at `/local/home/bythewc/Projects/camshaft/bach`)
+## 7. The bach API surface — RESOLVED (repo studied at `camshaft/bach`)
 
 The concierge cloned bach; §4 is now reconciled with its **actual** interface, not a default. The single
 most important finding shapes the whole port:
@@ -395,7 +395,7 @@ The operator ruled on the three open items, all now baked into the design:
   the units layer has **no** instant/duration type split, so `Time`/`Duration` are DES nominal newtypes
   that enforce the discipline (§3.2). Bach API still pending from operator (slack-bridge ask out).
 - **2026-07-18 (tick 4)** — **bach API RESOLVED** (concierge cloned the repo to
-  `/local/home/bythewc/Projects/camshaft/bach`; studied `lib.rs`/`ext.rs`/`time.rs`/`task.rs`). Headline:
+  `camshaft/bach`; studied `lib.rs`/`ext.rs`/`time.rs`/`task.rs`). Headline:
   **bach is async/await, `.await` == Cadenza `perform`** — the port is mechanism-identical, not an
   analogy (§7.1). Reconciled §4 + rewrote §7 from "pending default" to the real interface. Two semantics
   corrections (§7.4): (a) **spawn is joinable** (`JoinHandle`) not fire-and-forget → added a `join` op to

@@ -7,7 +7,7 @@
 ///
 /// The gap between a `slug:` and its `import(...)` is BOUNDED ({0,500}?, not an unbounded lazy `[\s\S]*?`):
 /// a slug with no following import would otherwise backtrack the whole remaining file per exec
-/// (catastrophic on a malformed registry — amazon-q flagged this on PR #1166). Every real entry's gap is
+/// (catastrophic on a malformed registry — the AI review bot flagged this on PR #1166). Every real entry's gap is
 /// well under the bound (the longest, platform-safety's blurb, is 316 chars), so 500 is behaviour-preserving
 /// with comfortable margin.
 

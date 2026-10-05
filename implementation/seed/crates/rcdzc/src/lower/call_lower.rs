@@ -2328,7 +2328,7 @@ pub(super) fn collect_binding_uses(
     // be seen here for the CALL-BOTH-WAYS force-keep to fire. Walk EVERY form directly — the TAIL (the
     // last form, the do's value) is analyzed by its own iteration here, which is MORE precise than the
     // collapsed `resolved_of(do) = Ref{last}` would be, so we `return` afterward rather than falling
-    // through (the tail is NOT missed — PR #1245 amazon-q). A pure do (no discarded store) records the
+    // through (the tail is NOT missed — PR #1245 AI review bot). A pure do (no discarded store) records the
     // same facts either way, so this only ADDS the previously-hidden intermediate uses — never drops one.
     if let Some(forms) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
         let last_ix = forms.len().saturating_sub(1);

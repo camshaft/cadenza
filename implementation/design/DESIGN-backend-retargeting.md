@@ -19,7 +19,7 @@ with the honest decline boundaries called out at each step.
 runtime. If the backend is configurable, the *same* front end (decode → resolve → infer → lower → fold)
 can emit **Rust source** as an alternative artifact. That opens the door the user asked for: author a
 self-contained module in Cadenza, compile it to Rust, and link it into an existing Rust codebase (e.g.
-Membrain) as an ordinary crate — no wasm host, no component boundary.
+a distributed service) as an ordinary crate — no wasm host, no component boundary.
 
 **The seam already exists.** The pipeline is already an artifacts-in / artifacts-out ABI keyed by a
 `kind` string (`rcdzc/src/abi.rs`), and the boundary surface is already computed as a target-neutral
@@ -360,7 +360,7 @@ clean and is exactly what the user proposed:
 - **A `(host …)` delegation → a trait bound the generated function takes as a parameter.** A Cadenza
   function that performs effect `E` compiles to a Rust `fn run<H: E>(host: &H, …)` (or a struct holding
   `H`), and each perform site becomes `host.op(args)`. The **host is dependency-injected**, which is
-  precisely how Membrain's own gossip crate already threads its 30-method `Env` trait — so a
+  precisely how an existing gossip crate already threads its 30-method `Env` trait — so a
   Cadenza-generated module would compose with that pattern rather than fight it.
 - **Async.** If the host trait methods are `async fn` (`trait E { async fn op(&self, …) -> B; }`), then a
   Cadenza function that performs an effect compiles to a Rust `async fn` that `.await`s the host call.
@@ -417,8 +417,8 @@ This mirrors the house preference for "emit code that reads like the structure" 
 2. **One compound (Strategy A).** Add `List`/`Bytes`/`Match`/`Sum` over native Rust types. Compile a
    function that takes and returns a compound, exercising the `Ty` → native-type map, generated `enum`s,
    and real `match`. This is the point where Strategy A's ergonomics (no handles) show.
-3. **The real target — `VarU64`.** Reimplement Membrain's LEB128 varint (`core-wire/src/impl/varint.rs`,
-   ~50 lines, encode/decode over bytes) in Cadenza, compile it to Rust, and **diff against Membrain's own
+3. **The real target — `VarU64`.** Reimplement an existing LEB128 varint (~50
+   lines, encode/decode over bytes) in Cadenza, compile it to Rust, and **diff against the existing crate's own
    byte-exact unit tests** (`round_trips_across_magnitudes`, `small_values_are_compact`,
    `rejects_truncated_input`, `rejects_overlong_encoding`) as the oracle. A byte-identical pass is the
    compelling feasibility result: a real production wire codec, authored in Cadenza, compiled to Rust,
@@ -430,7 +430,7 @@ This spike deliberately stays **inside the pure value language** — it needs no
 closures, no floats. It validates: the `Target` seam, `Mir` → Rust codegen, the `Ty` → type map (both
 strategies if desired), checked-arithmetic trap fidelity, and boundary marshalling — the entire pure
 spine — while the effectful/async/host-trait half (§7) waits on task #148. Do **not** aim a first spike at
-gossip's `Client` (async, tokio, `#[derive(Wire)]`, the 30-method `Env`, Brazil packaging); aim it at a
+gossip's `Client` (async, tokio, `#[derive(Wire)]`, the 30-method `Env`, internal build packaging); aim it at a
 pure, test-backed leaf function and let the compelling result argue for the larger investment.
 
 ---
@@ -447,7 +447,7 @@ Stated up front so no one reads more into it than is there:
 - **Persistence semantics under Strategy A** — `Vec`/`BTreeMap` are not persistent; invisible for
   value→value functions, observable only for programs relying on cheap many-version sharing (§4). Strategy
   B (link the runtime) preserves it exactly.
-- **Not a `Client`-level drop-in for Membrain gossip** — the realistic seam is a pure leaf function
+- **Not a `Client`-level drop-in for the existing gossip crate** — the realistic seam is a pure leaf function
   (varint, interval, reconciliation step), not the async/RPC/`Wire`/`Env`-welded `Client` crate.
 
 The one load-bearing claim this doc *does* make: **the pure value→value spine — front end unchanged, a

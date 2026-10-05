@@ -193,7 +193,7 @@ Prefix every shell command with `export PATH="$HOME/.cargo/bin:$PATH"` (cargo is
 default PATH here).
 
 ```sh
-cd /Users/bythewc/Projects/camshaft/cadenza/implementation/seed/crates/cdz-runtime
+cd implementation/seed/crates/cdz-runtime   # from the repo root
 export PATH="$HOME/.cargo/bin:$PATH"
 
 # 1. Native tests (the behavioral contract) — must stay green.

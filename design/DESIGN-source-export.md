@@ -1,6 +1,6 @@
 # DESIGN: source export — nix flake outputs → vendorable Rust source
 
-Owner: `v-nix-projection` (subsystem `nix-flake`). First consumer: MembrainHivemind (a package
+Owner: `v-nix-projection` (subsystem `nix-flake`). First consumer: a downstream service (a package
 that plugs the REAL Cadenza reducer as its per-event fold), via `v-hivemind` — but nothing here
 is consumer-specific; this is a generic source export.
 

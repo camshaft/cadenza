@@ -19,7 +19,7 @@ The fleet has no single first-class entity for a review that works across every 
 
 Goals:
 
-1. A review is represented uniformly across its sources — an internal board document, a GitHub pull request, and a code.amazon.com change request — with no source-specific fields in the public interface.
+1. A review is represented uniformly across its sources — an internal board document, a GitHub pull request, and an internal code-review tool change request — with no source-specific fields in the public interface.
 2. A review is the single dedicated entity for every kind of review the fleet performs, including a self-improvement observation of an agent session or a completed task, so those observations are first-class records rather than untyped tasks.
 3. The number of issues a review surfaces falls over time, read as a trend from each review's log, sliced by review kind and by the producing area or agent.
 4. A fall in issues surfaced is genuine and not the result of less scrutiny: it is not accompanied by a rise in escaped defects, where an escaped defect is an issue found after approval.
@@ -32,7 +32,7 @@ Goals:
 Non-Goals:
 
 10. This does not replace the existing board Document review flow; a document review builds on it.
-11. This does not auto-sync code.amazon.com change requests in the first version; a change-request review is set through the interface until a bridge exists.
+11. This does not auto-sync internal code-review tool change requests in the first version; a change-request review is set through the interface until a bridge exists.
 12. This does not require full GitHub pull-request state fidelity, such as draft and changes-requested, in the first version.
 13. Adversarial review does not replace a person's review; it precedes it, and whether it blocks a person's review is an open decision.
 
@@ -94,7 +94,7 @@ v-task-board owns the board data model, the MCP tools, the interface, and the ev
 
 - id.
 - kind: one of document, code, design, agent-session, task.
-- source: one of board-document, github-pull-request, code-amazon-change-request, url, agent-session, task. Metadata only.
+- source: one of board-document, github-pull-request, internal-change-request, url, agent-session, task. Metadata only.
 - target-ref: the pointer read per source — a board document id, an external identifier such as a pull-request url, an agent-session id, or a task id.
 - status: the lifecycle state (A2).
 - log: a single append-only, generic event log attached to the review. Every event is an entry with a timestamp and a type — submitted, revised to a new version, a finding raised, a finding resolved, a comment, a state change, an adversarial-review run, and the concluding decision. A finding is an entry of type finding, not a separate collection; an actionable finding entry is linked to a child task. Reading the log in order gives the full timeline of the review, which the observation reviewer takes into account when producing proposals, and from which any count or trend is derived rather than stored as a separate counter (operator preference, comments 48 and 49).

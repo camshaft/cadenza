@@ -16,25 +16,25 @@ agent on the operator's spark (relayed via the concierge), verbatim:
 > modules that just respond inline just as a proof of concept."*
 
 This design was worked autonomously from that spark against the current platform kernel
-(`implementation/seed/crates/cdz-platform/`) and the up-to-date agent-platform design set in
-`MembrainDev/docs/designs/agent-platform/`. It records each fork with a chosen default and escalates
+(`implementation/seed/crates/cdz-platform/`) and the up-to-date agent-platform design set, kept
+in a separate repository. It records each fork with a chosen default and escalates
 only the one genuine operator fork (D1) as an `ask`.
 
 ### Lineage — this is the HTTP instance of an already-designed pattern
 
 The operator's idea maps onto prior art almost one-to-one; this doc is the concrete HTTP realization,
-not a new subsystem. (**Note on references:** `MembrainDev/…` paths below are **EXTERNAL** — they name
-docs in the separate *MembrainDev* repository, the operator's agent-platform requirements/design set,
+not a new subsystem. (**Note on references:** `agent-platform/…` paths below are **EXTERNAL** — they name
+docs in a separate repository, the operator's agent-platform requirements/design set,
 checked out locally alongside this repo; they are **not** in-tree paths. `implementation/design/…` and
 `cdz-platform/…` paths **are** in this repo.)
 
-- **`MembrainDev/.../patterns/api-gateway.md`** — "Federated API gateway (MCP and custom protocols)."
+- **`agent-platform/.../patterns/api-gateway.md`** — "Federated API gateway (MCP and custom protocols)."
   The general pattern: *an edge reducer fronts the fleet for a foreign client over the network,
   authenticates it, and translates its calls into platform effects and results back.* Its own words:
   *"Nothing here is MCP-specific… the same adapter bridges any external API: an OpenAPI service, a gRPC
   endpoint, an LSP client, a custom developer API… expose the platform out or bring a custom API in."*
   **An HTTP server serving wasm handlers IS this pattern with HTTP as the wire.**
-- **`MembrainDev/.../cadenza-platform-outposts.md`** — the trust/federation model this rides: outposts
+- **`agent-platform/.../cadenza-platform-outposts.md`** — the trust/federation model this rides: outposts
   **dial *in*** to the fleet (§2); trust leans on an identity provider + **SigV4-style symmetric-key
   signing**, **bearer tokens rejected** (§3); the **baked-in surface is tiny** (§9: transport dial-in +
   opaque frames, signature verify + a root-designated authenticator, location-transparent message
@@ -51,7 +51,7 @@ checked out locally alongside this repo; they are **not** in-tree paths. `implem
 - **`implementation/design/DESIGN-per-spawn-limits-and-spawn-capability.md`** — the per-spawn resource
   budget + `spawn` capability the per-request session lifecycle (§4) leans on.
 
-### Grounding — the requirements this serves (MembrainDev agent-platform docs)
+### Grounding — the requirements this serves (agent-platform docs)
 
 Mined from `problem-statement.md` (gaps), `tenets.md`, `goals.md`, and `how-it-works/*`:
 

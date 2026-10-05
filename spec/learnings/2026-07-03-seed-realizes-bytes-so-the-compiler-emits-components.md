@@ -2,7 +2,7 @@
 
 *2026-07-03*
 
-**What happened.** Midway through synthesizing the seed toolchain in an attended build, the build was
+**What happened.** Partway through synthesizing the seed toolchain in an attended build, the build was
 about to author the component-emitting codegen **in the seed's foreign language (Rust)** — a Rust
 function translating a program's AST to WebAssembly component bytes. The operator halted it: the *only*
 role Rust should play is the seed **reference interpreter (the oracle)**; the compiler — including its

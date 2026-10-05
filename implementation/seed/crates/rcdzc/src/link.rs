@@ -1741,7 +1741,7 @@ mod tests {
     }
 
     /// PRIVACY — the prelude-collision construct-shadow path (`resolve_name` step 3d) does NOT leak a
-    /// sibling file's private variant constructor. This pins amazon-q PR #392's "sibling variant leak"
+    /// sibling file's private variant constructor. This pins the AI review bot's PR #392 "sibling variant leak"
     /// (the `scoped.is_none()` guard on the `prelude_colliding_variant_ctor` fall-through) as a FALSE
     /// POSITIVE — `Some(Err(()))` already does not leak — AND that the guard is LOAD-BEARING: rewriting
     /// it to also fire on `Some(Err(()))` (file known, variant not visible) re-opens a real leak.

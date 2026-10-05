@@ -179,7 +179,7 @@ pub struct ExportParam {
 /// value corrupts the returned scalar → a mismatch. The list `--arg` is the `#list(…)` value-form.
 /// Shape 9 is the #9586 CDZ0910 arm-2: a FIVE-field record with an `(Option Node)` field over a scalar newtype
 /// `Node = (Node UInt64)`, `Record.with`-updated to `(Some (Node nid))` then read back via a let-destructure,
-/// `run(nid: UInt64)` threading the arg through — the exact MembrainHivemind `send` bisect. It was a KNOWN
+/// `run(nid: UInt64)` threading the arg through — the exact downstream conformance `send` bisect. It was a KNOWN
 /// cross-backend divergence (wasm CDZ0910 fixed by #9633; rust E0282 fixed by #9680) so it stayed OUT until
 /// BOTH sides agreed; now that #9680 landed it is a live value guard (a regression that re-mislowers the
 /// unboxed-i64 scalar-newtype option field as an i32 aggregate handle corrupts the round-tripped nid).
@@ -473,7 +473,7 @@ pub fn generate_export_param(entropy: &[u8]) -> ExportParam {
         //     newtype `Node = (Node UInt64)`; `Record.with` REPLACES `on` with `(Some (Node nid))`, read back
         //     via a single-ctor let-destructure. `run(nid: UInt64)` threads the arg through → returns nid
         //     (identity through the record-Option-newtype round-trip). Verbatim from the 15-rows corpus repro
-        //     (the MembrainHivemind `send` bisect). Was a known divergence (wasm CDZ0910 #9633 / rust E0282
+        //     (the downstream conformance `send` bisect). Was a known divergence (wasm CDZ0910 #9633 / rust E0282
         //     #9680); both backends now agree, so a re-mislower of the unboxed-i64 option field corrupts nid.
         9 => (
             "(do (type Sess (Sess Bytes)) (type Node (Node UInt64)) (type Msg (Msg (Record (: to Sess) (: contract String) (: from (Option Sess)) (: payload Bytes) (: on (Option Node))))) (def (message (: to Sess) (: contract String)) (: (Msg.Msg #record((= to to) (= contract contract) (= from (Option.None unit)) (= payload b\"\") (= on (Option.None unit)))) Msg)) (def (on (: m Msg) (: node Node)) (: (let (((Msg.Msg f) m)) (Msg.Msg (Record.with f #\"on\" (Option.Some node)))) Msg)) (def (unpack (: m Msg)) (: (let (((Msg.Msg f) m)) (match f.on ((Option.Some n) (let (((Node.Node v) n)) v)) ((Option.None _) 0))) UInt64)) (def (run (: nid UInt64)) (: (let ((a (Sess.Sess b\"s\"))) (let ((msg (|> (|> a (message \"msg\")) (on (Node.Node nid))))) (unpack msg))) UInt64)) (export run))"
