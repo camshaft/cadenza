@@ -1343,7 +1343,7 @@ fn compound_contains_lambda(db: &mut Db, init: StructId) -> bool {
 // the eval-side reducers (`reduce_to_if`/`reduce_to_match`), whose `Apply` β-reduction runs under
 // `Db::enter_reduction` (bounded by `REDUCE_DEPTH_LIMIT` + the cumulative `REDUCE_NODE_BUDGET`, declining
 // rather than diverging) and whose `Ref` arm stops at any kept multi-use binding. So this walk terminates
-// by construction. (amazon-q PR#556 flag — dismissed after verifying the arena invariant.)
+// by construction. (AI review bot PR#556 flag — dismissed after verifying the arena invariant.)
 fn if_or_match_selects_lambda(db: &mut Db, init: StructId) -> bool {
     // An arm body selects a function if it is a lambda, or itself a nested conditional of lambdas.
     let arm_selects = |db: &mut Db, body: StructId| {
@@ -5059,7 +5059,7 @@ fn runtime_try_failure_value(
 //
 // TERMINATION (no cycle detection needed): this follows a `LocalRef` binder exactly ONE hop and does NOT
 // self-recurse — the inner `match core_of(db, binder)` only matches `ListNew` or returns `None`, never
-// re-enters `const_list_elems`. (amazon-q PR#556 flagged this as an unbounded recursive walk; that is a
+// re-enters `const_list_elems`. (AI review bot PR#556 flagged this as an unbounded recursive walk; that is a
 // misread — there is no recursion here. Dismissed.)
 fn const_list_elems(db: &mut Db, list: StructId) -> Option<Vec<StructId>> {
     match core_of(db, list) {

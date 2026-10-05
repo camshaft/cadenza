@@ -59,7 +59,7 @@ cdz-run = { path = "../cdz-run", optional = true }
 # longer needlessly re-runs the ~28min spine (v-nix's over-trigger fix); a Core/rcdzc MR still busts it.
 cdz-corpus = { path = "../cdz-corpus", optional = true }
 # The WIT-world → KIND_WIT_WORLD binary-AST utility LIBRARY, mounted as `cdz world-artifact`. The Cadenza-ML
-# conformance runner (v-hivemind, MembrainHivemind) turns `wit/conformance.wit` into the KIND_WIT_WORLD binary
+# conformance runner (v-hivemind, a downstream consumer) turns `wit/conformance.wit` into the KIND_WIT_WORLD binary
 # that `cdz compile` links a guest against (`wit-world:conformance=WORLD.bin`), shelling ONLY the single `cdz`
 # toolchain (no real nix on PATH) — so the WIT→artifact logic that was a standalone flake bin (`nix build
 # .#world-artifact`) is folded in here as a subcommand. OPTIONAL behind the default-on `world-artifact` feature

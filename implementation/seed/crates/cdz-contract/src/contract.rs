@@ -400,7 +400,7 @@ mod tests {
         // contract-id is a WIRE value the router keys on (via the ContractQuery tag byte) and a decode-confirm
         // consumer (v-gateway-conformance) verifies byte-for-byte — and its declaration byte-shape (the
         // trailing `(kind query)` marker) was self-grounded + gateway-confirmed, not read from the (unreadable)
-        // Membrain build-plan. So freeze the absolute output for the query form of
+        // downstream build plan. So freeze the absolute output for the query form of
         // `(contract "temp.celsius" (types (type Temp (Mk f64))) Temp Temp (kind query))`: if it drifts, the
         // wire format changed — re-pin ONLY as a deliberate, re-derive-query-ids decision (query ids are not
         // deployed yet, so an intentional marker-shape change from a build-plan is an additive re-pin here,

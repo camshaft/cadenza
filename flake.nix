@@ -2555,7 +2555,7 @@
         # reducer-world tier — `cdz-platform` (the wasmtime driving in src/host.rs behind its `host` feature:
         # ReducerHost/WasmReducer/WasmProgramStore) + its reducer-world WIT (wit/world.wit, inside the crate
         # dir) + first-party deps cadenza-ast/cdz-contract/cdz-str. $out is a standalone cargo workspace a
-        # downstream consumer (MembrainHivemind's amzn-membrain-hivemind-reducer) vendors + builds with
+        # downstream consumer (a reducer package in a downstream service) vendors + builds with
         # `--features cdz-platform/host`, wrapping WasmReducer in its ReducerRuntime::fold and plugging its own
         # CAS/KV backends into the BlobStore/KvStore/ReducerGraph traits. SEPARATE package from the light codec
         # tier so wasmtime 37 + cranelift never leak into it. Refresh: `nix build .#reducer-source-export`.
@@ -2633,7 +2633,7 @@
         # workspace sharing a SINGLE cadenza-ast. A consumer needing BOTH (config via cadenza-ast-serde AND
         # the reducer via cdz-platform) MUST vendor this one tree: vendoring the two separate tiers ships two
         # cadenza-ast v0.1.0 copies at different paths, which collides at the consumer's lockfile stage
-        # (brazil-build sync "package collision ... cadenza-ast ... only one can be written unambiguously").
+        # (dependency sync: "package collision ... cadenza-ast ... only one can be written unambiguously").
         # Emits NO Cargo.lock (the consumer resolves from its own version set). Overlays the build-time-
         # generated cdz-platform/src/contracts so the tree is self-contained. Refresh: `nix build .#source-export`.
         sourceExportAll = pkgs.stdenvNoCC.mkDerivation {
@@ -2689,7 +2689,7 @@
             cd ./proj
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
             # cdz-platform with host (the driving) + the codec crates, all sharing the ONE cadenza-ast.
-            # Package names are amzn- prefixed (Brazil mandate); the `host` feature name is unchanged.
+            # Package names carry the consumer's required name prefix; the `host` feature name is unchanged.
             cargo build --offline -p amzn-cdz-platform --features host -p amzn-cadenza-value -p amzn-cadenza-ast-serde
             runHook postBuild
           '';
@@ -2756,7 +2756,7 @@
           echo "ok: $n wasm components exported (valid wasm magic) + hashes.env complete + .gitattributes LFS" > "$out"
         '';
         # reducerEchoComponent (v-nix-projection, for v-hivemind inc-7): a MINIMAL reducer-echo wasm
-        # component blob — a test fixture so the consumer can `include_bytes!` it (or seed it into a Brazil
+        # component blob — a test fixture so the consumer can `include_bytes!` it (or seed it into a consumer
         # test CAS by ProgramHash) to validate the real WasmReducer fold path (spawn a live guest + assert
         # echo + exercise the HostBackend-retry vs GuestCrashed fault classification). It is the EXISTING
         # `guests/inline/reducer-echo-cdz` Cadenza guest (exports cadenza:platform/guest, no host imports →
@@ -2868,7 +2868,7 @@
         # can bootstrap a hivemind's CAS entirely from `nix build .#hivemind-bootstrap` — components + contracts,
         # each with its manifest. git-LFS for the binary blobs (.wasm/.bin). Drift-proof/re-runnable.
         # (The dev-rig SERVER BINARIES — cdz-http-gateway/cdz-cas-http/control-mock — are the ~/hivemind serving
-        # layer; whether the Brazil daemon needs them is being confirmed with v-hivemind, added here if so.)
+        # layer; whether the downstream daemon needs them is being confirmed with v-hivemind, added here if so.)
         hivemindBootstrapRefresh = pkgs.writeText "hivemind-bootstrap-REFRESH.md" ''
           # Cadenza hivemind bootstrap export
 
@@ -7617,7 +7617,7 @@
         # `.gitattributes`, for vendoring into a git-LFS-backed package. Refresh: `nix build .#wasm-components-export`.
         packages.wasm-components-export = wasmComponentsExport;
         # reducer-echo-component (v-nix-projection, for v-hivemind inc-7): a minimal reducer-echo wasm blob
-        # (git-LFS) test fixture to validate the real WasmReducer fold path in a Brazil test.
+        # (git-LFS) test fixture to validate the real WasmReducer fold path in a downstream consumer test.
         packages.reducer-echo-component = reducerEchoComponent;
         # reducer-echo-accum-component (v-nix, v-reducer-pooling accumulator-loop reclaim tripwire): the
         # reducer-echo variant whose on-message runs a bounded owned-accumulator loop — a buildable O(n)

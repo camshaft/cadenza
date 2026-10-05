@@ -2756,7 +2756,7 @@
     "A should-work program the seed currently MISCOMPILES (CDZ0910 'type mismatch: expected i32, found i64'
            at component validation), pinned as a TODO per the corpus policy — a should-work is `(output V)`
            and AUTO-LOCKS to Pass once the fix lands (no future corpus edit). Bisected from v-hivemind's
-           MembrainHivemind conformance `send` (msg.cdz): `Record.with` REPLACING the `on` field — an
+           a downstream conformance `send` (msg.cdz): `Record.with` REPLACING the `on` field — an
            `Option` over a newtype-over-`UInt64` (`Node`, unboxed to i64) — of a five-field record with a
            RUNTIME `(Option.Some (Node.Node nid))`, then a single-ctor `(let (((Msg.Msg f) m)) …)`
            destructure reading `f.on`, mislowers the option field to `box-int(get-int(arr-get(<i64 newtype

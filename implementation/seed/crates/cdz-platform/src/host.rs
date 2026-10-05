@@ -1322,7 +1322,7 @@ pub enum InstantiateSubStep {
 }
 
 /// An embedder hook to record per-request reducer-instantiation sub-step timings. cdz-platform stays
-/// DEP-FREE: it only times its own [`InstantiateSubStep`]s and calls this observer; the embedder (the Membrain
+/// DEP-FREE: it only times its own [`InstantiateSubStep`]s and calls this observer; the embedder (the downstream
 /// daemon) records the durations into its metrics reporter as `wasm_instantiate_us{sub_step}` (the
 /// Prometheus-scrapable init-cost attribution the perf lane reads). A `None` observer — the default — pays
 /// ZERO: no `Instant` is taken and no call is made, so an un-observed host has no measurement overhead.
@@ -1784,7 +1784,7 @@ impl WasmProgramStore {
     }
 
     /// Install an [`InstantiateObserver`] to record per-request instantiate sub-step timings
-    /// (`wasm_instantiate_us{sub_step}`) — the embedder (the Membrain daemon) records them into its metrics
+    /// (`wasm_instantiate_us{sub_step}`) — the embedder (the downstream daemon) records them into its metrics
     /// reporter. Set once at node ASSEMBLY, before any reducer is spawned: the observer lives on the shared
     /// instantiation core, which at assembly time is still uniquely held (refcount 1), so this mutates it in
     /// place; called after a reducer has cloned the core it is a no-op (guarded in debug). Un-observed hosts
@@ -3107,7 +3107,7 @@ mod tests {
     fn the_instantiate_observer_records_sub_steps_only_when_installed() {
         // The dep-free instantiate-cost hook (InstantiateObserver): an un-observed host pays ZERO (no clock
         // reading, observe_end a no-op), and an installed observer receives exactly the sub-steps recorded, in
-        // order. This pins the hook contract the Membrain embedder wires to wasm_instantiate_us{sub_step}; the
+        // order. This pins the hook contract the downstream embedder wires to wasm_instantiate_us{sub_step}; the
         // sub-steps firing during a real instantiate_program are exercised end-to-end on the rig / itest once an
         // observer is installed there.
         use super::{InstantiateObserver, InstantiateSubStep, Instantiator};

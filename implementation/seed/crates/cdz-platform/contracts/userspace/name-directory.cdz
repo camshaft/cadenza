@@ -1,7 +1,7 @@
 // The name-directory contract — a GLOBAL name→bytes directory (operator milestone 769; value shape 773). A
 // reducer emits a request against this contract to BIND a name to an opaque VALUE, or LOOKUP a name's value;
 // the platform answers with the correlated response (folds via on_response). Names + values are global +
-// strongly consistent (backed by the same Membrain quorum KV as the root-router key), so any node resolves
+// strongly consistent (backed by the same quorum key-value store as the root-router key), so any node resolves
 // the same name→value.
 //
 // The value is ARBITRARY OPAQUE BYTES (operator 773): "the name directory should be able to store any bytes …

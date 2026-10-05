@@ -42,7 +42,7 @@ fn tier_roots(tier: &str) -> Result<&'static [&'static str], String> {
         // COMBINED tier: codec + reducer in ONE workspace sharing a SINGLE cadenza-ast. A consumer that
         // needs BOTH (config via cadenza-ast-serde AND the reducer via cdz-platform) must vendor this
         // ONE tree — vendoring the two separate tiers instead ships two cadenza-ast copies at different
-        // paths, which collides at the consumer's lockfile stage (`brazil-build sync`: "package collision
+        // paths, which collides at the consumer's lockfile stage (its dependency sync: "package collision
         // ... cadenza-ast v0.1.0 ... only one can be written unambiguously"). Rooting at both tiers' roots
         // + dedup discovery yields the union with cadenza-ast exactly once.
         "all" => Ok(&[
@@ -116,7 +116,7 @@ fn sibling_path_deps(manifest: &str) -> Vec<String> {
 /// first-party path-dep gains `package = "<prefix>-<dep>"` while KEEPING its original key (so the crate's
 /// `use <dep_underscored>::…` is unchanged — cargo maps the key to the renamed package); (3) the original
 /// lib name is PRESERVED via an explicit `[lib] name` (the projected crates have no `[lib]` section, so
-/// their lib name would otherwise follow the renamed package). Used e.g. for Brazil's mandatory `amzn-`.
+/// their lib name would otherwise follow the renamed package). Used e.g. for a consumer's mandatory name prefix.
 fn prefix_manifest(text: &str, own: &str, prefix: &str, members: &[&str]) -> String {
     // (1) the [package] name — replace the FIRST `name = "<own>"` (the package name precedes any
     // `[[bin]] name`); the closing quote disambiguates from a longer name like `<own>-itest`.
@@ -142,7 +142,7 @@ fn prefix_manifest(text: &str, own: &str, prefix: &str, members: &[&str]) -> Str
 
 /// Ensure the projected crate's `[package]` carries `publish = false`. A projection is a DO-NOT-EDIT
 /// vendored copy whose source of truth is upstream Cadenza, so a consumer that vendors it (e.g. a
-/// binary-only Brazil package) must never publish the copy. Idempotent: if a `publish` key is already
+/// binary-only internal package) must never publish the copy. Idempotent: if a `publish` key is already
 /// declared (some upstream crates set it), the manifest is left untouched; otherwise `publish = false`
 /// is inserted right after the `[package]` header so it lands in the package section. Cargo.toml-only,
 /// unconditional (independent of `--prefix`).
@@ -211,8 +211,8 @@ fn run() -> Result<(String, PathBuf), String> {
         write(&mf, &ensure_publish_false(&text))?;
     }
 
-    // 1c. Optionally namespace the projected crate names (Cargo.toml-only, e.g. Brazil's mandatory
-    //     `amzn-`): rename each [package] + rewrite sibling path-deps to the prefixed package, preserving
+    // 1c. Optionally namespace the projected crate names (Cargo.toml-only, e.g. a consumer's mandatory
+    //     prefix): rename each [package] + rewrite sibling path-deps to the prefixed package, preserving
     //     lib names so no source edit is needed.
     if let Some(prefix) = &args.prefix {
         for crate_name in &crates {
@@ -223,7 +223,7 @@ fn run() -> Result<(String, PathBuf), String> {
     }
 
     // 2. Write the projected workspace manifest + refresh doc. By DEFAULT no Cargo.lock is emitted —
-    //    the projection matches the consumer's no-lockfile norm (CargoBrazil resolves versions from its
+    //    the projection matches the consumer's no-lockfile norm (the consumer's build system resolves versions from its
     //    own version set), which also avoids the stale-standalone-lock-under-nix-`--locked` failure class.
     write(&out.join("Cargo.toml"), &workspace_manifest(&crates))?;
     write(&out.join("REFRESH.md"), &refresh_doc(&args.tier, &crates))?;
@@ -853,18 +853,18 @@ cadenza-ast-serde = { path = \"../cadenza-ast-serde\" }
 num-bigint = \"0.4\"
 ";
         let members = ["cdz-platform", "cadenza-ast", "cadenza-ast-serde"];
-        let out = prefix_manifest(manifest, "cdz-platform", "amzn", &members);
+        let out = prefix_manifest(manifest, "cdz-platform", "acme", &members);
         // (1) the package name is prefixed; the [[bin]] name is NOT (longer string, and only the first
         // `name = "cdz-platform"` is replaced).
-        assert!(out.contains("name = \"amzn-cdz-platform\"\n"));
+        assert!(out.contains("name = \"acme-cdz-platform\"\n"));
         assert!(out.contains("name = \"cdz-platform-itest\"\n"));
         // (2) sibling path-deps gain package=, keeping their original key; `../cadenza-ast` did NOT
         // corrupt `../cadenza-ast-serde` (closing-quote match).
         assert!(out.contains(
-            "cadenza-ast = { path = \"../cadenza-ast\", package = \"amzn-cadenza-ast\" }"
+            "cadenza-ast = { path = \"../cadenza-ast\", package = \"acme-cadenza-ast\" }"
         ));
         assert!(out.contains(
-            "cadenza-ast-serde = { path = \"../cadenza-ast-serde\", package = \"amzn-cadenza-ast-serde\" }"
+            "cadenza-ast-serde = { path = \"../cadenza-ast-serde\", package = \"acme-cadenza-ast-serde\" }"
         ));
         // external deps are untouched.
         assert!(out.contains("num-bigint = \"0.4\""));
