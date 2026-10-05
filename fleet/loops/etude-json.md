@@ -34,10 +34,10 @@ just time — "fewer/zero copies vs serde_json" is a first-class scoreboard axis
 - **Fleet-comms HOME = your cadenza worktree** (`.claude/worktrees/etude-json`). Run your LIFECYCLE here —
   `cargo xtask fleet heartbeat/inbox/sync/send` are cadenza's xtask, only from a cadenza worktree. This worktree
   is ONLY the comms home.
-- **MISSION target = the `etude` repo** at `/local/home/bythewc/Projects/camshaft/etude` (a PLAIN cargo workspace,
+- **MISSION target = the `etude` repo** at `$HOME/Projects/camshaft/etude` (a PLAIN cargo workspace,
   no nix): you ADD a new crate `etude-json` under `crates/`, depending on the byte-rope crate. Work in your OWN
-  etude worktree: once, `git -C /local/home/bythewc/Projects/camshaft/etude worktree add
-  /local/home/bythewc/Projects/camshaft/etude/.claude/worktrees/etude-json origin/main` (idempotent); `fetch` +
+  etude worktree: once, `git -C $HOME/Projects/camshaft/etude worktree add
+  $HOME/Projects/camshaft/etude/.claude/worktrees/etude-json origin/main` (idempotent); `fetch` +
   `reset --hard origin/main` at each tick top.
 
 ## Setup (every tick) — in your CADENZA comms worktree

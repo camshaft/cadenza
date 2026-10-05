@@ -11,9 +11,9 @@ are STANDING (you do not self-remove) — you idle when there is no issue to fix
   here — `cargo xtask fleet heartbeat/inbox/sync/send` are cadenza's xtask and only work from a cadenza
   worktree. This worktree is ONLY the comms home (the v-hivemind pattern).
 - **MISSION target = the `etude` repo**, crate `etude-byterope`, at
-  `/local/home/bythewc/Projects/camshaft/etude/crates/etude-byterope` (a PLAIN cargo workspace, no nix).
-  Fix in your OWN etude worktree: once, create it with `git -C /local/home/bythewc/Projects/camshaft/etude
-  worktree add /local/home/bythewc/Projects/camshaft/etude/.claude/worktrees/fixer-byterope origin/main`
+  `$HOME/Projects/camshaft/etude/crates/etude-byterope` (a PLAIN cargo workspace, no nix).
+  Fix in your OWN etude worktree: once, create it with `git -C $HOME/Projects/camshaft/etude
+  worktree add $HOME/Projects/camshaft/etude/.claude/worktrees/fixer-byterope origin/main`
   (idempotent — skip if it exists); per issue you check out the breaker's PR branch inside it.
 
 ## SHARED BOLERO HARNESS — reuse + improve it, NEVER one-off (operator mandate 2026-09-19)

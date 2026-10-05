@@ -10,10 +10,10 @@ preserving its semantics and API, so etude owns a first-class `Str` alongside `e
   LIFECYCLE here — `cargo xtask fleet heartbeat/inbox/sync/send` only work from a cadenza worktree. This
   worktree DOUBLES as your migration SOURCE: cadenza's `Str` lives here, so you read the original from
   your own comms worktree (`fleet sync` keeps it on the current tip).
-- **MISSION destination = the `etude` repo** at `/local/home/bythewc/Projects/camshaft/etude` (PLAIN cargo
+- **MISSION destination = the `etude` repo** at `$HOME/Projects/camshaft/etude` (PLAIN cargo
   workspace, no nix). Work in your OWN etude worktree: once, `git -C
-  /local/home/bythewc/Projects/camshaft/etude worktree add
-  /local/home/bythewc/Projects/camshaft/etude/.claude/worktrees/etude-str-migration origin/main`
+  $HOME/Projects/camshaft/etude worktree add
+  $HOME/Projects/camshaft/etude/.claude/worktrees/etude-str-migration origin/main`
   (idempotent); `fetch` + `reset --hard origin/main` at each tick top.
 
 ## ⚠ FIRST TICK: LOCATE `Str` + CONFIRM SCOPE (do not port the wrong thing)

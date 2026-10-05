@@ -15,6 +15,18 @@
 
 set -euo pipefail
 
+# HOST CONFIG: host-specific values (tool dirs, idea areas, and the like) live in the local, untracked
+# `${FLEET_HOST_CONF:-$HOME/.config/fleet/host.conf}`, never in this public tree. Source it with auto-export
+# (`set -a`) so the agent and every tool it spawns (e.g. `cargo xtask fleet`) see the same values. It holds
+# host paths and names only, no credentials. Absent file = no extras.
+_host_conf="${FLEET_HOST_CONF:-${HOME:-}/.config/fleet/host.conf}"
+if [ -f "$_host_conf" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$_host_conf"
+  set +a
+fi
+
 # task_347: GUARANTEE a known-good PATH for the agent process and every shell it spawns. A fleet agent's Bash
 # tool-calls intermittently spawned with a stripped PATH (coreutils / git / curl / nix all "command not found",
 # recoverable only via absolute /usr/bin/... paths) - a per-invocation tax seen across agents + days
@@ -25,14 +37,15 @@ set -euo pipefail
 # guaranteed present as a fallback, so a bare `git`/`curl`/`nix`/coreutil always resolves. A dir that does not
 # exist on this host is harmless (the shell just skips it).
 #
-# task_812: ALSO append the Amazon toolbox + mise tool dirs. An MCP server the agent spawns via a bare-command
-# wrapper (e.g. amazon-sharepoint-mcp -> `exec aim ...`, which in turn needs a mise-managed `node`) failed with
-# CONNECTION_CLOSED because `aim`/`mise`/`node` were not on the stripped agent PATH -- the same class as above.
-# `.toolbox/bin` resolves `aim` + the builder toolbox CLIs; `.local/bin` resolves `mise`; the mise `shims` dir
-# resolves `node`/`npx` to the mise-active version. Appended (so a user-preferred tool still wins); absent dirs
-# are skipped harmlessly. (NB: the mise shim resolves node to the GLOBAL default version -- a server needing a
-# newer node than that default is an operator mise-version decision, not a PATH gap.)
-export PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME:-}/.nix-profile/bin:/nix/var/nix/profiles/default/bin:${HOME:-}/.toolbox/bin:${HOME:-}/.local/bin:${HOME:-}/.local/share/mise/shims"
+# task_812: ALSO append the host's vendor tool dirs + the mise tool dirs. An MCP server the agent spawns via a
+# bare-command wrapper (a vendor launcher, which in turn needs a mise-managed `node`) failed with
+# CONNECTION_CLOSED because the launcher/`mise`/`node` were not on the stripped agent PATH -- the same class as
+# above. The vendor tool dirs are host-specific, so they come from `FLEET_EXTRA_PATH` (colon-separated, set in
+# the host config above); `.local/bin` resolves `mise`; the mise `shims` dir resolves `node`/`npx` to the
+# mise-active version. Appended (so a user-preferred tool still wins); absent dirs are skipped harmlessly. (NB:
+# the mise shim resolves node to the GLOBAL default version -- a server needing a newer node than that default
+# is an operator mise-version decision, not a PATH gap.)
+export PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${HOME:-}/.nix-profile/bin:/nix/var/nix/profiles/default/bin${FLEET_EXTRA_PATH:+:$FLEET_EXTRA_PATH}:${HOME:-}/.local/bin:${HOME:-}/.local/share/mise/shims"
 
 # task_781 / task_596: put the fleet's shared live bin dir on PATH so a CLI materialized into it
 # (paste_create, the `fleet` binary, and any future tool) is callable by THIS agent AND by every
@@ -297,7 +310,7 @@ LAUNCH_HB_MTIME="$(stat -c %Y "$HUB/.claude/fleet/heartbeat/$AGENT" 2>/dev/null 
 # CONCIERGE specifically: give its process a strongly-negative OOM score (-900) so the kernel picks another
 # victim (peers auto-recover via the out-of-band guardian; the concierge is the operator's only channel).
 # Lowering oom_score_adj below 0 needs CAP_SYS_RESOURCE, so this uses a NOPASSWD `choom` sudoers grant (the
-# operator installs it: `bythewc ALL=(root) NOPASSWD: /usr/bin/choom -n -900 -p *`). oom_score_adj is
+# operator installs it: `<fleet-user> ALL=(root) NOPASSWD: /usr/bin/choom -n -900 -p *`). oom_score_adj is
 # PRESERVED across execve, so setting it on THIS shell's pid ($$) now carries to the claude that replaces it
 # below. FAIL-OPEN: if the grant isn't in place yet (sudo/choom errors), log + launch UNPROTECTED — never
 # block the concierge on the protection (the guardian still recovers + alerts on an OOM kill regardless).
@@ -305,7 +318,7 @@ if [ "$AGENT" = "concierge" ] && command -v choom >/dev/null 2>&1; then
   if sudo -n choom -n -900 -p $$ >/dev/null 2>&1; then
     echo "window.sh: concierge OOM-protected (oom_score_adj=-900 — the kernel will spare it under memory pressure)"
   else
-    echo "window.sh: concierge NOT OOM-protected — the NOPASSWD choom grant is missing; launching anyway (guardian still recovers+alerts on an OOM kill). Grant: 'bythewc ALL=(root) NOPASSWD: /usr/bin/choom -n -900 -p *'" >&2
+    echo "window.sh: concierge NOT OOM-protected — the NOPASSWD choom grant is missing; launching anyway (guardian still recovers+alerts on an OOM kill). Grant: '${USER:-<fleet-user>} ALL=(root) NOPASSWD: /usr/bin/choom -n -900 -p *'" >&2
   fi
 fi
 

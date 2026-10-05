@@ -18,10 +18,10 @@ Schoolbook algorithms (the seed prioritized correctness > asymptotics), differen
   This worktree is ONLY the comms home (the v-hivemind / byterope-cohort pattern). It also holds the
   read-only SOURCE (`implementation/seed/crates/cdz-runtime/src/bigint.rs`); read it from `origin/main`
   (`git show origin/main:implementation/seed/crates/cdz-runtime/src/bigint.rs`) — do NOT edit cadenza.
-- **MISSION target = the `etude` repo** at `/local/home/bythewc/Projects/camshaft/etude` (a PLAIN cargo
+- **MISSION target = the `etude` repo** at `$HOME/Projects/camshaft/etude` (a PLAIN cargo
   workspace, no nix): you ADD a new crate `etude-bigint` under `crates/`. Work in your OWN etude worktree:
-  once, `git -C /local/home/bythewc/Projects/camshaft/etude worktree add
-  /local/home/bythewc/Projects/camshaft/etude/.claude/worktrees/etude-bigint origin/main` (idempotent);
+  once, `git -C $HOME/Projects/camshaft/etude worktree add
+  $HOME/Projects/camshaft/etude/.claude/worktrees/etude-bigint origin/main` (idempotent);
   `fetch` + `reset --hard origin/main` at each tick top.
 
 ## SHARED BOLERO HARNESS — reuse + improve it, NEVER one-off (operator mandate 2026-09-19)

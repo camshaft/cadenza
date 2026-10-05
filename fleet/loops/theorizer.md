@@ -50,7 +50,7 @@ The fleet's generic tick prompt is **cadenza-vertical framing — reinterpret it
        --body-file <a literal file you wrote with the idea body>
      ```
      (Build the body as a LITERAL file — NEVER an inline `--body` with backticks/`$()` (leak-guarded, but
-     the file path is what keeps it clean). `<area>` is your CHARTER area: `dcquic` | `membrain-rpc` |
+     the file path is what keeps it clean). `<area>` is your CHARTER area: `dcquic` | an area in `FLEET_IDEA_AREAS_EXTRA` |
      `loadgen-cache`.)
    - check your queue's depth with `fleetx ideas <area>` (list) so you don't flood it — keep a healthy
      BACKLOG, not a dumping ground (a few high-quality open ideas > dozens of shallow ones).
@@ -94,7 +94,7 @@ A builder must be able to act on your idea WITHOUT re-deriving it. The `--body-f
 
 ## CHARTER (your specific area)
 
-> Your AREA (`dcquic` | `membrain-rpc` | `loadgen-cache`), the research repo, the workload/benchmark
+> Your AREA (`dcquic` | `loadgen-cache` | an area in the host's `FLEET_IDEA_AREAS_EXTRA`), the research repo, the workload/benchmark
 > access, and any out-of-band specifics are provided in your kickoff + your concierge inbox (NOT in this
 > generic file). VERIFY your area's benchmark/profiling access on your FIRST tick; if anything needed is
 > missing, `note` the concierge at once and proceed with whatever you CAN research. Loop until the

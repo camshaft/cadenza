@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # slack-bridge-guard.sh — keep the fleet↔Slack bridge alive OUT OF BAND, decoupled from any agent's loop
-# (v-fleet-tooling, 2026-09-13; retargeted from the node bridge.js to the membrain daemon 2026-09-30).
+# (v-fleet-tooling, 2026-09-13; retargeted from the node bridge.js to the bridge daemon 2026-09-30).
 #
 # WHY: the operator's alert path runs THROUGH the bridge — notably the concierge-down alert (#8931), which
 # posts to the operator's Slack via the bridge precisely BECAUSE the concierge (the normal path) is down. So
 # "never let the concierge go down without anyone noticing" is only as reliable as the bridge. The live bridge
-# is the membrain-skynet-bridge daemon: it is fail-soft internally (its inbound/outbound loops retry board and
+# is the bridge daemon: it is fail-soft internally (its inbound/outbound loops retry board and
 # Slack I/O and do not crash on a transient error), but it runs as a bare process under no supervisor, so a
 # panic or a host reboot leaves it down with no auto-revive until the durable systemd role (dotfiles #153,
 # Restart=always) lands. This cron is that supervisor in the meantime — the same
@@ -19,8 +19,14 @@
 # second instance is a fresh deploy started alongside a not-yet-exited old one, so the newest process is the
 # intended (just-deployed) binary — keeping the oldest would kill the deploy and revert to the stale binary
 # (v-slack-bridge, 2026-09-30). A missing PROCESS is the only revive trigger; a stale
-# ~/.midway/cookie is NOT (the daemon starts fine without it and simply cannot post/read until it is
+# auth cookie is NOT (the daemon starts fine without it and simply cannot post/read until it is
 # refreshed), so this never thrash-revives on a cookie expiry.
+#
+# HOST CONFIG (kept out of this public script): the bridge binary, its working dir, instance name, state dir
+# and link root are host-specific, so they come from the local, untracked
+# `${FLEET_HOST_CONF:-$HOME/.config/fleet/host.conf}` (or the environment): FLEET_BRIDGE_BIN, FLEET_BRIDGE_DIR,
+# FLEET_BRIDGE_INSTANCE, FLEET_BRIDGE_STATE_DIR, CDZ_BRIDGE_LINK_ROOT. With the binary, the instance or the
+# link root unset, the guard is OFF: it stamps that and exits without touching any process.
 #
 # Tracked at <repo>/fleet/, RUN from the hub copy `fleet up` materializes into <hub>/.claude/fleet/.
 set -uo pipefail
@@ -36,38 +42,49 @@ ALARM="$HUB/slack-bridge-down.alarm"
 STAMP="$HUB/slack-bridge-guard.last-run"
 now() { date -Is 2>/dev/null || echo now; }
 
-BRIDGE_DIR="${HOME}/membrain-skynet-bridge"
-BRIDGE_BIN="${BRIDGE_DIR}/target/debug/membrain-skynet-bridge"
+CONF="${FLEET_HOST_CONF:-${HOME:-}/.config/fleet/host.conf}"
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+
+BRIDGE_BIN="${FLEET_BRIDGE_BIN:-}"
+BRIDGE_INSTANCE="${FLEET_BRIDGE_INSTANCE:-}"
+# task_1070: the board-ref link-root the daemon rewrites to the current tunnel. WITHOUT passing this on the
+# revive below, a crash/reboot relaunch falls back to the daemon's baked-in default (a stale host) and
+# silently regresses every linkified board ref — so the guard MUST pass it on every revive, not just the
+# manual launch. Required: the guard is off without it.
+LINK_ROOT="${CDZ_BRIDGE_LINK_ROOT:-}"
+if [ -z "$BRIDGE_BIN" ] || [ -z "$BRIDGE_INSTANCE" ] || [ -z "$LINK_ROOT" ]; then
+  printf '%s bridge=OFF (FLEET_BRIDGE_BIN / FLEET_BRIDGE_INSTANCE / CDZ_BRIDGE_LINK_ROOT unset in %s)\n' \
+    "$(now)" "$CONF" > "$STAMP" 2>/dev/null || true
+  exit 0
+fi
+BRIDGE_NAME="$(basename "$BRIDGE_BIN")"
+BRIDGE_DIR="${FLEET_BRIDGE_DIR:-$(dirname "$BRIDGE_BIN")}"
 BOARD_API="http://127.0.0.1:8880/board/api"
-STATE_DIR="${HOME}/.local/state/membrain-skynet-bridge"
+STATE_DIR="${FLEET_BRIDGE_STATE_DIR:-${HOME}/.local/state/${BRIDGE_NAME}}"
 # task_499 guard-side: the daemon rewrites this health file every tick (updated_epoch + a degraded flag).
 HEALTH="$STATE_DIR/health.json"
 # How long health.json may go un-updated before a still-UP process counts as WEDGED (alive but not ticking).
 # Generous (5 min >> the per-tick write cadence) so a brief hiccup never trips it; env-overridable.
 HEALTH_STALE_SECS="${CDZ_BRIDGE_HEALTH_STALE_SECS:-300}"
-# task_1070: the board-ref link-root the daemon rewrites to the current tunnel. WITHOUT passing this on the
-# revive below, a crash/reboot relaunch falls back to the daemon's baked-in DEFAULT_LINK_ROOT (the stale
-# green-machine host) and silently regresses every linkified board ref — so the guard MUST pass it on every
-# revive, not just the manual launch. Env-overridable for a future tunnel move.
-LINK_ROOT="${CDZ_BRIDGE_LINK_ROOT:-bythewc-membrain-board.w.tunnels.lab.aws.dev/board}"
 
 # The live daemon's PIDs, counted PRECISELY. A process counts only if BOTH its argv carries the instance
-# anchor (`--bridge-instance membrain`) AND its executable IS the membrain binary — so a shell, an observer, a
+# anchor (`--bridge-instance <instance>`) AND its executable IS the configured bridge binary — so a shell, an observer, a
 # `ps`/grep pipeline, or this guard's own pgrep that merely MENTIONS the string in its command line is never
 # miscounted. That precision matters: the count below drives a kill branch, and a false positive there would
 # terminate an innocent process.
 bridge_pids() {
   local p exe
-  for p in $(pgrep -f -- '--bridge-instance membrain' 2>/dev/null || true); do
+  for p in $(pgrep -f -- "--bridge-instance $BRIDGE_INSTANCE" 2>/dev/null || true); do
     # /proc/<pid>/exe is an absolute symlink to the running binary. Use PLAIN `readlink` (not -f): after a
-    # rebuild the target reads ".../membrain-skynet-bridge (deleted)", and `readlink -f` canonicalizes a
+    # rebuild the target reads ".../<binary> (deleted)", and `readlink -f` canonicalizes a
     # non-existent target to EMPTY — which silently dropped a live daemon running an older binary from the
     # count, so the guard could neither see it nor shed it: an invisible DOUBLE RELAY. Strip a trailing
     # " (deleted)" before the basename match so a fresh AND a rebuilt-binary daemon are both counted.
     exe="$(readlink "/proc/$p/exe" 2>/dev/null || true)"
     exe="${exe% (deleted)}"
     case "$exe" in
-      */membrain-skynet-bridge) printf '%s\n' "$p" ;;
+      */"$BRIDGE_NAME") printf '%s\n' "$p" ;;
     esac
   done
 }
@@ -179,15 +196,15 @@ fi
 if [ -x "$BRIDGE_BIN" ]; then
   ( exec 9>&- 2>/dev/null; cd "$BRIDGE_DIR" && setsid "$BRIDGE_BIN" \
       --board-api "$BOARD_API" \
-      --bridge-instance membrain \
+      --bridge-instance "$BRIDGE_INSTANCE" \
       --state-dir "$STATE_DIR" \
       --link-root "$LINK_ROOT" \
       >/dev/null 2>&1 </dev/null & )
-  printf '%s: slack-bridge (membrain daemon) was DOWN — relaunched %s. The operator alert path (concierge-down #8931) routes through it, so a human should confirm it recovered.\n' \
+  printf '%s: slack-bridge daemon was DOWN — relaunched %s. The operator alert path (concierge-down #8931) routes through it, so a human should confirm it recovered.\n' \
     "$(now)" "$BRIDGE_BIN" > "$ALARM" 2>/dev/null || true
-  printf '%s bridge=DOWN ran-revive=membrain\n' "$(now)" > "$STAMP" 2>/dev/null || true
+  printf '%s bridge=DOWN ran-revive=%s\n' "$(now)" "$BRIDGE_INSTANCE" > "$STAMP" 2>/dev/null || true
 else
-  printf '%s: slack-bridge (membrain daemon) DOWN and %s is missing/not executable — cannot auto-revive; a human must restart the bridge (the operator alert path is DOWN).\n' \
+  printf '%s: slack-bridge daemon DOWN and %s is missing/not executable — cannot auto-revive; a human must restart the bridge (the operator alert path is DOWN).\n' \
     "$(now)" "$BRIDGE_BIN" > "$ALARM" 2>/dev/null || true
   printf '%s bridge=DOWN no-binary\n' "$(now)" > "$STAMP" 2>/dev/null || true
 fi

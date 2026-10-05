@@ -47,7 +47,7 @@ among many.
   bare mirror per repo under `~/.fleet/mirrors/<repo>.git`; each agent's per-repo checkout is a
   `git worktree add` off that mirror onto the agent's branch. This keeps today's shared-object-store disk
   win (a worktree is cheap; N agents share one object store per repo) generalized to N repos, and it
-  dissolves the off-tree hack (capmesh/membrain/task-board self-serving `~/Projects/<repo>.<agent>`
+  dissolves the off-tree hack (capmesh/task-board and other off-tree repos self-serving `~/Projects/<repo>.<agent>`
   worktrees) — those become ordinary `agents/<agent>/<repo>` worktrees off a mirror.
 - **The board declares which repos an agent works in.** The agent metadata bag (board task #82) carries a
   **`repos` LIST** — each entry `{repo, branch}`. An agent may span several repos. `fleet up` reads that

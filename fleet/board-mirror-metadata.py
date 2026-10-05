@@ -45,7 +45,7 @@ def hub_registry_path() -> str:
 def metadata_bag(a: dict) -> dict:
     # Faithfully mirror the fields the registry actually holds. `repos` is intentionally NOT inferred:
     # the registry has no repo field, and EVERY agent (including off-tree bolero/backbeat/etude/
-    # capmesh/membrain ones) has a cadenza worktree that is only its fleet-coordination home base, NOT
+    # capmesh and other off-tree ones) has a cadenza worktree that is only its fleet-coordination home base, NOT
     # its work repo — so inferring cadenza from the worktree would mislabel every off-tree agent. The
     # `repos` LIST is populated correctly later, per-agent, by the owner/charter that knows the real
     # repo(s) (see fleet/DESIGN-fleet-per-agent-workspaces.md).
