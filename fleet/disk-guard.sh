@@ -5,7 +5,7 @@
 # filesystem's BYTE capacity — so the 2026-09-13 root-FS-full incident slipped silently to 100% (ENOSPC
 # blocked builds fleet-wide) with no early warning; it was only noticed when an agent hit ENOSPC. This is
 # the missing early-warning: sample root-FS use% on a cron and RAISE an alarm well before the wall so the
-# reclaim (often NOT this vertical's lane — e.g. the 855G brazil MembrainHivemind build) can be routed in
+# reclaim (often NOT this vertical's lane — e.g. an 855G out-of-tree package build) can be routed in
 # time. It does NOT reclaim anything itself (alarm-only, concierge call): the big levers are not safely
 # auto-reclaimable, and the target-reaper (prune-stale-targets.sh) already handles the cadenza recurrence.
 #
@@ -56,7 +56,7 @@ case "$prev" in OK|WARN|HIGH) ;; *) prev="OK";; esac
 # Rank the bands so we can detect an ESCALATION (a strictly higher band than last time).
 rank() { case "$1" in HIGH) echo 2;; WARN) echo 1;; *) echo 0;; esac; }
 
-reason="root FS ${ROOT_FS} ${use_pct}% used, ${free_h} free (warn=${WARN_PCT}% high=${HIGH_PCT}%). Likely lever: worktree target/ (prune-stale-targets.sh) or brazil builds (membrain lane). Detail: du -x --max-depth=2 \$HOME | sort -rn | head"
+reason="root FS ${ROOT_FS} ${use_pct}% used, ${free_h} free (warn=${WARN_PCT}% high=${HIGH_PCT}%). Likely lever: worktree target/ (prune-stale-targets.sh) or out-of-tree package builds (their owning lane). Detail: du -x --max-depth=2 \$HOME | sort -rn | head"
 
 if [ "$band" = "OK" ]; then
   rm -f "$ALARM" 2>/dev/null || true      # recovered → clear the board alarm (silent, no note)
@@ -79,7 +79,7 @@ if [ "$(rank "$band")" -gt "$(rank "$prev")" ]; then
   fi
   if [ -n "$best" ]; then
     body_file="$(mktemp 2>/dev/null || echo /tmp/disk-guard-note.$$)"
-    printf 'Root-FS byte pressure crossed into %s.\n%s\nAlarm is on the board (fleet status). No auto-reclaim was run (alarm-only). If the lever is cadenza worktree target/ the reaper handles it; if it is brazil/membrain builds it needs the membrain owner or a privileged sweep — routing to you to surface upward.\n' \
+    printf 'Root-FS byte pressure crossed into %s.\n%s\nAlarm is on the board (fleet status). No auto-reclaim was run (alarm-only). If the lever is cadenza worktree target/ the reaper handles it; if it is out-of-tree package builds it needs that build's owner or a privileged sweep — routing to you to surface upward.\n' \
       "$band" "$reason" > "$body_file" 2>/dev/null || true
     "$best" fleet send --to concierge --from disk-guard --kind note \
       --subject "DISK $band: root FS ${use_pct}% used, ${free_h} free — byte-pressure early-warning (alarm-only)" \

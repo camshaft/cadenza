@@ -66,7 +66,7 @@ today's fleet coordination and the task-board capabilities.
 
 Initial finding (probing THIS session): the board's MCP tools (`register_agent`, `create_task`,
 `comment_task`, …) did not appear in the `v-fleet-tooling` session — two `ToolSearch` passes returned only
-Amazon Taskei/SIM + pipeline-assistant tools, none of the board tools. **CORRECTION (concierge, host access):**
+internal ticketing and pipeline tools, none of the board tools. **CORRECTION (concierge, host access):**
 the tools ARE available to agent sessions — the reason THIS session doesn't see them is **session-start
 timing, not absence**. `task-board` lives in the GLOBAL `~/.claude.json`, and `fleet/window.sh` launches plain
 `claude` with no MCP-scoping flag (`CLAUDE_ARGS` = `--disallowedTools AskUserQuestion` + effort/model/

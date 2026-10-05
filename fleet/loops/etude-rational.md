@@ -27,10 +27,10 @@ BUILD it fresh from the design + the etude-bigint primitives. Do NOT edit cadenz
   here — `cargo xtask fleet heartbeat/inbox/sync/send` are cadenza's xtask, only from a cadenza worktree.
   This worktree is ONLY the comms home. Read the design reference from `origin/main`
   (`git show origin/main:implementation/design/DESIGN-bigint-and-rational-rcdzc.md`).
-- **MISSION target = the `etude` repo** at `/local/home/bythewc/Projects/camshaft/etude` (a PLAIN cargo
+- **MISSION target = the `etude` repo** at `$HOME/Projects/camshaft/etude` (a PLAIN cargo
   workspace, no nix): you ADD a new crate `etude-rational` under `crates/`, depending on `etude-bigint`.
-  Work in your OWN etude worktree: once, `git -C /local/home/bythewc/Projects/camshaft/etude worktree add
-  /local/home/bythewc/Projects/camshaft/etude/.claude/worktrees/etude-rational origin/main` (idempotent);
+  Work in your OWN etude worktree: once, `git -C $HOME/Projects/camshaft/etude worktree add
+  $HOME/Projects/camshaft/etude/.claude/worktrees/etude-rational origin/main` (idempotent);
   `fetch` + `reset --hard origin/main` at each tick top.
 
 ## SHARED HARNESS — differential oracle + reuse, NEVER one-off (operator mandate 2026-09-19)

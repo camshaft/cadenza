@@ -341,7 +341,7 @@ const MATERIALIZED_FLEET_FILES: &[&str] = &[
     "rearm-stale.sh",
     "compact-nudge.sh",
     "reap-leases.sh",
-    "aea-refresh.sh",
+    "auth-refresh.sh",
     "disk-guard.sh",
     "slack-bridge-guard.sh",
     "watchdog.sh",
@@ -1020,7 +1020,7 @@ pub enum FleetCmd {
     /// A THEORIZER files falsifiable hypotheses into its area queue; a BUILDER pulls the top idea, builds+
     /// measures it, then archives it. Hub-resolved + CWD-safe (foreign-repo agents run it via `fleetx
     /// ideas …` from any repo — same resolver discipline as the inbox; never a worktree-relative glob).
-    /// Areas: `dcquic` | `membrain-rpc` | `loadgen-cache`. Modes:
+    /// Areas: `dcquic` | `loadgen-cache`, plus any in `FLEET_IDEA_AREAS_EXTRA`. Modes:
     ///   * (default) LIST open ideas in `<hub>/queue/ideas/<area>/`, priority-desc then oldest-first.
     ///   * `--add --title T [--priority N] [--from A] [--body-file F]` — file an idea (theorizer).
     ///   * `--claim [--by A]` — atomically claim the top open idea (rename → `claimed/`; first claimer
@@ -1028,7 +1028,7 @@ pub enum FleetCmd {
     ///   * `--done <file> [--result-file F] [--by A]` — a builder COMPLETES a claimed idea: append the
     ///     measured RESULT (confirmed/refuted + delta + PR) and move `claimed/<file>` → `done/<file>`.
     Ideas {
-        /// The area: `dcquic` | `membrain-rpc` | `loadgen-cache`.
+        /// The area: `dcquic` | `loadgen-cache`, plus any in `FLEET_IDEA_AREAS_EXTRA`.
         area: String,
         /// File a new idea (theorizer). Requires `--title`.
         #[arg(long)]
@@ -2532,30 +2532,30 @@ fn ensure_rearm_stale_cron(fleet: &Fleet) {
     }
 }
 
-/// The desired every-30-min user-crontab line for the Midway AEA-cookie refresh (operator note-709,
-/// approved 2026-09-13), tagged `# fleet:aea-refresh` so [`reconcile_tagged_crons`] can find/heal it. Runs
-/// the HUB copy of `aea-refresh.sh` → `mwinit --refresh-aea`, silently re-minting the ~2h AEA cookie from a
+/// The desired every-30-min user-crontab line for the auth-cookie refresh (operator note-709,
+/// approved 2026-09-13), tagged `# fleet:auth-refresh` so [`reconcile_tagged_crons`] can find/heal it. Runs
+/// the HUB copy of `auth-refresh.sh` → the configured `FLEET_AUTH_REFRESH_CMD`, silently re-minting the ~2h auth cookie from a
 /// still-valid session so it never lapses MID-session (up to the ~12-20h session ceiling). 30 min gives the
 /// 2h cookie ~4× refresh margin, comfortably inside the operator's "~30-45min" ask.
-fn aea_refresh_cron_line(hub_script: &str) -> String {
-    format!("*/30 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:aea-refresh")
+fn auth_refresh_cron_line(hub_script: &str) -> String {
+    format!("*/30 * * * * bash {hub_script} >/dev/null 2>&1 # fleet:auth-refresh")
 }
 
-/// Ensure the `# fleet:aea-refresh` per-30-min user-crontab entry exists + points at THIS hub's
-/// `aea-refresh.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
+/// Ensure the `# fleet:auth-refresh` per-30-min user-crontab entry exists + points at THIS hub's
+/// `auth-refresh.sh`. Same re-arm-on-relaunch + drift-heal + FAIL-OPEN discipline as
 /// [`ensure_warm_keep_cron`], and INDEPENDENT of the other fleet crons (its own reconcile/write in `up`).
-/// Skips silently if `aea-refresh.sh` isn't materialized yet or `crontab` is absent/errs — never blocks
-/// `fleet up`. `mwinit --refresh-aea` re-mints from the existing valid session (no OTP), so the cron is a
-/// benign no-op when the cookie is already fresh.
-fn ensure_aea_refresh_cron(fleet: &Fleet) {
+/// Skips silently if `auth-refresh.sh` isn't materialized yet or `crontab` is absent/errs — never blocks
+/// `fleet up`. The configured `FLEET_AUTH_REFRESH_CMD` re-mints from the existing valid session (no OTP),
+/// so the cron is a benign no-op when the cookie is already fresh.
+fn ensure_auth_refresh_cron(fleet: &Fleet) {
     use std::io::Write;
-    let script = fleet.root.join("aea-refresh.sh");
+    let script = fleet.root.join("auth-refresh.sh");
     if !script.exists() {
         return; // not materialized (older tree) → nothing to schedule
     }
     let desired = [(
-        "# fleet:aea-refresh",
-        aea_refresh_cron_line(&script.display().to_string()),
+        "# fleet:auth-refresh",
+        auth_refresh_cron_line(&script.display().to_string()),
     )];
     let current = match Command::new("crontab").arg("-l").output() {
         Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -2623,7 +2623,7 @@ fn ensure_disk_guard_cron(fleet: &Fleet) {
 
 /// The desired every-5-min user-crontab line for the SLACK-BRIDGE liveness guard (v-fleet-tooling
 /// 2026-09-13), tagged `# fleet:slack-bridge-guard` so [`reconcile_tagged_crons`] can find/heal it. Runs the
-/// HUB copy of `slack-bridge-guard.sh`, which relaunches the membrain-skynet-bridge daemon when no bridge
+/// HUB copy of `slack-bridge-guard.sh`, which relaunches the Slack bridge daemon when no bridge
 /// process is up. WHY it matters: the operator's concierge-down alert (#8931) posts to Slack THROUGH the
 /// bridge (bypassing the down concierge), so the "never down without noticing" guarantee is only as reliable
 /// as the bridge — this keeps it up out-of-band even if the v-slack-bridge agent's own loop is down. 5 min:
@@ -2826,16 +2826,16 @@ fn up(fleet: &Fleet, crons_only: bool) {
     // structurally cannot (it runs DURING the concierge tick → always mid-tick). Independent + fail-open +
     // drift-healed; shares the watchdog's COMPACT_NUDGE_GRACE/WEDGE_RESTART_GRACE stamps so no double-action.
     ensure_compact_nudge_cron(fleet);
-    // The Midway AEA-cookie refresh cron: `aea-refresh.sh` → `mwinit --refresh-aea` every 30 min, silently
-    // re-minting the ~2h AEA cookie from the still-valid session so it never lapses mid-session (operator
+    // The auth-cookie refresh cron: `auth-refresh.sh` → the configured `FLEET_AUTH_REFRESH_CMD` every 30 min, silently
+    // re-minting the ~2h auth cookie from the still-valid session so it never lapses mid-session (operator
     // note-709). Independent + fail-open + drift-healed; does not extend the session past its ceiling.
-    ensure_aea_refresh_cron(fleet);
+    ensure_auth_refresh_cron(fleet);
     // The root-FS byte-pressure early-warning cron: `disk-guard.sh` samples root-FS use% every 15 min and
     // RAISES `disk-pressure.alarm` (surfaced by `fleet status`) at 85% WARN / 92% HIGH + one rate-limited
     // concierge note on a fresh escalation. Alarm-only (no auto-reclaim). Closes the no-early-warning gap the
     // 2026-09-13 root-FS-full incident hit. Independent + fail-open + drift-healed.
     ensure_disk_guard_cron(fleet);
-    // The slack-bridge liveness guard cron: `slack-bridge-guard.sh` relaunches the membrain-skynet-bridge
+    // The slack-bridge liveness guard cron: `slack-bridge-guard.sh` relaunches the Slack bridge
     // daemon when no bridge process is up (and sheds extras keeping the newest), out-of-band from the
     // v-slack-bridge agent — so the operator's concierge-down alert path (#8931, which posts through the
     // bridge) can't fail silently. Independent + fail-open + drift-healed.
@@ -4017,7 +4017,7 @@ fn read_alarm_files(dir: &Path) -> Vec<(String, String)> {
 }
 
 /// Parse the `rc=<n>` exit-code field from a `.last-run` stamp's last line, if present. The wrapper crons
-/// (compact-nudge / reap-leases / aea-refresh / drain-nudge / watchdog) write `<ts> rc=<n> <summary>`; the
+/// (compact-nudge / reap-leases / auth-refresh / drain-nudge / watchdog) write `<ts> rc=<n> <summary>`; the
 /// others (cpu-monitor, disk-guard, prune-*) have no `rc=` field. Returns the parsed code, or `None` when
 /// there is no `rc=` token (that cron is not rc-instrumented → not a failure). Pure so the tokenizer is
 /// unit-tested.
@@ -4173,7 +4173,7 @@ fn ssh_cert_valid_to(ssh_keygen_l: &str) -> Option<String> {
 }
 
 /// Lead time before the id_rsa offload cert's expiry at which `fleet status` starts warning the operator to
-/// re-mwinit (see [`offload_health_line`]). 1h: comfortably longer than a single gate-local's local grind
+/// renew the SSH certificate (see [`offload_health_line`]). 1h: comfortably longer than a single gate-local's local grind
 /// (the `GATE_LOCAL_POLL_MAX_SECS` 3600s ceiling), so a warned operator can refresh the cert before the NEXT
 /// gate-local would otherwise start on a degraded local path — but short enough not to warn for most of the
 /// ~12h cert lifetime (only the final hour). Not env-overridable: it's a display threshold, not a control.
@@ -4314,7 +4314,7 @@ fn last_gate_local_offload_outcome(now: u64) -> Option<OffloadBuildOutcome> {
 /// NEAR-EXPIRY (2026-09-18): the id_rsa cert is only ~12h, so the DEGRADED→local flip recurs ~daily — and
 /// while degraded, gate-local grinds locally (slow + the exact page-cache/OOM-prone path the #79845 harness
 /// bg-guardian kills). The cert-valid branch therefore appends a ⚠ LEAD-TIME warning once the cert is within
-/// [`OFFLOAD_CERT_EXPIRY_WARN_SECS`] of expiry, so the operator can re-mwinit BEFORE offload silently
+/// [`OFFLOAD_CERT_EXPIRY_WARN_SECS`] of expiry, so the operator can renew the SSH certificate BEFORE offload silently
 /// degrades rather than discovering it after gate-locals start grinding. Orthogonal to the outcome sub-branch
 /// (it's a suffix), so a near-expiry cert that is ALSO mid-failure surfaces both concerns.
 fn offload_health_line(
@@ -4340,11 +4340,11 @@ fn offload_health_line(
                      no recent offloaded build observed to verify)"
                 ),
             };
-            // Append the near-expiry lead-time warning so the operator can re-mwinit BEFORE the ~12h cert
-            // lapses and offload silently degrades to slow, OOM-prone local gate-local (#79845 trigger).
+            // Append the near-expiry lead-time warning so the operator can renew the SSH certificate BEFORE the
+            // ~12h cert lapses and offload silently degrades to slow, OOM-prone local gate-local (#79845 trigger).
             if exp.saturating_sub(now) <= OFFLOAD_CERT_EXPIRY_WARN_SECS {
                 format!(
-                    "{base} — ⚠ cert EXPIRES in ~{}m: run mwinit SOON or offload degrades to local \
+                    "{base} — ⚠ cert EXPIRES in ~{}m: renew the SSH certificate SOON or offload degrades to local \
                      (slower + OOM-prone gate-local)",
                     exp.saturating_sub(now) / 60
                 )
@@ -4354,7 +4354,7 @@ fn offload_health_line(
         }
         Some((to, _)) => format!(
             "  ⚠ distributed builds: {n_builders} builder(s) configured but offload DEGRADED to local — \
-             id_rsa Midway cert EXPIRED ({to}); run mwinit to restore offload (safe: builds fall back to \
+             id_rsa SSH certificate EXPIRED ({to}); renew it to restore offload (safe: builds fall back to \
              local, no red gate — just no OOM relief)"
         ),
         None => format!(
@@ -4706,10 +4706,10 @@ fn status(fleet: &Fleet) {
 
     // DISTRIBUTED-BUILD OFFLOAD HEALTH (distributed-nix seq-946): if remote builders are configured
     // (/etc/nix/machines exists), surface whether offload is ACTIVE or has SILENTLY degraded to local. The
-    // offload's root->peer SSH uses the id_rsa Midway cert (the key named in /etc/nix/machines); on cert
+    // offload's root->peer SSH uses the id_rsa SSH certificate (the key named in /etc/nix/machines); on cert
     // EXPIRY, SSH auth fails and nix falls back to LOCAL builds (fallback=true) — no red gate, no alarm, so
-    // the OOM-relief silently turns off until someone runs mwinit. This line makes that visible (the cert is
-    // ~12h, so the degradation recurs ~daily). FAIL-SAFE: no machines file / unreadable cert / unparseable
+    // the OOM-relief silently turns off until someone renews the SSH certificate. This line makes that
+    // visible (the cert is ~12h, so the degradation recurs ~daily). FAIL-SAFE: no machines file / unreadable cert / unparseable
     // validity → skip or "unknown" (never a false DEGRADED). Cert path is DERIVED from the builder key field
     // (`<key>-cert.pub`) so it follows whatever key the builders use — no hardcode to drift.
     let (n_builders, keypath) = machines_builder_keypath_and_count(
@@ -6537,14 +6537,38 @@ fn orphaned_inboxes(fleet: &Fleet, archive: bool) {
     );
 }
 
-/// The valid idea-queue AREAS (operator reorg 2026-09-06): the perf-fleet's three optimization fronts.
+/// The built-in idea-queue AREAS (operator reorg 2026-09-06): the perf-fleet's public optimization fronts.
+/// A host can add its own areas through `FLEET_IDEA_AREAS_EXTRA` (comma- or space-separated, set in the local
+/// host config that `window.sh` exports), so a host-specific area name never lands in this public source.
 /// A `fleet ideas <area>` with any other area is refused (same known-set discipline as the send-recipient
 /// guard) so a typo can't silently create a stray queue dir nobody pulls from.
-const IDEA_AREAS: &[&str] = &["dcquic", "membrain-rpc", "loadgen-cache"];
+const IDEA_AREAS: &[&str] = &["dcquic", "loadgen-cache"];
 
-/// Is `area` a valid idea-queue area? Pure for unit-testing.
+/// The valid idea-queue areas: the built-ins plus any `extra` entries (comma- or space-separated, blanks
+/// skipped, duplicates dropped). Pure for unit-testing.
+fn idea_areas_with(extra: Option<&str>) -> Vec<String> {
+    let mut areas: Vec<String> = IDEA_AREAS.iter().map(|a| a.to_string()).collect();
+    for a in extra
+        .unwrap_or("")
+        .split([',', ' '])
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
+        if !areas.iter().any(|x| x == a) {
+            areas.push(a.to_string());
+        }
+    }
+    areas
+}
+
+/// The valid idea-queue areas on this host: the built-ins plus `FLEET_IDEA_AREAS_EXTRA`.
+fn idea_areas() -> Vec<String> {
+    idea_areas_with(std::env::var("FLEET_IDEA_AREAS_EXTRA").ok().as_deref())
+}
+
+/// Is `area` a valid idea-queue area on this host?
 fn idea_area_valid(area: &str) -> bool {
-    IDEA_AREAS.contains(&area)
+    idea_areas().iter().any(|a| a == area)
 }
 
 /// A filesystem-safe slug for an idea title: lowercase, non-alphanumerics collapsed to single `-`,
@@ -6622,7 +6646,7 @@ fn ideas(
     if !idea_area_valid(area) {
         eprintln!(
             "fleet ideas: unknown area {area:?}. Valid areas: {}.",
-            IDEA_AREAS.join(" | ")
+            idea_areas().join(" | ")
         );
         std::process::exit(1);
     }
@@ -16942,8 +16966,8 @@ fn maybe_run_gc(fleet: &Fleet) {
     //           this sweep could rm its live scratch — re-review the nix-develop case if that changes.
     //       Same lease/dead-window reaper idea applied to /tmp inodes.
     // NOTE: nix does NOT build under /tmp (its daemon sandbox is /nix/var/nix/builds — v-nix confirmed), so
-    // there is no nix-build-temp hog here beyond the develop-shell scratch swept in (3). `toolbox-telemetry`/
-    // `mcs-telemetry` are NOT fleet-owned (routed to the toolbox owner), so they stay excluded.
+    // there is no nix-build-temp hog here beyond the develop-shell scratch swept in (3). vendor-tool telemetry/
+    // scratch dirs are NOT fleet-owned (routed to that tool's owner), so they stay excluded.
     let tmp_inode_pct = Command::new("df")
         .args(["-i", "/tmp"])
         .output()
@@ -16960,7 +16984,7 @@ fn maybe_run_gc(fleet: &Fleet) {
             .arg(inode_sweep_command(TMP_STALE_LOG_SECS / 60))
             .output();
         eprintln!(
-            "gc-hook: /tmp inodes at {}% (>= {TMP_INODE_SWEEP_PCT}%) → swept fleet-owned scratch (task logs >{}h + cdz-test/check + nix-develop/rcdzc-gate/libFuzzerTemp dirs >60min, warm-roots-excluded). /tmp inodes now: {}. (toolbox/mcs-telemetry hog is not fleet-owned.)",
+            "gc-hook: /tmp inodes at {}% (>= {TMP_INODE_SWEEP_PCT}%) → swept fleet-owned scratch (task logs >{}h + cdz-test/check + nix-develop/rcdzc-gate/libFuzzerTemp dirs >60min, warm-roots-excluded). /tmp inodes now: {}. (vendor-tool telemetry is not fleet-owned.)",
             tmp_inode_pct.unwrap_or(0),
             TMP_STALE_LOG_SECS / 3600,
             swept
@@ -22384,7 +22408,7 @@ mod tests {
             "baseline-drift-monitor.sh",
             "warm-keep.sh",
             "cpu-monitor.sh",
-            "aea-refresh.sh",
+            "auth-refresh.sh",
             "disk-guard.sh",
             "slack-bridge-guard.sh",
             "prune-stale-targets.sh",
@@ -24149,7 +24173,7 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // Stale but within 2× the window (a slow/long tick can do this) → STALE, not WEDGED.
         assert!(!agent_deeply_stale(true, win + 60, win));
         assert!(!agent_deeply_stale(true, win * 2, win)); // exactly 2× → not yet (strictly greater)
-        // Frozen well past 2× the window (e.g. the 16h membrain wedge) → WEDGED.
+        // Frozen well past 2× the window (e.g. a 16h wedge) → WEDGED.
         assert!(agent_deeply_stale(true, win * 2 + 1, win));
         assert!(agent_deeply_stale(true, 16 * 3600, win));
     }
@@ -24631,13 +24655,13 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
 
     #[test]
     fn machines_builder_keypath_and_count_parses_the_builder_lines() {
-        let machines = "ssh://bythewc@peer-a aarch64-linux /home/bythewc/.ssh/id_rsa 8 1 - -\n\
-                        ssh://bythewc@peer-b aarch64-linux /home/bythewc/.ssh/id_rsa 8 1 - -\n";
+        let machines = "ssh://builder@peer-a aarch64-linux /home/builder/.ssh/id_rsa 8 1 - -\n\
+                        ssh://builder@peer-b aarch64-linux /home/builder/.ssh/id_rsa 8 1 - -\n";
         let (n, key) = machines_builder_keypath_and_count(machines);
         assert_eq!(n, 2, "two builder lines");
         assert_eq!(
             key.as_deref(),
-            Some("/home/bythewc/.ssh/id_rsa"),
+            Some("/home/builder/.ssh/id_rsa"),
             "key path is whitespace field index 2 (derive cert as <key>-cert.pub, DRY)"
         );
         // Empty / no builder lines → (0, None); comments/blank lines ignored.
@@ -24698,7 +24722,7 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // and the reason snippet carries the actionable cause — this is the accept-then-error case a
         // valid cert would otherwise mask as "ACTIVE".
         let nixbld = "error: build of '/nix/store/abc-cdz-codegen-check-0.0.0.drv' on \
-                      'ssh://bythewc@dev-dsk-bythewc-2a-165ab34f.us-west-2.amazon.com' failed: error: \
+                      'ssh://builder@build-host-a.example.com' failed: error: \
                       the group 'nixbld' specified in 'build-users-group' does not exist\n";
         match classify_gate_log_offload(nixbld) {
             OffloadBuildOutcome::Failed(reason) => {
@@ -24711,7 +24735,7 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         }
         // A path copied back FROM a remote builder proves offload WORKED → Succeeded.
         let ok = "copying path '/nix/store/xyz-cdz-bench-check-0.0.0' from \
-                  'ssh://bythewc@dev-dsk-bythewc-2a-7c30cf07.us-west-2.amazon.com'...\n";
+                  'ssh://builder@build-host-b.example.com'...\n";
         assert_eq!(
             classify_gate_log_offload(ok),
             OffloadBuildOutcome::Succeeded
@@ -24808,7 +24832,7 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         use OffloadBuildOutcome::*;
         let now = 1_000_000u64;
         // Cert still VALID but within the warn window (30m ≤ 1h threshold): a healthy Succeeded outcome must
-        // still surface a near-expiry ⚠ lead-time warning naming mwinit + the local-degrade consequence, so
+        // still surface a near-expiry ⚠ lead-time warning naming the certificate renewal + the local-degrade consequence, so
         // the operator can refresh BEFORE offload silently degrades — without downgrading the ACTIVE state.
         let near = Some(("2026-09-18T17:07:37", now + 1800));
         let s = offload_health_line(2, near, now, Some(&Succeeded));
@@ -24816,7 +24840,7 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
             s.contains("ACTIVE + VERIFIED")
                 && s.contains('⚠')
                 && s.contains("EXPIRES in ~30m")
-                && s.contains("mwinit"),
+                && s.contains("renew the SSH certificate"),
             "near-expiry valid cert warns with lead time yet stays ACTIVE: {s}"
         );
 
@@ -24938,20 +24962,20 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
-    fn aea_refresh_cron_line_is_every_30min_silent_and_tagged() {
-        let line = aea_refresh_cron_line("/hub/aea-refresh.sh");
-        // Every 30 min (≥4× margin on the ~2h AEA cookie, inside the operator's ~30-45min ask), runs the hub
+    fn auth_refresh_cron_line_is_every_30min_silent_and_tagged() {
+        let line = auth_refresh_cron_line("/hub/auth-refresh.sh");
+        // Every 30 min (≥4× margin on the ~2h auth cookie, inside the operator's ~30-45min ask), runs the hub
         // script, silent, tagged for reconcile_tagged_crons to find/heal.
         assert!(
-            line.starts_with("*/30 * * * * bash /hub/aea-refresh.sh"),
+            line.starts_with("*/30 * * * * bash /hub/auth-refresh.sh"),
             "every-30-min, invoking the hub script: {line}"
         );
         assert!(
             line.contains(">/dev/null 2>&1"),
-            "silent — an AEA refresh never emits cron mail: {line}"
+            "silent — an auth refresh never emits cron mail: {line}"
         );
         assert!(
-            line.ends_with("# fleet:aea-refresh"),
+            line.ends_with("# fleet:auth-refresh"),
             "carries the reconcile tag so reconcile_tagged_crons can find/heal it: {line}"
         );
     }
@@ -25243,7 +25267,7 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // a re-run won't fix (the distributed-nix nixbld gap, 2026-09-16) — must NOT be misread as the GC race,
         // stays REAL so the operator fixes the peer/disables the builder instead of re-running.
         let nixbld = "error: build of '/nix/store/9xbmcq2cgngbyc14xclqwpkfk8fw7b7i-cargo-test-cdz-corpus-test-0.0.0.drv' \
-                      on 'ssh://bythewc@peer' failed: error: the group 'nixbld' specified in 'build-users-group' does not exist";
+                      on 'ssh://builder@peer' failed: error: the group 'nixbld' specified in 'build-users-group' does not exist";
         assert!(
             !gate_output_is_gc_race_transient(nixbld),
             "nixbld group error is not a GC race"
@@ -25261,7 +25285,7 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         );
         // A peer with a disabled experimental feature (GOTCHA E: ca-derivations missing) is the same
         // persistent-misconfig class → peer-repair guidance, not a re-run.
-        let exp_disabled = "error: build of '/nix/store/aaaa-guide-build-0017.drv' on 'ssh://bythewc@peer' \
+        let exp_disabled = "error: build of '/nix/store/aaaa-guide-build-0017.drv' on 'ssh://builder@peer' \
                             failed: error: experimental Nix feature 'ca-derivations' is disabled; \
                             add '--extra-experimental-features ca-derivations' to enable it";
         assert!(gate_output_is_persistent_peer_misconfig(exp_disabled));
@@ -27558,7 +27582,7 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
         // test is `stale_window < gap_age < PR_SYNC_RECENT_TRUNK_SECS` — assert the ordering holds so a
         // constant change that violated it would fail LOUDLY here rather than silently stop pinning.
         let stale_window = stale_window_secs(600, 2, 600);
-        let gap_age = (stale_window + PR_SYNC_RECENT_TRUNK_SECS) / 2; // midway through the coverage gap
+        let gap_age = (stale_window + PR_SYNC_RECENT_TRUNK_SECS) / 2; // halfway through the coverage gap
         assert!(
             stale_window < gap_age && gap_age < PR_SYNC_RECENT_TRUNK_SECS,
             "the compose window must exceed the stale window for a coverage gap to exist \
@@ -28068,13 +28092,18 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     }
 
     #[test]
-    fn idea_area_valid_only_for_the_three_perf_fronts() {
-        assert!(idea_area_valid("dcquic"));
-        assert!(idea_area_valid("membrain-rpc"));
-        assert!(idea_area_valid("loadgen-cache"));
-        assert!(!idea_area_valid("dcQUIC")); // case-sensitive; canonical is lowercase
-        assert!(!idea_area_valid("rcdzc"));
-        assert!(!idea_area_valid(""));
+    fn idea_areas_are_the_built_ins_plus_the_configured_extras() {
+        let base = idea_areas_with(None);
+        assert_eq!(base, vec!["dcquic", "loadgen-cache"]);
+        assert!(!base.iter().any(|a| a == "dcQUIC")); // case-sensitive; canonical is lowercase
+        assert!(!base.iter().any(|a| a == "rcdzc"));
+        assert!(!base.iter().any(|a| a.is_empty()));
+        // A host adds its own area through config: comma- or space-separated, blanks and duplicates dropped.
+        let extra = idea_areas_with(Some(" rpc-front, ,dcquic other-front"));
+        assert_eq!(
+            extra,
+            vec!["dcquic", "loadgen-cache", "rpc-front", "other-front"]
+        );
     }
 
     #[test]
@@ -29113,8 +29142,8 @@ error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.d
     #[test]
     fn parse_gh_checks_reads_real_output_and_tolerates_garbage() {
         // A representative slice of real `gh pr checks --json bucket,name,state` output (incl. a
-        // non-`checks/` entry like "Amazon Q Developer", which must parse like any other).
-        let json = r#"[{"bucket":"pass","name":"checks / rustfmt","state":"SUCCESS"},{"bucket":"fail","name":"checks / gate","state":"FAILURE"},{"bucket":"pending","name":"Amazon Q Developer","state":"IN_PROGRESS"}]"#;
+        // non-`checks/` entry like "Example Review App", which must parse like any other).
+        let json = r#"[{"bucket":"pass","name":"checks / rustfmt","state":"SUCCESS"},{"bucket":"fail","name":"checks / gate","state":"FAILURE"},{"bucket":"pending","name":"Example Review App","state":"IN_PROGRESS"}]"#;
         let checks = parse_gh_checks(json);
         assert_eq!(checks.len(), 3);
         assert_eq!(checks[0].0, "pass");
@@ -30580,9 +30609,9 @@ branch refs/heads/fleet/trunk-tools
         );
         assert_eq!(
             agent_from_worktree_cwd(Path::new(
-                "/repo/.claude/worktrees/membrain-testing-subscriber/xtask"
+                "/repo/.claude/worktrees/perf-testing-subscriber/xtask"
             )),
-            Some("membrain-testing-subscriber".to_string())
+            Some("perf-testing-subscriber".to_string())
         );
         // No `worktrees` segment (e.g. the main checkout) → None (→ empty owner → no exemption).
         assert_eq!(agent_from_worktree_cwd(Path::new("/repo/xtask/src")), None);

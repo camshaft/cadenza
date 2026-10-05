@@ -516,7 +516,7 @@ revert in one session — see the stale-store memory traps.)
 
 ## Shared memory — write your own; do NOT reorganize or minimize it (that's the librarian's job)
 
-The shared memory (`/local/home/bythewc/claude-memory/`) is the fleet's brain. You WRITE your own
+The shared memory (`$HOME/claude-memory/`) is the fleet's brain. You WRITE your own
 learnings/landings there (a new note, your vertical's log) — that's expected and good. But do NOT
 spend a tick PRUNING, COMPACTING, MINIMIZING, or RE-ORGANIZING memory — not `MEMORY.md`, not the
 `index-*` sub-indexes, not other agents' notes. There is a dedicated **`librarian`** agent that owns

@@ -9,10 +9,10 @@ human library author wrote it.
 - **Fleet-comms HOME = your cadenza worktree** (`.claude/worktrees/etude-docs`). Run your LIFECYCLE here —
   `cargo xtask fleet heartbeat/inbox/sync/send` are cadenza's xtask, only from a cadenza worktree. This
   worktree is ONLY the comms home (the v-hivemind pattern).
-- **MISSION target = the `etude` repo** at `/local/home/bythewc/Projects/camshaft/etude` (PLAIN cargo
+- **MISSION target = the `etude` repo** at `$HOME/Projects/camshaft/etude` (PLAIN cargo
   workspace, no nix): crates `etude-buffer`, `etude-byterope`, `etude-bytevec`, `etude-ensure` (+ any
-  added). Work in your OWN etude worktree: once, `git -C /local/home/bythewc/Projects/camshaft/etude
-  worktree add /local/home/bythewc/Projects/camshaft/etude/.claude/worktrees/etude-docs origin/main`
+  added). Work in your OWN etude worktree: once, `git -C $HOME/Projects/camshaft/etude
+  worktree add $HOME/Projects/camshaft/etude/.claude/worktrees/etude-docs origin/main`
   (idempotent); `fetch` + `reset --hard origin/main` at each tick top so you document the current code.
 
 ## Setup (every tick) — in your CADENZA comms worktree

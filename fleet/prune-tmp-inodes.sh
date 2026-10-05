@@ -4,9 +4,10 @@
 # WHY: /tmp is a tmpfs with a FIXED inode budget (~1M here) independent of its byte capacity. Tiny-but-
 # numerous files exhaust its inodes at low BYTE usage (seen: 100% inodes / 16% bytes), after which every
 # agent's Bash fails ENOSPC (it cannot write its output file) and the fleet wedges. Four classes:
-#   A. TOOLBOX TELEMETRY (the PRIMARY accumulator, operator-confirmed): `/tmp/toolbox-telemetry-*` dirs
-#      created ~2/min by the internal toolbox EMF wrapper, each holding a few log/metric files, with NO
-#      cleanup — hundreds pile up per hour.
+#   A. VENDOR-TOOL TELEMETRY (the PRIMARY accumulator, operator-confirmed): telemetry dirs created ~2/min by
+#      a vendor tool wrapper, each holding a few log/metric files, with NO cleanup — hundreds pile up per
+#      hour. The dir name pattern is host-specific, so it comes from the local host config
+#      (`FLEET_TMP_TELEMETRY_GLOB`, see HOST CONFIG below); unset means Class A is off.
 #   B. CLAUDE TASK TRANSCRIPTS: `*.output`/`*.jsonl` under `/tmp/claude-<pid>/<session>/…` plus the
 #      per-command `/tmp/claude-*-cwd` capture files, across ~20 active agents.
 #   C. AGENT SCRATCH DIRS (concierge trend 2026-08-28, 19%→33%/session; broadened after the 2026-09-22
@@ -44,7 +45,7 @@
 #      inode hog + pure-leak + lsof-protected, so it's reaped earlier, well before the 90% ENOSPC wedge.
 #   2. AGE-GUARDED: removes only entries older than a per-class age — a live buffer/transcript/scratch has
 #      a recent mtime. TELEMETRY_STALE_MIN (15), STALE_MIN (120), SCRATCH_STALE_MIN (240 = 4h) are knobs.
-#      NOTE: telemetry is the PRIMARY accumulator and the fleet generates toolbox-telemetry-* faster than a
+#      NOTE: telemetry is the PRIMARY accumulator and the fleet generates telemetry dirs faster than a
 #      30min window cleared them net (observed monotonic /tmp inode creep 34%→46% over ~2h), so the window
 #      is 15min: standing backlog ≈ generation_rate × window, and a buffer idle 15min is flushed (EMF
 #      buffers flush in seconds), so 15min carries no live-buffer risk while ~halving the standing count.
@@ -60,9 +61,20 @@
 # Meant to be run periodically (e.g. a maintenance cron) from the materialized hub copy.
 set -euo pipefail
 
+# HOST CONFIG (kept out of this public script): the names of other tools' /tmp state are host-specific, so
+# they come from the local, untracked `${FLEET_HOST_CONF:-$HOME/.config/fleet/host.conf}` (or the environment):
+#   FLEET_TMP_TELEMETRY_GLOB     Class A's telemetry dir pattern (e.g. `vendor-telemetry-*`). Unset = A off.
+#   FLEET_TMP_REAP_EXEMPT_EXTRA  space-separated extra Class F exempt patterns (other tools' /tmp state).
+#                                Class F only runs when this is DEFINED (empty is fine): unset = F off, so a
+#                                host with no config never reaps another tool's state it was meant to spare.
+CONF="${FLEET_HOST_CONF:-${HOME:-}/.config/fleet/host.conf}"
+# shellcheck disable=SC1090
+if [ -f "$CONF" ]; then . "$CONF"; fi
+TELEMETRY_GLOB="${FLEET_TMP_TELEMETRY_GLOB:-}"
+
 TMPDIR_ROOT="${TMPDIR_ROOT:-/tmp}"
 INODE_THRESHOLD_PCT="${INODE_THRESHOLD_PCT:-80}"   # A/B sweep only when /tmp inode-use% is at/above this
-TELEMETRY_STALE_MIN="${TELEMETRY_STALE_MIN:-15}"   # remove toolbox-telemetry-* older than this (minutes; primary accumulator, kept short so the always-on sweep clears more per pass)
+TELEMETRY_STALE_MIN="${TELEMETRY_STALE_MIN:-15}"   # remove Class A telemetry dirs older than this (minutes; primary accumulator, kept short so the always-on sweep clears more per pass)
 MCS_TELEMETRY_STALE_MIN="${MCS_TELEMETRY_STALE_MIN:-15}"  # Class E: remove own-user /tmp/mcs-telemetry-l1-*.log older than this (minutes; fire-and-forget MCS L1 logs, flushed instantly so 15min carries no live risk)
 STALE_MIN="${STALE_MIN:-120}"                      # remove claude task transcripts older than this (minutes)
 SCRATCH_THRESHOLD_PCT="${SCRATCH_THRESHOLD_PCT:-70}" # Class C fires ONLY at/above this — INDEPENDENT of INODE_THRESHOLD_PCT
@@ -112,15 +124,22 @@ ORACLE_PATTERNS=('oracle-all*' 'oall*' 'surv*')
 #   - `claude-*`: LIVE-AGENT session roots (`/tmp/claude-<pid>/`, journal.jsonl + transcripts). NOT scratch —
 #     rm -rf'ing one breaks a running agent; Class B already manages these (stale-transcript reap that
 #     PRESERVES journal.jsonl), so Class F must leave the whole tree to B.
-# The three named NON-FLEET TOOLS below (a2a-client / MembrainDev* / S3TurboCacheModel*) are a CONSERVATIVE
-# default, NOT the old scratch allowlist: they are the user's other tools' /tmp state, deleting them is
-# irreversible + outward-facing, /tmp is not under pressure, and the operator's explicit "pure-everything vs
-# skip-just-nix" confirmation is still pending (concierge is relaying). Sparing just these three named tools
-# until that confirmation is a 3-line exemption (negligible inodes) — drop this line the moment the operator
-# says "pure everything." EVERYTHING ELSE >TMP_REAP_MIN (fleet scratch, `tmp.*` mktemp leftovers, unknown idle
-# dirs) is free game per the ruling; the lsof-idle guard still spares anything with an open fd/cwd.
-REAP_EXEMPT_PATTERNS=('*-result' 'result' 'nix-shell.*' 'nix-develop-*' 'nix-build-*' 'claude-*' \
-                      'a2a-client' 'MembrainDev*' 'S3TurboCacheModel*')
+# The named NON-FLEET TOOLS (`a2a-client` here, plus the host's FLEET_TMP_REAP_EXEMPT_EXTRA) are a
+# CONSERVATIVE default, NOT the old scratch allowlist: they are the user's other tools' /tmp state, deleting
+# them is irreversible + outward-facing, /tmp is not under pressure, and the operator's explicit
+# "pure-everything vs skip-just-nix" confirmation is still pending (concierge is relaying). Sparing just these
+# named tools until that confirmation is a small exemption (negligible inodes) — drop it the moment the
+# operator says "pure everything." EVERYTHING ELSE >TMP_REAP_MIN (fleet scratch, `tmp.*` mktemp leftovers,
+# unknown idle dirs) is free game per the ruling; the lsof-idle guard still spares anything with an open fd/cwd.
+REAP_EXEMPT_PATTERNS=('*-result' 'result' 'nix-shell.*' 'nix-develop-*' 'nix-build-*' 'claude-*' 'a2a-client')
+# Class F runs only when the host has DEFINED its extra exemptions (see HOST CONFIG above).
+REAP_CONFIGURED=0
+if [ -n "${FLEET_TMP_REAP_EXEMPT_EXTRA+x}" ]; then
+  REAP_CONFIGURED=1
+  _reap_extra=()
+  read -r -a _reap_extra <<< "${FLEET_TMP_REAP_EXEMPT_EXTRA}" || true
+  REAP_EXEMPT_PATTERNS+=("${_reap_extra[@]}")
+fi
 
 iuse_pct() { df -i "$TMPDIR_ROOT" | awk 'NR==2 {gsub(/%/,"",$5); print $5}'; }
 
@@ -144,8 +163,11 @@ printf 'prune-tmp-inodes: %s inode-use=%s%% ab-threshold=%s%% scratch-threshold=
 
 # ── Classes A + B: gated on INODE_THRESHOLD_PCT (the cron runs this at 0 = unconditional). ────────────
 if [ "$iuse" -ge "$INODE_THRESHOLD_PCT" ]; then
-  # Class A: toolbox EMF telemetry buffers (`/tmp/toolbox-telemetry-*`, whole dirs).
-  telemetry="$(find "$TMPDIR_ROOT" -maxdepth 1 -name 'toolbox-telemetry-*' -mmin +"$TELEMETRY_STALE_MIN" 2>/dev/null | wc -l)"
+  # Class A: vendor-tool telemetry buffers (`$TELEMETRY_GLOB`, whole dirs). Off when the glob is unset.
+  telemetry=0
+  if [ -n "$TELEMETRY_GLOB" ]; then
+    telemetry="$(find "$TMPDIR_ROOT" -maxdepth 1 -name "$TELEMETRY_GLOB" -mmin +"$TELEMETRY_STALE_MIN" 2>/dev/null | wc -l)"
+  fi
 
   # Class E: MCS L1 telemetry logs — own-user FILES only (`-uid`), so the mcs-owned dir is never a candidate.
   mcs_logs="$(find "$TMPDIR_ROOT" -maxdepth 1 -type f -uid "$(id -u)" -name 'mcs-telemetry-l1-*.log' -mmin +"$MCS_TELEMETRY_STALE_MIN" 2>/dev/null | wc -l)"
@@ -164,8 +186,10 @@ if [ "$iuse" -ge "$INODE_THRESHOLD_PCT" ]; then
 
   if [ "$APPLY" = 1 ]; then
     # A: remove whole stale telemetry dirs (they are self-contained buffers).
-    find "$TMPDIR_ROOT" -maxdepth 1 -name 'toolbox-telemetry-*' -mmin +"$TELEMETRY_STALE_MIN" \
-      -exec rm -rf {} + 2>/dev/null || true
+    if [ -n "$TELEMETRY_GLOB" ]; then
+      find "$TMPDIR_ROOT" -maxdepth 1 -name "$TELEMETRY_GLOB" -mmin +"$TELEMETRY_STALE_MIN" \
+        -exec rm -rf {} + 2>/dev/null || true
+    fi
     # E: remove own-user MCS L1 telemetry logs (fire-and-forget files; -uid guards against the mcs-owned dir).
     find "$TMPDIR_ROOT" -maxdepth 1 -type f -uid "$(id -u)" -name 'mcs-telemetry-l1-*.log' \
       -mmin +"$MCS_TELEMETRY_STALE_MIN" -delete 2>/dev/null || true
@@ -289,7 +313,10 @@ while IFS= read -r -d '' d; do uncov_cands+=("$d"); done \
         -mmin +"$TMP_REAP_MIN" \
         -not \( "${reap_excl[@]}" \) -print0 2>/dev/null)
 uncovered="${#uncov_cands[@]}"
-if [ "$iuse" -ge "$INODE_THRESHOLD_PCT" ]; then
+if [ "$REAP_CONFIGURED" != 1 ]; then
+  printf 'prune-tmp-inodes: age-GC OFF — FLEET_TMP_REAP_EXEMPT_EXTRA is not defined in %s (%s dir(s) >%smin tracked).\n' \
+    "$CONF" "$uncovered" "$TMP_REAP_MIN"
+elif [ "$iuse" -ge "$INODE_THRESHOLD_PCT" ]; then
   # LIVENESS via ONE bulk `lsof` pass, NOT `lsof +D` per-dir: `lsof +D <dir>` recursively descends each dir
   # (O(files)) and a per-candidate loop spawns lsof once per dir — over a large backlog that is minutes-long
   # and would pile up (this cron has no flock singleton). Instead enumerate all open files ONCE (`lsof -F n`

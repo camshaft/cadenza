@@ -12,11 +12,11 @@ Two repos are in play. Do not confuse them:
   LIFECYCLE here — `cargo xtask fleet heartbeat/inbox/sync/send` are cadenza's xtask and only work from a
   cadenza worktree. This is exactly the v-hivemind model: the cadenza worktree is only the comms home.
 - **MISSION target = the `etude` repo**, crate `etude-byterope`, at
-  `/local/home/bythewc/Projects/camshaft/etude/crates/etude-byterope`. This is a PLAIN cargo workspace
+  `$HOME/Projects/camshaft/etude/crates/etude-byterope`. This is a PLAIN cargo workspace
   (no nix). Do your actual breaking work here, in your OWN etude worktree so throwaway probes never
   collide with the live checkout: once, create it with
-  `git -C /local/home/bythewc/Projects/camshaft/etude worktree add -b breaker-byterope
-  /local/home/bythewc/Projects/camshaft/etude/.claude/worktrees/breaker-byterope` (idempotent — skip if
+  `git -C $HOME/Projects/camshaft/etude worktree add -b breaker-byterope
+  $HOME/Projects/camshaft/etude/.claude/worktrees/breaker-byterope` (idempotent — skip if
   it exists), and `git -C <your-etude-worktree> fetch origin && git reset --hard origin/main` at the top
   of each tick to attack the newest byterope code (that is where the bugs are).
 

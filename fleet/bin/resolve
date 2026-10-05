@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# resolve — resolve Slack entities through the running membrain-skynet-bridge daemon (which holds the Slack
+# resolve — resolve Slack entities through the running Slack bridge daemon (which holds the Slack
 # creds), so a fleet agent never re-auths. This thin client just forwards the request to the daemon's
 # loopback resolve API and prints the result. No MCP, no per-call auth, no credentials in this file.
 #

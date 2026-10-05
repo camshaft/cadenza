@@ -62,8 +62,8 @@ if timeout 300 nix build "$FLAKE#packages.aarch64-linux.cdz-shell-wrappers" --ou
   date +%s > "$STAMP" 2>/dev/null || true
 fi
 
-# task_812: pin a node >=20 for fleet-spawned MCP servers (e.g. amazon-sharepoint-mcp, whose wrapper runs
-# `exec aim mcp start-server …`, and `aim` needs node >=20). v-nix added `packages.<sys>.nodejs = nodejs_22`
+# task_812: pin a node >=20 for fleet-spawned MCP servers (e.g. an internal MCP server whose wrapper runs
+# an internal launcher `mcp start-server …`, and that launcher needs node >=20). v-nix added `packages.<sys>.nodejs = nodejs_22`
 # to the FLEET flake (camshaft/fleet) — node is fleet-agent tooling, not a cadenza concern, so it lives there
 # and we build it from the FLEET flake ref, NOT from `$FLAKE` (= the cadenza worktree, which does not expose
 # nodejs). We use the github ref tracking fleet main rather than a local checkout because a local camshaft/fleet

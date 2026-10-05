@@ -27,14 +27,14 @@
 # rather than trying to create an nixbld group the installer refuses to create.
 #
 #   setup-nix-builder-peer.sh peer
-#       Run ON EACH PEER as `bythewc` (needs NOPASSWD sudo, which these boxes have for non-interactive use).
+#       Run ON EACH PEER as the fleet user (needs NOPASSWD sudo, which these boxes have for non-interactive use).
 #       Installs Determinate Nix (idempotent), forces build-users-group empty, trusts the coordinator SSH
 #       user, replicates the coordinator's experimental-features (ca-derivations + dynamic-derivations —
 #       GOTCHA E), asserts the pinned nix version (GOTCHA D), restarts the daemon, and fixes the
 #       non-interactive PATH so `nix-store --serve` resolves.
 #
 #   setup-nix-builder-peer.sh register <peer-fqdn>
-#       Run ON THE PRIMARY (coordinator) as `bythewc` (NOPASSWD sudo). Adds the peer to /etc/nix/machines
+#       Run ON THE PRIMARY (coordinator) as the fleet user (NOPASSWD sudo). Adds the peer to /etc/nix/machines
 #       (key = id_rsa, NOT id_ecdsa — see GOTCHA C), enables builders-use-substitutes, and seeds the peer's
 #       host key into root's known_hosts. Idempotent.
 #
@@ -46,9 +46,9 @@
 #       `--builders` override, so pinning the file is the only way to target a specific peer), verifies, then
 #       restores the file. With no arg it verifies against the active machines file as-is (non-destructive).
 #
-# DURABILITY CAVEAT (unchanged, by design): the coordinator→peer SSH uses the ~12h Midway id_rsa cert, so
+# DURABILITY CAVEAT (unchanged, by design): the coordinator→peer SSH uses the ~12h id_rsa SSH cert, so
 # offload degrades to LOCAL on cert expiry (graceful — fallback=true + local jobs > 0, never a red gate) and
-# auto-resumes on the operator's next mwinit. This script does not and can not durably fix the cert lifetime.
+# auto-resumes on the operator's next cert renewal. This script does not and can not durably fix the cert lifetime.
 #
 # All steps are idempotent — re-running is safe and is the intended recovery after a re-image.
 
@@ -59,8 +59,8 @@ export PATH="/nix/var/nix/profiles/default/bin:$HOME/.cargo/bin:$HOME/.local/bin
 
 readonly NIX_CUSTOM_CONF="/etc/nix/nix.custom.conf"
 readonly MACHINES_FILE="/etc/nix/machines"
-readonly SSH_USER="bythewc"
-readonly BUILDER_KEY="/home/bythewc/.ssh/id_rsa"   # GOTCHA C: the FRESH Midway cert is id_rsa; id_ecdsa is the stale May one.
+readonly SSH_USER="${FLEET_BUILDER_SSH_USER:-${USER:-$(id -un)}}"
+readonly BUILDER_KEY="${FLEET_BUILDER_KEY:-${HOME}/.ssh/id_rsa}"   # GOTCHA C: the FRESH SSH cert is id_rsa; id_ecdsa is the stale May one.
 readonly PEER_SYSTEM="aarch64-linux"
 readonly PEER_MAXJOBS="8"                          # conservative start; bump after measuring headroom.
 readonly INSTALLER_URL="https://install.determinate.systems/nix/nix-installer-aarch64-linux"
@@ -151,7 +151,7 @@ provision_peer() {
   sudo -n systemctl restart nix-daemon.service
 
   # 5. GOTCHA B — non-interactive PATH: 'nix-store --serve' runs over a NON-login zsh that does not source
-  #    Determinate's login-only profile.d, so it can't find nix-store. Fix in bythewc's ~/.zshenv.
+  #    Determinate's login-only profile.d, so it can't find nix-store. Fix in the fleet user's ~/.zshenv.
   local zshenv="$HOME/.zshenv"
   local path_line='export PATH="/nix/var/nix/profiles/default/bin:$PATH"'
   if [ -f "$zshenv" ] && grep -Fq '/nix/var/nix/profiles/default/bin' "$zshenv"; then

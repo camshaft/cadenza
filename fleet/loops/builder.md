@@ -81,7 +81,7 @@ The fleet's generic tick prompt is **cadenza-vertical framing — reinterpret it
 
 ## CHARTER (your specific area)
 
-> Your AREA (`dcquic` | `membrain-rpc` | `loadgen-cache`), the work repo, the benchmark/host access, and
+> Your AREA (`dcquic` | `loadgen-cache` | an area in the host's `FLEET_IDEA_AREAS_EXTRA`), the work repo, the benchmark/host access, and
 > any out-of-band specifics are provided in your kickoff + your concierge inbox (NOT in this generic file).
 > VERIFY your build + benchmark access on your FIRST tick; if anything needed is missing, `note` the
 > concierge at once and proceed with whatever you CAN build. Loop claim→build→complete until the
