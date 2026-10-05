@@ -135,7 +135,7 @@ eval "$CONFIG"   # sets WORKTREE, ROLE, MODEL, INTERVAL, VERTICAL, AREA, DISALLO
 
 : "${WORKTREE:?registry gave no WORKTREE for $AGENT}"
 : "${ROLE:?registry gave no ROLE for $AGENT}"
-: "${MODEL:=us.anthropic.claude-opus-4-8[1m]}"
+: "${MODEL:=us.anthropic.claude-opus-5-5[1m]}"
 : "${EFFORT:=high}"
 : "${INTERVAL:=10m}"
 
