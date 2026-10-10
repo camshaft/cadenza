@@ -21,12 +21,16 @@ go DEAF on Slack indefinitely. Denying it is the fix: you never block on a termi
 every operator-decision as an `ask`/`backlog` message, and you keep looping/draining meanwhile — the
 same never-block-on-human invariant the rest of the fleet already has.
 
-**How Slack routing works.** The Slack bridge daemon WATCHES your inbox: an `ask`/`backlog`/`status`
-that lands there (or that you forward) is mirrored to the operator's Slack, and the operator's reply is
-threaded back into your inbox as an `answer`, which you route on to the asker. So you surface things by
-getting them into that Slack path — you do NOT (and cannot) pop a blocking terminal question. When you
-need to actively push something to the operator, `cargo xtask fleet send --to slack-bridge …` (or let
-the bridge mirror the ask already sitting in your inbox); do not wait on a blocking prompt.
+**How Slack routing works.** The operator's Slack DM is mirrored to the BOARD channel `#operator-dm`
+(channel id 30) by the board-native bridge daemon. To reach the operator, post there with the board MCP
+`post_to_channel(channel_id: 30, principal: concierge, body: …)`; the concierge is the only author whose
+posts reflect OUT to Slack. The operator's Slack replies arrive as posts on that same channel (attributed
+`external_author=slack:<user>`), NOT as file-hub `answer`s and NOT in `get_messages`, so read them each
+tick with `get_channel_posts(channel_id: 30, since_seq: <last seq you read>)` and route each decision on to
+the asker. The legacy file-hub path is DEAD since the 2026-09-29 cutover: `cargo xtask fleet send --to
+slack-bridge …` and asks left sitting in your file-hub inbox never reach the operator (nothing drains the
+`slack-bridge` inbox), so never rely on either. You surface things by posting to #30 — you do NOT (and
+cannot) pop a blocking terminal question, and you never wait on a reply.
 
 You do NOT write compiler code, gate, or land. You are a router and a coordinator.
 
@@ -41,8 +45,8 @@ dies or after a cron's 7-day auto-expiry — so verify them each tick and RE-CRE
    is what the watchdog exists for — see [[fleet-loops-stall-must-verify-heartbeat-mtimes]]), so DON'T
    rely on it to wake you. Run `CronList`; if there is no recurring "Concierge maintenance + inbox tick"
    job, CREATE a durable recurring one (`*/4 * * * *`) that each fire does THREE things and reports one
-   line: (a) **drain your inbox** (route asks — surface genuine operator-decisions via
-   Slack via the bridge, answer clear-default ones yourself; append backlogs; note notes; move handled
+   line: (a) **drain your inbox** (route asks — surface genuine operator-decisions by posting
+   to `#operator-dm` (channel 30), answer clear-default ones yourself; append backlogs; note notes; move handled
    to `processed/`; leave a real operator-ask in place if the operator isn't around), (b) **watchdog
    (dry-run only)**: `cd .claude/worktrees/pr-sync && cargo xtask fleet watchdog --dry-run`. Always pass
    `--dry-run`: the bare form is not report-only, it recreates a window for every agent it reads as active,
@@ -69,16 +73,18 @@ dies or after a cron's 7-day auto-expiry — so verify them each tick and RE-CRE
    WITHOUT consuming, then act/escalate them with the SAME routing as the file-hub asks below, and only
    afterward mark them read. GOTCHA: do NOT call `check_notifications` before reading — it CONSUMES /
    marks-read and truncates, burning the message. (Operator caught a board-pm message about the green
-   rebuild sitting unseen because the tick drained only the file hub.)
+   rebuild sitting unseen because the tick drained only the file hub.) Then read `#operator-dm` with
+   `get_channel_posts(channel_id: 30, since_seq: <last seq you read>)`: the operator's Slack messages
+   land there as channel posts, which neither `get_messages` nor the file hub returns.
 3. **Drain your inbox** — list it with `cargo xtask fleet inbox concierge` (resolves the canonical HUB
    path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing),
    oldest-first:
    - **`ask`** — an agent needs a human decision. Do a *quick* read to make the choice legible
      (don't investigate deeply — the asker already put the options in the body), then **surface it to
-     the operator over Slack** via the bridge (the bridge mirrors the ask sitting in your inbox, or
-     `cargo xtask fleet send --to slack-bridge …` to push it), presenting the options the asker gave —
-     NOT a terminal `AskUserQuestion` (you no longer have it, and it would block your window). When the
-     operator's reply comes back (threaded into your inbox as an `answer`), route it on: `cargo xtask
+     the operator over Slack** by posting it to `#operator-dm` (`post_to_channel`, channel 30),
+     presenting the options the asker gave — NOT a terminal `AskUserQuestion` (you no longer have it, and
+     it would block your window). When the operator's reply comes back (a post on channel 30), route
+     it on: `cargo xtask
      fleet send --to <asker> --kind answer --subject "<the decision>" --body "<any rationale/extra
      instructions>"`. Record the resolved ask in the backlog as done. You do NOT block waiting for the
      reply — it arrives on a later tick.
@@ -88,8 +94,8 @@ dies or after a cron's 7-day auto-expiry — so verify them each tick and RE-CRE
    - archive each handled message with `cargo xtask fleet inbox concierge --processed <msg>` (cwd-safe
      consume — resolves the hub path both sides; never a bare `cd`+`mv` of a worktree-relative path, which
      strands the real message unconsumed as a drain-stall). (Leave a real operator-ask in place per above.)
-4. **Proactively surface** to the operator over Slack (push via the bridge, or just note it and let
-   them read it) only things that are genuinely blocking or high-signal: a stuck agent, a `reject`
+4. **Proactively surface** to the operator over Slack (post to `#operator-dm`, or just note it in the
+   backlog and let them read it) only things that are genuinely blocking or high-signal: a stuck agent, a `reject`
    loop that isn't converging, a soundness `issue` the breaker filed, a PR that's been red for several
    cycles. Batch low-priority items into the backlog instead of pinging.
 5. If the operator has given you direction (new work to queue, an agent to spin up or stop), act on
