@@ -79,7 +79,7 @@ if [ "$(rank "$band")" -gt "$(rank "$prev")" ]; then
   fi
   if [ -n "$best" ]; then
     body_file="$(mktemp 2>/dev/null || echo /tmp/disk-guard-note.$$)"
-    printf 'Root-FS byte pressure crossed into %s.\n%s\nAlarm is on the board (fleet status). No auto-reclaim was run (alarm-only). If the lever is cadenza worktree target/ the reaper handles it; if it is out-of-tree package builds it needs that build's owner or a privileged sweep — routing to you to surface upward.\n' \
+    printf 'Root-FS byte pressure crossed into %s.\n%s\nAlarm is on the board (fleet status). No auto-reclaim was run (alarm-only). If the lever is cadenza worktree target/ the reaper handles it; if it is out-of-tree package builds it needs the owner of that build or a privileged sweep — routing to you to surface upward.\n' \
       "$band" "$reason" > "$body_file" 2>/dev/null || true
     "$best" fleet send --to concierge --from disk-guard --kind note \
       --subject "DISK $band: root FS ${use_pct}% used, ${free_h} free — byte-pressure early-warning (alarm-only)" \
