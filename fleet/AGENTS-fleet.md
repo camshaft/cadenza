@@ -56,9 +56,9 @@ directly and keep `AskUserQuestion`; every other role runs unattended (see invar
    (operator directive 2026-08-01: "most of our interactions now are over Slack"). When you hit
    something only the operator can decide, send the concierge an `ask` and **move on** (pick different
    work this tick, or stand down and let the next tick retry) — do not sit idle waiting for an answer.
-   The concierge routes your `ask`/`backlog`/`status` to the operator over Slack (the bridge watches
-   the concierge inbox and threads the operator's reply back as an `answer`), which lands in your inbox
-   on a later tick. **Enforced structurally:** every fleet window EXCEPT `design` (the on-demand
+   The concierge routes your `ask`/`backlog`/`status` to the operator over Slack (it posts to the board
+   channel `#operator-dm`, which the bridge mirrors to the operator's Slack DM, and reads the operator's
+   reply there), and the concierge sends the decision back to you as an `answer` on a later tick. **Enforced structurally:** every fleet window EXCEPT `design` (the on-demand
    terminal session the operator explicitly switches to and types into) is launched with
    `--disallowedTools AskUserQuestion`, so the human-prompt tool is denied at the harness level — you
    *cannot* pop a question in your window even by mistake. That now includes the concierge itself, and
@@ -67,8 +67,8 @@ directly and keep `AskUserQuestion`; every other role runs unattended (see invar
    — so any operator message arriving over the Slack bridge sits UNREAD until the terminal question is
    answered. One stray `AskUserQuestion` could thus pin the concierge to the terminal and make it go
    DEAF on Slack indefinitely. Denying it is the fix: the concierge never blocks on a terminal prompt,
-   surfaces every operator-decision as an `ask`/`backlog` (which the bridge mirrors to Slack + threads
-   the `answer` back), and keeps looping/draining meanwhile — the same never-block-on-human invariant
+   surfaces every operator-decision through `#operator-dm` (mirrored to Slack, with the operator's reply
+   coming back on the same channel), and keeps looping/draining meanwhile — the same never-block-on-human invariant
    every other role has. If you feel the urge to ask, that's always an `ask` to the concierge.
 
 ## 🥇 The corpus policy — OPERATOR STANDING DIRECTIVE, FLEET-WIDE (2026-08-31)
