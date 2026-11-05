@@ -238,11 +238,12 @@ fn int_kind(neg: bool, radix: Radix) -> u8 {
 pub fn encode(arenas: &Arenas) -> Vec<u8> {
     // Under std, canonicalize to normal form so equal programs encode to identical bytes. `canonicalize`
     // returns a `Cow` — borrowed (no clone/rebuild) when `arenas` is already canonical, which a fresh
-    // parse is. The no_std minimal core has no `canon` module and serializes the arena AS GIVEN: a
-    // Builder-built arena whose nodes were built in source order (siblings left to right, each list
-    // after its children) is already canonical (leaves interned/deduped on insert), so the bytes match;
-    // a `decode`d arena is canonical only when the bytes it was decoded from were canonical, which a
-    // transport encoding's bytes need not be. This mirrors rcdzc's minimal encode, which has no canon.
+    // parse is. Without std, `encode` doesn't call `canon` (which builds there only with the `canon`
+    // feature) and serializes the arena AS GIVEN: a Builder-built arena whose nodes were built in
+    // source order (siblings left to right, each list after its children) is already canonical
+    // (leaves interned/deduped on insert), so the bytes match; a `decode`d arena is canonical only
+    // when the bytes it was decoded from were canonical, which a transport encoding's bytes need not
+    // be. This mirrors rcdzc's minimal encode, which has no canon.
     #[cfg(feature = "std")]
     let canon = crate::canon::canonicalize(arenas);
     #[cfg(feature = "std")]
@@ -269,8 +270,11 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
 /// refuses those bytes with [`DecodeError::NotATree`]; [`encode`] under `std` writes each occurrence as
 /// a node of its own instead. Nodes and leaves the root does not reach are written as given too, and a
 /// decoder accepts them, so a caller whose arena may hold values outside the tree, such as one it
-/// edited or decoded, sends those values to the receiver; `encode` under `std` drops them. A leaf
-/// value listed at two ids is written twice, and the canonical re-encoding lists it once.
+/// edited or decoded, sends those values to the receiver; `encode` under `std` drops them.
+///
+/// `arenas` also lists each distinct leaf value once, as `Builder::leaf` interns it, since a transport
+/// encoding lists each distinct leaf once. A value at two leaf ids, such as two `Builder::leaf_unique`
+/// leaves, is written twice, as [`encode`] writes it too, and the canonical re-encoding keeps both.
 ///
 /// Public under every feature. Without `std`, [`encode`] is this same walk, so there `encode` of a
 /// decoded transport encoding returns the bytes received, not the canonical ones.
@@ -827,39 +831,25 @@ mod tests {
     //= type=test
     //# A content address or hash MUST be taken over the canonical re-encoding of the decoded tree, never over received bytes.
     #[test]
-    fn a_leaf_listed_twice_re_encodes_to_the_canonical_bytes() {
-        // A transport encoding may list one leaf value twice. The canonical re-encoding of what it
-        // decodes to lists the value once, as `encode` of the same tree from a `Builder` does.
-        let mut twice = SCHEMA_HEADER.to_vec();
-        twice.push(2); // leaf count
-        twice.extend_from_slice(&[KIND_NAME, 1, b'a']); // leaf 0 = `a`
-        twice.extend_from_slice(&[KIND_NAME, 1, b'a']); // leaf 1 = `a` again
-        twice.push(3); // structure count
-        twice.extend_from_slice(&[TAG_ATOM, 0]); // node 0 = atom of leaf 0
-        twice.extend_from_slice(&[TAG_ATOM, 1]); // node 1 = atom of leaf 1
-        twice.extend_from_slice(&[TAG_LIST, 2, 0, 1]); // node 2 = (node 0 node 1)
-        twice.push(2); // root = node 2
-        let mut canonical = SCHEMA_HEADER.to_vec();
-        canonical.push(1); // leaf count
-        canonical.extend_from_slice(&[KIND_NAME, 1, b'a']); // leaf 0 = `a`
-        canonical.push(3); // structure count
-        canonical.extend_from_slice(&[TAG_ATOM, 0]); // node 0 = atom of leaf 0
-        canonical.extend_from_slice(&[TAG_ATOM, 0]); // node 1 = atom of leaf 0
-        canonical.extend_from_slice(&[TAG_LIST, 2, 0, 1]); // node 2 = (node 0 node 1)
-        canonical.push(2); // root = node 2
-
-        let back = decode(&twice).expect("a leaf listed twice decodes");
-        assert_eq!(back.leaves.len(), 2, "decode keeps both copies");
+    fn a_leaf_value_at_two_ids_re_encodes_as_encode_writes_it() {
+        // `Builder::leaf_unique` keeps two copies of one value apart on purpose, as a placeholder
+        // template does. Canonicalization keeps them apart by id, so `encode` of the arena and the
+        // canonical re-encoding of its `encode_as_built` bytes both list the value twice: the bytes a
+        // sender hashes and the bytes a receiver re-encodes agree.
         let mut b = Builder::new();
-        let first = b.name("a");
-        let second = b.name("a");
-        let root = b.list(vec![first, second]);
-        let built = b.finish(root);
-        assert_eq!(built.leaves.len(), 1, "the Builder interns `a` once");
-        assert!(back.structurally_eq(&built), "the same tree");
-        assert!(!crate::canon::is_canonical(&back), "not canonical");
-        assert_eq!(encode(&built), canonical, "the Builder's tree");
-        assert_eq!(encode(&back), canonical, "one canonical encoding");
+        let first = b.leaf_unique(Leaf::Name("a".into()));
+        let second = b.leaf_unique(Leaf::Name("a".into()));
+        let x = b.atom(first);
+        let y = b.atom(second);
+        let root = b.list(vec![x, y]);
+        let a = b.finish(root);
+        let canonical = encode(&a);
+        let transport = encode_as_built(&a);
+        let back = decode(&transport).expect("the transport bytes decode");
+        assert_eq!(back.leaves.len(), 2, "decode keeps both copies");
+        assert_eq!(encode(&back), canonical, "the sender's canonical bytes");
+        let from_canonical = decode(&canonical).expect("the canonical bytes decode");
+        assert_eq!(from_canonical.leaves.len(), 2, "both ids kept");
     }
 
     #[test]
@@ -889,10 +879,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "a benchmark: run it with --ignored --nocapture"]
     fn encode_and_encode_as_built_times_are_reported_for_the_same_tree() {
         // A benchmark that measures and does not gate: it reports the time of each call on one wide
         // tree built operand-first, which `encode` checks and rebuilds into canonical order and
-        // `encode_as_built` writes as built. Run the test with `--nocapture` to read the report.
+        // `encode_as_built` writes as built. It doesn't run by default; run it with
+        // `cargo test -p cadenza-ast -- --ignored --nocapture` to read the report.
         let mut b = Builder::new();
         let mut items = Vec::new();
         for k in 0..20_000 {
