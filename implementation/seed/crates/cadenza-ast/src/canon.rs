@@ -17,6 +17,7 @@
 
 use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
 use alloc::borrow::Cow;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -46,7 +47,7 @@ pub fn canonicalize(arenas: &Arenas) -> Cow<'_, Arenas> {
         src: arenas,
         leaves: Vec::new(),
         leaf_map: CanonMap::default(),
-        value_map: CanonMap::default(),
+        value_map: BTreeMap::new(),
         structure: Vec::new(),
         id_map: Vec::new(), // not tracked on this path — see `canonicalize_with_map`
     };
@@ -76,7 +77,8 @@ pub fn is_canonical(arenas: &Arenas) -> bool {
     }
     let mut next_leaf: u32 = 0;
     let mut seen_leaf = vec![false; arenas.leaves.len()];
-    let mut seen_value: CanonMap<&Leaf, ()> = CanonMap::default();
+    // A BTreeSet, not FxHash, for the reason `Canon::value_map` gives.
+    let mut seen_value: BTreeSet<&Leaf> = BTreeSet::new();
     let mut next_struct: u32 = 0;
     let mut entered = vec![false; arenas.structure.len()];
     // (node, child-cursor): a `List` is visited (assigned its id) AFTER its children — matching
@@ -95,7 +97,7 @@ pub fn is_canonical(arenas: &Arenas) -> bool {
                     }
                     // A second id holding a value already seen: the normal form lists each
                     // distinct leaf once, so the rebuild deduplicates it.
-                    if seen_value.insert(&arenas.leaves[lid], ()).is_some() {
+                    if !seen_value.insert(&arenas.leaves[lid]) {
                         return false;
                     }
                     seen_leaf[lid] = true;
@@ -143,7 +145,7 @@ pub fn canonicalize_with_map(arenas: &Arenas) -> (Arenas, Vec<Option<StructId>>)
         src: arenas,
         leaves: Vec::new(),
         leaf_map: CanonMap::default(),
-        value_map: CanonMap::default(),
+        value_map: BTreeMap::new(),
         structure: Vec::new(),
         id_map: vec![None; arenas.structure.len()],
     };
@@ -164,8 +166,11 @@ struct Canon<'a> {
     leaf_map: CanonMap<LeafId, LeafId>, // old leaf id -> new (first-encounter) leaf id
     /// leaf VALUE -> new leaf id, so two old ids that hold one value intern to one new leaf: the
     /// canonical leaf pool lists each distinct leaf once, deduplicated by value, whatever ids a
-    /// transport encoding or `Builder::leaf_unique` gave the copies.
-    value_map: CanonMap<&'a Leaf, LeafId>,
+    /// transport encoding or `Builder::leaf_unique` gave the copies. Always alloc's BTreeMap, never
+    /// the FxHash `CanonMap`: these keys are leaf values that a peer chooses when it sends a transport
+    /// encoding, and FxHash is unseeded, so a sender could choose values that share one hash and make
+    /// each insert probe every earlier one. A BTreeMap's cost doesn't depend on which values it holds.
+    value_map: BTreeMap<&'a Leaf, LeafId>,
     structure: Vec<Struct>,
     /// old structure id -> new id, recorded as each node is emitted (for span-table remap). Empty when
     /// the caller does not need it (`canonicalize`), non-empty for `canonicalize_with_map`.
