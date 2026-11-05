@@ -2,15 +2,20 @@
 //!
 //! Every `serialize_*` returns the [`StructId`] of the node it built into the shared [`Builder`]; the
 //! top-level driver ([`crate::to_bytes`]) then `finish`es the builder at that root and
-//! `codec::encode`s it. The value-model mapping (mirrored by the [`crate::de`] reader):
+//! `codec::encode`s it. spec/contracts/ast-typed-values.md pins the value-model mapping as a
+//! frozen contract, with a worked byte example for each row that the `golden` tests check, and the
+//! [`crate::de`] reader reads it back. In brief, with `<list>`, `<tuple>`, `<map>` and `<record>`
+//! for the constructor-head leaves and `=` for the field-pair head leaf:
 //!
-//! - primitives → the matching leaf atom (`Bool`/`Int`/`Float`/`Char`/`Str`/`Bytes`);
-//! - `unit` / `unit_struct` / `None` → the empty list `()`; `Some(v)` → the one-element list `(v)`;
-//! - `seq` → `("list" e…)`, `tuple`/`tuple_struct` → `("tuple" e…)`;
-//! - `map` → `("map" (= k v)…)`, `struct` → `("record" (= "field" v)…)` (field name a `Str` key);
-//! - an enum variant → `(VariantName payload…)`: the head is the variant `Name`, the tail is the
-//!   payload (empty for a unit variant, one node for newtype, the elements for a tuple variant, the
-//!   `(= "field" v)` pairs for a struct variant).
+//! - primitives -> the matching leaf atom (`Bool`/`Int`/`Float`/`Char`/`Str`/`Bytes`);
+//! - `unit` / `unit_struct` / `None` -> the empty list `()`; `Some(v)` -> the one-element list
+//!   `(v)`;
+//! - `seq` -> `(<list> e...)`, `tuple`/`tuple_struct` -> `(<tuple> e...)`;
+//! - `map` -> `(<map> (= k v)...)`, `struct` -> `(<record> (= "field" v)...)`, a field name being a
+//!   `Str` key;
+//! - an enum variant -> `(VariantName payload...)`: the head is the variant `Name`, the tail is the
+//!   payload (empty for a unit variant, one node for newtype, the elements for a tuple variant, and
+//!   one `(<record> (= "field" v)...)` node for a struct variant).
 
 use crate::error::{Error, Result};
 use cadenza_ast::ast::{Builder, CompoundCtor, Decimal, IntValue, Leaf, Radix, StructId};
@@ -410,7 +415,8 @@ impl<'a> ser::SerializeStruct for StructSerializer<'a> {
     }
 }
 
-/// A `struct_variant` `(VariantName (= "field" v)…)` — the head Name plus record-style field pairs.
+/// A `struct_variant` `(VariantName (<record> (= "field" v)...))`: the head Name, then one record
+/// of the field pairs.
 pub struct StructVariantSerializer<'a> {
     builder: &'a mut Builder,
     head: StructId,
