@@ -8042,6 +8042,22 @@
               buildPhaseCargoCommand = "cargo check --locked -p cdz";
               installPhaseCommand = ''echo "ok: cdz-default-features-check (cargo check -p cdz, DEFAULT features — watch/lsp/completions/corpus/standalone arms)" > "$out"'';
             });
+            # ast-wasm32: the browser build of the binary-AST libraries. cadenza-ast and cadenza-ast-serde must keep
+            # building for wasm32-unknown-unknown, so that a program's browser client exchanges the same binary-AST
+            # messages as its native peers. Builds both crates with DEFAULT features (what a consumer builds) and
+            # cadenza-ast's no_std core (`--no-default-features`). A build, not a test run: neither crate holds code
+            # that differs by target, so the host tests cover the same code. Scoped to cadenza-ast-serde's closure
+            # (cadenza-ast + itself) via craneCrateCommon, so only an edit to those two crates rotates it. Added
+            # to localGate below, and run by fast-gate for either crate.
+            astWasm32Check = craneLib.mkCargoDerivation ((craneCrateCommon { crate = "cadenza-ast-serde"; }) // {
+              pname = "ast-wasm32-check";
+              doInstallCargoArtifacts = false;
+              buildPhaseCargoCommand = ''
+                cargo build --locked --target wasm32-unknown-unknown -p cadenza-ast -p cadenza-ast-serde
+                cargo build --locked --target wasm32-unknown-unknown -p cadenza-ast --no-default-features
+              '';
+              installPhaseCommand = ''echo "ok: ast-wasm32 (cadenza-ast + cadenza-ast-serde build for wasm32-unknown-unknown with default features; cadenza-ast with --no-default-features)" > "$out"'';
+            });
             # crane MR2: the CLIPPY half via crane (per-crate cargoClippy consuming the shared cargoArtifacts →
             # deps NOT recompiled each run). Each maker takes crate/extraSrc/extraInputs. cdz stays
             # workspace-src (crateCdzCheck, different shape — its clippy is inside cargoWorkspaceCheck).
@@ -8268,6 +8284,8 @@
             #     staleness natively, but NOT the through-nix hash-from-bytes reproduction — that's this.
             #   · the example project's @test suite run through nix.
             #   · the pure-eval closure-assert guard.
+            #   - ast-wasm32, the wasm32-unknown-unknown build of cadenza-ast + cadenza-ast-serde (also in localGate),
+            #     which no other checks.yml job builds.
             # The advisory job runs `nix build .#checks.<sys>.flake-repro-backstop` (minutes, cache-warm) instead
             # of `nix flake check` (48m). Coverage of the required set is unchanged (those jobs still run); only
             # the redundant re-run is dropped. `nix flake check` locally/in devShell still builds everything.
@@ -8275,7 +8293,7 @@
               {
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
                   contractHashesValid harnessRunsAll
-                  exampleProjectTests crateClosureAssert;
+                  exampleProjectTests crateClosureAssert astWasm32Check;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
             '';
@@ -9098,6 +9116,9 @@
                   # cdz-wasm NATIVE tests (host, OOB-free) — GATES the browser compiler's sidecar consumers
                   # so a future binary-AST wire flip can't silently re-break them (the #6324/#6342 hole).
                   cdzWasmNativeCheck
+                  # astWasm32Check: cadenza-ast + cadenza-ast-serde still build for wasm32-unknown-unknown (the
+                  # browser), with default features and as cadenza-ast's no_std core. See its def note.
+                  astWasm32Check
                   # corpus-hygiene lints FOLDED IN (v-fleet-tooling 2026-08-30, v-corpus-harness green +
                   # concierge exempt-first-then-fold): corpusNativizeCheck (M3 input #ctor form; #6025 escaped
                   # the ADVISORY checks.yml job because --admin bypasses required GHA) + corpusVanishedCheck
@@ -9360,6 +9381,9 @@
             # localGate constituent (crateCdzCheck's workspace build already covers default-features at the
             # authoritative gate) — this is the cheap inner-loop catch for the default-only-arm class.
             cdz-default-features = cdzDefaultFeaturesCheck;
+            # `nix build .#checks.<sys>.ast-wasm32`: cadenza-ast + cadenza-ast-serde build for wasm32-unknown-unknown
+            # (also in the localGate fail-set, and run by fast-gate for either crate; see its def note).
+            ast-wasm32 = astWasm32Check;
             # The REQUIRED clippy contexts = the 2-WAY SHARD (see the clippyShardA/B bindings): per-crate crane
             # cargoClippy (shared cargoArtifacts → deps compiled ONCE), split into 2 parallel jobs to halve the
             # ~8.8m clippy critical-path pole. The former single `clippy` attr (= clippyCraneAggregate, the whole
@@ -9855,6 +9879,9 @@
               # catch — the per-crate crane checks + seedCompiler build --no-default-features, so a touched cdz
               # in the inner loop needs this to catch a watch/lsp/completions/corpus/standalone cfg-arm break).
               if name == "cdz" then [ "crate-cdz" "cdz-default-features" ]
+              # cadenza-ast / cadenza-ast-serde: PLUS ast-wasm32, the browser build of both crates, so that an edit
+              # to either in the inner loop catches a break of their wasm32-unknown-unknown build.
+              else if name == "cadenza-ast" || name == "cadenza-ast-serde" then [ "test-${name}" "clippy-${name}" "ast-wasm32" ]
               else [ "test-${name}" "clippy-${name}" ];
             # bash `case` arms mapping a crate DIR PREFIX → its space-joined check attrs (for git-diff detect).
             # MOST-SPECIFIC FIRST: sort crates by dir-path LENGTH descending so a crate NESTED under
