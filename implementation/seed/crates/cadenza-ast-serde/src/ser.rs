@@ -23,6 +23,18 @@ use serde::ser;
 use serde::ser::Serialize;
 use std::sync::Arc;
 
+//= spec/contracts/ast-typed-values.md#a-whole-64-bit-binary-floating-point-value-is-its-integer-decimal
+//# A finite 64-bit binary floating-point value that is a whole number MUST be written as an atom of a float leaf whose exponent is zero and whose significand is the value's absolute value.
+//= spec/contracts/ast-typed-values.md#a-fractional-64-bit-binary-floating-point-value-is-its-shortest-decimal
+//# A finite 64-bit binary floating-point value that is not a whole number MUST be written as an atom of a float leaf whose significand and exponent are those of the value's shortest decimal.
+//= spec/contracts/ast-typed-values.md#the-sign-of-a-float-leaf-is-the-value-s-sign-bit
+//# The negative flag of the float leaf written for a finite binary floating-point value MUST be set exactly when the value's sign bit is set, so that negative zero is a negative float leaf with an empty significand.
+//= spec/contracts/ast-typed-values.md#a-not-a-number-value-is-the-not-a-number-leaf
+//# A not-a-number value of either binary floating-point format MUST be written as an atom of the not-a-number leaf, kind `17`, whatever its sign and payload.
+//= spec/contracts/ast-typed-values.md#an-infinity-is-its-infinity-leaf
+//# A positive infinity of either binary floating-point format MUST be written as an atom of the positive-infinity leaf, kind `18`.
+//= spec/contracts/ast-typed-values.md#an-infinity-is-its-infinity-leaf
+//# A negative infinity of either binary floating-point format MUST be written as an atom of the negative-infinity leaf, kind `19`.
 /// A finite `f64` is an exact decimal; a non-finite one is a payloadless marker leaf.
 fn f64_leaf(v: f64) -> Leaf {
     if v.is_nan() {
@@ -37,6 +49,16 @@ fn f64_leaf(v: f64) -> Leaf {
     }
 }
 
+//= spec/contracts/ast-typed-values.md#a-32-bit-binary-floating-point-value-is-its-shortest-decimal
+//# A finite 32-bit binary floating-point value MUST be written as an atom of a float leaf whose significand and exponent are those of the value's shortest decimal, whether or not it is a whole number.
+//= spec/contracts/ast-typed-values.md#the-sign-of-a-float-leaf-is-the-value-s-sign-bit
+//# The negative flag of the float leaf written for a finite binary floating-point value MUST be set exactly when the value's sign bit is set, so that negative zero is a negative float leaf with an empty significand.
+//= spec/contracts/ast-typed-values.md#a-not-a-number-value-is-the-not-a-number-leaf
+//# A not-a-number value of either binary floating-point format MUST be written as an atom of the not-a-number leaf, kind `17`, whatever its sign and payload.
+//= spec/contracts/ast-typed-values.md#an-infinity-is-its-infinity-leaf
+//# A positive infinity of either binary floating-point format MUST be written as an atom of the positive-infinity leaf, kind `18`.
+//= spec/contracts/ast-typed-values.md#an-infinity-is-its-infinity-leaf
+//# A negative infinity of either binary floating-point format MUST be written as an atom of the negative-infinity leaf, kind `19`.
 /// The `f32` twin of [`f64_leaf`] — uses the `f32`-precise shortest-decimal decomposition so a
 /// round-tripped `f32` reconstructs bit-exactly.
 fn f32_leaf(v: f32) -> Leaf {
@@ -57,6 +79,8 @@ pub struct AstSerializer<'a> {
 }
 
 impl<'a> AstSerializer<'a> {
+    //= spec/contracts/ast-typed-values.md#an-integer-is-a-decimal-integer-leaf
+    //# An integer of any width MUST be written as an atom of a decimal integer leaf whose magnitude is the integer's absolute value, kind `0` for zero and every positive integer and kind `3` for every negative integer.
     fn int_atom(self, value: IntValue) -> StructId {
         self.builder.atom_leaf(Leaf::Int {
             value,
@@ -65,6 +89,8 @@ impl<'a> AstSerializer<'a> {
     }
 }
 
+//= spec/contracts/ast-typed-values.md#the-leaf-kinds-the-typed-mapping-writes
+//# An encoder MUST write a typed value with leaves of kinds `0`, `3`, `6`, `7`, `8`, `9`, `10`, `11`, `13`, `17`, `18`, `19`, `20`, `21`, `22`, `23` and `25` alone.
 impl<'a> ser::Serializer for AstSerializer<'a> {
     type Ok = StructId;
     type Error = Error;
@@ -77,6 +103,8 @@ impl<'a> ser::Serializer for AstSerializer<'a> {
     type SerializeStruct = StructSerializer<'a>;
     type SerializeStructVariant = StructVariantSerializer<'a>;
 
+    //= spec/contracts/ast-typed-values.md#a-boolean-is-its-boolean-leaf
+    //# A boolean MUST be written as an atom of the boolean leaf of its value, kind `8` for false and kind `9` for true.
     fn serialize_bool(self, v: bool) -> Result<StructId> {
         Ok(self.builder.atom_leaf(Leaf::Bool(v)))
     }
@@ -120,22 +148,32 @@ impl<'a> ser::Serializer for AstSerializer<'a> {
         Ok(self.builder.atom_leaf(f64_leaf(v)))
     }
 
+    //= spec/contracts/ast-typed-values.md#a-character-is-a-character-leaf
+    //# A character, one Unicode scalar value, MUST be written as an atom of a character leaf, kind `13`, holding that scalar.
     fn serialize_char(self, v: char) -> Result<StructId> {
         Ok(self.builder.atom_leaf(Leaf::Char(v)))
     }
 
+    //= spec/contracts/ast-typed-values.md#a-text-is-a-string-leaf
+    //# A text MUST be written as an atom of a string leaf, kind `7`, holding the text's UTF-8 bytes as given, without normalization.
     fn serialize_str(self, v: &str) -> Result<StructId> {
         Ok(self.builder.atom_leaf(Leaf::Str(Arc::from(v))))
     }
 
+    //= spec/contracts/ast-typed-values.md#a-byte-sequence-is-a-bytes-leaf
+    //# A byte sequence MUST be written as an atom of a bytes leaf, kind `11`, holding its bytes.
     fn serialize_bytes(self, v: &[u8]) -> Result<StructId> {
         Ok(self.builder.atom_leaf(Leaf::Bytes(Arc::from(v))))
     }
 
+    //= spec/contracts/ast-typed-values.md#an-absent-optional-value-is-the-empty-list
+    //# An absent optional value MUST be written as the empty list `()`.
     fn serialize_none(self) -> Result<StructId> {
         Ok(self.builder.list(Vec::new()))
     }
 
+    //= spec/contracts/ast-typed-values.md#a-present-optional-value-is-a-list-of-one
+    //# A present optional value MUST be written as a list of one child, the tree of the value it holds.
     fn serialize_some<T>(self, value: &T) -> Result<StructId>
     where
         T: ?Sized + Serialize,
@@ -146,14 +184,22 @@ impl<'a> ser::Serializer for AstSerializer<'a> {
         Ok(self.builder.list(vec![node]))
     }
 
+    //= spec/contracts/ast-typed-values.md#a-unit-is-the-empty-list
+    //# A unit, the unit value or a named unit, MUST be written as the empty list `()`.
     fn serialize_unit(self) -> Result<StructId> {
         Ok(self.builder.list(Vec::new()))
     }
 
+    //= spec/contracts/ast-typed-values.md#a-unit-is-the-empty-list
+    //# A unit, the unit value or a named unit, MUST be written as the empty list `()`.
     fn serialize_unit_struct(self, _name: &'static str) -> Result<StructId> {
         Ok(self.builder.list(Vec::new()))
     }
 
+    //= spec/contracts/ast-typed-values.md#an-enumeration-variant-is-headed-by-a-name-leaf-of-its-name
+    //# The first child of the list an enumeration variant is written as MUST be an atom of a name leaf, kind `10`, holding the variant's name as its type declares it for writing.
+    //= spec/contracts/ast-typed-values.md#a-variant-without-a-payload-is-a-list-of-its-name
+    //# A variant without a payload MUST be written as a list of one child, the atom of its name.
     fn serialize_unit_variant(
         self,
         _name: &'static str,
@@ -164,6 +210,8 @@ impl<'a> ser::Serializer for AstSerializer<'a> {
         Ok(self.builder.list(vec![head]))
     }
 
+    //= spec/contracts/ast-typed-values.md#a-wrapper-is-the-tree-of-the-value-it-wraps
+    //# A wrapper MUST be written as the tree of its one positional part, with nothing added.
     fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<StructId>
     where
         T: ?Sized + Serialize,
@@ -172,6 +220,10 @@ impl<'a> ser::Serializer for AstSerializer<'a> {
         value.serialize(self)
     }
 
+    //= spec/contracts/ast-typed-values.md#an-enumeration-variant-is-headed-by-a-name-leaf-of-its-name
+    //# The first child of the list an enumeration variant is written as MUST be an atom of a name leaf, kind `10`, holding the variant's name as its type declares it for writing.
+    //= spec/contracts/ast-typed-values.md#a-variant-with-one-payload-value-is-its-name-then-that-value
+    //# A variant whose payload is one value MUST be written as a list of two children: the atom of its name, then the tree of the payload.
     fn serialize_newtype_variant<T>(
         self,
         _name: &'static str,
@@ -189,6 +241,8 @@ impl<'a> ser::Serializer for AstSerializer<'a> {
         Ok(self.builder.list(vec![head, node]))
     }
 
+    //= spec/contracts/ast-typed-values.md#a-list-is-the-list-constructor-head-then-its-elements
+    //# A list MUST be written as a list whose first child is an atom of the list constructor head, kind `20`, followed by the tree of each element in order.
     fn serialize_seq(self, _len: Option<usize>) -> Result<SeqSerializer<'a>> {
         Ok(SeqSerializer {
             builder: self.builder,
@@ -197,6 +251,8 @@ impl<'a> ser::Serializer for AstSerializer<'a> {
         })
     }
 
+    //= spec/contracts/ast-typed-values.md#a-tuple-is-the-tuple-constructor-head-then-its-parts
+    //# A tuple MUST be written as a list whose first child is an atom of the tuple constructor head, kind `21`, followed by the tree of each part in order.
     fn serialize_tuple(self, _len: usize) -> Result<SeqSerializer<'a>> {
         Ok(SeqSerializer {
             builder: self.builder,
@@ -205,6 +261,8 @@ impl<'a> ser::Serializer for AstSerializer<'a> {
         })
     }
 
+    //= spec/contracts/ast-typed-values.md#a-tuple-is-the-tuple-constructor-head-then-its-parts
+    //# A tuple MUST be written as a list whose first child is an atom of the tuple constructor head, kind `21`, followed by the tree of each part in order.
     fn serialize_tuple_struct(self, _name: &'static str, _len: usize) -> Result<SeqSerializer<'a>> {
         Ok(SeqSerializer {
             builder: self.builder,
@@ -213,6 +271,10 @@ impl<'a> ser::Serializer for AstSerializer<'a> {
         })
     }
 
+    //= spec/contracts/ast-typed-values.md#an-enumeration-variant-is-headed-by-a-name-leaf-of-its-name
+    //# The first child of the list an enumeration variant is written as MUST be an atom of a name leaf, kind `10`, holding the variant's name as its type declares it for writing.
+    //= spec/contracts/ast-typed-values.md#a-variant-with-positional-parts-is-its-name-then-each-part
+    //# A variant whose payload is two or more positional parts MUST be written as a list of the atom of its name followed by the tree of each part in order.
     fn serialize_tuple_variant(
         self,
         _name: &'static str,
@@ -242,6 +304,8 @@ impl<'a> ser::Serializer for AstSerializer<'a> {
         })
     }
 
+    //= spec/contracts/ast-typed-values.md#an-enumeration-variant-is-headed-by-a-name-leaf-of-its-name
+    //# The first child of the list an enumeration variant is written as MUST be an atom of a name leaf, kind `10`, holding the variant's name as its type declares it for writing.
     fn serialize_struct_variant(
         self,
         _name: &'static str,
@@ -280,6 +344,8 @@ impl<'a> ser::SerializeSeq for SeqSerializer<'a> {
         Ok(())
     }
 
+    //= spec/contracts/ast-typed-values.md#a-decoder-may-accept-a-name-head-in-place-of-a-constructor-head
+    //# An encoder MUST NOT write a name leaf in place of a constructor head.
     fn end(self) -> Result<StructId> {
         Ok(self.builder.compound(self.ctor, &self.elems))
     }
@@ -366,6 +432,8 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
         Ok(())
     }
 
+    //= spec/contracts/ast-typed-values.md#a-field-pair-is-the-field-pair-head-a-key-and-a-value
+    //# A field pair MUST be written as a list of three children: an atom of the field-pair head, kind `25`, then the tree of the key, then the tree of the value.
     fn serialize_value<T>(&mut self, value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
@@ -382,6 +450,10 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
         Ok(())
     }
 
+    //= spec/contracts/ast-typed-values.md#a-map-is-the-map-constructor-head-then-one-field-pair-per-entry
+    //# A map MUST be written as a list whose first child is an atom of the map constructor head, kind `23`, followed by one field pair for each entry, holding the entry's key and value, in the order the map presents its entries.
+    //= spec/contracts/ast-typed-values.md#a-decoder-may-accept-a-name-head-in-place-of-a-constructor-head
+    //# An encoder MUST NOT write a name leaf in place of a constructor head.
     fn end(self) -> Result<StructId> {
         Ok(self.builder.compound(CompoundCtor::Map, &self.entries))
     }
@@ -397,6 +469,10 @@ impl<'a> ser::SerializeStruct for StructSerializer<'a> {
     type Ok = StructId;
     type Error = Error;
 
+    //= spec/contracts/ast-typed-values.md#a-field-pair-is-the-field-pair-head-a-key-and-a-value
+    //# A field pair MUST be written as a list of three children: an atom of the field-pair head, kind `25`, then the tree of the key, then the tree of the value.
+    //= spec/contracts/ast-typed-values.md#a-record-field-s-key-is-a-string-leaf-of-its-name
+    //# The key of a record field's field pair MUST be written as an atom of a string leaf holding the field's name as the record's type declares it for writing.
     fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
@@ -410,6 +486,10 @@ impl<'a> ser::SerializeStruct for StructSerializer<'a> {
         Ok(())
     }
 
+    //= spec/contracts/ast-typed-values.md#a-record-is-the-record-constructor-head-then-one-field-pair-per-field
+    //# A record MUST be written as a list whose first child is an atom of the record constructor head, kind `22`, followed by one field pair for each of its fields, in the order the record's type declares them.
+    //= spec/contracts/ast-typed-values.md#a-decoder-may-accept-a-name-head-in-place-of-a-constructor-head
+    //# An encoder MUST NOT write a name leaf in place of a constructor head.
     fn end(self) -> Result<StructId> {
         Ok(self.builder.compound(CompoundCtor::Record, &self.entries))
     }
@@ -427,6 +507,10 @@ impl<'a> ser::SerializeStructVariant for StructVariantSerializer<'a> {
     type Ok = StructId;
     type Error = Error;
 
+    //= spec/contracts/ast-typed-values.md#a-field-pair-is-the-field-pair-head-a-key-and-a-value
+    //# A field pair MUST be written as a list of three children: an atom of the field-pair head, kind `25`, then the tree of the key, then the tree of the value.
+    //= spec/contracts/ast-typed-values.md#a-record-field-s-key-is-a-string-leaf-of-its-name
+    //# The key of a record field's field pair MUST be written as an atom of a string leaf holding the field's name as the record's type declares it for writing.
     fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
@@ -440,6 +524,10 @@ impl<'a> ser::SerializeStructVariant for StructVariantSerializer<'a> {
         Ok(())
     }
 
+    //= spec/contracts/ast-typed-values.md#a-variant-with-named-fields-is-its-name-then-one-record
+    //# A variant whose payload is named fields MUST be written as a list of two children: the atom of its name, then the tree of a record holding those fields.
+    //= spec/contracts/ast-typed-values.md#a-decoder-may-accept-a-name-head-in-place-of-a-constructor-head
+    //# An encoder MUST NOT write a name leaf in place of a constructor head.
     fn end(self) -> Result<StructId> {
         // A struct variant is `(VariantName (record (= "field" v)…))` — the variant name applied to a
         // single Record payload. This matches the canonical value-form sum shape `Variant(Record(…))`
