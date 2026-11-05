@@ -314,7 +314,7 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
 /// `canon` without `std`).
 /// Before it takes a content address of that re-encoding, it calls `check_addressable` on the
 /// decoded tree, under `std`, and refuses the message, or keeps it without a content address, where
-/// the bytes listed one leaf value twice or held `Name` text outside Unicode Normalization Form C.
+/// the bytes broke an encoder rule that the canonical re-encoding doesn't repair.
 ///
 /// `arenas` must be a TREE from its root, as a `Builder` builds one when each `StructId` is the child
 /// of one node only. A node reachable twice (a shared subtree) is written as given, and [`decode`]
@@ -600,34 +600,41 @@ pub fn decode_detailed(bytes: &[u8]) -> Result<Arenas, DecodeError> {
 
 /// Why a program that received the bytes of a tree doesn't take a content address of the tree it
 /// decoded them to: the bytes break a rule an encoder keeps, which this crate's canonicalization
-/// doesn't repair, since it keeps leaves apart by id and doesn't normalize decoded text. [`encode`]
-/// of the decoded tree is then not the tree's canonical byte sequence, and the peer that sent the
-/// bytes would set a second content address for the tree. [`check_addressable`] answers it.
+/// doesn't repair, since it keeps leaves apart by id and copies each leaf as decoded, its `Name`
+/// text and its integer and float magnitudes as received. [`encode`] of the decoded tree is then not
+/// the tree's canonical byte sequence, and the peer that sent the bytes would set a second content
+/// address for the tree. [`check_addressable`] answers it.
 #[cfg(feature = "std")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotAddressable {
+    /// The `Name` leaf at this leaf id holds text that isn't in Unicode Normalization Form C. A
+    /// decoder accepts such text, and [`encode`] of the decoded tree writes it as received.
+    NameNotNfc(LeafId),
+    /// The `Int` or `Float` leaf at this leaf id, or the integer or float body of the `Suffixed`
+    /// leaf there, holds a magnitude whose first byte is zero, where the canonical form's magnitude
+    /// is minimal. A decoder accepts it, and [`encode`] of the decoded tree writes it as received.
+    NonMinimalMagnitude(LeafId),
     /// The leaf pool lists one leaf value at two leaf ids: `repeat` is the lowest leaf id whose
     /// value a lower id holds too, and `first` is the lowest id that holds that value. A decoder
     /// accepts such a pool, and [`encode`] of the decoded tree keeps both copies.
     RepeatedLeaf { first: LeafId, repeat: LeafId },
-    /// The `Name` leaf at this leaf id holds text that isn't in Unicode Normalization Form C. A
-    /// decoder accepts such text, and [`encode`] of the decoded tree writes it as received.
-    NameNotNfc(LeafId),
 }
 
-/// Check that a decoded tree can be given a content address: its leaf pool lists each distinct leaf
-/// value once, and each `Name` leaf holds text in Unicode Normalization Form C, as an encoder writes
-/// them. A program that received the bytes of a tree, such as a transport encoding, calls this on
-/// the [`decode`]d tree before it takes a content address of the tree's canonical re-encoding, and
-/// refuses the message, or keeps it without a content address, where this answers
-/// [`NotAddressable`].
+/// Check that a decoded tree can be given a content address: each `Name` leaf holds text in Unicode
+/// Normalization Form C, each integer magnitude and float significand is minimal, and the leaf pool
+/// lists each distinct leaf value once, as an encoder writes them. A program that received the bytes
+/// of a tree, such as a transport encoding, calls this on the [`decode`]d tree before it takes a
+/// content address of the tree's canonical re-encoding, and refuses the message, or keeps it without
+/// a content address, where this answers [`NotAddressable`].
 ///
-/// It reads every leaf of the pool, the leaves the root doesn't reach among them, and checks the
-/// `Name` text first: of two spellings of one name that differ only in their normalization, the one
-/// outside NFC answers [`NotAddressable::NameNotNfc`], and after that check two leaves hold one
-/// value exactly when they are equal. The repeat check is a `BTreeMap` over the leaves' own order,
-/// not a hash map, so a sender can't choose leaf values that collide in it: its cost is the sorted
-/// map's comparisons.
+/// It reads every leaf of the pool, the leaves the root doesn't reach among them. It checks each
+/// leaf on its own first, in leaf id order, and answers the first leaf that breaks a rule of its
+/// own with [`NotAddressable::NameNotNfc`] or [`NotAddressable::NonMinimalMagnitude`]. Then it
+/// checks for a repeat: after the leaf checks, two leaves are one leaf of the canonical form exactly
+/// when they are equal, as `Builder::leaf` interns them, so two spellings of one name, or two
+/// magnitudes of one integer, answer a leaf check and not [`NotAddressable::RepeatedLeaf`]. The
+/// repeat check is a `BTreeMap` over the leaves' own order, not a hash map, so a sender can't choose
+/// leaf values that collide in it: its cost is the sorted map's comparisons.
 ///
 /// It doesn't change what [`decode`] accepts: [`encode`] of an arena built with two
 /// `Builder::leaf_unique` leaves of one value writes such a pool, as the compiler's own templates
@@ -640,10 +647,18 @@ pub enum NotAddressable {
 pub fn check_addressable(arenas: &Arenas) -> Result<(), NotAddressable> {
     use alloc::collections::BTreeMap;
 
-    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
-    //# A program that receives a transport encoding that holds a Name leaf whose text is not in Unicode Normalization Form C MUST NOT take a content address of the tree it decodes to.
-    if let Some(id) = arenas.leaves.iter().position(is_name_outside_nfc) {
-        return Err(NotAddressable::NameNotNfc(LeafId(id as u32)));
+    for (id, leaf) in arenas.leaves.iter().enumerate() {
+        let id = LeafId(id as u32);
+        //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+        //# A program that receives a transport encoding that holds a Name leaf whose text is not in Unicode Normalization Form C MUST NOT take a content address of the tree it decodes to.
+        if is_name_outside_nfc(leaf) {
+            return Err(NotAddressable::NameNotNfc(id));
+        }
+        //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+        //# A program that receives a transport encoding that holds an integer or float significand magnitude that is not minimal MUST NOT take a content address of the tree it decodes to.
+        if has_non_minimal_magnitude(leaf) {
+            return Err(NotAddressable::NonMinimalMagnitude(id));
+        }
     }
 
     //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
@@ -666,6 +681,23 @@ fn is_name_outside_nfc(leaf: &Leaf) -> bool {
         Leaf::Name(text) => !text.is_ascii() && !unicode_normalization::is_nfc(text),
         _ => false,
     }
+}
+
+/// Whether `leaf` holds an integer magnitude or a float significand whose first byte is zero, which
+/// the canonical form's minimal magnitude rules out: an `Int` or a `Float` leaf, or the integer or
+/// float body of a `Suffixed` leaf.
+#[cfg(feature = "std")]
+fn has_non_minimal_magnitude(leaf: &Leaf) -> bool {
+    let magnitude = match leaf {
+        Leaf::Int { value, .. } => &value.magnitude,
+        Leaf::Float(d) => &d.significand,
+        Leaf::Suffixed { value, .. } => match value {
+            SuffixBody::Int { value, .. } => &value.magnitude,
+            SuffixBody::Float(d) => &d.significand,
+        },
+        _ => return false,
+    };
+    magnitude.first() == Some(&0)
 }
 
 /// Decode an integer body whose already-read `kind` tag encodes its sign + radix: read the LEB-framed
@@ -2548,6 +2580,27 @@ mod tests {
     // A program that received a binary AST checks the decoded tree with `check_addressable` before
     // it takes a content address of the tree's canonical re-encoding.
 
+    /// A tree whose root is an atom of leaf 0, with `leaves` as its leaf pool: each leaf after the
+    /// first is one the root doesn't reach, which a decoder accepts and `check_addressable` reads.
+    fn pool(leaves: Vec<Leaf>) -> Arenas {
+        Arenas {
+            leaves,
+            structure: vec![Struct::Atom(LeafId(0))],
+            root: StructId(0),
+        }
+    }
+
+    /// A positive decimal `Int` leaf whose magnitude is `magnitude`, as received.
+    fn int_leaf(magnitude: &[u8]) -> Leaf {
+        Leaf::Int {
+            value: IntValue {
+                negative: false,
+                magnitude: magnitude.to_vec(),
+            },
+            radix: Radix::Dec,
+        }
+    }
+
     #[test]
     fn a_message_that_lists_a_leaf_value_twice_is_not_addressable() {
         //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
@@ -2618,15 +2671,108 @@ mod tests {
     }
 
     #[test]
-    fn the_repeat_check_compares_whole_leaf_values_across_the_pool() {
-        // Arenas built by hand: a root atom of leaf 0, and other leaves the root doesn't reach,
-        // which a decoder accepts and the check reads too.
-        let pool = |leaves: Vec<Leaf>| Arenas {
-            leaves,
-            structure: vec![Struct::Atom(LeafId(0))],
-            root: StructId(0),
+    fn a_message_that_holds_a_magnitude_with_a_leading_zero_byte_is_not_addressable() {
+        //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+        //= type=test
+        //# A program that receives a transport encoding that holds an integer or float significand magnitude that is not minimal MUST NOT take a content address of the tree it decodes to.
+        // The integer 5 as one atom, its magnitude sent with a leading zero byte, `00 05`, and sent
+        // minimal, `05`. A decoder accepts both, and keeps the magnitude as received.
+        let message = |magnitude: &[u8]| {
+            let mut bytes = SCHEMA_HEADER.to_vec();
+            bytes.extend_from_slice(&[1, KIND_INT_POS_DEC, magnitude.len() as u8]);
+            bytes.extend_from_slice(magnitude);
+            bytes.extend_from_slice(&[1, TAG_ATOM, 0, 0]);
+            bytes
         };
-        // A string at leaf ids 1 and 3, with another leaf between them.
+        let padded = decode(&message(&[0, 5])).expect("decodes");
+        let minimal = decode(&message(&[5])).expect("decodes");
+        assert_eq!(padded.leaves, [int_leaf(&[0, 5])]);
+        assert_eq!(
+            check_addressable(&padded),
+            Err(NotAddressable::NonMinimalMagnitude(LeafId(0)))
+        );
+        assert_eq!(check_addressable(&minimal), Ok(()));
+        // One value as a minimal and a padded magnitude: the padded one is refused.
+        let both = pool(vec![int_leaf(&[5]), int_leaf(&[0, 5])]);
+        assert_eq!(
+            check_addressable(&both),
+            Err(NotAddressable::NonMinimalMagnitude(LeafId(1)))
+        );
+    }
+
+    #[test]
+    fn each_magnitude_a_leaf_holds_is_checked() {
+        let decimal = |significand: &[u8]| Decimal {
+            negative: false,
+            significand: significand.to_vec(),
+            exponent: -1,
+        };
+        let int_value = |magnitude: &[u8]| IntValue {
+            negative: false,
+            magnitude: magnitude.to_vec(),
+        };
+        let suffixed = |value: SuffixBody| Leaf::Suffixed {
+            value,
+            kind: SuffixKind::BigInt,
+        };
+        let padded = [
+            Leaf::Float(decimal(&[0, 15])),
+            suffixed(SuffixBody::Int {
+                value: int_value(&[0, 5]),
+                radix: Radix::Dec,
+            }),
+            suffixed(SuffixBody::Float(decimal(&[0, 15]))),
+            // A negative integer whose magnitude is one zero byte, where zero is the empty one.
+            Leaf::Int {
+                value: IntValue {
+                    negative: true,
+                    magnitude: vec![0],
+                },
+                radix: Radix::Dec,
+            },
+        ];
+        for leaf in padded {
+            assert_eq!(
+                check_addressable(&pool(vec![leaf.clone()])),
+                Err(NotAddressable::NonMinimalMagnitude(LeafId(0))),
+                "{leaf:?}"
+            );
+        }
+        // Their minimal forms, zero as the empty magnitude among them, pass.
+        let minimal = pool(vec![
+            Leaf::Float(decimal(&[15])),
+            Leaf::Float(decimal(&[])),
+            suffixed(SuffixBody::Int {
+                value: int_value(&[5]),
+                radix: Radix::Dec,
+            }),
+            suffixed(SuffixBody::Float(decimal(&[15]))),
+            int_leaf(&[]),
+        ]);
+        assert_eq!(check_addressable(&minimal), Ok(()));
+    }
+
+    #[test]
+    fn a_leaf_that_breaks_a_rule_of_its_own_is_refused_before_the_repeat_check() {
+        // Two equal leaves outside the canonical form: the repeat check would answer
+        // `RepeatedLeaf { first: LeafId(0), repeat: LeafId(1) }`, and the leaf check answers
+        // first, at the lower id.
+        let name = || Leaf::Name("cafe\u{0301}".into());
+        let names = pool(vec![name(), name()]);
+        assert_eq!(
+            check_addressable(&names),
+            Err(NotAddressable::NameNotNfc(LeafId(0)))
+        );
+        let ints = pool(vec![int_leaf(&[0, 5]), int_leaf(&[0, 5])]);
+        assert_eq!(
+            check_addressable(&ints),
+            Err(NotAddressable::NonMinimalMagnitude(LeafId(0)))
+        );
+    }
+
+    #[test]
+    fn the_repeat_check_compares_whole_leaf_values_across_the_pool() {
+        // A string at leaf ids 1 and 3, with another leaf between them, the root reaching neither.
         let repeated = pool(vec![
             Leaf::Bool(true),
             Leaf::Str("x".into()),
@@ -2645,6 +2791,22 @@ mod tests {
             Leaf::Sym("x".into()),
         ]);
         assert_eq!(check_addressable(&kinds), Ok(()));
+        // One integer in two radixes is two leaf values, as the Builder interns them, and one
+        // integer in one radix twice is a repeat.
+        let dec = Leaf::Int {
+            value: IntValue::from_i64(42),
+            radix: Radix::Dec,
+        };
+        let hex = Leaf::Int {
+            value: IntValue::from_i64(42),
+            radix: Radix::Hex,
+        };
+        assert_eq!(check_addressable(&pool(vec![dec.clone(), hex])), Ok(()));
+        let (first, repeat) = (LeafId(0), LeafId(1));
+        assert_eq!(
+            check_addressable(&pool(vec![dec.clone(), dec])),
+            Err(NotAddressable::RepeatedLeaf { first, repeat })
+        );
         // The rule on normalization is for Name text: a string outside NFC is a value of its own.
         let text = pool(vec![
             Leaf::Str("cafe\u{0301}".into()),
