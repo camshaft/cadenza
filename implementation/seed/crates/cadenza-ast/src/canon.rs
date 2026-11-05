@@ -46,6 +46,7 @@ pub fn canonicalize(arenas: &Arenas) -> Cow<'_, Arenas> {
         src: arenas,
         leaves: Vec::new(),
         leaf_map: CanonMap::default(),
+        value_map: CanonMap::default(),
         structure: Vec::new(),
         id_map: Vec::new(), // not tracked on this path — see `canonicalize_with_map`
     };
@@ -67,13 +68,15 @@ pub fn canonicalize(arenas: &Arenas) -> Cow<'_, Arenas> {
 /// so the walk is load-bearing (a linear scan gave false positives on cross-surface programs and broke
 /// the byte-equality tests). Any deviation returns `false` → the full rebuild is the sound fallback (a
 /// false negative only costs the rebuild we already do, never a wrong result). No native recursion (an
-/// explicit stack), so deep input can't overflow.
+/// explicit stack), so deep input can't overflow. A leaf value held at two ids is a deviation too:
+/// the normal form lists each distinct leaf once, deduplicated by value.
 pub fn is_canonical(arenas: &Arenas) -> bool {
     if arenas.structure.is_empty() {
         return false;
     }
     let mut next_leaf: u32 = 0;
     let mut seen_leaf = vec![false; arenas.leaves.len()];
+    let mut seen_value: CanonMap<&Leaf, ()> = CanonMap::default();
     let mut next_struct: u32 = 0;
     let mut entered = vec![false; arenas.structure.len()];
     // (node, child-cursor): a `List` is visited (assigned its id) AFTER its children — matching
@@ -88,6 +91,11 @@ pub fn is_canonical(arenas: &Arenas) -> bool {
                 }
                 if !seen_leaf[lid] {
                     if leaf.0 != next_leaf {
+                        return false;
+                    }
+                    // A second id holding a value already seen: the normal form lists each
+                    // distinct leaf once, so the rebuild deduplicates it.
+                    if seen_value.insert(&arenas.leaves[lid], ()).is_some() {
                         return false;
                     }
                     seen_leaf[lid] = true;
@@ -135,6 +143,7 @@ pub fn canonicalize_with_map(arenas: &Arenas) -> (Arenas, Vec<Option<StructId>>)
         src: arenas,
         leaves: Vec::new(),
         leaf_map: CanonMap::default(),
+        value_map: CanonMap::default(),
         structure: Vec::new(),
         id_map: vec![None; arenas.structure.len()],
     };
@@ -153,6 +162,10 @@ struct Canon<'a> {
     src: &'a Arenas,
     leaves: Vec<Leaf>,
     leaf_map: CanonMap<LeafId, LeafId>, // old leaf id -> new (first-encounter) leaf id
+    /// leaf VALUE -> new leaf id, so two old ids that hold one value intern to one new leaf: the
+    /// canonical leaf pool lists each distinct leaf once, deduplicated by value, whatever ids a
+    /// transport encoding or `Builder::leaf_unique` gave the copies.
+    value_map: CanonMap<&'a Leaf, LeafId>,
     structure: Vec<Struct>,
     /// old structure id -> new id, recorded as each node is emitted (for span-table remap). Empty when
     /// the caller does not need it (`canonicalize`), non-empty for `canonicalize_with_map`.
@@ -222,8 +235,18 @@ impl Canon<'_> {
         if let Some(&new) = self.leaf_map.get(&old) {
             return new;
         }
-        let new = LeafId(self.leaves.len() as u32);
-        self.leaves.push(self.src.leaf(old).clone());
+        let src = self.src;
+        let leaf = src.leaf(old);
+        let new = match self.value_map.get(leaf).copied() {
+            // Another old id holds this value and was interned first: share its new leaf.
+            Some(new) => new,
+            None => {
+                let new = LeafId(self.leaves.len() as u32);
+                self.leaves.push(leaf.clone());
+                self.value_map.insert(leaf, new);
+                new
+            }
+        };
         self.leaf_map.insert(old, new);
         new
     }
@@ -238,7 +261,7 @@ impl Canon<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Arenas, Builder, StructId};
+    use crate::ast::{Arenas, Builder, Leaf, StructId};
     use crate::codec;
     use std::borrow::Cow;
 
@@ -399,6 +422,24 @@ mod tests {
         // result is itself canonical + idempotent.
         let c = canonicalize(&a).into_owned();
         assert!(is_canonical(&c));
+    }
+
+    // The tree `(a a)` with ONE value at TWO leaf ids (`leaf_unique`, or a transport encoding that
+    // lists the value twice): the normal form lists each distinct leaf once, by value.
+    #[test]
+    fn one_leaf_value_at_two_ids_is_not_canonical_and_rebuilds_to_one_leaf() {
+        let mut b = Builder::new();
+        let first = b.leaf_unique(Leaf::Name("a".into()));
+        let second = b.leaf_unique(Leaf::Name("a".into()));
+        let x = b.atom(first);
+        let y = b.atom(second);
+        let root = b.list(vec![x, y]);
+        let a = b.finish(root);
+        assert!(!is_canonical(&a), "one value at two ids");
+        let c = canonicalize(&a);
+        assert_eq!(c.leaves.len(), 1, "the rebuild lists the value once");
+        assert!(is_canonical(&c), "the rebuild is canonical");
+        assert!(a.structurally_eq(&c), "the same tree");
     }
 
     #[test]
