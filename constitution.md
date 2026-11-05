@@ -133,7 +133,7 @@ A requirement that describes runtime behavior MUST be discharged by executing th
 
 Each normative statement MUST carry exactly one obligation under a stable heading.
 
-A normative statement MUST NOT name a concrete engine, a hashing algorithm, a numeric width, a prior prototype, or a source-file path.
+A normative statement MUST NOT name a concrete engine, a hashing algorithm, a numeric width, a prior prototype, or a source-file path, with the one exception of a numeric width that a frozen contract names as part of the byte-level form it pins.
 
 A concrete technology choice MUST be recorded at the declared-defaults location rather than in a normative requirement.
 
@@ -189,7 +189,7 @@ An amendment that weakens a governance floor MUST require explicit human approva
 
 This constitution supersedes all other specifications where they conflict on an invariant. The frozen contracts under `spec/contracts/` pin the byte- and ABI-level forms these invariants govern; the capability specifications under `spec/capabilities/` describe behavior that must satisfy these invariants; the executable semantics under `spec/semantics/` is the single source of truth for behavior. Compliance is checked by two gates: the requirement gate, under which every load-bearing requirement here must carry an implementation citation and a test citation in any promoted generation, and the behavior gate, under which every executable-semantics case must reproduce its recorded output. Amendments follow the Amendment Discipline above and are traced against the architecture in [spec/traceability.md](./spec/traceability.md).
 
-**Version**: 0.7.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-06
+**Version**: 0.9.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-11-05
 
 > **Amendment 0.2.0 (2026-07-02).** Core Principle VII gains a bootstrap carve-out: the
 > operator-synthesized seed generation MAY defer static typing and realize evaluation dynamically,
@@ -284,3 +284,16 @@ This constitution supersedes all other specifications where they conflict on an 
 > change (the entry is the tool's interface, not a program's emitted code). This does NOT touch a
 > never-downgradable Governance Floor (determinism and capability-safety). Rationale in
 > [spec/learnings/2026-07-07-the-build-tool-interface-is-a-kinded-artifact-list-not-a-two-arm-result.md](./spec/learnings/2026-07-07-the-build-tool-interface-is-a-kinded-artifact-list-not-a-two-arm-result.md).
+>
+> **Amendment 0.9.0 (2026-11-05).** Core Principle XIII's ban on naming a numeric width gains one
+> exception: a numeric width that a frozen contract names as part of the byte-level form it pins, such
+> as the length of a header, the size of the groups of a variable-length integer, or the binary
+> floating-point format of a value the contract maps to a tree and reads back. Such a width is not a
+> technology choice that a generation makes: a frozen contract pins its bytes so that a third party can
+> implement them from the contract alone, every generation writes the same bytes, and one number written
+> as a value of two binary floating-point formats can take two byte sequences, so the width can't move to
+> the declared-default location. The ban still holds for every other normative statement, and for a
+> width that a frozen contract names outside the form it pins. No requirement of a frozen contract
+> changes, and no byte of a tree, a program or a component changes. It doesn't weaken any of the
+> minimum-process rules the constitution sets for a change to the specification. Rationale in
+> [spec/learnings/2026-11-05-a-frozen-contract-names-the-widths-of-the-byte-level-form-it-pins.md](./spec/learnings/2026-11-05-a-frozen-contract-names-the-widths-of-the-byte-level-form-it-pins.md).
