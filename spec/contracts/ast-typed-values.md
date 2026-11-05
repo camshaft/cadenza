@@ -297,7 +297,7 @@ A decoder MUST refuse an integer leaf whose value the target integer type can't 
 
 Example: the bytes of 300 above, read into an integer type whose largest value is 255, are refused,
 and so is the integer 2^64 + 1, `H 01 00 09 01 00 00 00 00 00 00 00 01 01 00 00 00`, read into any
-integer type of 64 bits or fewer.
+integer type whose largest value is less than 2^64 + 1.
 
 ### A Decoder Rounds A Float Leaf To Its Target's Nearest Value
 
