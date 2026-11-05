@@ -45,9 +45,13 @@ A program MUST be supplied to the compiler as its binary AST rather than as a te
 
 Each abstract syntax tree MUST have exactly one canonical binary encoding.
 
-Two abstract syntax trees that are equal MUST have identical binary encodings.
+Two abstract syntax trees that are equal MUST have identical canonical binary encodings.
 
 Decoding a canonical binary encoding MUST yield the abstract syntax tree it was encoded from.
+
+A transport encoding MAY differ from the canonical encoding.
+
+A content address or hash MUST be taken over the canonical re-encoding of the decoded tree, never over received bytes.
 
 ### The Encoding Is General And Stable
 
@@ -65,9 +69,9 @@ A node MUST name its kind by an atom node that references, by index into the lea
 
 ### The Prelude Order Is Canonical
 
-The order of leaves in the pool MUST be a deterministic function of the tree alone, independent of the order in which nodes were constructed or discovered; [ast-binary-format.md](./ast-binary-format.md) pins that concrete order (first-encounter under a pre-order walk, deduplicated by value).
+The order of leaves in the pool of the canonical encoding MUST be a deterministic function of the tree alone, independent of the order in which nodes were constructed or discovered; [ast-binary-format.md](./ast-binary-format.md) pins that concrete order (first-encounter under a pre-order walk, deduplicated by value).
 
-Two abstract syntax trees that are equal MUST produce identical leaf pools, so that the leaf pool participates in the one-canonical-byte-form-per-tree bijection.
+Two abstract syntax trees that are equal MUST produce identical leaf pools in their canonical encodings, so that the leaf pool participates in the one-canonical-byte-form-per-tree bijection.
 
 ## What The Tree Carries
 
