@@ -652,6 +652,14 @@
           ];
         };
         cargoWorkspaceCheck = { name, cargoCmd, src ? seedSrc, extraInputs ? [ ], stubClosure ? null }:
+          # The build phase runs `${cargoCmd}` as one line under the builder's `set -e`, which doesn't end
+          # the build phase on a command that fails before the last `&&` of a list: the rest of the list is
+          # skipped, and the install phase still writes the "ok" line. Refuse `&&` at eval, so that each
+          # command is its own statement and a failure of any one of them fails the check.
+          assert pkgs.lib.assertMsg (!(pkgs.lib.hasInfix "&&" cargoCmd)) (
+            "flake.nix cargoWorkspaceCheck ${name}: cargoCmd holds `&&`, so a command that fails before "
+            + "the last `&&` would pass the check under the builder's `set -e`. Write each command as its "
+            + "own statement, joined with `;`.");
           pkgs.stdenvNoCC.mkDerivation {
             pname = name;
             version = "0.0.0";
@@ -8413,7 +8421,7 @@
               # the nix app uses) — the bin then spawns them for the surface conversions. cwd is the
               # seedRoundtripSrc root (carries spec/semantics), so the bin's repo-root cwd fallback finds
               # the corpus. Same tool-build cost as before (the old `xtask roundtrip` cargo-built them too).
-              cargoCmd = "cargo build --locked --profile release -p cdz -p cdz-corpus && CDZ_SEED_BIN_DIR=\"$PWD/target/release\" cargo run --locked --profile release -p xtask-roundtrip";
+              cargoCmd = "cargo build --locked --profile release -p cdz -p cdz-corpus; CDZ_SEED_BIN_DIR=\"$PWD/target/release\" cargo run --locked --profile release -p xtask-roundtrip";
               # SCOPED src (v-nix caching): only the cdz+cdz-corpus+xtask-roundtrip dep-closure has full src;
               # the rest are Cargo.toml-only + stubbed (stubClosure) so cargo loads the workspace. A non-closure
               # crate edit (e.g. cdz-platform) no longer rotates this check. See seedRoundtripSrcScoped's note.
