@@ -706,6 +706,29 @@
             '';
           };
 
+        # cargoWorkspaceCheck `&&`-guard self-test. The guard above is the test of each caller's `cargoCmd`;
+        # this is the test of the guard. Pure-eval, mirroring wasmtimeSingleHolderAssert: cargoWorkspaceCheck
+        # on a `cargoCmd` that holds `&&` must fail evaluation (the guard's assertMsg throws), and the same
+        # commands joined with `;` must evaluate. tryEval forces each call only to its derivation's attrset,
+        # which evaluates the guard and doesn't instantiate or build anything. With the guard taken out, the
+        # `&&` probe evaluates, so this throws at eval and fails `nix flake check` and localGate's evaluation.
+        cargoWorkspaceCheckAndGuardAssert =
+          let
+            probe = cargoCmd: builtins.tryEval (cargoWorkspaceCheck { name = "and-guard-probe"; inherit cargoCmd; });
+            chained = probe "true && true";
+            separate = probe "true; true";
+          in
+          if chained.success || !separate.success then
+            throw ("flake.nix cargo-workspace-check-and-guard-assert: cargoWorkspaceCheck's `&&` guard failed its "
+              + "self-test. A cargoCmd that holds `&&` evaluated: ${pkgs.lib.boolToString chained.success} "
+              + "(expected false); the same commands joined with `;` evaluated: "
+              + "${pkgs.lib.boolToString separate.success} (expected true). Keep the assertMsg that refuses `&&` "
+              + "in cargoWorkspaceCheck's `cargoCmd`.")
+          else
+            pkgs.runCommand "cargo-workspace-check-and-guard-assert" { } ''
+              echo "ok: cargoWorkspaceCheck refuses a cargoCmd that holds && and takes one joined with ;" > $out
+            '';
+
         # ── seq-126 Part B: PER-CRATE dependency-granularity (concierge-confirmed, option A + 1a) ───
         #
         # REPLACE the whole-workspace `clippy --workspace` / `test --workspace` (which bust on ANY
@@ -9120,6 +9143,9 @@
                   charterLintCheck
                   mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert
                   wasmtimeSingleHolderAssert compilerPureLibraryAssert memberRegistrationAssert
+                  # cargoWorkspaceCheckAndGuardAssert: the self-test of cargoWorkspaceCheck's `&&` guard (see its
+                  # def note), so that taking the guard out fails localGate's evaluation.
+                  cargoWorkspaceCheckAndGuardAssert
                   # cdz-wasm NATIVE tests (host, OOB-free) — GATES the browser compiler's sidecar consumers
                   # so a future binary-AST wire flip can't silently re-break them (the #6324/#6342 hole).
                   cdzWasmNativeCheck
@@ -9370,6 +9396,7 @@
             compiler-pure-library-assert = compilerPureLibraryAssert;
             standalone-wasm-workspace-assert = standaloneWasmWorkspaceAssert;
             member-registration-assert = memberRegistrationAssert;
+            cargo-workspace-check-and-guard-assert = cargoWorkspaceCheckAndGuardAssert;
             # cdz = WORKSPACE-SRC (concierge-confirmed 1a), NOT closure/tests-dir-scoped like the other 10.
             # WHY cdz differs: its run_rust_cli tests are WORKSPACE-INTEGRATION — they rustc-compile emitted
             # Rust linking the sibling cdz-num/cdz-rt rlibs "beside the cdz bin", which only a full-workspace
