@@ -343,7 +343,7 @@ impl<'a> ser::SerializeTupleVariant for VariantSeqSerializer<'a> {
     }
 }
 
-/// A `map` `("map" (= k v)…)` — keys and values arrive separately, so we stash the key node until its
+/// A `map` `(<map> (= k v)...)`: keys and values arrive separately, so we stash the key node until its
 /// value arrives, then push a `(= k v)` field pair.
 pub struct MapSerializer<'a> {
     builder: &'a mut Builder,
@@ -387,7 +387,7 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
     }
 }
 
-/// A `struct` `("record" (= "field" v)…)` — each field key is a `Str` leaf holding the field name.
+/// A `struct` `(<record> (= "field" v)...)`: each field key is a `Str` leaf holding the field name.
 pub struct StructSerializer<'a> {
     builder: &'a mut Builder,
     entries: Vec<StructId>,
