@@ -440,7 +440,12 @@ impl<'de> de::Deserializer<'de> for AstDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        self.deserialize_any(visitor)
+        // A value the target type ignores, such as a record field it doesn't declare, is skipped
+        // without a read of its node. The tree is decoded already, so the skip succeeds whatever
+        // tree the node holds, a leaf that `deserialize_any` refuses among them, as
+        // spec/contracts/ast-typed-values.md requires in "A Decoder Skips A Record Field Its Type
+        // Doesn't Declare".
+        visitor.visit_unit()
     }
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value>
