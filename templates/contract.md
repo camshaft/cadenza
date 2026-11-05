@@ -13,8 +13,10 @@
   - A frozen contract pins something honored across every regeneration of the compiler: a byte
     form, the component ABI, a canonical encoding, a hash rule, or the tool interface.
   - Every normative statement is ONE self-contained RFC-2119 sentence under a stable heading.
-  - Standalone: fix the SEMANTICS and the WIRE/ABI SHAPE, not a concrete engine, algorithm, or
-    numeric width. Name the concrete realization only at the declared-default location.
+  - Standalone: fix the SEMANTICS and the WIRE/ABI SHAPE, not a concrete engine or algorithm. Name a
+    numeric width only as part of the byte-level form the contract pins, such as the length of a
+    header (Core Principle XIII). Name every other concrete realization only at the declared-default
+    location.
   - Include an "Additive Evolution" section: a change is additive with respect to already-derived
     components, or carries a version increment and a migration path.
   - After writing: add to spec/traceability.md, add a [[specification]] block to .duvet/config.toml

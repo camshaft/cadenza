@@ -32,9 +32,12 @@ source of truth.
    algorithm, a numeric width, a prior prototype, a library, or a source-file path. Describe
    the runnable form as "component", the execution environment as "runtime" / "sandbox", the
    bound on execution as "a deterministic resource measure". A concrete technology choice
-   lives in [options/](options/) as a declared-default choice, never in a requirement. The only
-   exception is [spec/learnings/](spec/learnings/), whose entries may name prior
-   implementations as historical reference.
+   lives in [options/](options/) as a declared-default choice, never in a requirement. A frozen
+   contract under [spec/contracts/](spec/contracts/) may name a numeric width as part of the
+   byte-level form it pins, such as the length of a header or the binary floating-point format of a
+   value it maps, because a third party implements those bytes from the contract alone (Core
+   Principle XIII). The only other exception is [spec/learnings/](spec/learnings/), whose entries
+   may name prior implementations as historical reference.
 
 3. **Use the glossary.** Vocabulary comes from [spec/glossary.md](spec/glossary.md); add a
    new term there before using it normatively elsewhere.

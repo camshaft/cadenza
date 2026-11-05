@@ -104,7 +104,11 @@ Run every check and report all findings; do not stop at the first failure.
   or hash name, a fixed integer/float width) and report any hit in a normative file.
   Hits under `spec/learnings/` (historical reference) and under `options/` (the
   declared-default location, where concrete choices intentionally live) are not
-  findings.
+  findings. Nor is a numeric width that a frozen contract under `spec/contracts/`
+  names as part of the byte-level form it pins, such as the length of a header, the
+  size of a variable-length integer's groups, or the binary floating-point format of
+  a value the contract maps (constitution §XIII second sentence). Report a width that
+  a frozen contract names outside that form, and every width in another normative file.
 - Contract and capability bodies describe the execution environment as "runtime" and
   "sandbox" and the runnable form as "component", rather than naming a specific
   runtime engine or format; no normative file, and no spec filename, names a concrete
