@@ -49,12 +49,15 @@ with `2`. The shortest decimal of zero is the empty significand with the exponen
 ### The Kinds Of Typed Value
 
 A list is a sequence of elements of one type. A tuple is a fixed-length sequence of positional
-parts, and a value of a named type with two or more positional parts is a tuple too. A map is a set
-of entries, each a key and a value. A record is a value of a named type with named fields. A wrapper
-is a value of a named type with exactly one positional part. A named unit is the one value of a named
-type without parts. An enumeration variant is one alternative of a type whose values are named
-alternatives, with no payload, one payload value, positional parts or named fields. A byte sequence is
-a value its type declares as raw bytes; a list of small integers is a list, under the list row.
+parts, and a value of a named type declared with a list of positional parts is a tuple too, whether
+the list holds none of them or two or more. A map is a set of entries, each a key and a value. A
+record is a value of a named type declared with named fields, whatever count of them it declares,
+none among them. A wrapper is a value of a named type whose list of positional parts holds exactly
+one. A named unit is the one value of a named type declared with neither named fields nor a list of
+positional parts, by its name alone. An enumeration variant is one alternative of a type whose values
+are named alternatives, with no payload, one payload value, positional parts or named fields. A byte
+sequence is a value its type declares as raw bytes; a list of small integers is a list, under the
+list row.
 
 ## The Typed Values
 
@@ -177,7 +180,8 @@ A tuple MUST be written as a list whose first child is an atom of the tuple cons
 `21`, followed by the tree of each part in order.
 
 Example: the tuple of 1 and the text `a` is `(<tuple> 1 "a")`,
-`H 03 15 00 01 01 07 01 61 04 00 00 00 01 00 02 01 03 00 01 02 03`.
+`H 03 15 00 01 01 07 01 61 04 00 00 00 01 00 02 01 03 00 01 02 03`, and a value of a named type
+declared with an empty list of positional parts is `(<tuple>)`, `H 01 15 02 00 00 01 01 00 01`.
 
 ### A Field Pair Is The Field-Pair Head, A Key And A Value
 
@@ -204,8 +208,9 @@ H 04 17 19 07 01 61 00 01 01
 A record MUST be written as a list whose first child is an atom of the record constructor head, kind
 `22`, followed by one field pair for each of its fields, in the order the record's type declares them.
 
-Example: the record with the field `x` 1 and the field `y` 2 is `(<record> (<=> "x" 1) (<=> "y" 2))`,
-in which both field pairs use the one field-pair head leaf:
+Example: a value of a record type declared with no fields is `(<record>)`,
+`H 01 16 02 00 00 01 01 00 01`, and the record with the field `x` 1 and the field `y` 2 is
+`(<record> (<=> "x" 1) (<=> "y" 2))`, in which both field pairs use the one field-pair head leaf:
 
 ```text
 H 06 16 19 07 01 78 00 01 01 07 01 79 00 01 02
@@ -290,7 +295,9 @@ A decoder MUST read each typed value from the tree that the row above for its ki
 
 A decoder MUST refuse an integer leaf whose value the target integer type can't hold.
 
-Example: the bytes of 300 above, read into an integer type whose largest value is 255, are refused.
+Example: the bytes of 300 above, read into an integer type whose largest value is 255, are refused,
+and so is the integer 2^64 + 1, `H 01 00 09 01 00 00 00 00 00 00 00 01 01 00 00 00`, read into any
+integer type of 64 bits or fewer.
 
 ### A Decoder Rounds A Float Leaf To Its Target's Nearest Value
 
