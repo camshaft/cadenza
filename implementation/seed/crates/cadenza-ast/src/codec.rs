@@ -606,6 +606,8 @@ fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
         KIND_SET_CTOR => Leaf::Ctor(CompoundCtor::Set),
         KIND_FIELD_PAIR => Leaf::FieldPair,
         KIND_MEMBER => Leaf::Member,
+        //= spec/contracts/ast-binary-format.md#a-leaf-is-a-kind-byte-then-a-kind-determined-body
+        //# The body MUST be empty; the rational value is recognized by this kind identity.
         KIND_RATIONAL => Leaf::Rational,
         KIND_STR => Leaf::Str(read_string(r)?.into()),
         KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?.into()),
@@ -2169,6 +2171,9 @@ mod tests {
         examples
     }
 
+    //= spec/contracts/ast-binary-format.md#a-leaf-is-a-kind-byte-then-a-kind-determined-body
+    //= type=test
+    //# The body MUST be empty; the rational value is recognized by this kind identity.
     //= spec/contracts/ast-binary-format.md#additive-evolution-of-this-contract
     //= type=test
     //# A change that adds a leaf kind, a structure tag, or a row of the mapping between typed values and trees MUST keep the container version 1.
