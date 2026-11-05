@@ -53,7 +53,7 @@
 //! [`encode_as_built`] writes the same two vectors AS GIVEN, without that normal form: a TRANSPORT
 //! encoding, for a message between programs, under the same header, which `decode` reads as it reads
 //! the canonical bytes (a decoder accepts the pools in any order). Its bytes are never a content
-//! address; a hash is taken over `encode` of the decoded tree:
+//! address; a hash is taken over the canonical re-encoding of the decoded tree:
 //!
 //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
 //# A transport encoding MAY differ from the canonical encoding.
@@ -239,8 +239,10 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
     // Under std, canonicalize to normal form so equal programs encode to identical bytes. `canonicalize`
     // returns a `Cow` — borrowed (no clone/rebuild) when `arenas` is already canonical, which a fresh
     // parse is. The no_std minimal core has no `canon` module and serializes the arena AS GIVEN: a
-    // Builder-built or `decode`d arena is already canonical (leaves interned/deduped on insert, structure
-    // in occurrence order), so the bytes match — this mirrors rcdzc's minimal encode, which has no canon.
+    // Builder-built arena whose nodes were built in source order (siblings left to right, each list
+    // after its children) is already canonical (leaves interned/deduped on insert), so the bytes match;
+    // a `decode`d arena is canonical only when the bytes it was decoded from were canonical, which a
+    // transport encoding's bytes need not be. This mirrors rcdzc's minimal encode, which has no canon.
     #[cfg(feature = "std")]
     let canon = crate::canon::canonicalize(arenas);
     #[cfg(feature = "std")]
@@ -258,17 +260,20 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
 ///
 /// These bytes are NOT a content-address input: two equal trees built in different orders encode to
 /// different bytes here. A caller that stores, hashes or compiles a tree it received this way decodes
-/// it and takes [`encode`] of the decoded tree, its canonical re-encoding.
+/// it and takes its canonical re-encoding: [`encode`] of the decoded tree under `std`, or, without
+/// `std`, `canon::canonicalize` of the decoded tree and then [`encode`] (the `canon` feature builds
+/// `canon` without `std`).
 ///
 /// `arenas` must be a TREE from its root, as a `Builder` builds one when each `StructId` is the child
 /// of one node only. A node reachable twice (a shared subtree) is written as given, and [`decode`]
 /// refuses those bytes with [`DecodeError::NotATree`]; [`encode`] under `std` writes each occurrence as
 /// a node of its own instead. Nodes and leaves the root does not reach are written as given too, and a
 /// decoder accepts them, so a caller whose arena may hold values outside the tree, such as one it
-/// edited or decoded, sends those values to the receiver; `encode` drops them. A leaf value listed at
-/// two ids is written twice, and the canonical re-encoding lists it once.
+/// edited or decoded, sends those values to the receiver; `encode` under `std` drops them. A leaf
+/// value listed at two ids is written twice, and the canonical re-encoding lists it once.
 ///
-/// Public under every feature; in the `no_std` minimal core, [`encode`] is this same walk.
+/// Public under every feature. Without `std`, [`encode`] is this same walk, so there `encode` of a
+/// decoded transport encoding returns the bytes received, not the canonical ones.
 pub fn encode_as_built(arenas: &Arenas) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&SCHEMA_HEADER);
