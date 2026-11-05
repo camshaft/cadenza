@@ -75,10 +75,13 @@
 //= spec/contracts/ast-encoding.md#the-encoding-is-versioned
 //# A reader MUST refuse a binary AST whose container encoding version it does not implement rather than misinterpret it.
 //!
-//! The current tag is a fixed `cdzast\x00\x01` (a name + a version number). A future refinement could
-//! make the version a truncated hash of the AST type schema so a schema change also bumps it, but that
-//! is an optional strengthening of the same check — the refuse-on-mismatch guarantee holds today, and
-//! swapping the tag's content is a drop-in change.
+//! The tag is the format's name `cdzast` followed by its version, [`FORMAT_VERSION`], as a
+//! two-byte big-endian integer. `decode_detailed` refuses a tag that names this format with another
+//! version as [`DecodeError::UnknownVersion`] and any other eight bytes as
+//! [`DecodeError::BadHeader`], so a reader tells bytes of a version it doesn't implement from bytes
+//! that aren't this format at all. It refuses a leaf whose kind byte is above [`MAX_KIND`] as
+//! [`DecodeError::UnknownKind`], apart from every other refusal, so that a peer can report that the
+//! sender is newer than the reader.
 
 use crate::ast::{
     Arenas, CompoundCtor, Decimal, IntValue, Leaf, LeafId, Radix, Struct, StructId, SuffixBody,
@@ -147,8 +150,11 @@ const TAG_LIST: u8 = 1;
 /// Why [`decode_detailed`] rejected a byte string. The load-bearing distinction for a streaming/log
 /// consumer (e.g. the agent-harness kernel's crash recovery) is [`DecodeError::Truncated`] — the input
 /// ended mid-read, a benign torn/interrupted write — versus EVERY OTHER variant, which means the bytes
-/// were all present but did not form a valid canonical AST: genuine corruption. A consumer that only
-/// needs that split matches `Truncated` and treats the rest as one "corrupt" case; the finer variants
+/// were all present but this reader can't decode them as a valid canonical AST. Of those,
+/// [`DecodeError::UnknownVersion`] and [`DecodeError::UnknownKind`] say that the bytes use a version
+/// or a leaf kind this reader doesn't define, as a newer producer writes, and every other variant is
+/// genuine corruption. A consumer that only needs the torn-or-not split matches `Truncated` and
+/// treats the rest as one "corrupt" case; the finer variants
 /// are for diagnostics. `decode` (the `Option`-returning API) is exactly `decode_detailed(_).ok()`, so
 /// the two never disagree on which byte strings decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,12 +162,23 @@ pub enum DecodeError {
     /// A read needed more bytes than remained — the input ended mid-header, mid-varint, or mid-field.
     /// An interrupted/torn write, NOT corruption (map to a torn-tail / clean-end in a log).
     Truncated,
-    /// The 8-byte container version header is present but is not the recognized tag — a different/older
-    /// format or corruption. (Fewer than 8 bytes is [`Self::Truncated`], not this.)
+    /// The 8-byte container version header is present but its first six bytes aren't the format's
+    /// name `cdzast`: another format, or damage. (Fewer than 8 bytes is [`Self::Truncated`], and a
+    /// header that names this format with another version is [`Self::UnknownVersion`], not this.)
     BadHeader,
+    /// The 8-byte header names this format (`cdzast`), but its version, the big-endian integer
+    /// of its last two bytes, isn't [`FORMAT_VERSION`]: bytes of a version this reader doesn't
+    /// implement, such as a newer producer's. Carries that version.
+    UnknownVersion(u16),
     /// A tag/discriminant byte that is present but unrecognized: a structure entry tag (not
-    /// atom/list), a leaf kind, a suffix/body shape, or a bool byte (not 0/1).
+    /// atom/list), a suffix/body shape, the int kind byte inside a suffixed literal's body, or a bool
+    /// byte (not 0/1). A leaf's own kind byte that this reader doesn't define is
+    /// [`Self::UnknownKind`], not this.
     BadTag,
+    /// A leaf's kind byte is above [`MAX_KIND`], so this reader doesn't define that kind: a kind
+    /// of a producer newer than this reader, or damage. Carries that kind byte. A bad discriminant
+    /// inside a leaf's body, such as a suffix or body-shape byte, stays [`Self::BadTag`].
+    UnknownKind(u8),
     /// A varint (a count, id, or length) is present but not a valid canonical `VarU64` — non-minimal
     /// (overlong) or wider than 64 bits. (`leb128::VarErr::Malformed`.)
     MalformedVarint,
@@ -187,10 +204,33 @@ impl From<crate::leb128::VarErr> for DecodeError {
     }
 }
 
-/// The 8-byte container version tag (a name + a version number). `decode` verifies it and refuses any
-/// bytes with an unrecognized header, per ast-encoding.md §The Encoding Is Versioned (see the module
-/// header). The content could be strengthened to a schema hash later; swapping it is a drop-in change.
+/// The 8-byte container version tag: the format's name `cdzast`, then [`FORMAT_VERSION`] as a
+/// two-byte big-endian integer. `decode` verifies it and refuses any bytes with an unrecognized
+/// header, per ast-encoding.md "The Encoding Is Versioned" (see the module header).
 const SCHEMA_HEADER: [u8; 8] = *b"cdzast\x00\x01";
+
+/// The container format version this codec reads and writes: the last two bytes of its 8-byte
+/// header, read as a big-endian integer. A message exchange states it, so that a peer knows which
+/// version this reader decodes without parsing anything. [`decode_detailed`] refuses a header of
+/// this format with any other version as [`DecodeError::UnknownVersion`].
+pub const FORMAT_VERSION: u16 = 1;
+
+/// The highest leaf kind byte this codec defines, the Rational head's. A message exchange states it
+/// beside [`FORMAT_VERSION`]. A leaf kind byte above it is a kind of a producer newer than this
+/// reader, or damage, which [`decode_detailed`] refuses as [`DecodeError::UnknownKind`].
+pub const MAX_KIND: u8 = 27;
+
+/// Why an 8-byte header that isn't [`SCHEMA_HEADER`] is refused: a header that names this format
+/// (`cdzast`) with another version is [`DecodeError::UnknownVersion`] with that version, and any
+/// other 8 bytes are [`DecodeError::BadHeader`].
+fn header_error(header: &[u8]) -> DecodeError {
+    match header {
+        [name @ .., hi, lo] if *name == SCHEMA_HEADER[..6] => {
+            DecodeError::UnknownVersion(u16::from_be_bytes([*hi, *lo]))
+        }
+        _ => DecodeError::BadHeader,
+    }
+}
 
 fn int_kind(neg: bool, radix: Radix) -> u8 {
     match (neg, radix) {
@@ -394,15 +434,17 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
 
 /// Decode bytes to `Arenas`, classifying WHY it failed (see [`DecodeError`]). Total: never panics,
 /// never over-reads, never returns a wrong tree. `Truncated` means a read ran past the end of the input
-/// (a torn/interrupted write); every other variant means the bytes were all present but did not form a
-/// valid canonical AST (corruption). Verifies the version header, referential integrity, tree-ness (no
-/// cycle or shared subtree — a decode-bomb guard), and that the whole input is consumed.
+/// (a torn/interrupted write); every other variant means the bytes were all present but this reader
+/// can't decode them: [`DecodeError::UnknownVersion`] and [`DecodeError::UnknownKind`] for a version
+/// or a leaf kind it doesn't define, the rest for corruption. Verifies the version header, referential
+/// integrity, tree-ness (no cycle or shared subtree, a decode-bomb guard), and that the whole input
+/// is consumed.
 pub fn decode_detailed(bytes: &[u8]) -> Result<Arenas, DecodeError> {
-    // Header. Fewer than 8 bytes = the input ended mid-header = truncated; 8 present but wrong = a
-    // different/older format or corruption = BadHeader.
+    // Header. Fewer than 8 bytes = the input ended mid-header = truncated; 8 present but not this
+    // codec's tag = another version of this format (UnknownVersion) or another format (BadHeader).
     let header = bytes.get(..8).ok_or(DecodeError::Truncated)?;
     if header != SCHEMA_HEADER {
-        return Err(DecodeError::BadHeader);
+        return Err(header_error(header));
     }
     let mut r = Reader::new(&bytes[8..]);
 
@@ -583,7 +625,8 @@ fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
             };
             Leaf::Suffixed { value, kind }
         }
-        _ => return Err(DecodeError::BadTag),
+        // A kind byte above `MAX_KIND`: a leaf kind this reader doesn't define.
+        _ => return Err(DecodeError::UnknownKind(kind)),
     })
 }
 
@@ -1393,7 +1436,7 @@ mod tests {
             );
         }
 
-        // BAD_HEADER: 8 bytes present but not the tag (a different/older format).
+        // BAD_HEADER: 8 bytes present whose first six aren't `cdzast` (another format).
         {
             let mut b = good.clone();
             b[0] ^= 0xff;
@@ -1417,12 +1460,12 @@ mod tests {
             assert_eq!(decode_detailed(&b), Err(DecodeError::BadTag));
         }
 
-        // BAD_TAG: an unknown LEAF kind byte.
+        // UNKNOWN_KIND: a leaf kind byte above `MAX_KIND`.
         {
             let mut b = SCHEMA_HEADER.to_vec();
             leb128::write_u64(&mut b, 1); // leaf_count = 1
-            b.push(0xfe); // an unknown leaf kind
-            assert_eq!(decode_detailed(&b), Err(DecodeError::BadTag));
+            b.push(0xfe); // a leaf kind this reader doesn't define
+            assert_eq!(decode_detailed(&b), Err(DecodeError::UnknownKind(0xfe)));
         }
 
         // ID_OUT_OF_RANGE: a leaf id ≥ the leaf count.
@@ -1492,6 +1535,100 @@ mod tests {
     }
 
     #[test]
+    fn a_header_of_another_version_of_this_format_is_refused_as_unknown_version() {
+        // A header that names this format with a version this reader doesn't implement answers
+        // `UnknownVersion` with that version, apart from `BadHeader`, so a reader tells bytes of
+        // another version of this format from bytes of another format. The header is read first,
+        // so a valid body after it doesn't change the answer.
+        assert_eq!(
+            decode_detailed(b"cdzast\x00\x02"),
+            Err(DecodeError::UnknownVersion(2))
+        );
+        let mut v2 = b"cdzast\x00\x02".to_vec();
+        v2.extend_from_slice(&encode(&sample())[8..]);
+        assert_eq!(decode_detailed(&v2), Err(DecodeError::UnknownVersion(2)));
+        assert_eq!(decode(&v2), None);
+        // The version is the big-endian integer of the header's last two bytes.
+        assert_eq!(
+            decode_detailed(b"cdzast\x01\x00"),
+            Err(DecodeError::UnknownVersion(256))
+        );
+        assert_eq!(
+            decode_detailed(b"cdzast\x00\x00"),
+            Err(DecodeError::UnknownVersion(0))
+        );
+        // `FORMAT_VERSION` is the version this codec's own header carries, which it decodes.
+        let good = encode(&sample());
+        assert_eq!(good[..6], *b"cdzast");
+        assert_eq!(u16::from_be_bytes([good[6], good[7]]), FORMAT_VERSION);
+        assert!(decode_detailed(&good).is_ok());
+    }
+
+    #[test]
+    fn eight_bytes_that_dont_name_this_format_are_refused_as_bad_header() {
+        // Eight bytes whose first six aren't `cdzast` answer `BadHeader`, whatever the last two
+        // hold: another format, or damage, and not a version of this one.
+        for header in [
+            *b"CDZAST\x00\x01",
+            *b"cdzasu\x00\x01",
+            *b"cdzasu\x00\x02",
+            [0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef],
+            [0u8; 8],
+        ] {
+            assert_eq!(
+                decode_detailed(&header),
+                Err(DecodeError::BadHeader),
+                "header {header:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_leaf_kind_above_max_kind_is_refused_as_unknown_kind() {
+        // A leaf whose kind byte is above `MAX_KIND` answers `UnknownKind` with that byte: a kind
+        // this reader doesn't define, as a newer producer writes. Each kind byte up to `MAX_KIND` is
+        // one the reader defines, so the same leaf, with the input ending right after its kind byte,
+        // answers `Truncated` at its missing body or at the missing structure count, never
+        // `UnknownKind`.
+        assert_eq!(MAX_KIND, KIND_RATIONAL);
+        for kind in 0..=u8::MAX {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 1); // leaf_count = 1
+            b.push(kind);
+            let expected = if kind > MAX_KIND {
+                DecodeError::UnknownKind(kind)
+            } else {
+                DecodeError::Truncated
+            };
+            assert_eq!(decode_detailed(&b), Err(expected), "kind byte {kind}");
+        }
+
+        // Kind byte 28, the first above `MAX_KIND`, in an encoding that is otherwise whole: one
+        // leaf, one atom on it, and the root. The leaf is read first, so the answer is
+        // `UnknownKind(28)`.
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 1); // leaf_count = 1
+            b.push(28);
+            leb128::write_u64(&mut b, 1); // struct_count = 1
+            b.push(TAG_ATOM);
+            leb128::write_u64(&mut b, 0); // the atom's leaf id
+            leb128::write_u64(&mut b, 0); // root
+            assert_eq!(decode_detailed(&b), Err(DecodeError::UnknownKind(28)));
+            assert_eq!(decode(&b), None);
+        }
+
+        // A leaf after a defined one answers the same: the second leaf's kind byte is 28.
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 2); // leaf_count = 2
+            b.push(KIND_BOOL_TRUE);
+            b.push(28);
+            assert_eq!(decode_detailed(&b), Err(DecodeError::UnknownKind(28)));
+        }
+    }
+
+    #[test]
     fn suffixed_leaf_round_trips_every_kind_and_body_shape() {
         // The `Suffixed` leaf is a 2×2 space — {BigInt, Rational} suffix × {Int, Float} body — yet the
         // fixtures only exercise (BigInt, Int) (`radix_sample`). The other three corners
@@ -1539,8 +1676,9 @@ mod tests {
     fn suffixed_leaf_rejects_a_present_but_invalid_sub_discriminant() {
         // The `KIND_SUFFIXED` decode arm reads THREE inner discriminant bytes after the kind byte — the
         // suffix byte ({BigInt, Rational}), the body-shape byte ({Int, Float}), and (for an Int body) the
-        // nested int-kind byte. Each is a present-but-invalid tag → `BadTag`, exactly like the top-level
-        // leaf-kind and structure-tag bytes the sibling test pins. But those inner bytes have no reject
+        // nested int-kind byte. Each is a present-but-invalid tag -> `BadTag`, exactly like the
+        // structure-tag byte the sibling test pins (a top-level leaf kind byte this reader doesn't
+        // define is `UnknownKind` instead). But those inner bytes have no reject
         // test, so a decode that accidentally accepted a bogus inner tag (widening the byte form beyond
         // the encoder's output — a bijection break) would go uncaught. Pin all three, each a `Suffixed`
         // leaf truncated right after the offending byte (`Truncated` past that would be a DIFFERENT

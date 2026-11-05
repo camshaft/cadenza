@@ -27,6 +27,11 @@ MUST refuse a container whose eight-byte version header it does not implement (s
 [Versioning](./ast-encoding.md)) rather than misinterpret it; defining a new version is the coordinated
 act described in the constitution's Governance Floors.
 
+A decoder MUST refuse a header that begins with the six bytes `cdzast` and carries a version the
+decoder does not implement with an answer distinct from its answer for eight bytes that are not a
+header of this format, so that a reader tells bytes of another version of this format from bytes of
+another format.
+
 ## Conventions
 
 ### Byte Order And Integer Encodings
@@ -176,6 +181,12 @@ shared subtree — so that a recursive consumer cannot diverge or be forced to e
 exponentially. Structure entries not reachable from the root are permitted and ignored.
 
 A decoder MUST refuse a binary AST with bytes remaining after the root reference.
+
+A decoder MUST refuse a leaf whose kind byte this format does not define with an answer distinct from
+its answer for every other way the bytes fail to form a valid binary AST.
+
+A kind byte above the highest kind a decoder defines means that the bytes come from an encoder newer
+than the decoder, unless they are damaged.
 
 ## The Canonical Byte Form
 
