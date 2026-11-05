@@ -38,4 +38,7 @@ The amendment is additive with respect to every already-stored binary AST: the c
 tree, and so every stored program, content address, and derived component, stay as they are, and the
 container version stays `cdzast\x00\x01`. It does not weaken any of the minimum-process rules the
 constitution sets for a change to the specification. The reference implementation adds
-`codec::encode_as_built`, which writes a tree's two pools as built, for this use.
+`codec::encode_as_built`, which writes a tree's two pools as built, for this use, and its
+canonicalization now deduplicates leaves by value, as the canonical form already required, so the
+canonical re-encoding of a transport encoding that lists a leaf twice is the tree's canonical
+encoding.
