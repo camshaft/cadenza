@@ -210,10 +210,13 @@ that [ast-encoding.md](./ast-encoding.md) requires: a node names its kind by an 
 
 A transport encoding is the bytes of a tree written for a message between programs rather than for
 storage, hashing, or compilation. It can differ from the canonical byte sequence in the order of either
-pool, in a leaf listed more than once, and in structure entries not reachable from the root.
+pool and in structure entries not reachable from the root.
 
 A transport encoding MAY be any byte sequence that a decoder conforming to this document accepts and
-decodes to the tree it encodes.
+decodes to the tree it encodes, within the rule below for its leaf pool.
+
+A transport encoding MUST list each distinct leaf exactly once, as the canonical byte sequence does, so
+that the canonical re-encoding of the tree it decodes to is that tree's canonical byte sequence.
 
 A transport encoding MUST begin with the same container header as the canonical byte sequence, so that
 a reader does not need a second container version to read it.
