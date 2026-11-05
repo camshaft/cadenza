@@ -312,6 +312,9 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
 /// it and takes its canonical re-encoding: [`encode`] of the decoded tree under `std`, or, without
 /// `std`, `canon::canonicalize` of the decoded tree and then [`encode`] (the `canon` feature builds
 /// `canon` without `std`).
+/// Before it takes a content address of that re-encoding, it calls `check_addressable` on the
+/// decoded tree, under `std`, and refuses the message, or keeps it without a content address, where
+/// the bytes listed one leaf value twice or held `Name` text outside Unicode Normalization Form C.
 ///
 /// `arenas` must be a TREE from its root, as a `Builder` builds one when each `StructId` is the child
 /// of one node only. A node reachable twice (a shared subtree) is written as given, and [`decode`]
@@ -593,6 +596,76 @@ pub fn decode_detailed(bytes: &[u8]) -> Result<Arenas, DecodeError> {
         structure,
         root,
     })
+}
+
+/// Why a program that received the bytes of a tree doesn't take a content address of the tree it
+/// decoded them to: the bytes break a rule an encoder keeps, which this crate's canonicalization
+/// doesn't repair, since it keeps leaves apart by id and doesn't normalize decoded text. [`encode`]
+/// of the decoded tree is then not the tree's canonical byte sequence, and the peer that sent the
+/// bytes would set a second content address for the tree. [`check_addressable`] answers it.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotAddressable {
+    /// The leaf pool lists one leaf value at two leaf ids: `repeat` is the lowest leaf id whose
+    /// value a lower id holds too, and `first` is the lowest id that holds that value. A decoder
+    /// accepts such a pool, and [`encode`] of the decoded tree keeps both copies.
+    RepeatedLeaf { first: LeafId, repeat: LeafId },
+    /// The `Name` leaf at this leaf id holds text that isn't in Unicode Normalization Form C. A
+    /// decoder accepts such text, and [`encode`] of the decoded tree writes it as received.
+    NameNotNfc(LeafId),
+}
+
+/// Check that a decoded tree can be given a content address: its leaf pool lists each distinct leaf
+/// value once, and each `Name` leaf holds text in Unicode Normalization Form C, as an encoder writes
+/// them. A program that received the bytes of a tree, such as a transport encoding, calls this on
+/// the [`decode`]d tree before it takes a content address of the tree's canonical re-encoding, and
+/// refuses the message, or keeps it without a content address, where this answers
+/// [`NotAddressable`].
+///
+/// It reads every leaf of the pool, the leaves the root doesn't reach among them, and checks the
+/// `Name` text first: of two spellings of one name that differ only in their normalization, the one
+/// outside NFC answers [`NotAddressable::NameNotNfc`], and after that check two leaves hold one
+/// value exactly when they are equal. The repeat check is a `BTreeMap` over the leaves' own order,
+/// not a hash map, so a sender can't choose leaf values that collide in it: its cost is the sorted
+/// map's comparisons.
+///
+/// It doesn't change what [`decode`] accepts: [`encode`] of an arena built with two
+/// `Builder::leaf_unique` leaves of one value writes such a pool, as the compiler's own templates
+/// hold, and those bytes decode.
+///
+/// Under `std` alone, since the normalization tables come with its `unicode-normalization`
+/// dependency: a program that takes a content address of a tree it received builds this crate with
+/// `std`.
+#[cfg(feature = "std")]
+pub fn check_addressable(arenas: &Arenas) -> Result<(), NotAddressable> {
+    use alloc::collections::BTreeMap;
+
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //# A program that receives a transport encoding that holds a Name leaf whose text is not in Unicode Normalization Form C MUST NOT take a content address of the tree it decodes to.
+    if let Some(id) = arenas.leaves.iter().position(is_name_outside_nfc) {
+        return Err(NotAddressable::NameNotNfc(LeafId(id as u32)));
+    }
+
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //# A program that receives a transport encoding whose leaf pool lists one leaf value more than once MUST NOT take a content address of the tree it decodes to.
+    let mut first_ids = BTreeMap::new();
+    for (id, leaf) in arenas.leaves.iter().enumerate() {
+        let repeat = LeafId(id as u32);
+        if let Some(first) = first_ids.insert(leaf, repeat) {
+            return Err(NotAddressable::RepeatedLeaf { first, repeat });
+        }
+    }
+    Ok(())
+}
+
+/// Whether `leaf` is a `Name` leaf whose text isn't in Unicode Normalization Form C. ASCII text is
+/// always in NFC, so it skips the normalization check.
+#[cfg(feature = "std")]
+fn is_name_outside_nfc(leaf: &Leaf) -> bool {
+    match leaf {
+        Leaf::Name(text) => !text.is_ascii() && !unicode_normalization::is_nfc(text),
+        _ => false,
+    }
 }
 
 /// Decode an integer body whose already-read `kind` tag encodes its sign + radix: read the LEB-framed
@@ -2470,5 +2543,126 @@ mod tests {
         expected.extend_from_slice(&[1, KIND_NAME, 5, b'c', b'a', b'f', 0xC3, 0xA9]);
         expected.extend_from_slice(&[1, TAG_ATOM, 0, 0]);
         assert_eq!(encode_name(decomposed), expected, "the bytes hold the NFC text");
+    }
+
+    // A program that received a binary AST checks the decoded tree with `check_addressable` before
+    // it takes a content address of the tree's canonical re-encoding.
+
+    #[test]
+    fn a_message_that_lists_a_leaf_value_twice_is_not_addressable() {
+        //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+        //= type=test
+        //# A program that receives a transport encoding whose leaf pool lists one leaf value more than once MUST NOT take a content address of the tree it decodes to.
+        // The tree `(a a)` as a peer that breaks the leaf pool rule sends it, with the leaf `a` at
+        // leaf ids 0 and 1, and as a transport encoding sends it, with `a` listed once.
+        let mut repeated = SCHEMA_HEADER.to_vec();
+        repeated.extend_from_slice(&[2, KIND_NAME, 1, b'a', KIND_NAME, 1, b'a']);
+        repeated.extend_from_slice(&[3, TAG_ATOM, 0, TAG_ATOM, 1, TAG_LIST, 2, 0, 1, 2]);
+        let mut once = SCHEMA_HEADER.to_vec();
+        once.extend_from_slice(&[1, KIND_NAME, 1, b'a']);
+        once.extend_from_slice(&[3, TAG_ATOM, 0, TAG_ATOM, 0, TAG_LIST, 2, 0, 1, 2]);
+        let from_repeated = decode(&repeated).expect("a repeated leaf decodes");
+        assert_eq!(from_repeated.leaves.len(), 2, "decode keeps both copies");
+        let from_once = decode(&once).expect("the message decodes");
+        assert_eq!(encode(&from_once), once, "a canonical message");
+        let (first, repeat) = (LeafId(0), LeafId(1));
+        assert_eq!(
+            check_addressable(&from_repeated),
+            Err(NotAddressable::RepeatedLeaf { first, repeat })
+        );
+        assert_eq!(check_addressable(&from_once), Ok(()));
+    }
+
+    #[test]
+    fn a_message_that_holds_a_name_outside_nfc_is_not_addressable() {
+        //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+        //= type=test
+        //# A program that receives a transport encoding that holds a Name leaf whose text is not in Unicode Normalization Form C MUST NOT take a content address of the tree it decodes to.
+        // The name `cafe` with an acute accent as one `Name` atom: decomposed (`e`, then U+0301),
+        // which isn't NFC, and precomposed (U+00E9), which is. A decoder accepts both, and keeps
+        // the text as received.
+        let message = |text: &str| {
+            let mut bytes = SCHEMA_HEADER.to_vec();
+            bytes.extend_from_slice(&[1, KIND_NAME, text.len() as u8]);
+            bytes.extend_from_slice(text.as_bytes());
+            bytes.extend_from_slice(&[1, TAG_ATOM, 0, 0]);
+            bytes
+        };
+        let decomposed = decode(&message("cafe\u{0301}")).expect("decodes");
+        let precomposed = decode(&message("caf\u{00e9}")).expect("decodes");
+        assert_ne!(decomposed, precomposed);
+        assert_eq!(
+            check_addressable(&decomposed),
+            Err(NotAddressable::NameNotNfc(LeafId(0)))
+        );
+        assert_eq!(check_addressable(&precomposed), Ok(()));
+    }
+
+    #[test]
+    fn two_spellings_of_one_name_are_refused_at_the_spelling_outside_nfc() {
+        // `(cafe cafe)` with the precomposed spelling at leaf id 0 and the decomposed one at leaf
+        // id 1. The canonical byte form counts them as one leaf, and their bytes differ, so the
+        // check refuses the spelling outside NFC.
+        let mut bytes = SCHEMA_HEADER.to_vec();
+        bytes.extend_from_slice(&[2, KIND_NAME, 5]);
+        bytes.extend_from_slice("caf\u{00e9}".as_bytes());
+        bytes.extend_from_slice(&[KIND_NAME, 6]);
+        bytes.extend_from_slice("cafe\u{0301}".as_bytes());
+        bytes.extend_from_slice(&[3, TAG_ATOM, 0, TAG_ATOM, 1, TAG_LIST, 2, 0, 1, 2]);
+        let a = decode(&bytes).expect("both spellings decode");
+        assert_eq!(a.leaves.len(), 2, "two leaves by their bytes");
+        assert_eq!(
+            check_addressable(&a),
+            Err(NotAddressable::NameNotNfc(LeafId(1)))
+        );
+    }
+
+    #[test]
+    fn the_repeat_check_compares_whole_leaf_values_across_the_pool() {
+        // Arenas built by hand: a root atom of leaf 0, and other leaves the root doesn't reach,
+        // which a decoder accepts and the check reads too.
+        let pool = |leaves: Vec<Leaf>| Arenas {
+            leaves,
+            structure: vec![Struct::Atom(LeafId(0))],
+            root: StructId(0),
+        };
+        // A string at leaf ids 1 and 3, with another leaf between them.
+        let repeated = pool(vec![
+            Leaf::Bool(true),
+            Leaf::Str("x".into()),
+            Leaf::Bool(false),
+            Leaf::Str("x".into()),
+        ]);
+        let (first, repeat) = (LeafId(1), LeafId(3));
+        assert_eq!(
+            check_addressable(&repeated),
+            Err(NotAddressable::RepeatedLeaf { first, repeat })
+        );
+        // One text as a name, a string and a symbol is three leaf values.
+        let kinds = pool(vec![
+            Leaf::Name("x".into()),
+            Leaf::Str("x".into()),
+            Leaf::Sym("x".into()),
+        ]);
+        assert_eq!(check_addressable(&kinds), Ok(()));
+        // The rule on normalization is for Name text: a string outside NFC is a value of its own.
+        let text = pool(vec![
+            Leaf::Str("cafe\u{0301}".into()),
+            Leaf::Str("caf\u{00e9}".into()),
+        ]);
+        assert_eq!(check_addressable(&text), Ok(()));
+    }
+
+    #[test]
+    fn a_transport_encoding_of_each_sample_tree_is_addressable() {
+        for a in [sample(), radix_sample(), operand_first()] {
+            let back = decode(&encode_as_built(&a)).expect("decodes");
+            assert_eq!(check_addressable(&back), Ok(()));
+        }
+        // Under `std` the Builder writes a name in NFC whatever spelling it is given.
+        let mut b = Builder::new();
+        let root = b.name("cafe\u{0301}");
+        let back = decode(&encode_as_built(&b.finish(root))).expect("decodes");
+        assert_eq!(check_addressable(&back), Ok(()));
     }
 }
