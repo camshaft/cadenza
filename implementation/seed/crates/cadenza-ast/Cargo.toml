@@ -20,6 +20,8 @@
 name = "cadenza-ast"
 version = "0.1.0"
 edition = "2024"
+description = "Cadenza's AST value model and its binary encoding, with a total decoder"
+repository = "https://github.com/camshaft/cadenza"
 
 # The MINIMAL codec core (ast value model + Builder + `codec::encode`/`decode` + `leb128`) is
 # `no_std` + `alloc`-only and carries NO external dependency, so `cdz-runtime` (which is `#![no_std]`

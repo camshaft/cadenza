@@ -4,7 +4,7 @@
 # crate is one more such format. `to_bytes::<T>` drives serde over `T` and builds a `cadenza_ast` value
 # tree via `Builder`, then `cadenza_ast::codec::encode`s it — so the OUTPUT is byte-for-byte the
 # canonical binary-AST (the ONE data-exchange format; no competing wire). `from_bytes::<T>` decodes the
-# binary-AST with `cadenza_ast::codec::decode` and drives serde's (type-directed) Deserializer over the
+# binary-AST with `cadenza_ast::codec::decode_detailed` and drives serde's (type-directed) Deserializer over the
 # resulting tree. Any `#[derive(Serialize, Deserialize)]` type then round-trips through binary-AST for
 # free — the point of the ast-serde vertical: replace hand-written struct<->AST mapping boilerplate
 # (the cadenza-compile-abi *_wire.rs family) with derive.
@@ -17,6 +17,8 @@
 name = "cadenza-ast-serde"
 version = "0.1.0"
 edition = "2024"
+description = "A serde data format whose wire is Cadenza's binary AST, for typed messages and stored values"
+repository = "https://github.com/camshaft/cadenza"
 
 [dependencies]
 cadenza-ast = { path = "../cadenza-ast" }
