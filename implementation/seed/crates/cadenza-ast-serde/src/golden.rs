@@ -3,7 +3,7 @@
 //! value encodes to and the value a decoder reads back from them are the contract's. A change to
 //! the mapping that alters a row's bytes fails that row's test.
 
-use crate::{from_arenas, from_bytes, to_arenas, to_bytes};
+use crate::{from_arenas, from_bytes, to_arenas, to_bytes, to_transport_bytes};
 use cadenza_ast::ast::{Builder, CompoundCtor, IntValue, Leaf, Radix};
 use cadenza_ast::codec;
 use serde::{Deserialize, Serialize};
@@ -76,7 +76,8 @@ fn example(text: &str) -> Vec<u8> {
 }
 
 /// Check one worked example: `value` encodes to the example's bytes, and those bytes decode back
-/// to `value`.
+/// to `value`. Then check `value`'s transport encoding against the example's bytes, as
+/// [`transport`] does.
 fn golden<T>(value: &T, text: &str)
 where
     T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
@@ -85,6 +86,21 @@ where
     assert_eq!(to_bytes(value).expect("encode"), bytes, "{value:?}");
     let back: T = from_bytes(&bytes).expect("decode the example");
     assert_eq!(&back, value, "the value the example decodes to");
+    transport(value, &bytes);
+}
+
+/// Check `value`'s transport encoding, which `to_transport_bytes` writes, against `canonical`, the
+/// value's canonical bytes: the transport bytes decode back to `value`, and the canonical
+/// re-encoding of the tree they decode to is `canonical`.
+fn transport<T>(value: &T, canonical: &[u8])
+where
+    T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+{
+    let bytes = to_transport_bytes(value).expect("transport encode");
+    let back: T = from_bytes(&bytes).expect("decode the transport encoding");
+    assert_eq!(&back, value, "the value the transport encoding decodes to");
+    let tree = codec::decode(&bytes).expect("the transport encoding decodes");
+    assert_eq!(codec::encode(&tree), canonical, "the canonical re-encoding of {value:?}");
 }
 
 /// A byte sequence: its `Serialize` and `Deserialize` declare the value as raw bytes, where a
@@ -511,4 +527,39 @@ fn a_field_added_to_a_record_type_is_optional() {
     let earlier_bytes = to_bytes(&Narrow { x: 1 }).expect("encode");
     let read: Newer = from_bytes(&earlier_bytes).expect("the newer type reads an earlier value");
     assert_eq!(read, Newer { x: 1, note: None });
+}
+
+#[test]
+fn a_transport_encoding_of_each_row_golden_does_not_check_reads_back() {
+    // The rows the tests above check without `golden`: negative zero keeps its sign bit, a value
+    // that isn't a number reads back as one, a record with an optional field added reads back,
+    // and a record with a field the target type doesn't declare re-encodes to the contract's bytes
+    // and decodes to the target type.
+    let bytes = to_transport_bytes(&-0.0f64).expect("transport encode");
+    let back: f64 = from_bytes(&bytes).expect("decode");
+    assert_eq!(back.to_bits(), (-0.0f64).to_bits());
+    let tree = codec::decode(&bytes).expect("a tree");
+    assert_eq!(codec::encode(&tree), example(F64_NEGATIVE_ZERO));
+
+    let bytes = to_transport_bytes(&f64::NAN).expect("transport encode");
+    let back: f64 = from_bytes(&bytes).expect("decode");
+    assert!(back.is_nan());
+    let tree = codec::decode(&bytes).expect("a tree");
+    assert_eq!(codec::encode(&tree), example("H 01 11 01 00 00 00"));
+
+    let newer = Newer {
+        x: 1,
+        note: Some(String::from("hi")),
+    };
+    transport(&newer, &example(NEWER));
+
+    let wide = Wide {
+        x: 1,
+        extra: Inner { items: vec![2] },
+    };
+    let bytes = to_transport_bytes(&wide).expect("transport encode");
+    let tree = codec::decode(&bytes).expect("a tree");
+    assert_eq!(codec::encode(&tree), example(WIDE));
+    let got: Narrow = from_bytes(&bytes).expect("skip the field `extra`");
+    assert_eq!(got, Narrow { x: 1 });
 }
