@@ -27,8 +27,8 @@ only one of them could neither store nor hash what the other sends.
   the encoder rule now binds the stored, hashed, and compiled forms of a tree.
 - [ast-binary-format.md](../contracts/ast-binary-format.md), section "A Transport Encoding Is Any Valid
   Encoding Of The Tree" (new): a transport encoding is any byte sequence a conforming decoder accepts
-  and decodes to the tree, it begins with the same container header, and a decoder decodes it by the
-  same rules as the canonical byte sequence.
+  and decodes to the tree, it lists each distinct leaf once and begins with the same container header,
+  and a decoder decodes it by the same rules as the canonical byte sequence.
 - [ast-encoding.md](../contracts/ast-encoding.md), section "The Encoding Is A Bijection With One
   Canonical Byte Form", gains two requirements: a transport encoding may differ from the canonical encoding, and a
   content address or hash is taken over the canonical re-encoding of the decoded tree, never over
@@ -38,7 +38,8 @@ The amendment is additive with respect to every already-stored binary AST: the c
 tree, and so every stored program, content address, and derived component, stay as they are, and the
 container version stays `cdzast\x00\x01`. It does not weaken any of the minimum-process rules the
 constitution sets for a change to the specification. The reference implementation adds
-`codec::encode_as_built`, which writes a tree's two pools as built, for this use, and its
-canonicalization now deduplicates leaves by value, as the canonical form already required, so the
-canonical re-encoding of a transport encoding that lists a leaf twice is the tree's canonical
-encoding.
+`codec::encode_as_built`, which writes a tree's two pools as built, for this use. A transport
+encoding lists each distinct leaf once because the reference implementation's canonicalization keeps
+leaves apart by their place in the pool, not by value: the compiler builds value templates that hold
+one placeholder value at two places on purpose, so that each placeholder has a byte offset of its own,
+and merging them would change those templates' bytes.
