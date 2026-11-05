@@ -8013,7 +8013,10 @@
             # per-crate closure isolation — it builds the whole workspace).
             crateCdzCheck = cargoWorkspaceCheck {
               name = "cargo-crate-cdz";
-              cargoCmd = "cargo build --workspace --locked && cargo clippy -p cdz --all-targets --locked -- -D warnings && cargo test -p cdz --locked";
+              # Each command is its own statement (`;`, not `&&`): under the builder's `set -e`, a command
+              # that fails before a list's last `&&` doesn't end the build phase, so a failed workspace build
+              # or clippy run would still pass the check.
+              cargoCmd = "cargo build --workspace --locked; cargo clippy -p cdz --all-targets --locked -- -D warnings; cargo test -p cdz --locked";
               # crateCdzCheckSrc = seedTestSrc MINUS spec/semantics (caching fast-path — see its binding note):
               # a corpus edit no longer rotates this whole-workspace check. compiler-ml + all crate src + xtask
               # stay (cdz's run_ml_cli/run_rust_cli tests + the workspace build need them).
