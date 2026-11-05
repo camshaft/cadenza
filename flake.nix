@@ -8052,7 +8052,10 @@
             astWasm32Check = craneLib.mkCargoDerivation ((craneCrateCommon { crate = "cadenza-ast-serde"; }) // {
               pname = "ast-wasm32-check";
               doInstallCargoArtifacts = false;
-              buildPhaseCargoCommand = "cargo build --locked --target wasm32-unknown-unknown -p cadenza-ast -p cadenza-ast-serde && cargo build --locked --target wasm32-unknown-unknown -p cadenza-ast --no-default-features";
+              buildPhaseCargoCommand = ''
+                cargo build --locked --target wasm32-unknown-unknown -p cadenza-ast -p cadenza-ast-serde
+                cargo build --locked --target wasm32-unknown-unknown -p cadenza-ast --no-default-features
+              '';
               installPhaseCommand = ''echo "ok: ast-wasm32 (cadenza-ast + cadenza-ast-serde build for wasm32-unknown-unknown with default features; cadenza-ast with --no-default-features)" > "$out"'';
             });
             # crane MR2: the CLIPPY half via crane (per-crate cargoClippy consuming the shared cargoArtifacts →
