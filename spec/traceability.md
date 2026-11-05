@@ -12,6 +12,8 @@
 |---|---|
 | `constitution.md` | §1, §2, §4, §5, §6, §7, §10, §11, §12, §13, §14, §15 |
 | `spec/contracts/ast-encoding.md` | §3 |
+| `spec/contracts/ast-binary-format.md` | §3 |
+| `spec/contracts/ast-typed-values.md` | §3, §4 |
 | `spec/contracts/source-tree-encoding.md` | §3, §7 |
 | `spec/contracts/component-abi.md` | §5, §6, §8 |
 | `spec/contracts/deterministic-value-form.md` | §4 |
@@ -48,8 +50,8 @@
 |---|---|
 | §1 The one idea | constitution.md |
 | §2 Why Cadenza exists | constitution.md; modules-and-namespaces.md |
-| §3 Source, programs, and the canonical form | ast-encoding.md; source-tree-encoding.md; core-semantics.md; metaprogramming.md; agent-authoring.md |
-| §4 Determinism | constitution.md; deterministic-value-form.md; determinism-and-fuel.md; memory-and-resource-model.md; numeric-model.md; collections-and-text.md; core-semantics.md; value-interchange.md |
+| §3 Source, programs, and the canonical form | ast-encoding.md; ast-binary-format.md; ast-typed-values.md; source-tree-encoding.md; core-semantics.md; metaprogramming.md; agent-authoring.md |
+| §4 Determinism | constitution.md; deterministic-value-form.md; determinism-and-fuel.md; ast-typed-values.md; memory-and-resource-model.md; numeric-model.md; collections-and-text.md; core-semantics.md; value-interchange.md |
 | §5 Types | constitution.md; component-abi.md; type-system.md; numeric-model.md; collections-and-text.md; units-of-measure.md |
 | §6 Capabilities and no ambient authority | constitution.md; component-abi.md; host-interface-binding.md; capabilities-and-effects.md |
 | §7 Derivation and reproducibility | constitution.md; source-tree-encoding.md; reproducible-derivation.md; build-tool-interface.md; modules-and-namespaces.md; compiler-pipeline.md; debug-information.md |
