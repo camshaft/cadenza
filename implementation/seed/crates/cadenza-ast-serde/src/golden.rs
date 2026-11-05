@@ -75,6 +75,15 @@ fn example(text: &str) -> Vec<u8> {
     bytes
 }
 
+//= spec/contracts/ast-typed-values.md#a-decoder-reads-each-typed-value-from-the-tree-its-row-writes
+//= type=test
+//# A decoder MUST read each typed value from the tree that the row above for its kind writes.
+//= spec/contracts/ast-typed-values.md#additive-evolution-of-this-contract
+//= type=test
+//# The addition of a row for a kind of typed value that no row maps MUST NOT change the tree of any typed value an existing row maps.
+//= spec/contracts/ast-typed-values.md#additive-evolution-of-this-contract
+//= type=test
+//# A change to the tree that an existing row writes MUST carry a container version increment and a stated migration path.
 /// Check one worked example: `value` encodes to the example's bytes, and those bytes decode back
 /// to `value`.
 fn golden<T>(value: &T, text: &str)
@@ -215,12 +224,18 @@ struct Every {
     shapes: Vec<Shape>,
 }
 
+//= spec/contracts/ast-typed-values.md#a-boolean-is-its-boolean-leaf
+//= type=test
+//# A boolean MUST be written as an atom of the boolean leaf of its value, kind `8` for false and kind `9` for true.
 #[test]
 fn a_boolean_is_its_boolean_leaf() {
     golden(&true, "H 01 09 01 00 00 00");
     golden(&false, "H 01 08 01 00 00 00");
 }
 
+//= spec/contracts/ast-typed-values.md#an-integer-is-a-decimal-integer-leaf
+//= type=test
+//# An integer of any width MUST be written as an atom of a decimal integer leaf whose magnitude is the integer's absolute value, kind `0` for zero and every positive integer and kind `3` for every negative integer.
 #[test]
 fn an_integer_is_a_decimal_integer_leaf() {
     golden(&300u16, "H 01 00 02 01 2C 01 00 00 00");
@@ -228,23 +243,35 @@ fn an_integer_is_a_decimal_integer_leaf() {
     golden(&0i64, "H 01 00 00 01 00 00 00");
 }
 
+//= spec/contracts/ast-typed-values.md#a-whole-64-bit-binary-floating-point-value-is-its-integer-decimal
+//= type=test
+//# A finite 64-bit binary floating-point value that is a whole number MUST be written as an atom of a float leaf whose exponent is zero and whose significand is the value's absolute value.
 #[test]
 fn a_whole_64_bit_binary_floating_point_value_is_its_integer_decimal() {
     golden(&300.0f64, F64_300);
 }
 
+//= spec/contracts/ast-typed-values.md#a-fractional-64-bit-binary-floating-point-value-is-its-shortest-decimal
+//= type=test
+//# A finite 64-bit binary floating-point value that is not a whole number MUST be written as an atom of a float leaf whose significand and exponent are those of the value's shortest decimal.
 #[test]
 fn a_fractional_64_bit_binary_floating_point_value_is_its_shortest_decimal() {
     golden(&1.5f64, F64_ONE_AND_A_HALF);
     golden(&-0.25f64, F64_MINUS_A_QUARTER);
 }
 
+//= spec/contracts/ast-typed-values.md#a-32-bit-binary-floating-point-value-is-its-shortest-decimal
+//= type=test
+//# A finite 32-bit binary floating-point value MUST be written as an atom of a float leaf whose significand and exponent are those of the value's shortest decimal, whether or not it is a whole number.
 #[test]
 fn a_32_bit_binary_floating_point_value_is_its_shortest_decimal() {
     golden(&0.1f32, F32_TENTH);
     golden(&300.0f32, F32_300);
 }
 
+//= spec/contracts/ast-typed-values.md#the-sign-of-a-float-leaf-is-the-value-s-sign-bit
+//= type=test
+//# The negative flag of the float leaf written for a finite binary floating-point value MUST be set exactly when the value's sign bit is set, so that negative zero is a negative float leaf with an empty significand.
 #[test]
 fn the_sign_of_a_float_leaf_is_the_values_sign_bit() {
     let bytes = example(F64_NEGATIVE_ZERO);
@@ -253,6 +280,12 @@ fn the_sign_of_a_float_leaf_is_the_values_sign_bit() {
     assert_eq!(back.to_bits(), (-0.0f64).to_bits());
 }
 
+//= spec/contracts/ast-typed-values.md#a-not-a-number-value-is-the-not-a-number-leaf
+//= type=test
+//# A not-a-number value of either binary floating-point format MUST be written as an atom of the not-a-number leaf, kind `17`, whatever its sign and payload.
+//= spec/contracts/ast-typed-values.md#a-decoder-rounds-a-float-leaf-to-its-target-s-nearest-value
+//= type=test
+//# A decoder MUST read the not-a-number leaf and each infinity leaf into a binary floating-point target as the value that leaf names.
 #[test]
 fn a_not_a_number_value_is_the_not_a_number_leaf() {
     let bytes = example("H 01 11 01 00 00 00");
@@ -263,6 +296,15 @@ fn a_not_a_number_value_is_the_not_a_number_leaf() {
     assert!(back.is_nan());
 }
 
+//= spec/contracts/ast-typed-values.md#an-infinity-is-its-infinity-leaf
+//= type=test
+//# A positive infinity of either binary floating-point format MUST be written as an atom of the positive-infinity leaf, kind `18`.
+//= spec/contracts/ast-typed-values.md#an-infinity-is-its-infinity-leaf
+//= type=test
+//# A negative infinity of either binary floating-point format MUST be written as an atom of the negative-infinity leaf, kind `19`.
+//= spec/contracts/ast-typed-values.md#a-decoder-rounds-a-float-leaf-to-its-target-s-nearest-value
+//= type=test
+//# A decoder MUST read the not-a-number leaf and each infinity leaf into a binary floating-point target as the value that leaf names.
 #[test]
 fn an_infinity_is_its_infinity_leaf() {
     golden(&f64::INFINITY, "H 01 12 01 00 00 00");
@@ -271,11 +313,17 @@ fn an_infinity_is_its_infinity_leaf() {
     golden(&f32::NEG_INFINITY, "H 01 13 01 00 00 00");
 }
 
+//= spec/contracts/ast-typed-values.md#a-character-is-a-character-leaf
+//= type=test
+//# A character, one Unicode scalar value, MUST be written as an atom of a character leaf, kind `13`, holding that scalar.
 #[test]
 fn a_character_is_a_character_leaf() {
     golden(&'\u{e9}', "H 01 0D 02 C3 A9 01 00 00 00");
 }
 
+//= spec/contracts/ast-typed-values.md#a-text-is-a-string-leaf
+//= type=test
+//# A text MUST be written as an atom of a string leaf, kind `7`, holding the text's UTF-8 bytes as given, without normalization.
 #[test]
 fn a_text_is_a_string_leaf() {
     let value = String::from("hi");
@@ -284,33 +332,57 @@ fn a_text_is_a_string_leaf() {
     golden(&unnormalized, "H 01 07 03 65 CC 81 01 00 00 00");
 }
 
+//= spec/contracts/ast-typed-values.md#a-byte-sequence-is-a-bytes-leaf
+//= type=test
+//# A byte sequence MUST be written as an atom of a bytes leaf, kind `11`, holding its bytes.
 #[test]
 fn a_byte_sequence_is_a_bytes_leaf() {
     golden(&Raw(vec![0x00, 0xFF]), "H 01 0B 02 00 FF 01 00 00 00");
 }
 
+//= spec/contracts/ast-typed-values.md#a-unit-is-the-empty-list
+//= type=test
+//# A unit, the unit value or a named unit, MUST be written as the empty list `()`.
 #[test]
 fn a_unit_is_the_empty_list() {
     golden(&(), "H 00 01 01 00 00");
     golden(&Marker, "H 00 01 01 00 00");
 }
 
+//= spec/contracts/ast-typed-values.md#an-absent-optional-value-is-the-empty-list
+//= type=test
+//# An absent optional value MUST be written as the empty list `()`.
 #[test]
 fn an_absent_optional_value_is_the_empty_list() {
     golden(&None::<u8>, "H 00 01 01 00 00");
 }
 
+//= spec/contracts/ast-typed-values.md#a-present-optional-value-is-a-list-of-one
+//= type=test
+//# A present optional value MUST be written as a list of one child, the tree of the value it holds.
 #[test]
 fn a_present_optional_value_is_a_list_of_one() {
     golden(&Some(5u8), "H 01 00 01 05 02 00 00 01 01 00 01");
 }
 
+//= spec/contracts/ast-typed-values.md#a-list-is-the-list-constructor-head-then-its-elements
+//= type=test
+//# A list MUST be written as a list whose first child is an atom of the list constructor head, kind `20`, followed by the tree of each element in order.
+//= spec/contracts/ast-typed-values.md#a-decoder-may-accept-a-name-head-in-place-of-a-constructor-head
+//= type=test
+//# An encoder MUST NOT write a name leaf in place of a constructor head.
 #[test]
 fn a_list_is_the_list_constructor_head_then_its_elements() {
     let value = Vec::from([1u8, 2]);
     golden(&value, LIST);
 }
 
+//= spec/contracts/ast-typed-values.md#a-tuple-is-the-tuple-constructor-head-then-its-parts
+//= type=test
+//# A tuple MUST be written as a list whose first child is an atom of the tuple constructor head, kind `21`, followed by the tree of each part in order.
+//= spec/contracts/ast-typed-values.md#a-decoder-may-accept-a-name-head-in-place-of-a-constructor-head
+//= type=test
+//# An encoder MUST NOT write a name leaf in place of a constructor head.
 #[test]
 fn a_tuple_is_the_tuple_constructor_head_then_its_parts() {
     let value = (1u8, String::from("a"));
@@ -318,48 +390,90 @@ fn a_tuple_is_the_tuple_constructor_head_then_its_parts() {
     golden(&Partless(), "H 01 15 02 00 00 01 01 00 01");
 }
 
+//= spec/contracts/ast-typed-values.md#a-map-is-the-map-constructor-head-then-one-field-pair-per-entry
+//= type=test
+//# A map MUST be written as a list whose first child is an atom of the map constructor head, kind `23`, followed by one field pair for each entry, holding the entry's key and value, in the order the map presents its entries.
+//= spec/contracts/ast-typed-values.md#a-field-pair-is-the-field-pair-head-a-key-and-a-value
+//= type=test
+//# A field pair MUST be written as a list of three children: an atom of the field-pair head, kind `25`, then the tree of the key, then the tree of the value.
+//= spec/contracts/ast-typed-values.md#a-decoder-may-accept-a-name-head-in-place-of-a-constructor-head
+//= type=test
+//# An encoder MUST NOT write a name leaf in place of a constructor head.
 #[test]
 fn a_map_is_the_map_constructor_head_then_one_field_pair_per_entry() {
     let value = BTreeMap::from([(String::from("a"), 1u8)]);
     golden(&value, MAP);
 }
 
+//= spec/contracts/ast-typed-values.md#a-record-is-the-record-constructor-head-then-one-field-pair-per-field
+//= type=test
+//# A record MUST be written as a list whose first child is an atom of the record constructor head, kind `22`, followed by one field pair for each of its fields, in the order the record's type declares them.
+//= spec/contracts/ast-typed-values.md#a-field-pair-is-the-field-pair-head-a-key-and-a-value
+//= type=test
+//# A field pair MUST be written as a list of three children: an atom of the field-pair head, kind `25`, then the tree of the key, then the tree of the value.
+//= spec/contracts/ast-typed-values.md#a-decoder-may-accept-a-name-head-in-place-of-a-constructor-head
+//= type=test
+//# An encoder MUST NOT write a name leaf in place of a constructor head.
 #[test]
 fn a_record_is_the_record_constructor_head_then_one_field_pair_per_field() {
     golden(&Point { x: 1, y: 2 }, RECORD);
     golden(&Fieldless {}, "H 01 16 02 00 00 01 01 00 01");
 }
 
+//= spec/contracts/ast-typed-values.md#a-record-field-s-key-is-a-string-leaf-of-its-name
+//= type=test
+//# The key of a record field's field pair MUST be written as an atom of a string leaf holding the field's name as the record's type declares it for writing.
 #[test]
 fn a_record_fields_key_is_a_string_leaf_of_its_name() {
     golden(&Renamed { x: 2 }, RENAMED);
 }
 
+//= spec/contracts/ast-typed-values.md#a-wrapper-is-the-tree-of-the-value-it-wraps
+//= type=test
+//# A wrapper MUST be written as the tree of its one positional part, with nothing added.
 #[test]
 fn a_wrapper_is_the_tree_of_the_value_it_wraps() {
     golden(&Meters(5), "H 01 00 01 05 01 00 00 00");
 }
 
+//= spec/contracts/ast-typed-values.md#an-enumeration-variant-is-headed-by-a-name-leaf-of-its-name
+//= type=test
+//# The first child of the list an enumeration variant is written as MUST be an atom of a name leaf, kind `10`, holding the variant's name as its type declares it for writing.
+//= spec/contracts/ast-typed-values.md#a-variant-without-a-payload-is-a-list-of-its-name
+//= type=test
+//# A variant without a payload MUST be written as a list of one child, the atom of its name.
 #[test]
 fn a_variant_without_a_payload_is_a_list_of_its_name() {
     golden(&Shape::Empty, EMPTY);
 }
 
+//= spec/contracts/ast-typed-values.md#a-variant-with-one-payload-value-is-its-name-then-that-value
+//= type=test
+//# A variant whose payload is one value MUST be written as a list of two children: the atom of its name, then the tree of the payload.
 #[test]
 fn a_variant_with_one_payload_value_is_its_name_then_that_value() {
     golden(&Shape::Circle(5), CIRCLE);
 }
 
+//= spec/contracts/ast-typed-values.md#a-variant-with-positional-parts-is-its-name-then-each-part
+//= type=test
+//# A variant whose payload is two or more positional parts MUST be written as a list of the atom of its name followed by the tree of each part in order.
 #[test]
 fn a_variant_with_positional_parts_is_its_name_then_each_part() {
     golden(&Shape::Pair(1, 2), PAIR);
 }
 
+//= spec/contracts/ast-typed-values.md#a-variant-with-named-fields-is-its-name-then-one-record
+//= type=test
+//# A variant whose payload is named fields MUST be written as a list of two children: the atom of its name, then the tree of a record holding those fields.
 #[test]
 fn a_variant_with_named_fields_is_its_name_then_one_record() {
     golden(&Shape::Rect { w: 1, h: 2 }, RECT);
 }
 
+//= spec/contracts/ast-typed-values.md#the-leaf-kinds-the-typed-mapping-writes
+//= type=test
+//# An encoder MUST write a typed value with leaves of kinds `0`, `3`, `6`, `7`, `8`, `9`, `10`, `11`, `13`, `17`, `18`, `19`, `20`, `21`, `22`, `23` and `25` alone.
 #[test]
 fn the_typed_mapping_writes_only_its_listed_leaf_kinds() {
     let every = Every {
@@ -396,6 +510,9 @@ fn the_typed_mapping_writes_only_its_listed_leaf_kinds() {
     assert_eq!(listed, "0 3 6 7 8 9 10 11 13 17 18 19 20 21 22 23 25");
 }
 
+//= spec/contracts/ast-typed-values.md#a-decoder-refuses-an-integer-its-target-can-t-hold
+//= type=test
+//# A decoder MUST refuse an integer leaf whose value the target integer type can't hold.
 #[test]
 fn a_decoder_refuses_an_integer_its_target_cant_hold() {
     // 300 and -1 into 8-bit targets, and 2^64 + 1, which a narrowing to 64 bits before the range
@@ -418,6 +535,12 @@ fn refused<T: serde::de::DeserializeOwned + std::fmt::Debug>(bytes: &[u8]) {
     assert!(matches!(got, Err(crate::Error::IntOutOfRange)), "{got:?}");
 }
 
+//= spec/contracts/ast-typed-values.md#a-decoder-rounds-a-float-leaf-to-its-target-s-nearest-value
+//= type=test
+//# A decoder MUST read a float leaf into a 64-bit binary floating-point target as the 64-bit value nearest the leaf's exact decimal, ties to even.
+//= spec/contracts/ast-typed-values.md#a-decoder-rounds-a-float-leaf-to-its-target-s-nearest-value
+//= type=test
+//# A decoder MUST read a float leaf into a 32-bit binary floating-point target as the 32-bit value nearest the 64-bit value that the rule for a 64-bit target returns, ties to even.
 #[test]
 fn a_decoder_rounds_a_float_leaf_to_its_targets_nearest_value() {
     // The decimal 1 x 10^-1, the shortest decimal of the 32-bit value 0.1.
@@ -428,6 +551,9 @@ fn a_decoder_rounds_a_float_leaf_to_its_targets_nearest_value() {
     assert_eq!(narrow.to_bits(), 0.1f32.to_bits());
 }
 
+//= spec/contracts/ast-typed-values.md#a-decoder-skips-a-record-field-its-type-doesn-t-declare
+//= type=test
+//# A decoder reading a record, or the record of a variant with named fields, MUST skip each field pair whose key names a field the target type doesn't declare, whatever tree the pair's value holds.
 #[test]
 fn a_decoder_skips_a_record_field_its_type_doesnt_declare() {
     let wide = Wide {
@@ -440,6 +566,9 @@ fn a_decoder_skips_a_record_field_its_type_doesnt_declare() {
     assert_eq!(got, Narrow { x: 1 });
 }
 
+//= spec/contracts/ast-typed-values.md#a-decoder-skips-a-record-field-its-type-doesn-t-declare
+//= type=test
+//# A decoder reading a record, or the record of a variant with named fields, MUST skip each field pair whose key names a field the target type doesn't declare, whatever tree the pair's value holds.
 #[test]
 fn a_decoder_skips_an_undeclared_field_whatever_tree_it_holds() {
     // The record `(<record> (= "x" 1) (= "member" (. object field)) (= "wide" N))`, where N is an
@@ -472,6 +601,9 @@ fn a_decoder_skips_an_undeclared_field_whatever_tree_it_holds() {
     assert_eq!(got, Narrow { x: 1 });
 }
 
+//= spec/contracts/ast-typed-values.md#a-decoder-skips-a-record-field-its-type-doesn-t-declare
+//= type=test
+//# A decoder reading a record, or the record of a variant with named fields, MUST skip each field pair whose key names a field the target type doesn't declare, whatever tree the pair's value holds.
 #[test]
 fn a_decoder_skips_an_undeclared_field_of_a_variant_with_named_fields() {
     let wide = WideShape::Rect {
@@ -484,6 +616,9 @@ fn a_decoder_skips_an_undeclared_field_of_a_variant_with_named_fields() {
     assert_eq!(got, Shape::Rect { w: 1, h: 2 });
 }
 
+//= spec/contracts/ast-typed-values.md#a-type-that-refuses-unknown-fields-refuses-them
+//= type=test
+//# A decoder reading a record into a type marked to refuse unknown fields MUST refuse a record that holds a field pair whose key names a field the type doesn't declare.
 #[test]
 fn a_type_that_refuses_unknown_fields_refuses_them() {
     let Err(crate::Error::Message(message)) = from_bytes::<Strict>(&example(WIDE)) else {
@@ -492,12 +627,18 @@ fn a_type_that_refuses_unknown_fields_refuses_them() {
     assert!(message.starts_with("unknown field `extra`"), "{message}");
 }
 
+//= spec/contracts/ast-typed-values.md#a-decoder-may-accept-a-name-head-in-place-of-a-constructor-head
+//= type=test
+//# A decoder MAY accept a list, a tuple, a map or a record whose first child is an atom of a name leaf spelling `list`, `tuple`, `map` or `record` in place of the constructor head of the kind it spells.
 #[test]
 fn a_decoder_may_accept_a_name_head_in_place_of_a_constructor_head() {
     let got: Narrow = from_bytes(&example(NAME_HEADED)).expect("read the name head `record`");
     assert_eq!(got, Narrow { x: 1 });
 }
 
+//= spec/contracts/ast-typed-values.md#a-field-added-to-a-record-type-is-optional
+//= type=test
+//# A field added to a record type whose earlier values decoders already read MUST be optional, so that a decoder of the newer type reads the earlier values and a decoder of the earlier type skips the field.
 #[test]
 fn a_field_added_to_a_record_type_is_optional() {
     let newer = Newer {

@@ -12,6 +12,8 @@ use serde::de::{
     Visitor,
 };
 
+//= spec/contracts/ast-typed-values.md#a-decoder-refuses-an-integer-its-target-can-t-hold
+//# A decoder MUST refuse an integer leaf whose value the target integer type can't hold.
 /// Fold a canonical (minimal, big-endian) magnitude into a `u128`; error if it is wider than 128 bits.
 fn mag_to_u128(iv: &IntValue) -> Result<u128> {
     if iv.magnitude.len() > 16 {
@@ -59,6 +61,8 @@ fn int_i128(iv: &IntValue) -> Result<i128> {
     }
 }
 
+//= spec/contracts/ast-typed-values.md#a-decoder-refuses-an-integer-its-target-can-t-hold
+//# A decoder MUST refuse an integer leaf whose value the target integer type can't hold.
 /// The signed value of `iv`, refused outside `min..=max`, the range of the target width.
 fn int_in(iv: &IntValue, min: i128, max: i128) -> Result<i128> {
     let v = int_i128(iv)?;
@@ -68,6 +72,8 @@ fn int_in(iv: &IntValue, min: i128, max: i128) -> Result<i128> {
     Ok(v)
 }
 
+//= spec/contracts/ast-typed-values.md#a-decoder-refuses-an-integer-its-target-can-t-hold
+//# A decoder MUST refuse an integer leaf whose value the target integer type can't hold.
 /// The unsigned value of `iv`, refused above `max`, the largest value of the target width.
 fn uint_in(iv: &IntValue, max: u128) -> Result<u128> {
     let v = int_u128(iv)?;
@@ -133,12 +139,18 @@ impl<'de> AstDeserializer<'de> {
     /// `(record …)` NAME-alias head, so this reads legacy/persisted values as well as canonical ones.
     /// (The EMIT side is strict — [`crate::ser`] serializes ONLY native ctor-leaf compounds, never a
     /// name/string head; that is the hard rule.)
+    //= spec/contracts/ast-typed-values.md#a-decoder-may-accept-a-name-head-in-place-of-a-constructor-head
+    //# A decoder MAY accept a list, a tuple, a map or a record whose first child is an atom of a name leaf spelling `list`, `tuple`, `map` or `record` in place of the constructor head of the kind it spells.
     fn compound_children(&self, expect: CompoundCtor) -> Result<&'de [StructId]> {
         self.arenas
             .compound_form_of(self.id, expect)
             .ok_or_else(|| Error::UnexpectedShape(format!("expected a {expect:?} compound")))
     }
 
+    //= spec/contracts/ast-typed-values.md#a-decoder-rounds-a-float-leaf-to-its-target-s-nearest-value
+    //# A decoder MUST read a float leaf into a 64-bit binary floating-point target as the 64-bit value nearest the leaf's exact decimal, ties to even.
+    //= spec/contracts/ast-typed-values.md#a-decoder-rounds-a-float-leaf-to-its-target-s-nearest-value
+    //# A decoder MUST read the not-a-number leaf and each infinity leaf into a binary floating-point target as the value that leaf names.
     /// The `f64` a float leaf denotes (finite decimal, or a non-finite marker).
     fn read_f64(&self) -> Result<f64> {
         match self.atom_leaf()? {
@@ -156,6 +168,8 @@ impl<'de> AstDeserializer<'de> {
     }
 }
 
+//= spec/contracts/ast-typed-values.md#a-decoder-reads-each-typed-value-from-the-tree-its-row-writes
+//# A decoder MUST read each typed value from the tree that the row above for its kind writes.
 impl<'de> de::Deserializer<'de> for AstDeserializer<'de> {
     type Error = Error;
 
@@ -197,6 +211,8 @@ impl<'de> de::Deserializer<'de> for AstDeserializer<'de> {
         V: Visitor<'de>,
     {
         let v = int_i128(self.read_int()?)?;
+        //= spec/contracts/ast-typed-values.md#a-decoder-refuses-an-integer-its-target-can-t-hold
+        //# A decoder MUST refuse an integer leaf whose value the target integer type can't hold.
         if v < i64::MIN as i128 || v > i64::MAX as i128 {
             return Err(Error::IntOutOfRange);
         }
@@ -235,6 +251,8 @@ impl<'de> de::Deserializer<'de> for AstDeserializer<'de> {
         V: Visitor<'de>,
     {
         let v = int_u128(self.read_int()?)?;
+        //= spec/contracts/ast-typed-values.md#a-decoder-refuses-an-integer-its-target-can-t-hold
+        //# A decoder MUST refuse an integer leaf whose value the target integer type can't hold.
         if v > u64::MAX as u128 {
             return Err(Error::IntOutOfRange);
         }
@@ -251,6 +269,8 @@ impl<'de> de::Deserializer<'de> for AstDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        //= spec/contracts/ast-typed-values.md#a-decoder-rounds-a-float-leaf-to-its-target-s-nearest-value
+        //# A decoder MUST read a float leaf into a 32-bit binary floating-point target as the 32-bit value nearest the 64-bit value that the rule for a 64-bit target returns, ties to even.
         visitor.visit_f32(self.read_f64()? as f32)
     }
     fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value>
@@ -464,6 +484,8 @@ impl<'de> de::Deserializer<'de> for AstDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
+        //= spec/contracts/ast-typed-values.md#a-decoder-skips-a-record-field-its-type-doesn-t-declare
+        //# A decoder reading a record, or the record of a variant with named fields, MUST skip each field pair whose key names a field the target type doesn't declare, whatever tree the pair's value holds.
         // A value the target type ignores, such as a record field it doesn't declare, is skipped
         // without a read of its node. The tree is decoded already, so the skip succeeds whatever
         // tree the node holds, a leaf that `deserialize_any` refuses among them, as
@@ -588,6 +610,10 @@ impl<'de> MapAccess<'de> for MapReader<'de> {
         if self.idx >= self.entries.len() {
             return Ok(None);
         }
+        // Each key goes to the target type's visitor, a key the type doesn't declare among them, so
+        // that a type marked to refuse unknown fields refuses it and any other type skips its value.
+        //= spec/contracts/ast-typed-values.md#a-type-that-refuses-unknown-fields-refuses-them
+        //# A decoder reading a record into a type marked to refuse unknown fields MUST refuse a record that holds a field pair whose key names a field the type doesn't declare.
         let (k, v) = self.pair(self.entries[self.idx])?;
         self.value = Some(v);
         let d = AstDeserializer {
