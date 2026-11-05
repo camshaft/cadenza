@@ -40,6 +40,33 @@ container version stays `cdzast\x00\x01`. It does not weaken any of the minimum-
 constitution sets for a change to the specification. The reference implementation adds
 `codec::encode_as_built`, which writes a tree's two pools as built, for this use. A transport
 encoding lists each distinct leaf once because the reference implementation's canonicalization keeps
-leaves apart by their place in the pool, not by value: the compiler builds value templates that hold
-one placeholder value at two places on purpose, so that each placeholder has a byte offset of its own,
-and merging them would change those templates' bytes.
+leaves apart by their place in the pool, not by value, so the re-encoding of a leaf pool that lists one value twice keeps both copies.
+
+**Who keeps one leaf value at two leaf ids.** `Builder::leaf_unique` is the `Builder` call that
+pushes a leaf without interning it. A search of the repository for it, and for tables keyed by a
+leaf id, found three callers, and whether each depends on canonicalization keeping such leaves apart:
+
+- The compiler's value-form templates (rcdzc, `lower/value_form.rs`): each Int and Bool placeholder
+  is a `leaf_unique` leaf, so that equal placeholders keep a hole each, and each hole's offset is
+  measured on the arena's leaf pool as built. They depended on it: they were written with
+  `codec::encode`, which canonicalizes under `std`, so each offset held only while canonicalization
+  left the pool as built, and twice a template built out of canonical order moved its holes. They
+  are now written with `codec::encode_as_built`, by one function that writes the bytes and resolves
+  the holes from the same pool, so the holes hold whatever canonicalization does. Without `std`,
+  `encode` already wrote every template as built, and a template built in canonical order keeps its
+  bytes. A runtime `Qty` template whose unit is a product, a power or a quotient is built out of
+  canonical order, since the unit's heads are built after their operands: under `std` its bytes now
+  list the unit's leaves and nodes as built, and decode to the same tree.
+- `cadenza-ast`'s codec test of one value at two leaf ids: it compares two canonical re-encodings
+  of one tree, which agree whether canonicalization keeps the two leaves apart or merges them, and
+  it doesn't assert how many leaves the canonical bytes list. It doesn't depend on it.
+- `cadenza-ast-serde`'s test of a received value that lists one leaf value at two ids: it reads a
+  typed value from the bytes, which doesn't keep leaf ids, and doesn't canonicalize the decoded
+  tree. It doesn't depend on it.
+
+Two design notes name `leaf_unique`, and no other code calls it. A search for `LeafId` outside
+`cadenza-ast` found one table keyed by a leaf id, the one that resolves the template holes, and it
+reads the arena as built. Two compiler paths push a leaf without interning it and without
+`leaf_unique`: `prelude::push_atom`, and the `try` desugaring, which pushes one name at two leaf
+ids. A change that makes canonicalization merge equal leaves, as the encoder rule above says the
+canonical byte sequence does, reads them first.
