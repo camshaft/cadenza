@@ -45,7 +45,7 @@
 //# Each abstract syntax tree MUST have exactly one canonical binary encoding.
 //!
 //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
-//# Two abstract syntax trees that are equal MUST have identical binary encodings.
+//# Two abstract syntax trees that are equal MUST have identical canonical binary encodings.
 //!
 //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
 //# Decoding a canonical binary encoding MUST yield the abstract syntax tree it was encoded from.
