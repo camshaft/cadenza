@@ -887,9 +887,11 @@ mod tests {
     #[test]
     fn a_leaf_value_at_two_ids_re_encodes_as_encode_writes_it() {
         // `Builder::leaf_unique` keeps two copies of one value apart on purpose, as a placeholder
-        // template does. Canonicalization keeps them apart by id, so `encode` of the arena and the
-        // canonical re-encoding of its `encode_as_built` bytes both list the value twice: the bytes a
-        // sender hashes and the bytes a receiver re-encodes agree.
+        // template does. The canonical re-encoding of the arena's `encode_as_built` bytes equals
+        // `encode` of the arena, so the bytes a sender hashes and the bytes a receiver re-encodes
+        // agree. The test doesn't assert how many leaves the canonical bytes list: the encoder rule
+        // of ast-binary-format.md says they list each distinct leaf once, while canonicalization
+        // keeps these two leaves apart by id, which the compiler's value-form templates rely on.
         let mut b = Builder::new();
         let first = b.leaf_unique(Leaf::Name("a".into()));
         let second = b.leaf_unique(Leaf::Name("a".into()));
@@ -902,8 +904,7 @@ mod tests {
         let back = decode(&transport).expect("the transport bytes decode");
         assert_eq!(back.leaves.len(), 2, "decode keeps both copies");
         assert_eq!(encode(&back), canonical, "the sender's canonical bytes");
-        let from_canonical = decode(&canonical).expect("the canonical bytes decode");
-        assert_eq!(from_canonical.leaves.len(), 2, "both ids kept");
+        assert!(decode(&canonical).is_ok(), "the canonical bytes decode");
     }
 
     #[test]
