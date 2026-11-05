@@ -1308,6 +1308,12 @@ impl Builder {
     /// counterpart to [`Builder::leaf`] for a caller that needs a DISTINCT occurrence (e.g. a compiler
     /// pass emitting a leaf whose identity, not just value, must stay separate). Skips the `leaf_index`
     /// entirely, so it neither reads nor populates the dedup map.
+    ///
+    /// The ids stay distinct in the arena `Builder::finish` returns and in the bytes
+    /// `codec::encode_as_built` writes of it. A caller that reads its leaf's place in the encoded leaf
+    /// pool, as the compiler's value-form templates do, writes the arena with `encode_as_built`:
+    /// `codec::encode` canonicalizes the arena under `std`, which can move leaves, and the encoder rule
+    /// of ast-binary-format.md has the canonical byte sequence list each distinct leaf once.
     pub fn leaf_unique(&mut self, leaf: Leaf) -> LeafId {
         let id = LeafId(self.leaves.len() as u32);
         self.leaves.push(leaf);

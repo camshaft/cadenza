@@ -63,11 +63,10 @@ pub fn runtime_value_form_template(
     let mut leaves: Vec<PendingLeaf> = Vec::new();
     let value = template_value_ast(&mut b, ty, &mut Vec::new(), &mut leaves)?;
     let arenas = b.finish(value);
-    let bytes = crate::codec::encode(&arenas);
-    // Locate each placeholder leaf's byte offset in the encoded LEAF POOL (leaves are encoded in order
-    // right after the 8-byte header + leaf-count LEB). Walk the pool, tracking offsets; a leaf that was
+    // Write the template AS BUILT and locate each placeholder leaf's byte offset in its LEAF POOL
+    // (leaves are encoded in order right after the 8-byte header + leaf-count LEB): a leaf that was
     // recorded as runtime (by its LeafId) gets its hole offset resolved here.
-    let holes = resolve_leaf_offsets(&bytes, &arenas, &leaves)?;
+    let (bytes, holes) = encode_template(&arenas, &leaves)?;
     Some(ValueFormTemplate {
         bytes,
         leaves: holes,
@@ -1490,8 +1489,7 @@ pub(super) fn variant_form_template(
     let _ = sum_ty;
     let root = value;
     let arenas = b.finish(root);
-    let bytes = crate::codec::encode(&arenas);
-    let holes = resolve_leaf_offsets(&bytes, &arenas, &leaves)?;
+    let (bytes, holes) = encode_template(&arenas, &leaves)?;
     Some(ValueFormTemplate {
         bytes,
         leaves: holes,
@@ -1597,14 +1595,15 @@ pub(super) fn template_value_ast_flagged(
                 // 2026-08-09). Mirrors the runtime `value_encode` + rust `cdz_render` record renders.
                 //
                 // Intern the FieldPair leaf FIRST (before the key/value), NOT via `b.field_pair` (which
-                // interns it last). The value-form template is `codec::encode`d, which CANONICALIZES under
-                // std — and canonical leaf-pool order is TRAVERSAL order (head-first: `= `, then key, then
-                // value). Building the entry head-first keeps the arena already-canonical, so `encode`'s
-                // canonicalization is a no-op and the hole offsets (`resolve_leaf_offsets`, computed on this
-                // arena's pool) match the encoded bytes. Building it with `b.field_pair` interned the `=`
-                // leaf AFTER the key/value → non-canonical order → canon reordered the pool → an Int hole's
-                // offset landed one byte early (on the leaf's LEN byte), corrupting the filled bytes so they
-                // failed to decode (`template_fills_a_runtime_record`; the #5158 canon-in-tests residue).
+                // interns it last), so the arena is built in canonical order, whose leaf-pool order is
+                // TRAVERSAL order (head-first: `=`, then key, then value). The hole offsets
+                // (`resolve_leaf_offsets`, computed on this arena's pool) match the bytes in either order,
+                // since `encode_template` writes the pool as built; building it in canonical order keeps
+                // the template's pools in canonical order. When the template was `codec::encode`d, which
+                // canonicalizes under std, building it with `b.field_pair` interned the `=` leaf AFTER the
+                // key/value, canon reordered the pool, and an Int hole's offset fell one byte early (on
+                // the leaf's LEN byte), corrupting the filled bytes so they failed to decode
+                // (`template_fills_a_runtime_record`; the #5158 canon-in-tests residue).
                 let fp_head = b.atom_leaf(crate::ast::Leaf::FieldPair);
                 let fname = b.name(&*name.name);
                 path.push(i as u32);
@@ -1638,15 +1637,14 @@ pub(super) fn template_value_ast_flagged(
                 return None;
             }
             // Build the list HEAD (`(. Qty of)`) BEFORE the inner-magnitude hole + unit, same head-first
-            // discipline as the RECORD arm above (and for the same reason): the value-form template is
-            // `codec::encode`d, which CANONICALIZES the leaf pool into traversal (head-first pre-order); the
-            // runtime hole's byte offset (`resolve_leaf_offsets`) is measured on THIS arena's pre-canon pool,
-            // so the pool must already be canonical or the offset drifts. Building `qty_of` LAST left the
-            // magnitude Int hole at pool index ~1 while canon moved it AFTER the head's leaves → the runtime
-            // magnitude write landed at the wrong offset, corrupting a struct child-id → the reader's
-            // `cdzast-decode-error IdOutOfRange` on `(: (Qty.of N unit) …)` under --guarded-all. Interning
-            // the head's leaves first makes the magnitude hole share the SAME preceding-leaf set in build and
-            // canonical order (the byte sum is order-invariant over that set), so the offset stays valid.
+            // discipline as the RECORD arm above: it keeps the head's leaves before the magnitude hole in
+            // the leaf pool, in canonical traversal order (head-first pre-order). The runtime hole's byte
+            // offset (`resolve_leaf_offsets`) is measured on THIS arena's pool, which `encode_template`
+            // writes as built. When the template was `codec::encode`d, which canonicalizes under std,
+            // building `qty_of` LAST left the magnitude Int hole at pool index ~1 while canon moved it
+            // AFTER the head's leaves, so the runtime magnitude write went to the wrong offset,
+            // corrupting a struct child-id: the reader's `cdzast-decode-error IdOutOfRange` on
+            // `(: (Qty.of N unit) ...)` under --guarded-all.
             let qty_of = b.name("Qty.of");
             let inner_hole = template_value_ast_flagged(b, inner, path, out, via_sum_payload)?;
             let unit_ast = unit_value_ast(b, &unit.at_reference());
@@ -1668,16 +1666,34 @@ pub(super) fn template_value_ast_flagged(
     }
 }
 
+/// Write a value-form template's bytes and resolve each pending leaf's hole in them, from one leaf
+/// pool. The bytes are written AS BUILT (`codec::encode_as_built`), so their leaf pool is the arena's
+/// own, the pool [`resolve_leaf_offsets`] walks, in every build. `codec::encode` canonicalizes under
+/// `std`, so an offset measured on the arena held only while canonicalization left the pool as built:
+/// a template built out of canonical order moved its holes, and a canonicalization that merged equal
+/// leaves would merge two `Builder::leaf_unique` placeholders into one hole. Written as built, each
+/// placeholder keeps its own pool entry and its own byte offset.
+fn encode_template(
+    arenas: &crate::ast::Arenas,
+    pending: &[PendingLeaf],
+) -> Option<(Vec<u8>, Vec<RuntimeLeaf>)> {
+    let bytes = crate::codec::encode_as_built(arenas);
+    let holes = resolve_leaf_offsets(&bytes, arenas, pending)?;
+    Some((bytes, holes))
+}
+
 /// Resolve each pending leaf's BYTE OFFSET in the encoded template. Re-encodes the leaf pool the same
-/// way `codec::encode` does (header + count, then each leaf), tracking the running offset; when a leaf's
-/// `LeafId` matches a pending runtime leaf, its hole offset is the magnitude position (Int: after the
-/// kind + len bytes) or the kind-byte position (Bool). Returns the resolved holes in the pending order.
+/// way `codec::encode_as_built` writes it (header + count, then each leaf), tracking the running
+/// offset; when a leaf's `LeafId` matches a pending runtime leaf, its hole offset is the magnitude
+/// position (Int: after the kind + len bytes) or the kind-byte position (Bool). Returns the resolved
+/// holes in the pending order.
 pub(super) fn resolve_leaf_offsets(
     bytes: &[u8],
     arenas: &crate::ast::Arenas,
     pending: &[PendingLeaf],
 ) -> Option<Vec<RuntimeLeaf>> {
-    // Offset walk mirrors `codec::encode`: 8-byte header, then a LEB128 leaf-count, then each leaf.
+    // Offset walk mirrors `codec::encode_as_built`: 8-byte header, then a LEB128 leaf-count, then
+    // each leaf.
     let mut off = 8usize;
     off += leb_len(arenas.leaves.len() as u64);
     // Map each LeafId → (magnitude offset for Int, kind-byte offset for Bool).
@@ -2347,4 +2363,100 @@ pub(crate) fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit
     let denominator = product(b, &den);
     let div_head = b.name("Unit./");
     b.list(vec![div_head, numerator, denominator])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LeafFill, RuntimeLeaf, encode_template, runtime_value_form_template, template_value_ast,
+    };
+    use crate::ast::{Builder, Leaf, Struct};
+    use crate::ty::Ty;
+
+    /// Fill each hole as the runtime walker does (an Int's 8 big-endian magnitude bytes, a Bool's kind
+    /// byte), decode the filled bytes, and answer the leaves of the root list's elements after its head.
+    fn fill_and_read(
+        bytes: &[u8],
+        holes: &[RuntimeLeaf],
+        ints: &[u64],
+        bools: &[bool],
+    ) -> Vec<Leaf> {
+        let mut filled = bytes.to_vec();
+        let (mut ints, mut bools) = (ints.iter(), bools.iter());
+        for hole in holes {
+            match hole.kind {
+                LeafFill::Int => {
+                    let value = ints.next().expect("a value for each Int hole");
+                    filled[hole.offset..hole.offset + 8].copy_from_slice(&value.to_be_bytes());
+                }
+                LeafFill::Bool => {
+                    let value = bools.next().expect("a value for each Bool hole");
+                    filled[hole.offset] = if *value { 9 } else { 8 };
+                }
+            }
+        }
+        let tree = crate::codec::decode(&filled).expect("the filled template decodes");
+        let Struct::List(children) = tree.get(tree.root) else {
+            panic!("the value is a list");
+        };
+        children[1..]
+            .iter()
+            .map(|&child| match tree.get(child) {
+                Struct::Atom(leaf) => tree.leaf(*leaf).clone(),
+                Struct::List(_) => panic!("each element is a leaf"),
+            })
+            .collect()
+    }
+
+    fn int(leaf: &Leaf) -> Option<i64> {
+        match leaf {
+            Leaf::Int { value, .. } => value.to_i64(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_template_keeps_each_equal_placeholder_at_a_hole_of_its_own() {
+        // Each pair's placeholders are one value, pushed with `Builder::leaf_unique` so that each
+        // element keeps a pool entry and a hole of its own.
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64(), Ty::Bool, Ty::Bool].into());
+        let tpl = runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[]))
+            .expect("a template");
+        let pool = crate::codec::decode(&tpl.bytes).expect("the template decodes").leaves;
+        let placeholders = pool
+            .iter()
+            .filter(|leaf| matches!(leaf, Leaf::Int { .. } | Leaf::Bool(_)))
+            .count();
+        assert_eq!(placeholders, 4, "each placeholder is a leaf of its own: {pool:?}");
+        let offsets: std::collections::BTreeSet<usize> =
+            tpl.leaves.iter().map(|h| h.offset).collect();
+        assert_eq!(offsets.len(), 4, "four holes at four offsets");
+        let got = fill_and_read(&tpl.bytes, &tpl.leaves, &[7, 5], &[true, false]);
+        assert_eq!(got.iter().map(int).collect::<Vec<_>>(), [Some(7), Some(5), None, None]);
+        assert_eq!(got[2..], [Leaf::Bool(true), Leaf::Bool(false)]);
+    }
+
+    #[test]
+    fn a_template_built_out_of_canonical_order_fills_each_hole_at_its_own_leaf() {
+        // The elements' placeholders are pushed before the `tuple` head they sit under, so the arena
+        // isn't in canonical order. Each hole is measured on the arena's pool as built, so the bytes
+        // have to list that pool as built: written in canonical order, the head's leaf comes first and
+        // the holes point at the wrong bytes.
+        let mut b = Builder::new();
+        let mut pending = Vec::new();
+        let mut children = Vec::new();
+        for (i, ty) in [Ty::int64(), Ty::int64(), Ty::Bool, Ty::Bool].iter().enumerate() {
+            let elem = template_value_ast(&mut b, ty, &mut vec![i as u32], &mut pending);
+            children.push(elem.expect("a scalar placeholder"));
+        }
+        let head = b.name("tuple");
+        children.insert(0, head);
+        let root = b.list(children);
+        let arenas = b.finish(root);
+        assert!(!crate::canon::is_canonical(&arenas), "the arena isn't in canonical order");
+        let (bytes, holes) = encode_template(&arenas, &pending).expect("a template");
+        let got = fill_and_read(&bytes, &holes, &[7, 5], &[true, false]);
+        assert_eq!(got.iter().map(int).collect::<Vec<_>>(), [Some(7), Some(5), None, None]);
+        assert_eq!(got[2..], [Leaf::Bool(true), Leaf::Bool(false)]);
+    }
 }
