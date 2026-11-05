@@ -10,6 +10,11 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A producer that doesn't normalize text can write Name text outside NFC](./2026-11-05-a-producer-that-does-not-normalize-can-write-name-text-outside-nfc.md):
+  `cadenza-ast`'s `Builder` normalizes `Name` text to NFC only under its `std` feature, and
+  `cdz-runtime`'s `ast-encode` op builds a `Name` from a runtime string without it, so that producer can
+  write `Name` text outside NFC. Drove ast-binary-format.md's rule that an encoder that does not
+  normalize text writes only NFC `Name` text; the producer fix is a change of its own.
 - [Pushing integers end-to-end to runtime is the forcing function that validates the foundation](./2026-07-11-pushing-integers-end-to-end-to-runtime-is-the-forcing-function-that-validates-the-foundation.md)
   — the operator's "get integers really solid to runtime before layering anything on" push, and *why* it drove
   whole-system thinking. A thin scalar slice that only *folds* never exercises the boundary, the runtime trap

@@ -589,6 +589,9 @@
             ./.cargo
             ./rust-toolchain.toml
             ./spec/semantics
+            # cadenza-ast's codec tests read the binary-format contract's kind list and worked byte
+            # examples at run time, from `$CARGO_MANIFEST_DIR/../../../../spec/contracts`.
+            ./spec/contracts/ast-binary-format.md
           ];
         };
         # `roundtrip` (`cargo xtask roundtrip`) is corpus-only — it reads spec/semantics but NOT
@@ -8139,7 +8142,8 @@
             # {per-crate tests} + cdz, matching `cargo test --workspace`. Coverage parity is asserted by
             # testCrateCoverageAssert (below) so a new workspace member can't silently escape the test set.
             perCrateTestCrane = {
-              test-cadenza-ast = mkCrateTestCrane { crate = "cadenza-ast"; };
+              # cadenza-ast's codec tests read the binary-format contract's kind list and worked byte examples.
+              test-cadenza-ast = mkCrateTestCrane { crate = "cadenza-ast"; extraSrc = [ ./spec/contracts/ast-binary-format.md ]; };
               # cadenza-ast-serde (v-ast-serde P1): 11 inline round-trip tests (primitives, floats,
               # option/unit, seq/tuple, maps, structs, enums, range/malformed rejection, determinism);
               # no fixture files → no extraSrc. REQUIRED by testCrateCoverageAssert as a new member.

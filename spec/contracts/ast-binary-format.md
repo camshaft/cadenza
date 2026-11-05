@@ -136,6 +136,9 @@ are exactly the following, and a decoder MUST refuse any other kind byte.
 - `26` — a MEMBER-ACCESS head — the head leaf of a projection `(<member> object key)` (the `.` marker).
   The body MUST be empty; the projection marker is recognized by this kind identity, distinct from a NAME
   leaf spelling `.` (kind `10`), which remains an ordinary name.
+- `27` - a RATIONAL head - the head leaf of a rational value `(<rational> numerator denominator)`,
+  whose two children are INTEGER leaves (kinds `0` to `5`). The body MUST be empty; the rational value
+  is recognized by this kind identity.
 
 ## The Structure Pool
 
@@ -196,6 +199,10 @@ two canonically-equal spellings intern to one leaf. An integer or float signific
 minimal (no leading zero byte), zero MUST be the empty magnitude, and zero MUST NOT take a negative
 kind; these together give each value one magnitude form.
 
+An encoder that does not normalize text MUST write only Name leaf text that is already in Unicode
+Normalization Form C. Such an encoder then writes the canonical bytes without a normalization step
+of its own.
+
 Decoding a canonical binary encoding MUST yield the abstract syntax tree it was encoded from, and
 re-encoding that tree MUST reproduce the same bytes.
 
@@ -210,7 +217,8 @@ that [ast-encoding.md](./ast-encoding.md) requires: a node names its kind by an 
 ### Per-Field Encodings
 
 The following are the exact body bytes for representative leaves (kind byte first), which a conformant
-encoder produces and a conformant decoder accepts:
+encoder produces and a conformant decoder accepts. Each leaf kind of the kind list above has at least
+one example:
 
 - The integer `300` (positive, decimal): `00 02 01 2C` — kind `0` (positive decimal), magnitude length
   `2`, magnitude `0x012C`.
@@ -228,6 +236,30 @@ encoder produces and a conformant decoder accepts:
 - The record constructor head: `16` — kind `22`, no body.
 - The field-pair (`=`) head: `19` — kind `25`, no body.
 - The member-access (`.`) head: `1A` — kind `26`, no body.
+- The integer `0xFF` (positive, hexadecimal): `01 01 FF` - kind `1` (positive hexadecimal), magnitude
+  length `1`, magnitude `0xFF`.
+- The integer `0b101` (positive, binary): `02 01 05` - kind `2` (positive binary), magnitude length
+  `1`, magnitude `0x05`.
+- The integer `-0x10` (hexadecimal): `04 01 10` - kind `4` (negative hexadecimal), magnitude length
+  `1`, magnitude `0x10`.
+- The integer `-0b10` (binary): `05 01 02` - kind `5` (negative binary), magnitude length `1`,
+  magnitude `0x02`.
+- The boolean `false`: `08` - kind `8`, no body.
+- The byte sequence `00 FF`: `0B 02 00 FF` - kind `11`, length `2`, the raw bytes `0x00` and `0xFF`.
+- The bad-escape marker holding the escape character `q`: `0C 01 71` - kind `12`, length `1`,
+  UTF-8 `q`.
+- The character `a`: `0D 01 61` - kind `13`, length `1`, UTF-8 `a`.
+- The bad-character marker holding the text `ab`: `0E 02 61 62` - kind `14`, length `2`, UTF-8 `ab`.
+- The symbol `ok`: `0F 02 6F 6B` - kind `15`, length `2`, UTF-8 `ok`.
+- The type-suffixed literal `100N`: `10 00 00 00 01 64` - kind `16`, suffix `0` (`BigInt`), body shape
+  `0` (integer), then the integer body: kind `0` (positive decimal), magnitude length `1`, magnitude
+  `0x64`.
+- Positive infinity: `12` - kind `18`, no body.
+- Negative infinity: `13` - kind `19`, no body.
+- The tuple constructor head: `15` - kind `21`, no body.
+- The map constructor head: `17` - kind `23`, no body.
+- The set constructor head: `18` - kind `24`, no body.
+- The rational head: `1B` - kind `27`, no body.
 
 ## Additive Evolution
 
@@ -240,3 +272,11 @@ change the bytes of any tree that does not use it, consistent with the general-a
 A change to this document that alters the bytes of an already-encodable tree MUST carry a container
 version increment and a stated migration path; a change that only pins bytes for a construct that
 previously had none MUST be permitted as an additive change.
+
+Stated for a reader, these rules mean the following.
+
+A change that adds a leaf kind, a structure tag, or a row of the mapping between typed values and
+trees MUST keep the container version 1.
+
+A change that alters the bytes that an already-encodable tree or typed value encodes to MUST carry a
+container version increment and a stated migration path.
