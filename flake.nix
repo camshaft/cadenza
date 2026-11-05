@@ -91,13 +91,13 @@
         # ── build FRAMEWORK helper (operator seq-126: DRY the per-build boilerplate) ───────────────
         #
         # `mkCargoVendorEnv { vendor }` emits the shell preamble every cargo-in-nix derivation shares:
-        # set HOME/CARGO_HOME, write the offline `config.toml` (jobs cap + source-replacement), block the
+        # set HOME/CARGO_HOME, write the offline `config.toml` (source-replacement), block the
         # network. Replaces the ~dozen hand-rolled copies. Two vendor shapes:
         #   - SINGLE importCargoLock vendor (merged = false, the default): the vendor dir SHIPS its own
         #     `.cargo/config.toml` carrying ALL source replacements — crates-io ALWAYS, plus a
         #     `[source."git+…#sha"] … replace-with` stanza WHEN the lock has a git dep. So we SOURCE that
         #     config (rewrite its relative `directory = "cargo-vendor-dir"` → the absolute store path,
-        #     prepend our [build] jobs cap) rather than hand-roll a crates-io-only one. This makes a git
+        #     and add nothing else) rather than hand-roll a crates-io-only one. This makes a git
         #     dependency Just Work: the derivation inherits the vendor's git source-replacement stanza,
         #     so cargo resolves the git crate from the vendor instead of the network (the offline-mode
         #     fetch failure that bit cdz-agent-host's s2n-quic-dc-metrics dep). Verified byte-identical to
@@ -118,8 +118,6 @@
             export CARGO_NET_OFFLINE=true
             mkdir -p "$HOME" "$CARGO_HOME"
             cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
             [source.crates-io]
             replace-with = "vendored-sources"
             [source.vendored-sources]
@@ -141,8 +139,6 @@
             export CARGO_NET_OFFLINE=true
             mkdir -p "$HOME" "$CARGO_HOME"
             {
-              echo "[build]"
-              echo "jobs = 4"
               sed 's|directory = "cargo-vendor-dir"|directory = "${vendor}"|' \
                 "${vendor}/.cargo/config.toml"
             } > "$CARGO_HOME/config.toml"
@@ -9706,7 +9702,6 @@
           # CDZ_COMPILE_BIN are injected by the apps themselves, so boot stays LAZY (no local build eager).
           shellHook = ''
             export NIX_REMOTE=daemon
-            export CARGO_BUILD_JOBS="''${CARGO_BUILD_JOBS:-8}"
             cdz-help
           '';
         };
