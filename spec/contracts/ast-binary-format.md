@@ -181,10 +181,11 @@ A decoder MUST refuse a binary AST with bytes remaining after the root reference
 
 ### Equal Trees Encode To Identical Bytes
 
-An encoder MUST produce, for a given abstract syntax tree, the one canonical byte sequence: the leaf
-pool MUST list each distinct leaf exactly once (leaves are deduplicated by value) and the leaf pool and
-the structure pool MUST be ordered by a deterministic function of the tree alone, independent of the
-order in which nodes were constructed, so that two equal trees produce identical bytes.
+An encoder MUST produce, for the stored, hashed, and compiled forms of a given abstract syntax tree,
+the one canonical byte sequence: the leaf pool MUST list each distinct leaf exactly once (leaves are
+deduplicated by value) and the leaf pool and the structure pool MUST be ordered by a deterministic
+function of the tree alone, independent of the order in which nodes were constructed, so that two
+equal trees produce identical bytes.
 
 The deterministic order is fixed as follows, so that a third party can produce the canonical bytes and
 not merely read them. The structure pool MUST be in POST-ORDER: an entry appears after all of its
@@ -204,6 +205,25 @@ the canonical order; the canonical order is an encoder obligation, and referenti
 tree-ness (above) are what a decoder enforces. The leaf pool realizes the self-contained symbol prelude
 that [ast-encoding.md](./ast-encoding.md) requires: a node names its kind by an atom referencing a
 `Name` leaf in the pool by index, and the file carries every leaf it references.
+
+### A Transport Encoding Is Any Valid Encoding Of The Tree
+
+A transport encoding is the bytes of a tree written for a message between programs rather than for
+storage, hashing, or compilation. It can differ from the canonical byte sequence in the order of either
+pool, in a leaf listed more than once, and in structure entries not reachable from the root.
+
+A transport encoding MAY be any byte sequence that a decoder conforming to this document accepts and
+decodes to the tree it encodes.
+
+A transport encoding MUST begin with the same container header as the canonical byte sequence, so that
+a reader does not need a second container version to read it.
+
+A decoder MUST decode a transport encoding by the same rules as the canonical byte sequence, since the
+bytes do not say which way they were encoded.
+
+The stored, hashed, and compiled forms of a tree keep the canonical byte sequence, and a content address
+is taken over the canonical re-encoding of a decoded transport encoding, as
+[ast-encoding.md](./ast-encoding.md) requires.
 
 ## Worked Byte Examples
 
