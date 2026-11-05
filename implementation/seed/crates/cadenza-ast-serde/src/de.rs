@@ -59,6 +59,24 @@ fn int_i128(iv: &IntValue) -> Result<i128> {
     }
 }
 
+/// The signed value of `iv`, refused outside `min..=max`, the range of the target width.
+fn int_in(iv: &IntValue, min: i128, max: i128) -> Result<i128> {
+    let v = int_i128(iv)?;
+    if v < min || v > max {
+        return Err(Error::IntOutOfRange);
+    }
+    Ok(v)
+}
+
+/// The unsigned value of `iv`, refused above `max`, the largest value of the target width.
+fn uint_in(iv: &IntValue, max: u128) -> Result<u128> {
+    let v = int_u128(iv)?;
+    if v > max {
+        return Err(Error::IntOutOfRange);
+    }
+    Ok(v)
+}
+
 /// The serde `Deserializer` over a borrowed [`Arenas`], positioned at one node.
 #[derive(Clone, Copy)]
 pub struct AstDeserializer<'de> {
@@ -157,19 +175,22 @@ impl<'de> de::Deserializer<'de> for AstDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_i64(int_i128(self.read_int()?)? as i64)
+        let v = int_in(self.read_int()?, i8::MIN.into(), i8::MAX.into())?;
+        visitor.visit_i64(v as i64)
     }
     fn deserialize_i16<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_i64(int_i128(self.read_int()?)? as i64)
+        let v = int_in(self.read_int()?, i16::MIN.into(), i16::MAX.into())?;
+        visitor.visit_i64(v as i64)
     }
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_i64(int_i128(self.read_int()?)? as i64)
+        let v = int_in(self.read_int()?, i32::MIN.into(), i32::MAX.into())?;
+        visitor.visit_i64(v as i64)
     }
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value>
     where
@@ -192,19 +213,22 @@ impl<'de> de::Deserializer<'de> for AstDeserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u64(int_u128(self.read_int()?)? as u64)
+        let v = uint_in(self.read_int()?, u8::MAX.into())?;
+        visitor.visit_u64(v as u64)
     }
     fn deserialize_u16<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u64(int_u128(self.read_int()?)? as u64)
+        let v = uint_in(self.read_int()?, u16::MAX.into())?;
+        visitor.visit_u64(v as u64)
     }
     fn deserialize_u32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u64(int_u128(self.read_int()?)? as u64)
+        let v = uint_in(self.read_int()?, u32::MAX.into())?;
+        visitor.visit_u64(v as u64)
     }
     fn deserialize_u64<V>(self, visitor: V) -> Result<V::Value>
     where
