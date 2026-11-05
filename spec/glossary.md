@@ -36,6 +36,11 @@
 - **Binary AST** — the stable binary serialization of the canonical representation; the canonical
   stored form of a program, and the form a program is hashed as and handed to the compiler as. Fixed
   by the ast-encoding contract.
+- **Transport encoding** - a byte encoding of an abstract syntax tree in the binary AST's format,
+  written for a message between programs rather than as a program's stored form: any encoding a
+  conforming decoder accepts and decodes to the tree, under the same container header as the canonical
+  form but not necessarily in its canonical byte form. It is decoded like the canonical form, and is
+  never stored, hashed, or handed to the compiler as received. Fixed by the ast-encoding contract.
 - **Symbol prelude** — the list, carried by a binary AST, of the symbols its nodes reference; it makes
   a file self-contained, since a node names its kind by referencing a prelude symbol by index rather
   than by an external registry.
