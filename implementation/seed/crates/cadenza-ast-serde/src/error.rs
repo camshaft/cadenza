@@ -9,9 +9,10 @@ pub enum Error {
     /// A `serde` error carrying its own message (a required field missing, a length mismatch, a
     /// custom `de::Error::custom`, etc.).
     Message(String),
-    /// `from_bytes` was handed bytes that are not a valid canonical binary-AST (`codec::decode`
-    /// returned `None`).
-    MalformedBinaryAst,
+    /// `from_bytes` was handed bytes that the codec refuses (`codec::decode_detailed` answered
+    /// `Err`). Carries the codec's reason, so a caller tells bytes that end early, a format version
+    /// or a value kind newer than this reader, and damaged bytes apart.
+    MalformedBinaryAst(cadenza_ast::codec::DecodeError),
     /// The decoded AST node did not have the shape the target type expects — e.g. a bool was
     /// requested but the node is an integer atom, or a struct was requested but the node is not a
     /// record. Carries a short description of the mismatch.
@@ -27,7 +28,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Message(m) => write!(f, "{m}"),
-            Error::MalformedBinaryAst => write!(f, "input is not a valid canonical binary-AST"),
+            Error::MalformedBinaryAst(reason) => {
+                write!(f, "input is not a valid binary-AST: {reason:?}")
+            }
             Error::UnexpectedShape(m) => write!(f, "unexpected AST shape: {m}"),
             Error::IntOutOfRange => write!(f, "integer value out of range for the target type"),
             Error::BadChar => write!(f, "AST char leaf is not a valid scalar value"),
