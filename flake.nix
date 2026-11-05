@@ -8281,6 +8281,8 @@
             #     staleness natively, but NOT the through-nix hash-from-bytes reproduction — that's this.
             #   · the example project's @test suite run through nix.
             #   · the pure-eval closure-assert guard.
+            #   - ast-wasm32, the wasm32-unknown-unknown build of cadenza-ast + cadenza-ast-serde (also in localGate),
+            #     which no other checks.yml job builds.
             # The advisory job runs `nix build .#checks.<sys>.flake-repro-backstop` (minutes, cache-warm) instead
             # of `nix flake check` (48m). Coverage of the required set is unchanged (those jobs still run); only
             # the redundant re-run is dropped. `nix flake check` locally/in devShell still builds everything.
@@ -8288,7 +8290,7 @@
               {
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
                   contractHashesValid harnessRunsAll
-                  exampleProjectTests crateClosureAssert;
+                  exampleProjectTests crateClosureAssert astWasm32Check;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
             '';
