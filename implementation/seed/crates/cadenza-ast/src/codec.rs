@@ -826,6 +826,9 @@ mod tests {
         assert_eq!(a.comment_wrapped_form(plain), None);
     }
 
+    //= spec/contracts/ast-binary-format.md#additive-evolution-of-this-contract
+    //= type=test
+    //# A change that alters the bytes that an already-encodable tree or typed value encodes to MUST carry a container version increment and a stated migration path.
     #[test]
     fn value_encode_of_a_framed_int_tuple_is_the_colon_framed_golden() {
         // CROSS-BACKEND byte-identity pin (mirror of cdz-runtime's
@@ -2172,9 +2175,6 @@ mod tests {
     //= spec/contracts/ast-binary-format.md#additive-evolution-of-this-contract
     //= type=test
     //# A change that adds a leaf kind, a structure tag, or a row of the mapping between typed values and trees MUST keep the container version 1.
-    //= spec/contracts/ast-binary-format.md#additive-evolution-of-this-contract
-    //= type=test
-    //# A change that alters the bytes that an already-encodable tree or typed value encodes to MUST carry a container version increment and a stated migration path.
     #[test]
     fn the_spec_kind_list_and_worked_examples_match_the_codec_kinds() {
         // The kinds this codec defines, read from its own decoder: a defined kind byte with no body
