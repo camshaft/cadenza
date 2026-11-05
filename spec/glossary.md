@@ -36,6 +36,10 @@
 - **Binary AST** — the stable binary serialization of the canonical representation; the canonical
   stored form of a program, and the form a program is hashed as and handed to the compiler as. Fixed
   by the ast-encoding contract.
+- **Typed value** - a value of a declared type, such as a record, a list, an optional value or an
+  enumeration variant, as a program holds it before it is written as a binary AST.
+- **Typed mapping** - the one binary AST tree each typed value is written as, and how a decoder reads
+  that tree back. Fixed by the ast-typed-values contract.
 - **Symbol prelude** — the list, carried by a binary AST, of the symbols its nodes reference; it makes
   a file self-contained, since a node names its kind by referencing a prelude symbol by index rather
   than by an external registry.
