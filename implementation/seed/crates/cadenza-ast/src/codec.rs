@@ -1018,7 +1018,8 @@ mod tests {
         // `encode` of the arena, so the bytes a sender hashes and the bytes a receiver re-encodes
         // agree. The test doesn't assert how many leaves the canonical bytes list: the encoder rule
         // of ast-binary-format.md says they list each distinct leaf once, while canonicalization
-        // keeps these two leaves apart by id, which the compiler's value-form templates rely on.
+        // keeps these two leaves apart by id. The compiler writes its value-form templates as built,
+        // so they don't rely on either count.
         let mut b = Builder::new();
         let first = b.leaf_unique(Leaf::Name("a".into()));
         let second = b.leaf_unique(Leaf::Name("a".into()));
