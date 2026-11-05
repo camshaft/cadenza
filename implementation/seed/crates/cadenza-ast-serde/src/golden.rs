@@ -533,7 +533,7 @@ fn the_typed_mapping_writes_only_its_listed_leaf_kinds() {
 #[test]
 fn a_decoder_refuses_an_integer_its_target_cant_hold() {
     // 300 and -1 into 8-bit targets, and 2^64 + 1, which a narrowing to 64 bits before the range
-    // check would wrap to 1, into every target of fewer than 64 bits.
+    // check would wrap to 1, into every integer target of 64 bits or fewer.
     refused::<u8>(&example("H 01 00 02 01 2C 01 00 00 00"));
     refused::<i8>(&example("H 01 00 02 01 2C 01 00 00 00"));
     refused::<u8>(&example("H 01 03 01 01 01 00 00 00"));
@@ -541,9 +541,11 @@ fn a_decoder_refuses_an_integer_its_target_cant_hold() {
     refused::<u8>(&past_64_bits);
     refused::<u16>(&past_64_bits);
     refused::<u32>(&past_64_bits);
+    refused::<u64>(&past_64_bits);
     refused::<i8>(&past_64_bits);
     refused::<i16>(&past_64_bits);
     refused::<i32>(&past_64_bits);
+    refused::<i64>(&past_64_bits);
 }
 
 /// Assert that `bytes` don't decode into `T`, with the answer for an integer out of `T`'s range.
