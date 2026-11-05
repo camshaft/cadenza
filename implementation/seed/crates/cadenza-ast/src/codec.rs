@@ -292,6 +292,8 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
     // source order (siblings left to right, each list after its children) is already canonical
     // (leaves interned/deduped on insert), so the bytes match; a `decode`d arena is canonical only
     // when the bytes it was decoded from were canonical, and a transport encoding's need not be.
+    //= spec/contracts/ast-binary-format.md#equal-trees-encode-to-identical-bytes
+    //# An encoder MUST produce, for the stored, hashed, and compiled forms of a given abstract syntax tree, the one canonical byte sequence: the leaf pool MUST list each distinct leaf exactly once (leaves are deduplicated by value) and the leaf pool and the structure pool MUST be ordered by a deterministic function of the tree alone, independent of the order in which nodes were constructed, so that two equal trees produce identical bytes.
     #[cfg(feature = "std")]
     let canon = crate::canon::canonicalize(arenas);
     #[cfg(feature = "std")]
@@ -328,8 +330,14 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
 /// decoded transport encoding returns the bytes received, not the canonical ones.
 pub fn encode_as_built(arenas: &Arenas) -> Vec<u8> {
     let mut out = Vec::new();
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //# A transport encoding MUST begin with the same container header as the canonical byte sequence, so that a reader does not need a second container version to read it.
     out.extend_from_slice(&SCHEMA_HEADER);
 
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //# A transport encoding MAY be any byte sequence that a decoder conforming to this document accepts and decodes to the tree it encodes, within the rule below for its leaf pool.
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //# A transport encoding MUST list each distinct leaf exactly once, as the canonical byte sequence does, so that the canonical re-encoding of the tree it decodes to is that tree's canonical byte sequence.
     leb128::write_u64(&mut out, arenas.leaves.len() as u64);
     for leaf in &arenas.leaves {
         write_leaf(&mut out, leaf);
@@ -494,6 +502,8 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
 /// integrity, tree-ness (no cycle or shared subtree, a decode-bomb guard), and that the whole input
 /// is consumed.
 pub fn decode_detailed(bytes: &[u8]) -> Result<Arenas, DecodeError> {
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //# A decoder MUST decode a transport encoding by the same rules as the canonical byte sequence, since the bytes do not say which way they were encoded.
     // Header. Fewer than 8 bytes = the input ended mid-header = truncated; 8 present but not this
     // codec's tag = another version of this format (UnknownVersion) or another format (BadHeader).
     let header = bytes.get(..8).ok_or(DecodeError::Truncated)?;
@@ -808,6 +818,15 @@ mod tests {
     //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
     //= type=test
     //# A content address or hash MUST be taken over the canonical re-encoding of the decoded tree, never over received bytes.
+    //= spec/contracts/ast-binary-format.md#equal-trees-encode-to-identical-bytes
+    //= type=test
+    //# An encoder MUST produce, for the stored, hashed, and compiled forms of a given abstract syntax tree, the one canonical byte sequence: the leaf pool MUST list each distinct leaf exactly once (leaves are deduplicated by value) and the leaf pool and the structure pool MUST be ordered by a deterministic function of the tree alone, independent of the order in which nodes were constructed, so that two equal trees produce identical bytes.
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //= type=test
+    //# A transport encoding MAY be any byte sequence that a decoder conforming to this document accepts and decodes to the tree it encodes, within the rule below for its leaf pool.
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //= type=test
+    //# A transport encoding MUST begin with the same container header as the canonical byte sequence, so that a reader does not need a second container version to read it.
     #[test]
     fn encode_as_built_writes_the_pools_as_given_and_decodes_to_the_same_tree() {
         let a = operand_first();
@@ -865,6 +884,9 @@ mod tests {
         assert_eq!(encode_as_built(&a), encode(&a), "the canonical bytes");
     }
 
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //= type=test
+    //# A decoder MUST decode a transport encoding by the same rules as the canonical byte sequence, since the bytes do not say which way they were encoded.
     #[test]
     fn encode_as_built_writes_a_shared_subtree_as_given_and_decode_refuses_it() {
         // `(x x)` with the one `x` node as both children: a DAG, not a tree. `encode` writes each
@@ -919,6 +941,29 @@ mod tests {
         assert_eq!(encode(&back), encode(&a), "the canonical bytes drop it");
         let canonical = decode(&encode(&a)).expect("canonical bytes decode");
         assert_eq!(canonical.leaves.len(), 1, "`x` alone");
+    }
+
+    //= spec/contracts/ast-binary-format.md#equal-trees-encode-to-identical-bytes
+    //= type=test
+    //# An encoder MUST produce, for the stored, hashed, and compiled forms of a given abstract syntax tree, the one canonical byte sequence: the leaf pool MUST list each distinct leaf exactly once (leaves are deduplicated by value) and the leaf pool and the structure pool MUST be ordered by a deterministic function of the tree alone, independent of the order in which nodes were constructed, so that two equal trees produce identical bytes.
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //= type=test
+    //# A transport encoding MUST list each distinct leaf exactly once, as the canonical byte sequence does, so that the canonical re-encoding of the tree it decodes to is that tree's canonical byte sequence.
+    #[test]
+    fn a_leaf_value_at_two_occurrences_is_listed_once_in_both_encodings() {
+        // `(x x)`: two occurrences of one `Name` value. `Builder::name` interns the value, so the
+        // arena holds one `x` leaf. A decoder keeps the leaf pool as the bytes list it, so each
+        // decoded arena's leaf pool is the one its bytes list.
+        let mut b = Builder::new();
+        let first = b.name("x");
+        let second = b.name("x");
+        let root = b.list(vec![first, second]);
+        let a = b.finish(root);
+        let from_transport = decode(&encode_as_built(&a)).expect("the transport bytes decode");
+        assert_eq!(from_transport.leaves.len(), 1, "the transport encoding lists `x` once");
+        let from_canonical = decode(&encode(&a)).expect("the canonical bytes decode");
+        assert_eq!(from_canonical.leaves.len(), 1, "the canonical encoding lists `x` once");
+        assert_eq!(encode(&from_transport), encode(&a), "the canonical re-encoding");
     }
 
     /// Encode `a` with `f` a few times; answer the mean time of one call and the bytes written.
