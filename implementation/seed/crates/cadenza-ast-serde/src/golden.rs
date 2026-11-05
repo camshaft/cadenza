@@ -82,7 +82,8 @@ fn example(text: &str) -> Vec<u8> {
 //= type=test
 //# The addition of a row for a kind of typed value that no row maps MUST NOT change the tree of any typed value an existing row maps.
 //= spec/contracts/ast-typed-values.md#additive-evolution-of-this-contract
-//= type=test
+//= type=exception
+//= reason=The rule constrains each later change to this contract, which the review of that change checks; no test of this implementation observes whether a changed tree carries a container version increment and a stated migration path.
 //# A change to the tree that an existing row writes MUST carry a container version increment and a stated migration path.
 /// Check one worked example: `value` encodes to the example's bytes, and those bytes decode back
 /// to `value`. Then check `value`'s transport encoding against the example's bytes, as
