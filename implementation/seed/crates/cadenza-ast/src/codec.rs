@@ -904,7 +904,7 @@ mod tests {
         let back = decode(&transport).expect("the transport bytes decode");
         assert_eq!(back.leaves.len(), 2, "decode keeps both copies");
         assert_eq!(encode(&back), canonical, "the sender's canonical bytes");
-        assert!(decode(&canonical).is_ok(), "the canonical bytes decode");
+        assert!(decode(&canonical).is_some(), "the canonical bytes decode");
     }
 
     #[test]
