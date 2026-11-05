@@ -264,7 +264,9 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
 /// of one node only. A node reachable twice (a shared subtree) is written as given, and [`decode`]
 /// refuses those bytes with [`DecodeError::NotATree`]; [`encode`] under `std` writes each occurrence as
 /// a node of its own instead. Nodes and leaves the root does not reach are written as given too, and a
-/// decoder accepts them.
+/// decoder accepts them, so a caller whose arena may hold values outside the tree, such as one it
+/// edited or decoded, sends those values to the receiver; `encode` drops them. A leaf value listed at
+/// two ids is written twice, and the canonical re-encoding lists it once.
 ///
 /// Public under every feature; in the `no_std` minimal core, [`encode`] is this same walk.
 pub fn encode_as_built(arenas: &Arenas) -> Vec<u8> {
@@ -814,6 +816,60 @@ mod tests {
         let canonical = encode(&a);
         let back = decode(&canonical).expect("encode writes a tree");
         assert!(a.structurally_eq(&back), "the tree the arena denotes");
+    }
+
+    //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
+    //= type=test
+    //# A content address or hash MUST be taken over the canonical re-encoding of the decoded tree, never over received bytes.
+    #[test]
+    fn a_leaf_listed_twice_re_encodes_to_the_canonical_bytes() {
+        // A transport encoding may list one leaf value twice. The canonical re-encoding of what it
+        // decodes to lists the value once, as `encode` of the same tree from a `Builder` does.
+        let mut twice = SCHEMA_HEADER.to_vec();
+        twice.push(2); // leaf count
+        twice.extend_from_slice(&[KIND_NAME, 1, b'a']); // leaf 0 = `a`
+        twice.extend_from_slice(&[KIND_NAME, 1, b'a']); // leaf 1 = `a` again
+        twice.push(3); // structure count
+        twice.extend_from_slice(&[TAG_ATOM, 0]); // node 0 = atom of leaf 0
+        twice.extend_from_slice(&[TAG_ATOM, 1]); // node 1 = atom of leaf 1
+        twice.extend_from_slice(&[TAG_LIST, 2, 0, 1]); // node 2 = (node 0 node 1)
+        twice.push(2); // root = node 2
+        let mut canonical = SCHEMA_HEADER.to_vec();
+        canonical.push(1); // leaf count
+        canonical.extend_from_slice(&[KIND_NAME, 1, b'a']); // leaf 0 = `a`
+        canonical.push(3); // structure count
+        canonical.extend_from_slice(&[TAG_ATOM, 0]); // node 0 = atom of leaf 0
+        canonical.extend_from_slice(&[TAG_ATOM, 0]); // node 1 = atom of leaf 0
+        canonical.extend_from_slice(&[TAG_LIST, 2, 0, 1]); // node 2 = (node 0 node 1)
+        canonical.push(2); // root = node 2
+
+        let back = decode(&twice).expect("a leaf listed twice decodes");
+        assert_eq!(back.leaves.len(), 2, "decode keeps both copies");
+        let mut b = Builder::new();
+        let first = b.name("a");
+        let second = b.name("a");
+        let root = b.list(vec![first, second]);
+        let built = b.finish(root);
+        assert_eq!(built.leaves.len(), 1, "the Builder interns `a` once");
+        assert!(back.structurally_eq(&built), "the same tree");
+        assert!(!crate::canon::is_canonical(&back), "not canonical");
+        assert_eq!(encode(&built), canonical, "the Builder's tree");
+        assert_eq!(encode(&back), canonical, "one canonical encoding");
+    }
+
+    #[test]
+    fn encode_as_built_keeps_entries_the_root_does_not_reach() {
+        // `dead` is a node and a leaf that the root `(x)` doesn't reach.
+        let mut b = Builder::new();
+        let _dead = b.name("dead");
+        let x = b.name("x");
+        let root = b.list(vec![x]);
+        let a = b.finish(root);
+        let back = decode(&encode_as_built(&a)).expect("dead entries decode");
+        assert_eq!(back, a, "the arena as built, the dead entry included");
+        assert_eq!(encode(&back), encode(&a), "the canonical bytes drop it");
+        let canonical = decode(&encode(&a)).expect("canonical bytes decode");
+        assert_eq!(canonical.leaves.len(), 1, "`x` alone");
     }
 
     /// Encode `a` with `f` a few times; answer the mean time of one call and the bytes written.
