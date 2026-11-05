@@ -23,6 +23,9 @@ pub mod de;
 pub mod error;
 pub mod ser;
 
+#[cfg(test)]
+mod golden;
+
 pub use de::AstDeserializer;
 pub use error::{Error, Result};
 pub use ser::AstSerializer;
