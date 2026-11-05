@@ -49,6 +49,10 @@ Two abstract syntax trees that are equal MUST have identical binary encodings.
 
 Decoding a canonical binary encoding MUST yield the abstract syntax tree it was encoded from.
 
+A transport encoding MAY differ from the canonical encoding.
+
+A content address or hash MUST be taken over the canonical re-encoding of the decoded tree, never over received bytes.
+
 ### The Encoding Is General And Stable
 
 The binary encoding MUST represent an abstract syntax tree as a tree of nodes, each a symbol applied to an ordered sequence of child nodes, so that the container form is independent of which node kinds the language currently defines.
