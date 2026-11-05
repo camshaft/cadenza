@@ -267,16 +267,12 @@ mod tests {
 
     #[test]
     fn int_out_of_range_is_an_error() {
-        // A u64::MAX value cannot deserialize into a u8. Because the full u64 is handed to serde's
-        // `visit_u64`, serde's own width-range check rejects it (a descriptive "expected u8"), which
-        // is exactly the behavior we want — an out-of-range integer is a hard error, not a silent
-        // truncation.
+        // A u64::MAX value cannot deserialize into a u8: the reader checks the value against the
+        // target width's range before it visits, so an out-of-range integer is a hard error, not a
+        // silent truncation.
         let bytes = to_bytes(&(u64::MAX)).unwrap();
         let r: Result<u8> = from_bytes(&bytes);
-        assert!(
-            r.is_err(),
-            "u64::MAX must not deserialize into u8, got {r:?}"
-        );
+        assert_eq!(r, Err(Error::IntOutOfRange));
     }
 
     #[test]
