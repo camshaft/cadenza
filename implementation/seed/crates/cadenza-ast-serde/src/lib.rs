@@ -37,8 +37,8 @@
 //! - [`to_bytes`]: a typed value to its canonical bytes, the one byte form of its tree, for a value
 //!   that is stored, hashed or compiled.
 //! - [`to_transport_bytes`]: a typed value to a transport encoding, for a message. A receiver that
-//!   stores or hashes the value takes the canonical re-encoding of the tree it decodes, never the
-//!   bytes it received.
+//!   stores or hashes the value it reads encodes it again with [`to_bytes`], never the bytes it
+//!   received.
 //! - [`from_bytes`]: bytes of either encoding to a typed value. Bytes the codec refuses are
 //!   [`Error::MalformedBinaryAst`] with the codec's reason, so a caller tells a message that
 //!   ended early, a format version or a value kind newer than this reader, and damaged bytes
@@ -86,8 +86,9 @@ where
 /// Serialize `value` to a transport encoding: the tree [`to_arenas`] builds, written as built by
 /// `codec::encode_as_built`, without the `canonicalize` pass of [`to_bytes`]. It is for a message
 /// between programs: [`from_bytes`] reads these bytes as it reads the canonical ones, to an equal
-/// value. These bytes aren't a content address; a receiver that stores or hashes the value takes
-/// the canonical re-encoding of the tree it decodes, such as `codec::encode` of that tree.
+/// value. These bytes aren't a content address; a receiver that stores or hashes the value encodes
+/// the value it reads again with [`to_bytes`], whose bytes list each leaf value once whatever the
+/// sender wrote.
 pub fn to_transport_bytes<T>(value: &T) -> Result<Vec<u8>>
 where
     T: ?Sized + Serialize,
@@ -387,6 +388,26 @@ mod tests {
         assert_eq!(back, value);
         let tree = codec::decode(&transport).expect("the transport encoding decodes");
         assert_eq!(codec::encode(&tree), to_bytes(&value).expect("encode"));
+    }
+
+    #[test]
+    fn a_value_received_with_one_leaf_value_at_two_ids_re_encodes_with_the_value_once() {
+        // A sender that breaks the transport rule lists one leaf value at two leaf ids. The typed
+        // value that `from_bytes` reads from those bytes doesn't keep leaf ids, so `to_bytes` of it
+        // lists the value once, as the canonical bytes of a conforming sender's message do.
+        let mut b = Builder::new();
+        let first = b.leaf_unique(cadenza_ast::ast::Leaf::Str(std::sync::Arc::from("same")));
+        let second = b.leaf_unique(cadenza_ast::ast::Leaf::Str(std::sync::Arc::from("same")));
+        let x = b.atom(first);
+        let y = b.atom(second);
+        let root = b.compound(cadenza_ast::ast::CompoundCtor::Tuple, &[x, y]);
+        let received = codec::encode_as_built(&b.finish(root));
+        assert_eq!(codec::decode(&received).expect("a tree").leaves.len(), 3);
+        let value: (String, String) = from_bytes(&received).expect("decode");
+        assert_eq!(value, ("same".to_string(), "same".to_string()));
+        let canonical = to_bytes(&value).expect("encode");
+        assert_eq!(codec::decode(&canonical).expect("a tree").leaves.len(), 2);
+        assert_eq!(canonical, to_bytes(&("same", "same")).expect("encode"));
     }
 
     #[test]
