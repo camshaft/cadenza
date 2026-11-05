@@ -22,16 +22,25 @@ the bytes (`cadenza-ast/src/ast.rs`, `Builder::leaf_name`). A read of the produc
 - `rcdzc` takes `cadenza-ast` with `default-features = false` and `features = ["canon"]`. Its
   compile-time `Ast.encode` fold (`lower/ast_reflect.rs`, `encode_ast_value`) writes `Leaf::Name(s)` for
   a constant string `s` (`Core::ConstStr`), through a `Builder` that normalizes only in a build where
-  another crate turns on `cadenza-ast`'s `std` feature. The reader normalizes a string literal; this
-  read didn't establish whether a string the compiler computes at compile time can fall outside NFC.
-  The other `Name` leaves of that file are ASCII literals, such as `->`, or copies of names from the
-  input tree.
+  another crate turns on `cadenza-ast`'s `std` feature. The reader normalizes a string literal, but a
+  string the compiler computes at compile time can fall outside NFC: `String.from-bytes` of a constant
+  `Bytes.of` folds to a constant string through `std::str::from_utf8`, which checks that the bytes are
+  well-formed UTF-8 and doesn't compose them (`lower/runtime_ops.rs`, `lower_str_from_bytes`, which the
+  `Prim::StrFromBytes` arm of `lower/compute.rs` calls). The comment of the `Prim::SymbolOf` arm of
+  `lower/compute.rs` says the same: "`String.from-bytes` of NFD bytes folds to a `ConstStr` WITHOUT
+  normalizing", and "rcdzc's core excludes `unicode-normalization`, so the compiler cannot fold the NFC
+  here". So an `Ast.Name` whose text is such a constant, such as the bytes of `cafe` followed by
+  U+0301, reaches `encode_ast_value`'s `Leaf::Name(s)` outside NFC in a build that leaves
+  `cadenza-ast`'s `std` feature off. `String.concat` folds only two all-ASCII constants (the
+  `Prim::StrConcat` arm of `lower/compute.rs`), whose join is ASCII. The other `Name` leaves of that
+  file are ASCII literals, such as `->`, or copies of names from the input tree.
 
 **Why.** The NFC rule was stated as an obligation of the encoder's deduplication, and the `std`
 `Builder` meets it by normalizing as it interns. The no_std core can't normalize, since its NFC
 dependency is std-only, and its comment assumed that it never builds names from unnormalized text.
 That holds for decode, which builds a `Name` from bytes a producer already wrote, but not for a
-producer that builds a `Name` from a runtime string.
+producer that builds a `Name` from a runtime string, or from a constant string that the compiler folds
+without normalizing it.
 
 **The requirement it drove.** [ast-binary-format.md](../contracts/ast-binary-format.md), Equal Trees
 Encode To Identical Bytes: an encoder that does not normalize text writes only `Name` leaf text that is
