@@ -348,6 +348,9 @@ mod tests {
         let mut damaged = canonical.clone();
         damaged[0] = b'x';
         assert_eq!(reason(&damaged), codec::DecodeError::BadHeader);
+        // The error's message states the reason.
+        let message = Error::MalformedBinaryAst(codec::DecodeError::UnknownVersion(2)).to_string();
+        assert_eq!(message, "input is not a valid binary-AST: UnknownVersion(2)");
         // Each reason is the one `decode_detailed` answers for the same bytes.
         let refused: [&[u8]; 4] = [ended_early, &newer_version, &newer_kind, &damaged];
         for bytes in refused {
