@@ -14,7 +14,7 @@
 //!       Char | BadChar | BadEscape    [ len:var ][ utf8:bytes ]  (one scalar; BadChar/BadEscape are markers)
 //!       BoolFalse | BoolTrue          (no payload)
 //!       FloatNan | FloatPosInf | FloatNegInf         (no payload — non-finite float values)
-//!       List|Tuple|Record|Map|Set-Ctor | FieldPair | Member   (no payload — native-compound-data heads)
+//!       List|Tuple|Record|Map|Set-Ctor | FieldPair | Member | Rational   (no payload — native-compound-data and rational heads)
 //! [ struct_count:var ]
 //!   for each structure entry, in canonical (post-order) order:
 //!     [ tag:1 ]
@@ -93,7 +93,13 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-// Leaf kind tags. Int folds (sign, radix) into the tag.
+// Leaf kind tags. Int folds (sign, radix) into the tag. Kinds 17 to 27 were appended under the same
+// container version as the earlier kinds, and spec/contracts/ast-binary-format.md lists every kind
+// with a worked byte example, which the test
+// `the_spec_kind_list_and_worked_examples_match_the_codec_kinds` checks against this codec:
+//
+//= spec/contracts/ast-binary-format.md#additive-evolution-of-this-contract
+//# A change that adds a leaf kind, a structure tag, or a row of the mapping between typed values and trees MUST keep the container version 1.
 const KIND_INT_POS_DEC: u8 = 0;
 const KIND_INT_POS_HEX: u8 = 1;
 const KIND_INT_POS_BIN: u8 = 2;
@@ -115,8 +121,9 @@ const KIND_SYM: u8 = 15;
 const KIND_SUFFIXED: u8 = 16;
 // The non-finite float VALUES — payloadless kind tags (like `KIND_BOOL_*`), a single byte with no body,
 // so they are canonical and byte-identical by construction and total over the non-finite space. A
-// frozen-contract assignment shared byte-identically with the rcdzc codec twin (and the runtime's op93/
-// decode, which `include!`s that twin): `Ast.encode` of a computed NaN/±∞ emits one of these.
+// frozen-contract assignment (spec/contracts/ast-binary-format.md), which cdz-runtime's
+// ast-encode/ast-decode ops (93/94) use through their cadenza-ast dependency: `Ast.encode` of a
+// computed NaN/±∞ emits one of these.
 const KIND_FLOAT_NAN: u8 = 17;
 const KIND_FLOAT_POS_INF: u8 = 18;
 const KIND_FLOAT_NEG_INF: u8 = 19;
@@ -124,8 +131,8 @@ const KIND_FLOAT_NEG_INF: u8 = 19;
 // floats), a single byte with no body. A compound literal's HEAD child is one of these leaves, so the
 // compound KIND is recognized by leaf-kind identity (a byte) rather than by comparing the head's text
 // (`native-ast-compound-data`; `DESIGN-native-ast-compound-data.md` D1). Appended after the existing
-// kinds so the assignment is additive-evolution-safe (no renumber); IDENTICAL byte-for-byte in the rcdzc
-// codec twin. `KIND_LIST_CTOR..=KIND_SET_CTOR` are the five collection constructors (a
+// kinds so the assignment is additive-evolution-safe (no renumber), under the same container version.
+// `KIND_LIST_CTOR..=KIND_SET_CTOR` are the five collection constructors (a
 // [`Leaf::Ctor(CompoundCtor)`] head); `KIND_FIELD_PAIR` is the record/map entry head (`=`) and
 // `KIND_MEMBER` the member-access head (`.`).
 const KIND_LIST_CTOR: u8 = 20;
@@ -207,6 +214,8 @@ impl From<crate::leb128::VarErr> for DecodeError {
 /// The 8-byte container version tag: the format's name `cdzast`, then [`FORMAT_VERSION`] as a
 /// two-byte big-endian integer. `decode` verifies it and refuses any bytes with an unrecognized
 /// header, per ast-encoding.md "The Encoding Is Versioned" (see the module header).
+//= spec/contracts/ast-binary-format.md#additive-evolution-of-this-contract
+//# A change that alters the bytes that an already-encodable tree or typed value encodes to MUST carry a container version increment and a stated migration path.
 const SCHEMA_HEADER: [u8; 8] = *b"cdzast\x00\x01";
 
 /// The container format version this codec reads and writes: the last two bytes of its 8-byte
@@ -262,14 +271,14 @@ fn int_kind(neg: bool, radix: Radix) -> u8 {
 ///
 /// Identity taken this way is STABLE across cdzast container-format evolution the same way the kernel's
 /// `Event::hash` is: it hashes the canonical `\x00\x01` bytes, which are format-pinned, so equal schemas
-/// always hash equal regardless of later additive vocabulary growth (new head names need no format bump;
-/// only a genuinely new leaf kind bumps to `\x00\x02`).
+/// always hash equal regardless of later additive vocabulary growth (a new head name, leaf kind
+/// or structure tag keeps the version: spec/contracts/ast-binary-format.md, Additive Evolution).
 pub fn encode(arenas: &Arenas) -> Vec<u8> {
     // Under std, canonicalize to normal form so equal programs encode to identical bytes. `canonicalize`
     // returns a `Cow` — borrowed (no clone/rebuild) when `arenas` is already canonical, which a fresh
     // parse is. The no_std minimal core has no `canon` module and serializes the arena AS GIVEN: a
     // Builder-built or `decode`d arena is already canonical (leaves interned/deduped on insert, structure
-    // in occurrence order), so the bytes match — this mirrors rcdzc's minimal encode, which has no canon.
+    // in occurrence order), so the bytes match.
     #[cfg(feature = "std")]
     let canon = crate::canon::canonicalize(arenas);
     #[cfg(feature = "std")]
@@ -315,9 +324,10 @@ fn write_int_body(out: &mut Vec<u8>, value: &IntValue, radix: Radix) {
     out.extend_from_slice(&value.magnitude);
 }
 
-/// Serialize a float/decimal body: the `negative` flag, the LEB i64 exponent, then the LEB-framed
-/// big-endian significand magnitude (the significand is a non-negative magnitude; its sign lives in
-/// `negative`). Shared by the bare [`Leaf::Float`] leaf and the [`SuffixBody::Float`] body, each after its
+/// Serialize a float/decimal body: the `negative` flag, the exponent as a fixed eight-byte big-endian
+/// i64, then the LEB-framed big-endian significand magnitude (the significand is a non-negative
+/// magnitude; its sign lives in `negative`). Shared by the bare [`Leaf::Float`] leaf and the
+/// [`SuffixBody::Float`] body, each after its
 /// own leading kind/`BODY_FLOAT` byte, so both emit byte-identical bytes. Its inverse is [`read_float_body`].
 fn write_float_body(out: &mut Vec<u8>, d: &Decimal) {
     out.push(d.negative as u8);
@@ -383,7 +393,7 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
             out.push(KIND_NAME);
             write_bytes(out, n.as_bytes());
         }
-        // A symbol leaf — the interned name text (mirrors rcdzc's codec `KIND_SYM`).
+        // A symbol leaf — the interned name text.
         Leaf::Sym(s) => {
             out.push(KIND_SYM);
             write_bytes(out, s.as_bytes());
@@ -1119,7 +1129,7 @@ mod tests {
     #[test]
     fn non_finite_float_leaves_encode_to_the_frozen_payloadless_tags_17_18_19() {
         // The operator-directed non-finite float VALUES (so `Ast.encode` of NaN/±∞ SUCCEEDS) are a
-        // FROZEN contract shared byte-identically across cadenza-ast, the rcdzc codec twin, and the
+        // FROZEN contract (spec/contracts/ast-binary-format.md) that cadenza-ast shares with the
         // runtime's op93/decode: KIND_FLOAT_NAN=17, KIND_FLOAT_POS_INF=18, KIND_FLOAT_NEG_INF=19 —
         // each a single kind byte with NO body (canonical + total). Pin the EXACT tag bytes (a future
         // edit cannot silently renumber them), payloadlessness (a lone-atom leaf section is exactly the
@@ -1167,7 +1177,7 @@ mod tests {
     fn native_compound_ctor_head_leaves_encode_to_the_frozen_payloadless_tags_20_through_26() {
         // The native-compound-data CTOR-HEAD leaves (a compound literal's head is recognized by leaf-KIND
         // identity, not head text — `DESIGN-native-ast-compound-data.md` D1) are a FROZEN wire contract
-        // shared byte-identically with the rcdzc codec twin: KIND_LIST_CTOR=20, TUPLE=21, RECORD=22,
+        // (spec/contracts/ast-binary-format.md): KIND_LIST_CTOR=20, TUPLE=21, RECORD=22,
         // MAP=23, SET=24, FIELD_PAIR(`=`)=25, MEMBER(`.`)=26 — each a single kind byte with NO body,
         // appended after the non-finite floats (19) so the assignment is additive-evolution-safe. Pin the
         // EXACT tag bytes (a future edit cannot silently renumber them), payloadlessness, and equal
@@ -2079,5 +2089,166 @@ mod tests {
         let wide_root = b2.list(kids);
         let wbytes = encode(&b2.finish(wide_root));
         assert!(decode(&wbytes).is_some(), "a 5000-wide arena round-trips");
+    }
+
+    // --- The specification's kind list and worked byte examples, checked against this codec ---
+
+    /// The frozen byte-format specification, read from the repository on each run of these tests.
+    fn binary_format_spec() -> String {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../spec/contracts/ast-binary-format.md"
+        );
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"))
+    }
+
+    /// The lines of the section that the heading line `heading` opens, up to the next heading.
+    fn spec_section<'a>(spec: &'a str, heading: &str) -> Vec<&'a str> {
+        let mut lines = spec.lines();
+        let found = lines.by_ref().any(|line| line.trim_end() == heading);
+        assert!(found, "the specification holds the heading {heading:?}");
+        lines.take_while(|line| !line.starts_with('#')).collect()
+    }
+
+    /// The list items of `section`, each item's wrapped continuation lines joined to it by one space.
+    fn list_items(section: &[&str]) -> Vec<String> {
+        let mut items: Vec<String> = Vec::new();
+        let mut open = false;
+        for line in section {
+            if let Some(text) = line.strip_prefix("- ") {
+                items.push(text.to_string());
+                open = true;
+            } else if open && line.starts_with(' ') && !line.trim().is_empty() {
+                let item = items.last_mut().expect("an open item");
+                item.push(' ');
+                item.push_str(line.trim());
+            } else {
+                open = false;
+            }
+        }
+        items
+    }
+
+    /// The text of the code span that `text` opens with, and the text after that span.
+    fn code_span(text: &str) -> Option<(&str, &str)> {
+        let inner = text.strip_prefix('`')?;
+        let end = inner.find('`')?;
+        Some((&inner[..end], &inner[end + 1..]))
+    }
+
+    /// The leaf kinds the specification's kind list defines. Each entry opens with a code span holding
+    /// one kind byte in decimal, or with two such spans joined by an en dash for a range of kinds.
+    fn spec_kind_list(spec: &str) -> Vec<u8> {
+        let heading = "### A Leaf Is A Kind Byte Then A Kind-Determined Body";
+        let mut kinds = Vec::new();
+        for item in list_items(&spec_section(spec, heading)) {
+            let (first, rest) = code_span(&item).expect("a kind entry opens with a code span");
+            let first: u8 = first.parse().expect("a kind entry names its kind byte in decimal");
+            let last: u8 = match rest.strip_prefix('\u{2013}').and_then(code_span) {
+                Some((last, _)) => last.parse().expect("a range's last kind byte is in decimal"),
+                None => first,
+            };
+            kinds.extend(first..=last);
+        }
+        kinds
+    }
+
+    /// The specification's worked byte examples. Each item shows a leaf's bytes, kind byte first, in
+    /// hexadecimal, as the code span right after the item's first `: `.
+    fn spec_worked_examples(spec: &str) -> Vec<Vec<u8>> {
+        let mut examples = Vec::new();
+        for item in list_items(&spec_section(spec, "### Per-Field Encodings")) {
+            let at = item.find(": `").expect("a worked example shows its bytes after `: `");
+            let (hex, _) = code_span(&item[at + 2..]).expect("the bytes are one code span");
+            let mut bytes = Vec::new();
+            for byte in hex.split_whitespace() {
+                bytes.push(u8::from_str_radix(byte, 16).expect("a byte in hexadecimal"));
+            }
+            examples.push(bytes);
+        }
+        examples
+    }
+
+    //= spec/contracts/ast-binary-format.md#additive-evolution-of-this-contract
+    //= type=test
+    //# A change that adds a leaf kind, a structure tag, or a row of the mapping between typed values and trees MUST keep the container version 1.
+    //= spec/contracts/ast-binary-format.md#additive-evolution-of-this-contract
+    //= type=test
+    //# A change that alters the bytes that an already-encodable tree or typed value encodes to MUST carry a container version increment and a stated migration path.
+    #[test]
+    fn the_spec_kind_list_and_worked_examples_match_the_codec_kinds() {
+        // The kinds this codec defines, read from its own decoder: a defined kind byte with no body
+        // after it reads as a payloadless leaf or as a truncated body, and any other byte is refused.
+        let mut codec_kinds = Vec::new();
+        for kind in 0..=u8::MAX {
+            let read = read_leaf(&mut Reader::new(&[kind]));
+            if matches!(read, Ok(_) | Err(DecodeError::Truncated)) {
+                codec_kinds.push(kind);
+            }
+        }
+
+        // The specification's kind list names each of them once, and no other byte.
+        let spec = binary_format_spec();
+        let mut spec_kinds = spec_kind_list(&spec);
+        spec_kinds.sort_unstable();
+        assert_eq!(
+            spec_kinds, codec_kinds,
+            "the specification's kind list names each leaf kind the codec defines, once"
+        );
+
+        // Each worked example is exactly one leaf, which the codec reads and writes as the same
+        // bytes, and which decodes under the version 1 header as the lone atom of a binary AST.
+        let mut example_kinds = Vec::new();
+        for example in spec_worked_examples(&spec) {
+            let mut r = Reader::new(&example);
+            let Ok(leaf) = read_leaf(&mut r) else {
+                panic!("worked example {example:02X?} doesn't read as a leaf");
+            };
+            assert!(r.at_end(), "worked example {example:02X?} is exactly one leaf");
+            let mut written = Vec::new();
+            write_leaf(&mut written, &leaf);
+            assert_eq!(written, example, "the codec writes worked example {example:02X?}");
+
+            let mut container = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut container, 1); // leaf count
+            container.extend_from_slice(&example);
+            leb128::write_u64(&mut container, 1); // structure count
+            container.push(TAG_ATOM);
+            leb128::write_u64(&mut container, 0); // the atom's leaf id
+            leb128::write_u64(&mut container, 0); // root
+            let Ok(arenas) = decode_detailed(&container) else {
+                panic!("worked example {example:02X?} doesn't decode as a binary AST");
+            };
+            assert_eq!(arenas.leaves, vec![leaf], "the leaf of worked example {example:02X?}");
+            example_kinds.push(example[0]);
+        }
+
+        // And every kind the codec defines has at least one worked example.
+        for kind in &codec_kinds {
+            assert!(
+                example_kinds.contains(kind),
+                "leaf kind {kind} has no worked byte example in the specification"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_outside_nfc_and_its_nfc_spelling_encode_to_the_same_bytes() {
+        // Under `std` the Builder normalizes `Name` text to NFC as it interns it, so a `Name` built
+        // from a decomposed spelling and one built from its NFC spelling encode to the same bytes,
+        // which hold the NFC text.
+        let decomposed = "cafe\u{0301}";
+        let precomposed = "caf\u{00e9}";
+        assert_ne!(decomposed, precomposed, "the two spellings differ before normalization");
+        let encode_name = |text: &str| {
+            let mut b = Builder::new();
+            let root = b.name(text);
+            encode(&b.finish(root))
+        };
+        assert_eq!(encode_name(decomposed), encode_name(precomposed));
+        let mut expected = SCHEMA_HEADER.to_vec();
+        expected.extend_from_slice(&[1, KIND_NAME, 5, b'c', b'a', b'f', 0xC3, 0xA9]);
+        expected.extend_from_slice(&[1, TAG_ATOM, 0, 0]);
+        assert_eq!(encode_name(decomposed), expected, "the bytes hold the NFC text");
     }
 }
