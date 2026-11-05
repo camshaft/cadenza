@@ -10,6 +10,15 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A message between programs needs a valid encoding of the tree, not its canonical byte form](./2026-11-05-a-message-needs-a-valid-encoding-not-the-canonical-byte-form.md):
+  the binary AST became the data exchange format for messages between programs, and every encoder had to
+  write the canonical byte form, which only storage, hashing, and compilation need. A decoder already
+  accepted the pools in any order, so the amendment narrows the encoder rule to the stored, hashed, and
+  compiled forms, adds the transport encoding (any valid encoding of the tree, under the same header), and
+  takes a content address over the canonical re-encoding of a decoded tree. Additive: no stored or derived
+  bytes change. Drove ast-binary-format.md sections "Equal Trees Encode To Identical Bytes" and "A
+  Transport Encoding Is Any Valid Encoding Of The Tree", and two requirements in ast-encoding.md section
+  "The Encoding Is A Bijection With One Canonical Byte Form".
 - [Pushing integers end-to-end to runtime is the forcing function that validates the foundation](./2026-07-11-pushing-integers-end-to-end-to-runtime-is-the-forcing-function-that-validates-the-foundation.md)
   — the operator's "get integers really solid to runtime before layering anything on" push, and *why* it drove
   whole-system thinking. A thin scalar slice that only *folds* never exercises the boundary, the runtime trap
