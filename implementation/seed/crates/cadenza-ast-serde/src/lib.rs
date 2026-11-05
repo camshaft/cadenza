@@ -1,4 +1,4 @@
-//! `cadenza-ast-serde` — a serde data format whose serialized bytes ARE the canonical binary-AST.
+//! `cadenza-ast-serde` — a serde data format whose wire is the binary-AST.
 //!
 //! serde defines a `Serializer`/`Deserializer` trait model that concrete formats (serde_json,
 //! ciborium, …) implement; this crate is one more such format, with `cadenza_ast`'s binary-AST as its
@@ -7,8 +7,11 @@
 //! - [`to_bytes`] drives serde's serialization over a `T: Serialize`, building a `cadenza_ast` value
 //!   tree via [`Builder`], then `cadenza_ast::codec::encode`s it — so the OUTPUT is byte-for-byte the
 //!   canonical binary-AST (the one data-exchange format; this is NOT a competing wire).
-//! - [`from_bytes`] `cadenza_ast::codec::decode`s the binary-AST and drives serde's (type-directed)
-//!   deserialization over the resulting tree.
+//! - [`to_transport_bytes`] builds the same tree and writes it with
+//!   `cadenza_ast::codec::encode_as_built`: a transport encoding for a message between programs,
+//!   without the canonical form's `canonicalize` pass.
+//! - [`from_bytes`] decodes either encoding with `cadenza_ast::codec::decode_detailed` and drives
+//!   serde's (type-directed) deserialization over the resulting tree.
 //! - [`to_arenas`] / [`from_arenas`] are the same, one step in from the bytes — for a caller that
 //!   already holds an [`Arenas`] (e.g. to compare a derived encoding against a hand-written one during
 //!   the `*_wire.rs` migration).
@@ -18,6 +21,29 @@
 //!
 //! Scope: this is a HOST-SIDE / tooling convenience layer (std-only). The canonical wire remains the
 //! hand-written `cadenza_ast::codec`; this crate USES it and never forks it.
+//!
+//! # Depending on it from another repository
+//!
+//! A project in another repository takes this crate as a git dependency of camshaft/cadenza at a
+//! fixed revision, and cargo resolves its path dependency on `cadenza-ast` in the same checkout:
+//!
+//! ```toml
+//! [dependencies]
+//! cadenza-ast-serde = { git = "https://github.com/camshaft/cadenza", rev = "<commit>" }
+//! ```
+//!
+//! The crate isn't published to a package registry. Its five documented calls:
+//!
+//! - [`to_bytes`]: a typed value to its canonical bytes, the one byte form of its tree, for a value
+//!   that is stored, hashed or compiled.
+//! - [`to_transport_bytes`]: a typed value to a transport encoding, for a message. A receiver that
+//!   stores or hashes the value takes the canonical re-encoding of the tree it decodes, never the
+//!   bytes it received.
+//! - [`from_bytes`]: bytes of either encoding to a typed value. Bytes the codec refuses are
+//!   [`Error::MalformedBinaryAst`] with the codec's reason, so a caller tells a message that
+//!   ended early, a format version or a value kind newer than this reader, and damaged bytes
+//!   apart.
+//! - [`to_arenas`] and [`from_arenas`]: the same mapping to and from a tree the caller holds.
 
 pub mod de;
 pub mod error;
@@ -57,6 +83,18 @@ where
     Ok(codec::encode(&to_arenas(value)?))
 }
 
+/// Serialize `value` to a transport encoding: the tree [`to_arenas`] builds, written as built by
+/// `codec::encode_as_built`, without the `canonicalize` pass of [`to_bytes`]. It is for a message
+/// between programs: [`from_bytes`] reads these bytes as it reads the canonical ones, to an equal
+/// value. These bytes aren't a content address; a receiver that stores or hashes the value takes
+/// the canonical re-encoding of the tree it decodes, such as `codec::encode` of that tree.
+pub fn to_transport_bytes<T>(value: &T) -> Result<Vec<u8>>
+where
+    T: ?Sized + Serialize,
+{
+    Ok(codec::encode_as_built(&to_arenas(value)?))
+}
+
 /// Deserialize a `T` from a `cadenza_ast` value tree previously produced by (or equivalent to) this
 /// format.
 pub fn from_arenas<T>(arenas: &Arenas) -> Result<T>
@@ -69,12 +107,16 @@ where
     })
 }
 
-/// Deserialize a `T` from canonical binary-AST bytes.
+/// Deserialize a `T` from binary-AST bytes: the canonical bytes of [`to_bytes`], or a transport
+/// encoding of [`to_transport_bytes`]. Bytes the codec refuses are [`Error::MalformedBinaryAst`]
+/// with the reason `codec::decode_detailed` answers, such as `DecodeError::Truncated` for bytes
+/// that end early, or `DecodeError::UnknownVersion` and `DecodeError::UnknownKind` for a format
+/// version or a value kind newer than this reader.
 pub fn from_bytes<T>(bytes: &[u8]) -> Result<T>
 where
     T: DeserializeOwned,
 {
-    let arenas = codec::decode(bytes).ok_or(Error::MalformedBinaryAst)?;
+    let arenas = codec::decode_detailed(bytes).map_err(Error::MalformedBinaryAst)?;
     from_arenas(&arenas)
 }
 
@@ -278,7 +320,96 @@ mod tests {
     #[test]
     fn malformed_bytes_are_rejected() {
         let r: Result<i32> = from_bytes(&[0xff, 0x00, 0x13, 0x37]);
-        assert_eq!(r, Err(Error::MalformedBinaryAst));
+        assert_eq!(r, Err(Error::MalformedBinaryAst(codec::DecodeError::Truncated)));
+    }
+
+    #[test]
+    fn a_refusal_keeps_the_codecs_reason() {
+        // `from_bytes` keeps why the codec refused the bytes, so a caller tells bytes that end
+        // early, a newer format version, a newer value kind and damaged bytes apart.
+        let canonical = to_bytes(&5u8).unwrap();
+        let reason = |bytes: &[u8]| match from_bytes::<u8>(bytes) {
+            Err(Error::MalformedBinaryAst(reason)) => reason,
+            other => panic!("expected a refusal of the bytes, got {other:?}"),
+        };
+        // The bytes end before the root's id.
+        let ended_early = &canonical[..canonical.len() - 1];
+        assert_eq!(reason(ended_early), codec::DecodeError::Truncated);
+        // The header names this format at version 2.
+        let mut newer_version = canonical.clone();
+        newer_version[7] = 2;
+        assert_eq!(reason(&newer_version), codec::DecodeError::UnknownVersion(2));
+        // The one leaf's kind byte is the first kind above the highest this reader defines.
+        let kind = codec::MAX_KIND + 1;
+        let mut newer_kind = canonical.clone();
+        newer_kind[9] = kind;
+        assert_eq!(reason(&newer_kind), codec::DecodeError::UnknownKind(kind));
+        // The header doesn't name this format.
+        let mut damaged = canonical.clone();
+        damaged[0] = b'x';
+        assert_eq!(reason(&damaged), codec::DecodeError::BadHeader);
+        // Each reason is the one `decode_detailed` answers for the same bytes.
+        let refused: [&[u8]; 4] = [ended_early, &newer_version, &newer_kind, &damaged];
+        for bytes in refused {
+            assert_eq!(Err(reason(bytes)), codec::decode_detailed(bytes).map(|_| ()));
+        }
+    }
+
+    #[test]
+    fn a_transport_encoding_reads_back_to_the_value() {
+        // `to_transport_bytes` writes the tree `to_arenas` builds as built, and `from_bytes` reads
+        // those bytes back to the value, as it reads the bytes of `to_bytes`. The canonical
+        // re-encoding of the tree they decode to is the bytes of `to_bytes`.
+        let value = Nested {
+            inner: Point {
+                x: 1,
+                y: -2,
+                label: "outer".into(),
+            },
+            tags: vec!["a".into(), "b".into()],
+            maybe: Some(Box::new(Nested {
+                inner: Point {
+                    x: 3,
+                    y: 4,
+                    label: "inner".into(),
+                },
+                tags: Vec::new(),
+                maybe: None,
+            })),
+        };
+        let transport = to_transport_bytes(&value).expect("transport encode");
+        let arenas = to_arenas(&value).expect("build the tree");
+        assert_eq!(transport, codec::encode_as_built(&arenas));
+        let back: Nested = from_bytes(&transport).expect("decode the transport encoding");
+        assert_eq!(back, value);
+        let tree = codec::decode(&transport).expect("the transport encoding decodes");
+        assert_eq!(codec::encode(&tree), to_bytes(&value).expect("encode"));
+    }
+
+    #[test]
+    #[ignore = "a benchmark: run it with --ignored --nocapture"]
+    fn to_bytes_and_to_transport_bytes_times_are_reported_for_the_same_values() {
+        // A benchmark that measures and doesn't gate: it reports the time each call takes to encode
+        // one list of 20,000 records. It doesn't run by default; run it with
+        // `cargo test -p cadenza-ast-serde -- --ignored --nocapture` to read the report.
+        let points: Vec<Point> = (0..20_000)
+            .map(|k| Point {
+                x: k,
+                y: -k,
+                label: format!("point {k}"),
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let canonical = to_bytes(&points).expect("encode");
+        let canonical_time = start.elapsed();
+        let start = std::time::Instant::now();
+        let transport = to_transport_bytes(&points).expect("transport encode");
+        let transport_time = start.elapsed();
+        eprintln!("to_bytes {canonical_time:?}, to_transport_bytes {transport_time:?}");
+        let back: Vec<Point> = from_bytes(&transport).expect("decode the transport encoding");
+        assert_eq!(back, points);
+        let tree = codec::decode(&transport).expect("the transport encoding decodes");
+        assert_eq!(codec::encode(&tree), canonical, "both calls encode one tree");
     }
 
     #[test]
