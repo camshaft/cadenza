@@ -252,6 +252,9 @@ MUST NOT take a content address of the tree it decodes to.
 A program that receives a transport encoding that holds a Name leaf whose text is not in Unicode
 Normalization Form C MUST NOT take a content address of the tree it decodes to.
 
+A program that receives a transport encoding that holds an integer or float significand magnitude
+that is not minimal MUST NOT take a content address of the tree it decodes to.
+
 A decoder accepts such bytes, since it enforces referential integrity, tree-ness, and exact
 consumption rather than the encoder rules above. A program that receives them refuses the message,
 or keeps it without a content address, so that the content address it takes of a received tree
