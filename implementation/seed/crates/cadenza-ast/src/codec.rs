@@ -50,6 +50,17 @@
 //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
 //# Decoding a canonical binary encoding MUST yield the abstract syntax tree it was encoded from.
 //!
+//! [`encode_as_built`] writes the same two vectors AS GIVEN, without that normal form: a TRANSPORT
+//! encoding, for a message between programs, under the same header, which `decode` reads as it reads
+//! the canonical bytes (a decoder accepts the pools in any order). Its bytes are never a content
+//! address; a hash is taken over `encode` of the decoded tree:
+//!
+//= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
+//# A transport encoding MAY differ from the canonical encoding.
+//!
+//= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
+//# A content address or hash MUST be taken over the canonical re-encoding of the decoded tree, never over received bytes.
+//!
 //! This binary serialization of the AST IS the program's canonical form — one canonical byte form
 //! independent of any textual rendering:
 //!
@@ -62,7 +73,7 @@
 //! because downstream consumers (e.g. `canon::canonicalize`) walk the structure recursively: a cyclic
 //! arena would diverge and a shared subtree would expand exponentially, so a hostile byte string could
 //! otherwise turn into a stack overflow or a decode-bomb. A canonical encoding is always a tree, so the
-//! check refuses nothing a valid encoder produced.
+//! check refuses nothing `encode` produced, nor `encode_as_built` of an arena that is a tree.
 //! Determinism ("equal programs -> identical bytes") is a property of CANONICAL arenas (see `canon.rs`),
 //! which `encode` imposes before serializing.
 //!
@@ -234,6 +245,29 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
     let canon = crate::canon::canonicalize(arenas);
     #[cfg(feature = "std")]
     let arenas = &*canon;
+    encode_as_built(arenas)
+}
+
+/// Serialize `arenas` to `cdzast\x00\x01` bytes AS GIVEN: the leaf pool and the structure pool in the
+/// order the arena holds them, without the `canon::canonicalize` pass that [`encode`] runs under `std`.
+/// This is a TRANSPORT encoding, for a message between programs, where latency matters more than one
+/// byte form per tree: it skips `canonicalize`'s `is_canonical` walk of the whole tree and the rebuild
+/// of a tree that is not in canonical order. It carries the same header as the canonical bytes, and
+/// [`decode`] reads it as it reads them, since a decoder accepts the pools in any order: `decode` of
+/// these bytes is structurally equal to `arenas`.
+///
+/// These bytes are NOT a content-address input: two equal trees built in different orders encode to
+/// different bytes here. A caller that stores, hashes or compiles a tree it received this way decodes
+/// it and takes [`encode`] of the decoded tree, its canonical re-encoding.
+///
+/// `arenas` must be a TREE from its root, as a `Builder` builds one when each `StructId` is the child
+/// of one node only. A node reachable twice (a shared subtree) is written as given, and [`decode`]
+/// refuses those bytes with [`DecodeError::NotATree`]; [`encode`] under `std` writes each occurrence as
+/// a node of its own instead. Nodes and leaves the root does not reach are written as given too, and a
+/// decoder accepts them.
+///
+/// Public under every feature; in the `no_std` minimal core, [`encode`] is this same walk.
+pub fn encode_as_built(arenas: &Arenas) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&SCHEMA_HEADER);
 
@@ -465,8 +499,9 @@ pub fn decode_detailed(bytes: &[u8]) -> Result<Arenas, DecodeError> {
 
     // The reachable structure from `root` must be a genuine TREE — every reachable node reached
     // exactly once. A canonical encoding is always a tree (`encode` re-emits every occurrence as a
-    // fresh node via `canon`, so it never shares a subtree), hence this rejects nothing a valid
-    // encoder produced. It DOES refuse a corrupted or hostile arena whose child ids form a CYCLE
+    // fresh node via `canon`, so it never shares a subtree), and so is `encode_as_built` of an arena
+    // that is a tree, hence this rejects nothing a valid encoder produced from a tree. It DOES refuse
+    // a corrupted or hostile arena whose child ids form a CYCLE
     // (which would make a recursive consumer such as `canon::canonicalize` diverge and overflow the
     // stack) or SHARE a subtree (which such a consumer expands, up to exponentially — a decode-bomb).
     // Iterative walk, so the check itself cannot overflow on deep input. Unreachable ("dead") nodes
@@ -689,6 +724,133 @@ mod tests {
         assert_eq!(a, back);
         // Determinism: re-encoding the decoded arenas reproduces the bytes.
         assert_eq!(bytes, encode(&back));
+    }
+
+    /// `(+ a)` built operand-first, as the ML surface builds an infix form: the structure pool holds
+    /// `a`, then `+`, then the list, and the leaf pool `a` then `+`, so neither pool is in canonical
+    /// order.
+    fn operand_first() -> Arenas {
+        let mut b = Builder::new();
+        let a = b.name("a");
+        let plus = b.name("+");
+        let root = b.list(vec![plus, a]);
+        b.finish(root)
+    }
+
+    //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
+    //= type=test
+    //# A transport encoding MAY differ from the canonical encoding.
+    //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
+    //= type=test
+    //# A content address or hash MUST be taken over the canonical re-encoding of the decoded tree, never over received bytes.
+    #[test]
+    fn encode_as_built_writes_the_pools_as_given_and_decodes_to_the_same_tree() {
+        let a = operand_first();
+        let mut as_built = SCHEMA_HEADER.to_vec();
+        as_built.push(2); // leaf count
+        as_built.extend_from_slice(&[KIND_NAME, 1, b'a']); // leaf 0 = `a`
+        as_built.extend_from_slice(&[KIND_NAME, 1, b'+']); // leaf 1 = `+`
+        as_built.push(3); // structure count
+        as_built.extend_from_slice(&[TAG_ATOM, 0]); // node 0 = atom of leaf 0 (`a`)
+        as_built.extend_from_slice(&[TAG_ATOM, 1]); // node 1 = atom of leaf 1 (`+`)
+        as_built.extend_from_slice(&[TAG_LIST, 2, 1, 0]); // node 2 = (node 1 node 0)
+        as_built.push(2); // root = node 2
+        // The canonical form of the same tree: leaves in first-encounter order of a pre-order walk
+        // (`+` first), structure in post-order (the root last).
+        let mut canonical = SCHEMA_HEADER.to_vec();
+        canonical.push(2); // leaf count
+        canonical.extend_from_slice(&[KIND_NAME, 1, b'+']); // leaf 0 = `+`
+        canonical.extend_from_slice(&[KIND_NAME, 1, b'a']); // leaf 1 = `a`
+        canonical.push(3); // structure count
+        canonical.extend_from_slice(&[TAG_ATOM, 0]); // node 0 = atom of leaf 0 (`+`)
+        canonical.extend_from_slice(&[TAG_ATOM, 1]); // node 1 = atom of leaf 1 (`a`)
+        canonical.extend_from_slice(&[TAG_LIST, 2, 0, 1]); // node 2 = (node 0 node 1)
+        canonical.push(2); // root = node 2
+
+        let transport = encode_as_built(&a);
+        assert_eq!(transport, as_built, "both pools as the arena holds them");
+        assert_eq!(encode(&a), canonical, "encode writes the canonical form");
+        assert_ne!(transport, canonical, "the transport encoding differs");
+
+        // A decoder reads the transport bytes as it reads the canonical ones and keeps the pools in
+        // the order the bytes present them, so it yields the arena as built: the same tree.
+        let back = decode(&transport).expect("a transport encoding decodes");
+        assert_eq!(back, a, "decode yields the arena as built");
+        let from_canonical = decode(&canonical).expect("the canonical encoding decodes");
+        assert!(back.structurally_eq(&from_canonical), "one tree");
+
+        // A hash is taken over the canonical re-encoding of the decoded tree, which is the tree's
+        // canonical encoding whichever way the received bytes were encoded.
+        assert_eq!(encode(&back), canonical, "the canonical re-encoding");
+    }
+
+    #[test]
+    fn a_transport_encoding_round_trips_every_leaf_kind() {
+        // `sample()` and `radix_sample()` carry every leaf kind between them. Each tree's transport
+        // encoding decodes to the same tree, whose canonical re-encoding is the canonical encoding.
+        for a in [sample(), radix_sample(), operand_first()] {
+            let transport = encode_as_built(&a);
+            let back = decode(&transport).expect("a transport encoding decodes");
+            assert!(a.structurally_eq(&back), "the same tree: {a:?}");
+            assert_eq!(encode(&back), encode(&a), "the canonical bytes: {a:?}");
+        }
+        // An arena already in canonical order encodes to the same bytes either way.
+        let a = sample();
+        assert!(crate::canon::is_canonical(&a), "built in canonical order");
+        assert_eq!(encode_as_built(&a), encode(&a), "the canonical bytes");
+    }
+
+    #[test]
+    fn encode_as_built_writes_a_shared_subtree_as_given_and_decode_refuses_it() {
+        // `(x x)` with the one `x` node as both children: a DAG, not a tree. `encode` writes each
+        // occurrence as a node of its own; `encode_as_built` writes the arena as given, so its input
+        // must be a tree.
+        let mut b = Builder::new();
+        let x = b.name("x");
+        let root = b.list(vec![x, x]);
+        let a = b.finish(root);
+        let refused = decode_detailed(&encode_as_built(&a)).err();
+        assert_eq!(refused, Some(DecodeError::NotATree), "not a tree");
+        let canonical = encode(&a);
+        let back = decode(&canonical).expect("encode writes a tree");
+        assert!(a.structurally_eq(&back), "the tree the arena denotes");
+    }
+
+    /// Encode `a` with `f` a few times; answer the mean time of one call and the bytes written.
+    fn timed(f: fn(&Arenas) -> Vec<u8>, a: &Arenas) -> (std::time::Duration, Vec<u8>) {
+        const RUNS: u32 = 5;
+        let start = std::time::Instant::now();
+        let mut bytes = Vec::new();
+        for _ in 0..RUNS {
+            bytes = std::hint::black_box(f(std::hint::black_box(a)));
+        }
+        (start.elapsed() / RUNS, bytes)
+    }
+
+    #[test]
+    fn encode_and_encode_as_built_times_are_reported_for_the_same_tree() {
+        // A benchmark that measures and does not gate: it reports the time of each call on one wide
+        // tree built operand-first, which `encode` checks and rebuilds into canonical order and
+        // `encode_as_built` writes as built. Run the test with `--nocapture` to read the report.
+        let mut b = Builder::new();
+        let mut items = Vec::new();
+        for k in 0..20_000 {
+            let value = b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i64(k),
+                radix: Radix::Dec,
+            });
+            let head = b.name("item");
+            items.push(b.list(vec![head, value]));
+        }
+        let root = b.list(items);
+        let a = b.finish(root);
+        assert!(!crate::canon::is_canonical(&a), "not in canonical order");
+
+        let (encode_time, canonical) = timed(encode, &a);
+        let (as_built_time, transport) = timed(encode_as_built, &a);
+        eprintln!("encode {encode_time:?}, encode_as_built {as_built_time:?}");
+        let back = decode(&transport).expect("the transport encoding decodes");
+        assert_eq!(encode(&back), canonical, "both calls encode one tree");
     }
 
     /// Build `(comment "text" node)` around `node`.
