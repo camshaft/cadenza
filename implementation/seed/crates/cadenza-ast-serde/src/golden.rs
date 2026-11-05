@@ -13,6 +13,7 @@ use std::sync::Arc;
 /// The eight-byte container header, which a worked example writes as `H`.
 const HEADER: [u8; 8] = *b"cdzast\x00\x01";
 
+const INT_PAST_64_BITS: &str = "H 01 00 09 01 00 00 00 00 00 00 00 01 01 00 00 00";
 const F64_300: &str = "H 01 06 00 00 00 00 00 00 00 00 00 02 01 2C 01 00 00 00";
 const F64_ONE_AND_A_HALF: &str = "H 01 06 00 FF FF FF FF FF FF FF FF 01 0F 01 00 00 00";
 const F64_MINUS_A_QUARTER: &str = "H 01 06 01 FF FF FF FF FF FF FF FE 01 19 01 00 00 00";
@@ -124,6 +125,14 @@ struct Marker;
 /// A wrapper of one positional part.
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct Meters(u8);
+
+/// A record type declared with named fields, none of them.
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct Fieldless {}
+
+/// A named type declared with an empty list of positional parts.
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+struct Partless();
 
 /// A record of two fields.
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -306,6 +315,7 @@ fn a_list_is_the_list_constructor_head_then_its_elements() {
 fn a_tuple_is_the_tuple_constructor_head_then_its_parts() {
     let value = (1u8, String::from("a"));
     golden(&value, TUPLE);
+    golden(&Partless(), "H 01 15 02 00 00 01 01 00 01");
 }
 
 #[test]
@@ -317,6 +327,7 @@ fn a_map_is_the_map_constructor_head_then_one_field_pair_per_entry() {
 #[test]
 fn a_record_is_the_record_constructor_head_then_one_field_pair_per_field() {
     golden(&Point { x: 1, y: 2 }, RECORD);
+    golden(&Fieldless {}, "H 01 16 02 00 00 01 01 00 01");
 }
 
 #[test]
@@ -387,10 +398,24 @@ fn the_typed_mapping_writes_only_its_listed_leaf_kinds() {
 
 #[test]
 fn a_decoder_refuses_an_integer_its_target_cant_hold() {
-    let too_large: crate::Result<u8> = from_bytes(&example("H 01 00 02 01 2C 01 00 00 00"));
-    assert!(too_large.is_err(), "{too_large:?}");
-    let negative: crate::Result<u8> = from_bytes(&example("H 01 03 01 01 01 00 00 00"));
-    assert!(negative.is_err(), "{negative:?}");
+    // 300 and -1 into 8-bit targets, and 2^64 + 1, which a narrowing to 64 bits before the range
+    // check would wrap to 1, into every target of fewer than 64 bits.
+    refused::<u8>(&example("H 01 00 02 01 2C 01 00 00 00"));
+    refused::<i8>(&example("H 01 00 02 01 2C 01 00 00 00"));
+    refused::<u8>(&example("H 01 03 01 01 01 00 00 00"));
+    let past_64_bits = example(INT_PAST_64_BITS);
+    refused::<u8>(&past_64_bits);
+    refused::<u16>(&past_64_bits);
+    refused::<u32>(&past_64_bits);
+    refused::<i8>(&past_64_bits);
+    refused::<i16>(&past_64_bits);
+    refused::<i32>(&past_64_bits);
+}
+
+/// Assert that `bytes` don't decode into `T`, with the answer for an integer out of `T`'s range.
+fn refused<T: serde::de::DeserializeOwned + std::fmt::Debug>(bytes: &[u8]) {
+    let got: crate::Result<T> = from_bytes(bytes);
+    assert!(matches!(got, Err(crate::Error::IntOutOfRange)), "{got:?}");
 }
 
 #[test]
