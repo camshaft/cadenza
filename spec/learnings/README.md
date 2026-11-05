@@ -10,6 +10,14 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A frozen contract names the widths of the byte-level form it pins](./2026-11-05-a-frozen-contract-names-the-widths-of-the-byte-level-form-it-pins.md):
+  Core Principle XIII banned a numeric width in every normative statement, and analyze's check 4 reported
+  each one, though ast-binary-format.md and ast-typed-values.md state the widths of the bytes they pin,
+  such as the container header's eight bytes and the 64-bit and 32-bit float formats, so that a third
+  party can implement those bytes from the contracts alone. Amendment 0.9.0 makes such a width the one
+  exception to the ban. Drove the second sentence of constitution.md Core Principle XIII, AGENTS.md rule
+  2, analyze's check 4, the contract template's checklist and specify's conventions; no requirement of a
+  contract and no byte changes.
 - [A message between programs needs a valid encoding of the tree, not its canonical byte form](./2026-11-05-a-message-needs-a-valid-encoding-not-the-canonical-byte-form.md):
   the binary AST became the data exchange format for messages between programs, and every encoder had to
   write the canonical byte form, which only storage, hashing, and compilation need. A decoder already
