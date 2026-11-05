@@ -22,7 +22,8 @@ contract (e.g. `contracts/component-abi`).
    - Keep it standalone: no reference to a prior prototype, a concrete engine, a hashing algorithm, a
      numeric width, a library, or a source-file path. Describe the runnable form as "component" and
      its execution environment as "runtime" / "sandbox"; a concrete technology choice lives in
-     `options/`, never in a requirement.
+     `options/`, never in a requirement. A frozen contract may name a numeric width as part of the
+     byte-level form it pins (Core Principle XIII).
    - State behavior and invariants (what must hold), not implementation (how).
 3. Trace it: add the new file and its sections to `spec/traceability.md`, mapping each to the
    `spec/overview.md` section(s) it serves, and confirm the reverse table still covers every overview
