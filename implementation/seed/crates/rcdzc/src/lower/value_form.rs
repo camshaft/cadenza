@@ -2459,4 +2459,52 @@ mod tests {
         assert_eq!(got.iter().map(int).collect::<Vec<_>>(), [Some(7), Some(5), None, None]);
         assert_eq!(got[2..], [Leaf::Bool(true), Leaf::Bool(false)]);
     }
+
+    #[test]
+    fn a_qty_template_at_a_product_unit_fills_its_magnitude_hole() {
+        // `unit_value_ast` builds the `Unit.*` head of a product after its two factors, so the
+        // template of a quantity at `meter * second` isn't in canonical order. Its one hole, the
+        // magnitude, is measured on the arena's pool as built, which `encode_template` writes, so a
+        // filled magnitude reads back at its leaf and the unit's leaves decode.
+        let meter = crate::ty::Unit::base("meter");
+        let unit = meter.mul(&crate::ty::Unit::base("second"));
+        let ty = Ty::Qty {
+            inner: Box::new(Ty::int64()),
+            unit,
+        };
+        let mut b = Builder::new();
+        let mut pending = Vec::new();
+        let root = template_value_ast(&mut b, &ty, &mut Vec::new(), &mut pending);
+        let arenas = b.finish(root.expect("a quantity template"));
+        let canonical = crate::canon::is_canonical(&arenas);
+        assert!(!canonical, "the arena isn't in canonical order");
+        let tpl = runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[]));
+        let tpl = tpl.expect("a quantity template");
+        assert_eq!(tpl.leaves.len(), 1, "one hole, the magnitude");
+        assert!(matches!(tpl.leaves[0].kind, LeafFill::Int));
+        // `fill_and_read` reads leaf elements alone, and the unit is a list, so write the hole here
+        // as it writes an Int: the value's 8 big-endian magnitude bytes.
+        let offset = tpl.leaves[0].offset;
+        let value = 42u64.to_be_bytes();
+        let mut filled = tpl.bytes.clone();
+        filled[offset..offset + 8].copy_from_slice(&value);
+        let tree = crate::codec::decode(&filled);
+        let tree = tree.expect("the filled template decodes");
+        let Struct::List(children) = tree.get(tree.root) else {
+            panic!("the value is a list");
+        };
+        assert_eq!(children.len(), 3, "the head, the magnitude and the unit");
+        let Struct::Atom(magnitude) = tree.get(children[1]) else {
+            panic!("the magnitude is a leaf");
+        };
+        assert_eq!(int(tree.leaf(*magnitude)), Some(42));
+        for name in ["meter", "second"] {
+            let base = Leaf::Sym(name.into());
+            assert!(
+                tree.leaves.contains(&base),
+                "the base {name} is in the decoded pool: {:?}",
+                tree.leaves
+            );
+        }
+    }
 }
