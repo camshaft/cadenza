@@ -325,9 +325,9 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
 /// decoder accepts them, so a caller whose arena may hold values outside the tree, such as one it
 /// edited or decoded, sends those values to the receiver; `encode` under `std` drops them.
 ///
-/// `arenas` also lists each distinct leaf value once, as `Builder::leaf` interns it, since a transport
-/// encoding lists each distinct leaf once. A value at two leaf ids, such as two `Builder::leaf_unique`
-/// leaves, is written twice, as [`encode`] writes it too, and the canonical re-encoding keeps both.
+/// A leaf value at two leaf ids, such as two `Builder::leaf_unique` leaves, is written twice, which a
+/// transport encoding may do: the canonical re-encoding of the decoded tree, and [`encode`] of the
+/// arena under `std`, list it once.
 ///
 /// Public under every feature. Without `std`, [`encode`] is this same walk, so there `encode` of a
 /// decoded transport encoding returns the bytes received, not the canonical ones.
@@ -338,9 +338,9 @@ pub fn encode_as_built(arenas: &Arenas) -> Vec<u8> {
     out.extend_from_slice(&SCHEMA_HEADER);
 
     //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
-    //# A transport encoding MAY be any byte sequence that a decoder conforming to this document accepts and decodes to the tree it encodes, within the rule below for its leaf pool.
+    //# A transport encoding MAY be any byte sequence that a decoder conforming to this document accepts and decodes to the tree it encodes.
     //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
-    //# A transport encoding MUST list each distinct leaf exactly once, as the canonical byte sequence does, so that the canonical re-encoding of the tree it decodes to is that tree's canonical byte sequence.
+    //# A transport encoding MAY list one leaf value at more than one index of its leaf pool, since the canonical re-encoding of the tree it decodes to lists each distinct leaf exactly once.
     leb128::write_u64(&mut out, arenas.leaves.len() as u64);
     for leaf in &arenas.leaves {
         write_leaf(&mut out, leaf);
@@ -610,8 +610,8 @@ pub fn decode_detailed(bytes: &[u8]) -> Result<Arenas, DecodeError> {
 
 /// Why a program that received the bytes of a tree doesn't take a content address of the tree it
 /// decoded them to: the bytes break a rule an encoder keeps, which this crate's canonicalization
-/// doesn't repair, since it keeps leaves apart by id and copies each leaf as decoded, its `Name`
-/// text and its integer and float magnitudes as received. [`encode`] of the decoded tree is then not
+/// doesn't repair, since it copies each leaf as decoded, its `Name` text and its integer and float
+/// magnitudes as received. [`encode`] of the decoded tree is then not
 /// the tree's canonical byte sequence, and the peer that sent the bytes would set a second content
 /// address for the tree. [`check_addressable`] answers it.
 #[cfg(feature = "std")]
@@ -624,39 +624,26 @@ pub enum NotAddressable {
     /// leaf there, holds a magnitude whose first byte is zero, where the canonical form's magnitude
     /// is minimal. A decoder accepts it, and [`encode`] of the decoded tree writes it as received.
     NonMinimalMagnitude(LeafId),
-    /// The leaf pool lists one leaf value at two leaf ids: `repeat` is the lowest leaf id whose
-    /// value a lower id holds too, and `first` is the lowest id that holds that value. A decoder
-    /// accepts such a pool, and [`encode`] of the decoded tree keeps both copies.
-    RepeatedLeaf { first: LeafId, repeat: LeafId },
 }
 
 /// Check that a decoded tree can be given a content address: each `Name` leaf holds text in Unicode
-/// Normalization Form C, each integer magnitude and float significand is minimal, and the leaf pool
-/// lists each distinct leaf value once, as an encoder writes them. A program that received the bytes
-/// of a tree, such as a transport encoding, calls this on the [`decode`]d tree before it takes a
-/// content address of the tree's canonical re-encoding, and refuses the message, or keeps it without
-/// a content address, where this answers [`NotAddressable`].
+/// Normalization Form C, and each integer magnitude and float significand is minimal, as an encoder
+/// writes them. A program that received the bytes of a tree, such as a transport encoding, calls this
+/// on the [`decode`]d tree before it takes a content address of the tree's canonical re-encoding, and
+/// refuses the message, or keeps it without a content address, where this answers [`NotAddressable`].
 ///
-/// It reads every leaf of the pool, the leaves the root doesn't reach among them. It checks each
-/// leaf on its own first, in leaf id order, and answers the first leaf that breaks a rule of its
-/// own with [`NotAddressable::NameNotNfc`] or [`NotAddressable::NonMinimalMagnitude`]. Then it
-/// checks for a repeat: after the leaf checks, two leaves are one leaf of the canonical form exactly
-/// when they are equal, as `Builder::leaf` interns them, so two spellings of one name, or two
-/// magnitudes of one integer, answer a leaf check and not [`NotAddressable::RepeatedLeaf`]. The
-/// repeat check is a `BTreeMap` over the leaves' own order, not a hash map, so a sender can't choose
-/// leaf values that collide in it: its cost is the sorted map's comparisons.
+/// It reads every leaf of the pool, the leaves the root doesn't reach among them, in leaf id order,
+/// and answers the first leaf that breaks a rule with [`NotAddressable::NameNotNfc`] or
+/// [`NotAddressable::NonMinimalMagnitude`].
 ///
-/// It doesn't change what [`decode`] accepts: [`encode`] of an arena built with two
-/// `Builder::leaf_unique` leaves of one value writes such a pool, as the compiler's own templates
-/// hold, and those bytes decode.
+/// A leaf pool that lists one leaf value at two leaf ids passes: canonicalization merges the two ids
+/// into one leaf, so the canonical re-encoding lists the value once.
 ///
 /// Under `std` alone, since the normalization tables come with its `unicode-normalization`
 /// dependency: a program that takes a content address of a tree it received builds this crate with
 /// `std`.
 #[cfg(feature = "std")]
 pub fn check_addressable(arenas: &Arenas) -> Result<(), NotAddressable> {
-    use alloc::collections::BTreeMap;
-
     for (id, leaf) in arenas.leaves.iter().enumerate() {
         let id = LeafId(id as u32);
         //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
@@ -668,16 +655,6 @@ pub fn check_addressable(arenas: &Arenas) -> Result<(), NotAddressable> {
         //# A program that receives a transport encoding that holds an integer or float significand magnitude that is not minimal MUST NOT take a content address of the tree it decodes to.
         if has_non_minimal_magnitude(leaf) {
             return Err(NotAddressable::NonMinimalMagnitude(id));
-        }
-    }
-
-    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
-    //# A program that receives a transport encoding whose leaf pool lists one leaf value more than once MUST NOT take a content address of the tree it decodes to.
-    let mut first_ids = BTreeMap::new();
-    for (id, leaf) in arenas.leaves.iter().enumerate() {
-        let repeat = LeafId(id as u32);
-        if let Some(first) = first_ids.insert(leaf, repeat) {
-            return Err(NotAddressable::RepeatedLeaf { first, repeat });
         }
     }
     Ok(())
@@ -928,7 +905,7 @@ mod tests {
     //# An encoder MUST produce, for the stored, hashed, and compiled forms of a given abstract syntax tree, the one canonical byte sequence: the leaf pool MUST list each distinct leaf exactly once (leaves are deduplicated by value) and the leaf pool and the structure pool MUST be ordered by a deterministic function of the tree alone, independent of the order in which nodes were constructed, so that two equal trees produce identical bytes.
     //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
     //= type=test
-    //# A transport encoding MAY be any byte sequence that a decoder conforming to this document accepts and decodes to the tree it encodes, within the rule below for its leaf pool.
+    //# A transport encoding MAY be any byte sequence that a decoder conforming to this document accepts and decodes to the tree it encodes.
     //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
     //= type=test
     //# A transport encoding MUST begin with the same container header as the canonical byte sequence, so that a reader does not need a second container version to read it.
@@ -1011,15 +988,17 @@ mod tests {
     //= spec/contracts/ast-encoding.md#the-encoding-is-a-bijection-with-one-canonical-byte-form
     //= type=test
     //# A content address or hash MUST be taken over the canonical re-encoding of the decoded tree, never over received bytes.
+    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+    //= type=test
+    //# A transport encoding MAY list one leaf value at more than one index of its leaf pool, since the canonical re-encoding of the tree it decodes to lists each distinct leaf exactly once.
     #[test]
     fn a_leaf_value_at_two_ids_re_encodes_as_encode_writes_it() {
         // `Builder::leaf_unique` keeps two copies of one value apart on purpose, as a placeholder
         // template does. The canonical re-encoding of the arena's `encode_as_built` bytes equals
         // `encode` of the arena, so the bytes a sender hashes and the bytes a receiver re-encodes
-        // agree. The test doesn't assert how many leaves the canonical bytes list: the encoder rule
-        // of ast-binary-format.md says they list each distinct leaf once, while canonicalization
-        // keeps these two leaves apart by id. The compiler writes its value-form templates as built,
-        // so they don't rely on either count.
+        // agree, and both list the value once, as the encoder rule of ast-binary-format.md says:
+        // canonicalization merges the two ids into one leaf. The compiler writes its value-form
+        // templates as built, so their bytes keep both copies.
         let mut b = Builder::new();
         let first = b.leaf_unique(Leaf::Name("a".into()));
         let second = b.leaf_unique(Leaf::Name("a".into()));
@@ -1032,7 +1011,12 @@ mod tests {
         let back = decode(&transport).expect("the transport bytes decode");
         assert_eq!(back.leaves.len(), 2, "decode keeps both copies");
         assert_eq!(encode(&back), canonical, "the sender's canonical bytes");
-        assert!(decode(&canonical).is_some(), "the canonical bytes decode");
+        let from_canonical = decode(&canonical).expect("the canonical bytes decode");
+        assert_eq!(
+            from_canonical.leaves.len(),
+            1,
+            "the canonical bytes list `a` once"
+        );
     }
 
     #[test]
@@ -1053,9 +1037,6 @@ mod tests {
     //= spec/contracts/ast-binary-format.md#equal-trees-encode-to-identical-bytes
     //= type=test
     //# An encoder MUST produce, for the stored, hashed, and compiled forms of a given abstract syntax tree, the one canonical byte sequence: the leaf pool MUST list each distinct leaf exactly once (leaves are deduplicated by value) and the leaf pool and the structure pool MUST be ordered by a deterministic function of the tree alone, independent of the order in which nodes were constructed, so that two equal trees produce identical bytes.
-    //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
-    //= type=test
-    //# A transport encoding MUST list each distinct leaf exactly once, as the canonical byte sequence does, so that the canonical re-encoding of the tree it decodes to is that tree's canonical byte sequence.
     #[test]
     fn a_leaf_value_at_two_occurrences_is_listed_once_in_both_encodings() {
         // `(x x)`: two occurrences of one `Name` value. `Builder::name` interns the value, so the
@@ -2648,12 +2629,12 @@ mod tests {
     }
 
     #[test]
-    fn a_message_that_lists_a_leaf_value_twice_is_not_addressable() {
+    fn a_message_that_lists_a_leaf_value_twice_re_encodes_to_the_canonical_bytes() {
         //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
         //= type=test
-        //# A program that receives a transport encoding whose leaf pool lists one leaf value more than once MUST NOT take a content address of the tree it decodes to.
-        // The tree `(a a)` as a peer that breaks the leaf pool rule sends it, with the leaf `a` at
-        // leaf ids 0 and 1, and as a transport encoding sends it, with `a` listed once.
+        //# A transport encoding MAY list one leaf value at more than one index of its leaf pool, since the canonical re-encoding of the tree it decodes to lists each distinct leaf exactly once.
+        // The tree `(a a)` as a sender that doesn't intern leaves sends it, with the leaf `a` at
+        // leaf ids 0 and 1, and as a sender that interns them sends it, with `a` listed once.
         let mut repeated = SCHEMA_HEADER.to_vec();
         repeated.extend_from_slice(&[2, KIND_NAME, 1, b'a', KIND_NAME, 1, b'a']);
         repeated.extend_from_slice(&[3, TAG_ATOM, 0, TAG_ATOM, 1, TAG_LIST, 2, 0, 1, 2]);
@@ -2664,11 +2645,12 @@ mod tests {
         assert_eq!(from_repeated.leaves.len(), 2, "decode keeps both copies");
         let from_once = decode(&once).expect("the message decodes");
         assert_eq!(encode(&from_once), once, "a canonical message");
-        let (first, repeat) = (LeafId(0), LeafId(1));
         assert_eq!(
-            check_addressable(&from_repeated),
-            Err(NotAddressable::RepeatedLeaf { first, repeat })
+            encode(&from_repeated),
+            once,
+            "the canonical re-encoding lists `a` once"
         );
+        assert_eq!(check_addressable(&from_repeated), Ok(()));
         assert_eq!(check_addressable(&from_once), Ok(()));
     }
 
@@ -2799,10 +2781,9 @@ mod tests {
     }
 
     #[test]
-    fn a_leaf_that_breaks_a_rule_of_its_own_is_refused_before_the_repeat_check() {
-        // Two equal leaves outside the canonical form: the repeat check would answer
-        // `RepeatedLeaf { first: LeafId(0), repeat: LeafId(1) }`, and the leaf check answers
-        // first, at the lower id.
+    fn a_leaf_value_at_two_ids_answers_the_leaf_check_at_the_lower_id() {
+        // Two equal leaves outside the canonical form: the leaf check answers the first, at the
+        // lower id.
         let name = || Leaf::Name("cafe\u{0301}".into());
         let names = pool(vec![name(), name()]);
         assert_eq!(
@@ -2817,42 +2798,24 @@ mod tests {
     }
 
     #[test]
-    fn the_repeat_check_compares_whole_leaf_values_across_the_pool() {
-        // A string at leaf ids 1 and 3, with another leaf between them, the root reaching neither.
+    fn a_pool_that_lists_a_leaf_value_twice_is_addressable() {
+        //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+        //= type=test
+        //# A transport encoding MAY list one leaf value at more than one index of its leaf pool, since the canonical re-encoding of the tree it decodes to lists each distinct leaf exactly once.
+        // A string at leaf ids 1 and 3, with another leaf between them, the root reaching neither,
+        // and one integer in one radix at two leaf ids.
         let repeated = pool(vec![
             Leaf::Bool(true),
             Leaf::Str("x".into()),
             Leaf::Bool(false),
             Leaf::Str("x".into()),
         ]);
-        let (first, repeat) = (LeafId(1), LeafId(3));
-        assert_eq!(
-            check_addressable(&repeated),
-            Err(NotAddressable::RepeatedLeaf { first, repeat })
-        );
-        // One text as a name, a string and a symbol is three leaf values.
-        let kinds = pool(vec![
-            Leaf::Name("x".into()),
-            Leaf::Str("x".into()),
-            Leaf::Sym("x".into()),
-        ]);
-        assert_eq!(check_addressable(&kinds), Ok(()));
-        // One integer in two radixes is two leaf values, as the Builder interns them, and one
-        // integer in one radix twice is a repeat.
+        assert_eq!(check_addressable(&repeated), Ok(()));
         let dec = Leaf::Int {
             value: IntValue::from_i64(42),
             radix: Radix::Dec,
         };
-        let hex = Leaf::Int {
-            value: IntValue::from_i64(42),
-            radix: Radix::Hex,
-        };
-        assert_eq!(check_addressable(&pool(vec![dec.clone(), hex])), Ok(()));
-        let (first, repeat) = (LeafId(0), LeafId(1));
-        assert_eq!(
-            check_addressable(&pool(vec![dec.clone(), dec])),
-            Err(NotAddressable::RepeatedLeaf { first, repeat })
-        );
+        assert_eq!(check_addressable(&pool(vec![dec.clone(), dec])), Ok(()));
         // The rule on normalization is for Name text: a string outside NFC is a value of its own.
         let text = pool(vec![
             Leaf::Str("cafe\u{0301}".into()),

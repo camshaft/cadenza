@@ -10,6 +10,14 @@ change exists.
 The learnings here are the reasons this clean-room specification is shaped as it is. Earlier
 generations of Cadenza taught these lessons the expensive way; the specification is the response.
 
+- [A transport encoding may list one leaf value twice, since canonicalization merges equal leaves](./2026-11-06-a-transport-encoding-may-list-a-leaf-value-twice.md):
+  the compiler's value-form templates keep a leaf for each placeholder, so the runtime's output can
+  list one value at two indexes of the leaf pool, which the transport rules of ast-binary-format.md
+  refused because the reference canonicalization kept such leaves apart. Canonicalization now merges
+  equal leaves, as the encoder rule's canonical byte sequence already lists them, so the amendment lets
+  a transport encoding list a value more than once and removes the receiver rule that refused it. No
+  canonical, stored or derived bytes change. Drove ast-binary-format.md section "A Transport Encoding
+  Is Any Valid Encoding Of The Tree" and the glossary's entry for a transport encoding.
 - [A frozen contract names the widths of the byte-level form it pins](./2026-11-05-a-frozen-contract-names-the-widths-of-the-byte-level-form-it-pins.md):
   Core Principle XIII banned a numeric width in every normative statement, and analyze's check 4 reported
   each one, though ast-binary-format.md and ast-typed-values.md state the widths of the bytes they pin,

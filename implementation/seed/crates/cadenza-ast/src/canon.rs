@@ -14,20 +14,21 @@
 //! build order is erased. The walk is pre-order over the root's reachable structure; leaves are
 //! interned in the order their atoms are first visited. Unreachable nodes (the reader never
 //! produces them, but a hand-built arena might) are dropped, which is correct for a normal form.
+//!
+//! Leaves are interned BY VALUE too: two leaf ids that hold one value, as two `Builder::leaf_unique`
+//! leaves or a received transport encoding can hold, become one leaf of the normal form, so its leaf
+//! pool lists each distinct leaf exactly once, as the encoder rule of
+//! `spec/contracts/ast-binary-format.md` says. Two leaves are one value when they are equal as
+//! `Builder::leaf` interns them: a `Name`, a `Str` and a `Sym` of one text, or one integer in two
+//! radixes, stay apart. The value indexes are a `BTreeMap` and a `BTreeSet` over the leaves' own
+//! order, not hash maps, since a decoded arena's leaves are values a sender chose: they can't collide
+//! in a sorted index, and its cost is its comparisons.
 
 use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
 use alloc::borrow::Cow;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
-
-/// canon's leaf-id remap index. FxHashMap under `std` (fast, canon runs on ~every decode); alloc's
-/// BTreeMap without it (so `canon` is reachable no_std, e.g. from rcdzc's default-features=false dep,
-/// with no num-bigint / hashbrown). Lookup-only + ids are walk-ordered, so the arena — and thus the
-/// encoded bytes — are identical regardless of map kind (same argument as the Builder's `InternMap`).
-#[cfg(feature = "std")]
-type CanonMap<K, V> = crate::fxhash::FxHashMap<K, V>;
-#[cfg(not(feature = "std"))]
-type CanonMap<K, V> = alloc::collections::BTreeMap<K, V>;
 
 /// Return the canonical form of `arenas`: the same program, re-indexed so that any arena denoting
 /// this tree yields byte-identical output from [`crate::codec::encode`]. Idempotent.
@@ -45,7 +46,8 @@ pub fn canonicalize(arenas: &Arenas) -> Cow<'_, Arenas> {
     let mut c = Canon {
         src: arenas,
         leaves: Vec::new(),
-        leaf_map: CanonMap::default(),
+        by_id: vec![None; arenas.leaves.len()],
+        by_value: BTreeMap::new(),
         structure: Vec::new(),
         id_map: Vec::new(), // not tracked on this path — see `canonicalize_with_map`
     };
@@ -61,8 +63,9 @@ pub fn canonicalize(arenas: &Arenas) -> Cow<'_, Arenas> {
 /// identical arena, so serializing `arenas` in place is byte-equal. The normal form numbers structure
 /// nodes AND leaves by FIRST-ENCOUNTER in the PRE-ORDER walk from `root` (`canonicalize`'s `visit`), so
 /// this replays exactly that walk and checks the numbering is the identity: each node visited is the
-/// next sequential `StructId`, each leaf first-seen is the next `LeafId`, and every node/leaf is
-/// reached. A structure-array-order scan is NOT equivalent — the rebuild's leaf order follows the
+/// next sequential `StructId`, each leaf first-seen is the next `LeafId` and holds a value that no
+/// earlier leaf holds (the rebuild merges equal values), and every node/leaf is reached. A
+/// structure-array-order scan is NOT equivalent — the rebuild's leaf order follows the
 /// pre-order VISIT, which a repeated leaf under a different subtree can reorder relative to the array —
 /// so the walk is load-bearing (a linear scan gave false positives on cross-surface programs and broke
 /// the byte-equality tests). Any deviation returns `false` → the full rebuild is the sound fallback (a
@@ -74,6 +77,7 @@ pub fn is_canonical(arenas: &Arenas) -> bool {
     }
     let mut next_leaf: u32 = 0;
     let mut seen_leaf = vec![false; arenas.leaves.len()];
+    let mut seen_value: BTreeSet<&Leaf> = BTreeSet::new();
     let mut next_struct: u32 = 0;
     let mut entered = vec![false; arenas.structure.len()];
     // (node, child-cursor): a `List` is visited (assigned its id) AFTER its children — matching
@@ -88,6 +92,10 @@ pub fn is_canonical(arenas: &Arenas) -> bool {
                 }
                 if !seen_leaf[lid] {
                     if leaf.0 != next_leaf {
+                        return false;
+                    }
+                    // A value an earlier leaf holds: the rebuild maps both atoms to that leaf.
+                    if !seen_value.insert(arenas.leaf(*leaf)) {
                         return false;
                     }
                     seen_leaf[lid] = true;
@@ -134,7 +142,8 @@ pub fn canonicalize_with_map(arenas: &Arenas) -> (Arenas, Vec<Option<StructId>>)
     let mut c = Canon {
         src: arenas,
         leaves: Vec::new(),
-        leaf_map: CanonMap::default(),
+        by_id: vec![None; arenas.leaves.len()],
+        by_value: BTreeMap::new(),
         structure: Vec::new(),
         id_map: vec![None; arenas.structure.len()],
     };
@@ -152,14 +161,18 @@ pub fn canonicalize_with_map(arenas: &Arenas) -> (Arenas, Vec<Option<StructId>>)
 struct Canon<'a> {
     src: &'a Arenas,
     leaves: Vec<Leaf>,
-    leaf_map: CanonMap<LeafId, LeafId>, // old leaf id -> new (first-encounter) leaf id
+    /// old leaf id -> new (first-encounter) leaf id, set as each old id is first seen.
+    by_id: Vec<Option<LeafId>>,
+    /// leaf value -> new leaf id, so that an old id whose value an earlier old id holds maps to the
+    /// earlier id's new leaf.
+    by_value: BTreeMap<&'a Leaf, LeafId>,
     structure: Vec<Struct>,
     /// old structure id -> new id, recorded as each node is emitted (for span-table remap). Empty when
     /// the caller does not need it (`canonicalize`), non-empty for `canonicalize_with_map`.
     id_map: Vec<Option<StructId>>,
 }
 
-impl Canon<'_> {
+impl<'a> Canon<'a> {
     /// Visit an occurrence, emitting it (and its subtree) into the new arena, and return its new id.
     /// Children are visited before the parent is appended, so the parent's `StructId` is always
     /// greater than its children's — a post-order layout, deterministic from the tree shape alone.
@@ -217,14 +230,28 @@ impl Canon<'_> {
         results.pop().expect("visit leaves the root's new id")
     }
 
-    /// Intern a leaf by first-encounter order during the walk.
+    /// Intern a leaf by first-encounter order during the walk, and by value: an old id whose value an
+    /// earlier old id holds maps to that id's new leaf, so the new pool lists each value once.
     fn intern(&mut self, old: LeafId) -> LeafId {
-        if let Some(&new) = self.leaf_map.get(&old) {
+        if let Some(&Some(new)) = self.by_id.get(old.0 as usize) {
             return new;
         }
-        let new = LeafId(self.leaves.len() as u32);
-        self.leaves.push(self.src.leaf(old).clone());
-        self.leaf_map.insert(old, new);
+        let src: &'a Arenas = self.src;
+        let value = src.leaf(old);
+        //= spec/contracts/ast-binary-format.md#equal-trees-encode-to-identical-bytes
+        //# An encoder MUST produce, for the stored, hashed, and compiled forms of a given abstract syntax tree, the one canonical byte sequence: the leaf pool MUST list each distinct leaf exactly once (leaves are deduplicated by value) and the leaf pool and the structure pool MUST be ordered by a deterministic function of the tree alone, independent of the order in which nodes were constructed, so that two equal trees produce identical bytes.
+        //= spec/contracts/ast-binary-format.md#a-transport-encoding-is-any-valid-encoding-of-the-tree
+        //# A transport encoding MAY list one leaf value at more than one index of its leaf pool, since the canonical re-encoding of the tree it decodes to lists each distinct leaf exactly once.
+        let new = match self.by_value.get(value) {
+            Some(&new) => new,
+            None => {
+                let new = LeafId(self.leaves.len() as u32);
+                self.leaves.push(value.clone());
+                self.by_value.insert(value, new);
+                new
+            }
+        };
+        self.by_id[old.0 as usize] = Some(new);
         new
     }
 
@@ -238,7 +265,7 @@ impl Canon<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Arenas, Builder, StructId};
+    use crate::ast::{Arenas, Builder, IntValue, Leaf, Radix, StructId};
     use crate::codec;
     use std::borrow::Cow;
 
@@ -399,6 +426,90 @@ mod tests {
         // result is itself canonical + idempotent.
         let c = canonicalize(&a).into_owned();
         assert!(is_canonical(&c));
+    }
+
+    #[test]
+    fn one_leaf_value_at_two_ids_is_not_canonical_and_rebuilds_to_one_leaf() {
+        //= spec/contracts/ast-binary-format.md#equal-trees-encode-to-identical-bytes
+        //= type=test
+        //# An encoder MUST produce, for the stored, hashed, and compiled forms of a given abstract syntax tree, the one canonical byte sequence: the leaf pool MUST list each distinct leaf exactly once (leaves are deduplicated by value) and the leaf pool and the structure pool MUST be ordered by a deterministic function of the tree alone, independent of the order in which nodes were constructed, so that two equal trees produce identical bytes.
+        // `(a a)` with the value `a` at two leaf ids, as two `Builder::leaf_unique` leaves hold it,
+        // and at one leaf id, as `Builder::name` interns it. Both arenas number their leaves in the
+        // walk's first-encounter order and each list after its children, as the normal form does,
+        // so the value at two ids alone keeps the first out of the normal form.
+        let mut b = Builder::new();
+        let first = b.leaf_unique(Leaf::Name("a".into()));
+        let second = b.leaf_unique(Leaf::Name("a".into()));
+        let x = b.atom(first);
+        let y = b.atom(second);
+        let root = b.list(vec![x, y]);
+        let two_ids = b.finish(root);
+        let mut b = Builder::new();
+        let x = b.name("a");
+        let y = b.name("a");
+        let root = b.list(vec![x, y]);
+        let one_id = b.finish(root);
+        assert_eq!(two_ids.leaves.len(), 2);
+        assert_eq!(one_id.leaves.len(), 1);
+        assert!(is_canonical(&one_id));
+        assert!(!is_canonical(&two_ids));
+        match canonicalize(&two_ids) {
+            Cow::Owned(c) => {
+                assert_eq!(&c, &one_id, "the two ids become one leaf");
+                assert!(is_canonical(&c), "the rebuilt form is itself canonical");
+            }
+            Cow::Borrowed(_) => panic!("one value at two ids must rebuild, not borrow"),
+        }
+        let (out, map) = canonicalize_with_map(&two_ids);
+        assert_eq!(&out, &one_id);
+        assert_eq!(
+            map,
+            vec![Some(StructId(0)), Some(StructId(1)), Some(StructId(2))]
+        );
+        assert_eq!(codec::encode(&two_ids), codec::encode(&one_id));
+    }
+
+    #[test]
+    fn only_equal_leaf_values_become_one_leaf() {
+        // One text as a name, a string and a symbol is three values, and one integer in two radixes
+        // is two, as `Builder::leaf` interns them; a string at two leaf ids is one value.
+        let values = [
+            Leaf::Name("x".into()),
+            Leaf::Str("x".into()),
+            Leaf::Sym("x".into()),
+            Leaf::Int {
+                value: IntValue::from_i64(42),
+                radix: Radix::Dec,
+            },
+            Leaf::Int {
+                value: IntValue::from_i64(42),
+                radix: Radix::Hex,
+            },
+            Leaf::Str("x".into()),
+        ];
+        let mut b = Builder::new();
+        let atoms: Vec<StructId> = values
+            .iter()
+            .map(|v| {
+                let id = b.leaf_unique(v.clone());
+                b.atom(id)
+            })
+            .collect();
+        let root = b.list(atoms);
+        let a = b.finish(root);
+        let mut b = Builder::new();
+        let atoms: Vec<StructId> = values.iter().map(|v| b.atom_leaf(v.clone())).collect();
+        let root = b.list(atoms);
+        let interned = b.finish(root);
+        assert_eq!(a.leaves.len(), 6);
+        assert_eq!(
+            interned.leaves.len(),
+            5,
+            "the Builder interns the second string alone"
+        );
+        let c = canonicalize(&a).into_owned();
+        assert_eq!(c.leaves.len(), 5, "the two strings become one leaf");
+        assert_eq!(&c, &interned);
     }
 
     #[test]
