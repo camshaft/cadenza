@@ -2420,19 +2420,27 @@ mod tests {
         // Each pair's placeholders are one value, pushed with `Builder::leaf_unique` so that each
         // element keeps a pool entry and a hole of its own.
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64(), Ty::Bool, Ty::Bool].into());
-        let tpl = runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[]))
-            .expect("a template");
-        let pool = crate::codec::decode(&tpl.bytes).expect("the template decodes").leaves;
+        let tpl =
+            runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("a template");
+        let pool = crate::codec::decode(&tpl.bytes)
+            .expect("the template decodes")
+            .leaves;
         let placeholders = pool
             .iter()
             .filter(|leaf| matches!(leaf, Leaf::Int { .. } | Leaf::Bool(_)))
             .count();
-        assert_eq!(placeholders, 4, "each placeholder is a leaf of its own: {pool:?}");
+        assert_eq!(
+            placeholders, 4,
+            "each placeholder is a leaf of its own: {pool:?}"
+        );
         let offsets: std::collections::BTreeSet<usize> =
             tpl.leaves.iter().map(|h| h.offset).collect();
         assert_eq!(offsets.len(), 4, "four holes at four offsets");
         let got = fill_and_read(&tpl.bytes, &tpl.leaves, &[7, 5], &[true, false]);
-        assert_eq!(got.iter().map(int).collect::<Vec<_>>(), [Some(7), Some(5), None, None]);
+        assert_eq!(
+            got.iter().map(int).collect::<Vec<_>>(),
+            [Some(7), Some(5), None, None]
+        );
         assert_eq!(got[2..], [Leaf::Bool(true), Leaf::Bool(false)]);
     }
 
@@ -2445,7 +2453,10 @@ mod tests {
         let mut b = Builder::new();
         let mut pending = Vec::new();
         let mut children = Vec::new();
-        for (i, ty) in [Ty::int64(), Ty::int64(), Ty::Bool, Ty::Bool].iter().enumerate() {
+        for (i, ty) in [Ty::int64(), Ty::int64(), Ty::Bool, Ty::Bool]
+            .iter()
+            .enumerate()
+        {
             let elem = template_value_ast(&mut b, ty, &mut vec![i as u32], &mut pending);
             children.push(elem.expect("a scalar placeholder"));
         }
@@ -2453,10 +2464,16 @@ mod tests {
         children.insert(0, head);
         let root = b.list(children);
         let arenas = b.finish(root);
-        assert!(!crate::canon::is_canonical(&arenas), "the arena isn't in canonical order");
+        assert!(
+            !crate::canon::is_canonical(&arenas),
+            "the arena isn't in canonical order"
+        );
         let (bytes, holes) = encode_template(&arenas, &pending).expect("a template");
         let got = fill_and_read(&bytes, &holes, &[7, 5], &[true, false]);
-        assert_eq!(got.iter().map(int).collect::<Vec<_>>(), [Some(7), Some(5), None, None]);
+        assert_eq!(
+            got.iter().map(int).collect::<Vec<_>>(),
+            [Some(7), Some(5), None, None]
+        );
         assert_eq!(got[2..], [Leaf::Bool(true), Leaf::Bool(false)]);
     }
 
