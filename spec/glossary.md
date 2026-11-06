@@ -39,8 +39,9 @@
 - **Transport encoding** - a byte encoding of an abstract syntax tree in the binary AST's format,
   written for a message between programs rather than as a program's stored form: any encoding a
   conforming decoder accepts and decodes to the tree, under the same container header as the canonical
-  form and listing each distinct leaf once, but not necessarily in its canonical byte order. It is decoded like the canonical form, and is
-  never stored, hashed, or handed to the compiler as received. Fixed by the ast-encoding contract.
+  form, but not necessarily in its canonical byte order or with each distinct leaf listed once. It is
+  decoded like the canonical form, and is never stored, hashed, or handed to the compiler as
+  received. Fixed by the ast-encoding contract.
 - **Typed value** - a value of a declared type, such as a record, a list, an optional value or an
   enumeration variant, as a program holds it before it is written as a binary AST.
 - **Typed mapping** - the one binary AST tree each typed value is written as, and how a decoder reads
