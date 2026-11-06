@@ -392,9 +392,10 @@ mod tests {
 
     #[test]
     fn a_value_received_with_one_leaf_value_at_two_ids_re_encodes_with_the_value_once() {
-        // A sender that breaks the transport rule lists one leaf value at two leaf ids. The typed
-        // value that `from_bytes` reads from those bytes doesn't keep leaf ids, so `to_bytes` of it
-        // lists the value once, as the canonical bytes of a conforming sender's message do.
+        // A sender that doesn't intern leaves lists one leaf value at two leaf ids, which a transport
+        // encoding may do. The canonical re-encoding of the received tree lists the value once, and
+        // the typed value that `from_bytes` reads from those bytes doesn't keep leaf ids, so
+        // `to_bytes` of it lists the value once too.
         let mut b = Builder::new();
         let first = b.leaf_unique(cadenza_ast::ast::Leaf::Str(std::sync::Arc::from("same")));
         let second = b.leaf_unique(cadenza_ast::ast::Leaf::Str(std::sync::Arc::from("same")));
@@ -402,7 +403,10 @@ mod tests {
         let y = b.atom(second);
         let root = b.compound(cadenza_ast::ast::CompoundCtor::Tuple, &[x, y]);
         let received = codec::encode_as_built(&b.finish(root));
-        assert_eq!(codec::decode(&received).expect("a tree").leaves.len(), 3);
+        let tree = codec::decode(&received).expect("a tree");
+        assert_eq!(tree.leaves.len(), 3);
+        let re_encoded = codec::decode(&codec::encode(&tree)).expect("a tree");
+        assert_eq!(re_encoded.leaves.len(), 2);
         let value: (String, String) = from_bytes(&received).expect("decode");
         assert_eq!(value, ("same".to_string(), "same".to_string()));
         let canonical = to_bytes(&value).expect("encode");
