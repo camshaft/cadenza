@@ -434,9 +434,9 @@ mod tests {
         //= type=test
         //# An encoder MUST produce, for the stored, hashed, and compiled forms of a given abstract syntax tree, the one canonical byte sequence: the leaf pool MUST list each distinct leaf exactly once (leaves are deduplicated by value) and the leaf pool and the structure pool MUST be ordered by a deterministic function of the tree alone, independent of the order in which nodes were constructed, so that two equal trees produce identical bytes.
         // `(a a)` with the value `a` at two leaf ids, as two `Builder::leaf_unique` leaves hold it,
-        // and at one leaf id, as `Builder::name` interns it. Both arenas number their nodes and
-        // leaves in the pre-order walk's order, so the value at two ids alone keeps the first out
-        // of the normal form.
+        // and at one leaf id, as `Builder::name` interns it. Both arenas number their leaves in the
+        // walk's first-encounter order and each list after its children, as the normal form does,
+        // so the value at two ids alone keeps the first out of the normal form.
         let mut b = Builder::new();
         let first = b.leaf_unique(Leaf::Name("a".into()));
         let second = b.leaf_unique(Leaf::Name("a".into()));
