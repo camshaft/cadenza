@@ -1048,10 +1048,22 @@ mod tests {
         let root = b.list(vec![first, second]);
         let a = b.finish(root);
         let from_transport = decode(&encode_as_built(&a)).expect("the transport bytes decode");
-        assert_eq!(from_transport.leaves.len(), 1, "the transport encoding lists `x` once");
+        assert_eq!(
+            from_transport.leaves.len(),
+            1,
+            "the transport encoding lists `x` once"
+        );
         let from_canonical = decode(&encode(&a)).expect("the canonical bytes decode");
-        assert_eq!(from_canonical.leaves.len(), 1, "the canonical encoding lists `x` once");
-        assert_eq!(encode(&from_transport), encode(&a), "the canonical re-encoding");
+        assert_eq!(
+            from_canonical.leaves.len(),
+            1,
+            "the canonical encoding lists `x` once"
+        );
+        assert_eq!(
+            encode(&from_transport),
+            encode(&a),
+            "the canonical re-encoding"
+        );
     }
 
     /// Encode `a` with `f` a few times; answer the mean time of one call and the bytes written.
@@ -2495,9 +2507,13 @@ mod tests {
         let mut kinds = Vec::new();
         for item in list_items(&spec_section(spec, heading)) {
             let (first, rest) = code_span(&item).expect("a kind entry opens with a code span");
-            let first: u8 = first.parse().expect("a kind entry names its kind byte in decimal");
+            let first: u8 = first
+                .parse()
+                .expect("a kind entry names its kind byte in decimal");
             let last: u8 = match rest.strip_prefix('\u{2013}').and_then(code_span) {
-                Some((last, _)) => last.parse().expect("a range's last kind byte is in decimal"),
+                Some((last, _)) => last
+                    .parse()
+                    .expect("a range's last kind byte is in decimal"),
                 None => first,
             };
             kinds.extend(first..=last);
@@ -2510,7 +2526,9 @@ mod tests {
     fn spec_worked_examples(spec: &str) -> Vec<Vec<u8>> {
         let mut examples = Vec::new();
         for item in list_items(&spec_section(spec, "### Per-Field Encodings")) {
-            let at = item.find(": `").expect("a worked example shows its bytes after `: `");
+            let at = item
+                .find(": `")
+                .expect("a worked example shows its bytes after `: `");
             let (hex, _) = code_span(&item[at + 2..]).expect("the bytes are one code span");
             let mut bytes = Vec::new();
             for byte in hex.split_whitespace() {
@@ -2556,10 +2574,16 @@ mod tests {
             let Ok(leaf) = read_leaf(&mut r) else {
                 panic!("worked example {example:02X?} doesn't read as a leaf");
             };
-            assert!(r.at_end(), "worked example {example:02X?} is exactly one leaf");
+            assert!(
+                r.at_end(),
+                "worked example {example:02X?} is exactly one leaf"
+            );
             let mut written = Vec::new();
             write_leaf(&mut written, &leaf);
-            assert_eq!(written, example, "the codec writes worked example {example:02X?}");
+            assert_eq!(
+                written, example,
+                "the codec writes worked example {example:02X?}"
+            );
 
             let mut container = SCHEMA_HEADER.to_vec();
             leb128::write_u64(&mut container, 1); // leaf count
@@ -2571,7 +2595,11 @@ mod tests {
             let Ok(arenas) = decode_detailed(&container) else {
                 panic!("worked example {example:02X?} doesn't decode as a binary AST");
             };
-            assert_eq!(arenas.leaves, vec![leaf], "the leaf of worked example {example:02X?}");
+            assert_eq!(
+                arenas.leaves,
+                vec![leaf],
+                "the leaf of worked example {example:02X?}"
+            );
             example_kinds.push(example[0]);
         }
 
@@ -2591,7 +2619,10 @@ mod tests {
         // which hold the NFC text.
         let decomposed = "cafe\u{0301}";
         let precomposed = "caf\u{00e9}";
-        assert_ne!(decomposed, precomposed, "the two spellings differ before normalization");
+        assert_ne!(
+            decomposed, precomposed,
+            "the two spellings differ before normalization"
+        );
         let encode_name = |text: &str| {
             let mut b = Builder::new();
             let root = b.name(text);
@@ -2601,7 +2632,11 @@ mod tests {
         let mut expected = SCHEMA_HEADER.to_vec();
         expected.extend_from_slice(&[1, KIND_NAME, 5, b'c', b'a', b'f', 0xC3, 0xA9]);
         expected.extend_from_slice(&[1, TAG_ATOM, 0, 0]);
-        assert_eq!(encode_name(decomposed), expected, "the bytes hold the NFC text");
+        assert_eq!(
+            encode_name(decomposed),
+            expected,
+            "the bytes hold the NFC text"
+        );
     }
 
     // A program that received a binary AST checks the decoded tree with `check_addressable` before

@@ -321,7 +321,10 @@ mod tests {
     #[test]
     fn malformed_bytes_are_rejected() {
         let r: Result<i32> = from_bytes(&[0xff, 0x00, 0x13, 0x37]);
-        assert_eq!(r, Err(Error::MalformedBinaryAst(codec::DecodeError::Truncated)));
+        assert_eq!(
+            r,
+            Err(Error::MalformedBinaryAst(codec::DecodeError::Truncated))
+        );
     }
 
     #[test]
@@ -339,7 +342,10 @@ mod tests {
         // The header names this format at version 2.
         let mut newer_version = canonical.clone();
         newer_version[7] = 2;
-        assert_eq!(reason(&newer_version), codec::DecodeError::UnknownVersion(2));
+        assert_eq!(
+            reason(&newer_version),
+            codec::DecodeError::UnknownVersion(2)
+        );
         // The one leaf's kind byte is the first kind above the highest this reader defines.
         let kind = codec::MAX_KIND + 1;
         let mut newer_kind = canonical.clone();
@@ -351,11 +357,17 @@ mod tests {
         assert_eq!(reason(&damaged), codec::DecodeError::BadHeader);
         // The error's message states the reason.
         let message = Error::MalformedBinaryAst(codec::DecodeError::UnknownVersion(2)).to_string();
-        assert_eq!(message, "input is not a valid binary-AST: UnknownVersion(2)");
+        assert_eq!(
+            message,
+            "input is not a valid binary-AST: UnknownVersion(2)"
+        );
         // Each reason is the one `decode_detailed` answers for the same bytes.
         let refused: [&[u8]; 4] = [ended_early, &newer_version, &newer_kind, &damaged];
         for bytes in refused {
-            assert_eq!(Err(reason(bytes)), codec::decode_detailed(bytes).map(|_| ()));
+            assert_eq!(
+                Err(reason(bytes)),
+                codec::decode_detailed(bytes).map(|_| ())
+            );
         }
     }
 
@@ -437,7 +449,11 @@ mod tests {
         let back: Vec<Point> = from_bytes(&transport).expect("decode the transport encoding");
         assert_eq!(back, points);
         let tree = codec::decode(&transport).expect("the transport encoding decodes");
-        assert_eq!(codec::encode(&tree), canonical, "both calls encode one tree");
+        assert_eq!(
+            codec::encode(&tree),
+            canonical,
+            "both calls encode one tree"
+        );
     }
 
     #[test]
