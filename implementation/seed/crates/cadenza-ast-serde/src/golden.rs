@@ -110,7 +110,11 @@ where
     let back: T = from_bytes(&bytes).expect("decode the transport encoding");
     assert_eq!(&back, value, "the value the transport encoding decodes to");
     let tree = codec::decode(&bytes).expect("the transport encoding decodes");
-    assert_eq!(codec::encode(&tree), canonical, "the canonical re-encoding of {value:?}");
+    assert_eq!(
+        codec::encode(&tree),
+        canonical,
+        "the canonical re-encoding of {value:?}"
+    );
 }
 
 /// A byte sequence: its `Serialize` and `Deserialize` declare the value as raw bytes, where a
